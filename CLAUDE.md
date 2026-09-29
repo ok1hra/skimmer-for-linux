@@ -101,8 +101,11 @@ here; what was done and why is in git.
   git), is chosen in Preferences → Decoding; without the runtime or the model
   the pipeline falls back to v2.
 - **IQ sources: TCI, or HPSDR Protocol 1 direct** (Red Pitaya
-  `sdr_receiver_hpsdr`, one receiver, 48/96/192 kHz, clock ppm correction;
-  the wire is RF-inverted and ingest conjugates — `docs/HPSDR-P1.md`).
+  `sdr_receiver_hpsdr`, 48/96/192 kHz, clock ppm correction; the wire is
+  RF-inverted and ingest conjugates — `docs/HPSDR-P1.md`). The app uses one
+  receiver; `skimmer-headless` runs up to 8 (one pipeline per band, one
+  telnet feed, console + web status). The FFTW planner is not thread-safe:
+  plan create/destroy goes through `skim_fftw_lock()`.
 - **`meson test` = 15 gates.** It does NOT relink the app — build
   `ninja skimmer-for-linux` explicitly or an old binary keeps running.
 - Richard's live instance runs from `builddir`; recorded IQ fixtures live in
@@ -129,6 +132,7 @@ titles carry no epithet: "Skimmer for Linux 0.4.1", tag message
 src/engine/   headless, GLib-only:
   tci_client   WS client, IQ ingest (true orientation), outgoing SPOT
   hpsdr_p1     HPSDR Protocol 1 UDP client (Red Pitaya) — the non-TCI IQ source
+  fftw_lock    the one lock around FFTW plan creation/destruction
   channelizer  polyphase filter bank → complex baseband per channel
   decode.h     backend interface: channel → { text, confidence, freq, wpm/baud }
   decode_cw    CW backend (phase 1: v1 classical + v2 Viterbi)
@@ -140,6 +144,7 @@ src/engine/   headless, GLib-only:
 src/app/      GTK4/libadwaita: main.c (window: waterfall + callsign column over the
               decode pane), wf_view.c (widget), wf_compose.c (GLib-only pixels + layout),
               scp_update.c (GLib + libcurl, GTK-free: MASTER.SCP background updater)
+src/headless_main.c  skimmer-headless: multi-band, no GUI (HPSDR P1 → N pipelines)
 vendor/wdsp/  in-tree WDSP copy (FFT + resampler)
 vendor/onnxruntime/  ONNX Runtime C API header only (MIT) — dlopen at run time
 ```

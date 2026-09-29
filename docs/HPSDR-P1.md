@@ -17,9 +17,8 @@ A bridge (an HPSDR → TCI relay) would have kept the engine TCI-only. It would
 also have added a second process and a WebSocket hop just to deliver one
 receiver. The P1 client is ~500 lines of GLib + POSIX UDP. It hands the pipeline
 the same callback shape as the TCI client (`iq, nframes, rate, centre`), so
-nothing downstream changed. Multi-band skimming from the RP's 8 receivers is
-future work. Either the same client grows N receivers, or a bridge is built on
-top of it.
+nothing downstream changed. Multi-band skimming uses the same client with N
+receivers, see below.
 
 ## Facts about the server (read from the source, confirmed live 2026-09-29)
 
@@ -87,6 +86,34 @@ never reached the machine at all. The client zero-fills sequence gaps to keep
 stream time continuous for the decoders, counts them, and the status line shows
 the percentage. 192 kHz wants a wired link. Eight receivers at 192 kHz would be
 ~77 Mb/s of UDP.
+
+## Multi-band: skimmer-headless
+
+`skimmer-headless` (`src/headless_main.c`, no GTK) starts one client with up to
+8 receivers (`skim_hpsdr_client_start_multi`) and feeds each receiver into its
+own pipeline (`SKIM_PIPELINE_SOURCE_EXTERNAL`, IQ via `skim_pipeline_push`).
+All the pipelines spot into one telnet feed. Config lives in
+`~/.config/skimmer-for-linux/headless.ini` (`[radio]`, `[bands]` in receiver
+order, `[decode]`, `[feed]`, `[status]`). Status goes to a console table and to
+a web page with `/status.json`.
+
+- The server has **one rate for all receivers**. EP2 carries rate + receiver
+  count and every receiver's frequency, two control words per packet.
+- **The FFTW planner is not thread-safe.** Six pipelines build their channel
+  banks on six engine threads from the first IQ block, and they crashed inside
+  `fftwf`'s planner (2026-09-29). Every plan create/destroy in the engine now
+  takes `skim_fftw_lock()` (`src/engine/fftw_lock.c`). The `channelizer` gate
+  builds 200 banks on 8 threads, and without the lock it segfaults 3 runs in 3.
+- Measured on the RP at 192.168.1.21, 2026-09-29, **wired**, with 6 × 96 kHz
+  (160/80/40/30/20/15 m): ~3 700 packets/s (26 samples per packet at 6 RX),
+  **0 % lost**, 96 kS/s per band, no queue drops. The whole process used
+  70–85 % of one core on an i5-10210U (8 threads). One 96 kHz pipeline
+  replays at ~40× real time.
+- "Active decoders" on the status page counts channels decoding running text.
+  The decoders emit a one-character fragment on noise every now and then:
+  160 m at night gave 1 895 fragments in 20 s, most of them single
+  characters. A per-channel character score with a 10 s decay and a threshold
+  of 8 tells those apart from keyed CW at 2–3 characters per second.
 
 ## Tools
 

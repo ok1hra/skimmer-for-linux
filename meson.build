@@ -46,6 +46,7 @@ engine_sources = [
   'src/engine/tci_client.c',   # M1: WS client, IQ ingest, conjugate, outgoing SPOT
   'src/engine/hpsdr_p1.c',     # HPSDR Protocol 1 IQ source (Red Pitaya), no TCI
   'src/engine/channelizer.c',  # M2: polyphase filter bank → complex channels
+  'src/engine/fftw_lock.c',    # FFTW planner is not thread-safe: one lock
   'src/engine/decode_cw.c',    # M3: CW backend (implements decode.h)
   'src/engine/decode_cw_v2.c', # CW v2: semi-Markov Viterbi (QSB-proof)
   'src/engine/decode_rtty.c',  # M7: RTTY backend (Baudot FSK)
@@ -264,6 +265,15 @@ skimmer_scp_test = executable('skimmer-scp-test',
   link_with : engine_lib,
 )
 test('scp-update', skimmer_scp_test, timeout : 180)
+
+# Multi-band skimmer without a GUI: one HPSDR P1 receiver (Red Pitaya) with
+# up to 8 RX, one pipeline per band, one telnet feed, console + web status.
+executable('skimmer-headless',
+  ['src/headless_main.c', 'src/app/scp_update.c'],   # updater is GTK-free
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps + [curl_dep],
+  link_with : engine_lib,
+)
 
 # --- Application ------------------------------------------------------------
 executable('skimmer-for-linux',
