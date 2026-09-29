@@ -30,6 +30,10 @@ GitHub Issues.
   consumes IQ and sends spots; it never keys and never changes radio state on
   its own. The single deliberate write is `vfo:0,0,<hz>` when the USER
   activates a station row (added 2026-07-15 at Richard's request).
+  The HPSDR P1 source (Red Pitaya, `docs/HPSDR-P1.md`) is not the operator's
+  radio but the skimmer's own receiver: it sets that receiver's DDC centre,
+  rate and RX count, never keys, and never touches a receiver another
+  client is streaming from unless the user presses "Take over".
 - **RBN feed must never emit unvalidated callsigns** — M4 (validation) gates M6
   (RBN).
 - **Every commit and tag is GPG-signed** (`commit.gpgsign=true`, key
@@ -96,7 +100,10 @@ here; what was done and why is in git.
   A third backend, DeepCW (neural, ONNX Runtime via `dlopen`, model outside
   git), is chosen in Preferences → Decoding; without the runtime or the model
   the pipeline falls back to v2.
-- **`meson test` = 14 gates.** It does NOT relink the app — build
+- **IQ sources: TCI, or HPSDR Protocol 1 direct** (Red Pitaya
+  `sdr_receiver_hpsdr`, one receiver, 48/96/192 kHz, clock ppm correction;
+  the wire is RF-inverted and ingest conjugates — `docs/HPSDR-P1.md`).
+- **`meson test` = 15 gates.** It does NOT relink the app — build
   `ninja skimmer-for-linux` explicitly or an old binary keeps running.
 - Richard's live instance runs from `builddir`; recorded IQ fixtures live in
   `/var/tmp/skimmer-iq/` (a fresh one takes minutes:
@@ -121,6 +128,7 @@ titles carry no epithet: "Skimmer for Linux 0.4.1", tag message
 ```
 src/engine/   headless, GLib-only:
   tci_client   WS client, IQ ingest (true orientation), outgoing SPOT
+  hpsdr_p1     HPSDR Protocol 1 UDP client (Red Pitaya) — the non-TCI IQ source
   channelizer  polyphase filter bank → complex baseband per channel
   decode.h     backend interface: channel → { text, confidence, freq, wpm/baud }
   decode_cw    CW backend (phase 1: v1 classical + v2 Viterbi)

@@ -19,6 +19,8 @@
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include <adwaita.h>
+#include <glib-unix.h>
+#include <signal.h>
 #include <string.h>
 
 #include "callsign.h"
@@ -26,6 +28,7 @@
 #include "pane_log.h"
 #include "spot_out.h"
 #include "decode_deepcw.h"
+#include "hpsdr_p1.h"
 #include "pipeline.h"
 #include "scp_update.h"
 #include "wf_compose.h"
@@ -94,6 +97,16 @@ typedef struct {
   int             tci_port;      /* TCI server port (persisted; default 40001
                                   * — the spec names none, the server decides:
                                   * ExpertSDR3 shows it in its settings)     */
+  guint           source;        /* IQ source: SKIM_PIPELINE_SOURCE_TCI /
+                                  * _HPSDR (persisted [source] type)          */
+  char           *rp_host;       /* HPSDR P1 receiver (Red Pitaya) — persisted
+                                  * [hpsdr]; the skimmer tunes it itself      */
+  double          rp_center_hz;  /* its DDC centre (TRUE frequency)           */
+  guint           rp_rate;       /* 48000 / 96000 / 192000                    */
+  double          rp_ppm;        /* sampling-clock correction, ppm            */
+  gboolean        rp_take_over;  /* the user said "Take over" — the NEXT start
+                                  * may grab a busy radio; never automatic   */
+  AdwBanner      *rp_banner;     /* "in use by another client · Take over"   */
   gboolean        cq_only;       /* spot only CALLING stations (persisted)    */
   guint           spot_round;    /* outgoing spot freq grid Hz, 0=exact
                                   * (persisted; SDC-style spot accuracy)      */
@@ -187,6 +200,9 @@ typedef struct {
 } App;
 
 static SkimPipeline *pipeline_create(App *app);
+static void pipeline_start_async(App *app);
+static void rp_busy_show(App *app);
+static gboolean scan_tick(gpointer data);
 static void replay_stop(App *app);
 static void replay_start(App *app);
 
@@ -1003,12 +1019,20 @@ static gboolean status_tick(gpointer data) {
     if (app->vfo_hz > 0) {
       g_snprintf(vfo, sizeof(vfo), "%.2f kHz · ", app->vfo_hz / 1000.0);
     }
+    /* HPSDR over UDP: lost packets are zero-filled, say how many (Wi-Fi
+     * dropped a third of a 192 kHz stream, 2026-09-29). */
+    char lost[48] = "";
+    const guint64 lf = skim_pipeline_lost_frames(app->pipeline);
+    const guint64 fr = skim_pipeline_frames(app->pipeline);
+    if (lf > 0 && fr > 0) {
+      g_snprintf(lost, sizeof(lost), " · %.1f %% lost", 100.0 * lf / fr);
+    }
     g_snprintf(s, sizeof(s),
                "%s%u stations · %" G_GUINT64_FORMAT " spots · %"
-               G_GUINT64_FORMAT " Mframes%s",
+               G_GUINT64_FORMAT " Mframes%s%s",
                vfo, skim_pipeline_stations(app->pipeline),
                skim_pipeline_spots(app->pipeline),
-               skim_pipeline_frames(app->pipeline) / 1000000, rbn);
+               fr / 1000000, lost, rbn);
     gtk_label_set_text(app->status, s);
   } else {
     char s[96];
@@ -1053,6 +1077,42 @@ static int settings_load_tci_port(void) {
   g_key_file_free(kf);
   g_free(path);
   return port;
+}
+
+/* [source] type + [hpsdr] — the HPSDR P1 receiver the skimmer drives
+ * itself. Defaults: the shack's Red Pitaya, 20 m CW, 192 kHz, no correction. */
+static void settings_load_source(App *app) {
+  char *path = settings_file();
+  GKeyFile *kf = g_key_file_new();
+  app->source = SKIM_PIPELINE_SOURCE_TCI;
+  app->rp_host = NULL;
+  app->rp_center_hz = 14080000;
+  app->rp_rate = 192000;
+  app->rp_ppm = 0;
+  if (g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, NULL)) {
+    char *t = g_key_file_get_string(kf, "source", "type", NULL);
+    if (g_strcmp0(t, "hpsdr") == 0) { app->source = SKIM_PIPELINE_SOURCE_HPSDR; }
+    g_free(t);
+    app->rp_host = g_key_file_get_string(kf, "hpsdr", "host", NULL);
+    if (g_key_file_has_key(kf, "hpsdr", "center_hz", NULL)) {
+      const double c = g_key_file_get_double(kf, "hpsdr", "center_hz", NULL);
+      if (c >= 100000 && c <= 62000000) { app->rp_center_hz = c; }
+    }
+    if (g_key_file_has_key(kf, "hpsdr", "rate", NULL)) {
+      const int r = g_key_file_get_integer(kf, "hpsdr", "rate", NULL);
+      if (r == 48000 || r == 96000 || r == 192000) { app->rp_rate = (guint)r; }
+    }
+    if (g_key_file_has_key(kf, "hpsdr", "clock_ppm", NULL)) {
+      const double v = g_key_file_get_double(kf, "hpsdr", "clock_ppm", NULL);
+      if (ABS(v) <= 100) { app->rp_ppm = v; }
+    }
+  }
+  g_key_file_free(kf);
+  g_free(path);
+  if (!app->rp_host || !app->rp_host[0]) {
+    g_free(app->rp_host);
+    app->rp_host = g_strdup("192.168.1.21");
+  }
 }
 
 static gboolean settings_load_cq_only(void) {
@@ -1233,6 +1293,12 @@ static void settings_save(const App *app) {
   g_key_file_load_from_file(kf, path, G_KEY_FILE_KEEP_COMMENTS, NULL);
   g_key_file_set_string(kf, "tci", "host", app->host);
   g_key_file_set_integer(kf, "tci", "port", app->tci_port);
+  g_key_file_set_string(kf, "source", "type",
+                        app->source == SKIM_PIPELINE_SOURCE_HPSDR ? "hpsdr" : "tci");
+  g_key_file_set_string(kf, "hpsdr", "host", app->rp_host);
+  g_key_file_set_double(kf, "hpsdr", "center_hz", app->rp_center_hz);
+  g_key_file_set_integer(kf, "hpsdr", "rate", (gint)app->rp_rate);
+  g_key_file_set_double(kf, "hpsdr", "clock_ppm", app->rp_ppm);
   g_key_file_set_string(kf, "decode", "mode", app->dec_mode ? "rtty" : "cw");
   g_key_file_set_string(kf, "decode", "engine", app->cw_engine ? "deepcw" : "v2");
   g_key_file_set_string(kf, "decode", "device", app->dcw_device ? "cuda" : "cpu");
@@ -1402,11 +1468,18 @@ static void start_pipeline_done(GObject *src, GAsyncResult *res, gpointer user) 
     g_clear_pointer(&app->starting, skim_pipeline_free);
     return;
   }
+  app->rp_take_over = FALSE;                   /* one start per click only   */
   if (!ok) {
+    if (g_error_matches(err, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_BUSY)) {
+      rp_busy_show(app);
+    } else if (app->source == SKIM_PIPELINE_SOURCE_HPSDR && err) {
+      g_message("hpsdr: start failed: %s", err->message);
+    }
     g_clear_error(&err);                       /* scanner keeps trying       */
     g_clear_pointer(&app->starting, skim_pipeline_free);
     return;
   }
+  adw_banner_set_revealed(app->rp_banner, FALSE);
   app->pipeline = app->starting;
   app->starting = NULL;
   skim_pipeline_set_spot_cq_only(app->pipeline, app->cq_only);
@@ -1438,8 +1511,12 @@ static void probe_done(GObject *src, GAsyncResult *res, gpointer user) {
   }
   g_io_stream_close(G_IO_STREAM(conn), NULL, NULL);
   g_object_unref(conn);
+  pipeline_start_async(app);                   /* the TCI port answers       */
+}
 
-  /* The TCI port answers — bring the pipeline up off the main thread. */
+/* Bring the pipeline up off the main thread (the handshake blocks);
+ * app->probing stays set until start_pipeline_done. */
+static void pipeline_start_async(App *app) {
   app->starting = pipeline_create(app);
   adw_window_title_set_subtitle(app->title, "connecting…");
   GTask *t = g_task_new(NULL, NULL, start_pipeline_done, app);
@@ -1464,10 +1541,15 @@ static SkimPipeline *pipeline_create(App *app) {
   g_date_time_unref(now);
   g_free(day);
   g_free(logdir);
+  const gboolean rp = app->source == SKIM_PIPELINE_SOURCE_HPSDR;
   SkimPipelineConfig cfg = {
-    .host = app->host,
-    .port = (guint16)app->tci_port,
-    .iq_rate = 192000,
+    .source = rp ? SKIM_PIPELINE_SOURCE_HPSDR : SKIM_PIPELINE_SOURCE_TCI,
+    .host = rp ? app->rp_host : app->host,
+    .port = rp ? SKIM_HPSDR_DEFAULT_PORT : (guint16)app->tci_port,
+    .iq_rate = rp ? app->rp_rate : 192000,
+    .center_hz = app->rp_center_hz,
+    .clock_ppm = app->rp_ppm,
+    .take_over = app->rp_take_over,
     .mode = app->dec_mode ? SKIM_PIPELINE_MODE_RTTY : SKIM_PIPELINE_MODE_CW,
     .cw_engine = app->cw_engine ? SKIM_CW_ENGINE_DEEPCW : SKIM_CW_ENGINE_V2,
     .chan_bw_hz = 0,                           /* mode default: 125/250 Hz   */
@@ -1581,11 +1663,88 @@ static void replay_start(App *app) {
   app->replay_thread = g_thread_new("skim-replay", replay_thread, app);
 }
 
+/* HPSDR scanner: discovery answers idle/busy. Idle → start; busy → the
+ * banner offers "Take over" and NOTHING is sent to the radio — its stream
+ * belongs to another client (Quisk), and when that client lets go the next
+ * scan finds it idle and starts on its own. */
+typedef struct {
+  char         *host;
+  gboolean      ok;
+  SkimHpsdrInfo info;
+} RpProbe;
+
+static void rp_probe_free(gpointer data) {
+  RpProbe *rp = data;
+  g_free(rp->host);
+  g_free(rp);
+}
+
+static void rp_probe_thread(GTask *task, gpointer src, gpointer data,
+                            GCancellable *cancel) {
+  (void)src; (void)cancel;
+  RpProbe *rp = data;
+  rp->ok = skim_hpsdr_discover(rp->host, SKIM_HPSDR_DEFAULT_PORT, 1000,
+                               &rp->info, NULL);
+  g_task_return_boolean(task, TRUE);
+}
+
+static void rp_busy_show(App *app) {
+  char s[200];
+  g_snprintf(s, sizeof(s), "Red Pitaya %s is in use by another client",
+             app->rp_host);
+  adw_window_title_set_subtitle(app->title, s);
+  adw_banner_set_title(app->rp_banner, s);
+  adw_banner_set_revealed(app->rp_banner, TRUE);
+}
+
+static void rp_probe_done(GObject *src, GAsyncResult *res, gpointer user) {
+  (void)src;
+  App *app = user;
+  RpProbe *rp = g_task_get_task_data(G_TASK(res));
+  if (app->closing || app->source != SKIM_PIPELINE_SOURCE_HPSDR ||
+      g_strcmp0(rp->host, app->rp_host) != 0) {
+    app->probing = FALSE;                      /* stale probe: next tick     */
+    return;
+  }
+  if (!rp->ok) {                               /* not on the network (yet)   */
+    adw_banner_set_revealed(app->rp_banner, FALSE);
+    app->probing = FALSE;
+    return;
+  }
+  if (rp->info.busy && !app->rp_take_over) {
+    rp_busy_show(app);
+    app->probing = FALSE;
+    return;
+  }
+  pipeline_start_async(app);
+}
+
+static void on_rp_take_over(AdwBanner *banner, gpointer user) {
+  App *app = user;
+  adw_banner_set_revealed(banner, FALSE);
+  app->rp_take_over = TRUE;                    /* the next start only        */
+  if (!app->pipeline && !app->probing) { scan_tick(app); }
+}
+
 static gboolean scan_tick(gpointer data) {
   App *app = data;
   if (app->closing) { return G_SOURCE_REMOVE; }
   if (app->pipeline || app->probing) { return G_SOURCE_CONTINUE; }
   app->probing = TRUE;
+  if (app->source == SKIM_PIPELINE_SOURCE_HPSDR) {
+    if (!adw_banner_get_revealed(app->rp_banner)) {
+      char s[160];
+      g_snprintf(s, sizeof(s), "searching for Red Pitaya %s…", app->rp_host);
+      adw_window_title_set_subtitle(app->title, s);
+    }
+    RpProbe *rp = g_new0(RpProbe, 1);
+    rp->host = g_strdup(app->rp_host);
+    GTask *t = g_task_new(NULL, NULL, rp_probe_done, app);
+    g_task_set_task_data(t, rp, rp_probe_free);
+    g_task_run_in_thread(t, rp_probe_thread);
+    g_object_unref(t);
+    return G_SOURCE_CONTINUE;
+  }
   char s[160];
   g_snprintf(s, sizeof(s), "searching for %s:%d…", app->host, app->tci_port);
   adw_window_title_set_subtitle(app->title, s);
@@ -1635,6 +1794,47 @@ static void on_pref_engine(AdwComboRow *r, GParamSpec *ps, gpointer user) {
   gtk_widget_set_visible(GTK_WIDGET(user), adw_combo_row_get_selected(r) == 1);
 }
 
+/* Red Pitaya band presets: centres for a 192 kHz window with the band's low
+ * edge ~15 kHz inside it (the channel bank's skirts), so the whole CW
+ * segment and the start of the digital one are covered. */
+static const struct { const char *label; double hz; } RP_BANDS[] = {
+  { "160 m", 1840000 },  { "80 m", 3550000 },  { "40 m", 7050000 },
+  { "30 m", 10125000 },  { "20 m", 14080000 }, { "17 m", 18100000 },
+  { "15 m", 21080000 },  { "12 m", 24920000 }, { "10 m", 28080000 },
+};
+static const guint RP_RATES[] = { 48000, 96000, 192000 };
+
+static guint rp_band_index(double hz) {
+  for (guint i = 0; i < G_N_ELEMENTS(RP_BANDS); i++) {
+    if (ABS(RP_BANDS[i].hz - hz) < 50) { return i; }
+  }
+  return G_N_ELEMENTS(RP_BANDS);               /* "Custom"                   */
+}
+
+/* Source row → only the chosen source's group shows. */
+static void on_pref_source(AdwComboRow *r, GParamSpec *ps, gpointer user) {
+  (void)ps; (void)user;
+  const gboolean rp = adw_combo_row_get_selected(r) == 1;
+  gtk_widget_set_visible(g_object_get_data(G_OBJECT(r), "tci-grp"), !rp);
+  gtk_widget_set_visible(g_object_get_data(G_OBJECT(r), "rp-grp"), rp);
+}
+
+/* Band preset → centre; a hand-typed centre → the matching preset or
+ * Custom. (Setting an unchanged value emits nothing, so no ping-pong.) */
+static void on_pref_rp_band(AdwComboRow *r, GParamSpec *ps, gpointer user) {
+  (void)ps;
+  const guint sel = adw_combo_row_get_selected(r);
+  if (sel < G_N_ELEMENTS(RP_BANDS)) {
+    adw_spin_row_set_value(ADW_SPIN_ROW(user), RP_BANDS[sel].hz / 1000.0);
+  }
+}
+
+static void on_pref_rp_centre(AdwSpinRow *r, GParamSpec *ps, gpointer user) {
+  (void)ps;
+  adw_combo_row_set_selected(ADW_COMBO_ROW(user),
+                             rp_band_index(adw_spin_row_get_value(r) * 1000.0));
+}
+
 static void prefs_closed(AdwDialog *dlg, gpointer user) {
   App *app = user;
   GtkWidget *row  = g_object_get_data(G_OBJECT(dlg), "host-row");
@@ -1649,6 +1849,44 @@ static void prefs_closed(AdwDialog *dlg, gpointer user) {
   GtkWidget *rcall = g_object_get_data(G_OBJECT(dlg), "rbn-call-row");
   GtkWidget *rport = g_object_get_data(G_OBJECT(dlg), "rbn-port-row");
   GtkWidget *scprow = g_object_get_data(G_OBJECT(dlg), "scp-row");
+  GtkWidget *srcrow = g_object_get_data(G_OBJECT(dlg), "source-row");
+  GtkWidget *rphrow = g_object_get_data(G_OBJECT(dlg), "rp-host-row");
+  GtkWidget *rpcrow = g_object_get_data(G_OBJECT(dlg), "rp-centre-row");
+  GtkWidget *rprrow = g_object_get_data(G_OBJECT(dlg), "rp-rate-row");
+  GtkWidget *rpprow = g_object_get_data(G_OBJECT(dlg), "rp-ppm-row");
+  const guint source = adw_combo_row_get_selected(ADW_COMBO_ROW(srcrow)) == 1
+                           ? SKIM_PIPELINE_SOURCE_HPSDR : SKIM_PIPELINE_SOURCE_TCI;
+  const char *rh = gtk_editable_get_text(GTK_EDITABLE(rphrow));
+  char *rp_host = g_strstrip(g_strdup(rh ? rh : ""));
+  const double rp_center = adw_spin_row_get_value(ADW_SPIN_ROW(rpcrow)) * 1000.0;
+  const guint rp_rate = RP_RATES[MIN(adw_combo_row_get_selected(ADW_COMBO_ROW(rprrow)),
+                                     G_N_ELEMENTS(RP_RATES) - 1)];
+  const double rp_ppm = adw_spin_row_get_value(ADW_SPIN_ROW(rpprow));
+  const gboolean source_changed = source != app->source;
+  const gboolean rp_changed = (rp_host[0] && g_strcmp0(rp_host, app->rp_host) != 0) ||
+                              ABS(rp_center - app->rp_center_hz) >= 1 ||
+                              rp_rate != app->rp_rate ||
+                              ABS(rp_ppm - app->rp_ppm) > 1e-6;
+  if (rp_changed) {
+    if (rp_host[0]) {
+      g_free(app->rp_host);
+      app->rp_host = rp_host;
+      rp_host = NULL;
+    }
+    app->rp_center_hz = rp_center;
+    app->rp_rate = rp_rate;
+    app->rp_ppm = rp_ppm;
+  }
+  g_free(rp_host);
+  app->source = source;
+  /* A new source or receiver setting: whatever the banner said is stale,
+   * and a pending "Take over" was for the old target. */
+  const gboolean source_reconnect =
+      source_changed || (rp_changed && source == SKIM_PIPELINE_SOURCE_HPSDR);
+  if (source_reconnect) {
+    adw_banner_set_revealed(app->rp_banner, FALSE);
+    app->rp_take_over = FALSE;
+  }
   const char *h = gtk_editable_get_text(GTK_EDITABLE(row));
   char *host = g_strstrip(g_strdup((h && h[0]) ? h : "127.0.0.1"));
   int tci_port = (int)adw_spin_row_get_value(ADW_SPIN_ROW(tprow));
@@ -1725,7 +1963,7 @@ static void prefs_closed(AdwDialog *dlg, gpointer user) {
   }
   if (host_changed || port_changed || mode_changed || engine_changed ||
       device_changed || cq_changed || round_changed || font_changed ||
-      rbn_changed || scp_changed) {
+      rbn_changed || scp_changed || source_changed || rp_changed) {
     settings_save(app);
   }
   /* A device change only matters to a DeepCW pipeline: the loaded session
@@ -1740,7 +1978,7 @@ static void prefs_closed(AdwDialog *dlg, gpointer user) {
    * fresh pipeline just like a host change does; a mode or engine change
    * swaps the backend (and the bank geometry), which only a rebuild can do. */
   if (host_changed || port_changed || mode_changed || engine_changed ||
-      device_rebuild || rbn_changed) {
+      device_rebuild || rbn_changed || source_reconnect) {
     const gboolean replaying = app->replay_thread != NULL;
     if (replaying) { replay_stop(app); }        /* feeder off BEFORE the free */
     if (app->pipeline) {
@@ -1778,6 +2016,76 @@ static void prefs_open(GtkButton *btn, gpointer user) {
   AdwPreferencesPage *p_dec   = prefs_page(dlg, "Decoding", "input-keyboard-symbolic");
   AdwPreferencesPage *p_spots = prefs_page(dlg, "Spots", "mark-location-symbolic");
   AdwPreferencesPage *p_disp  = prefs_page(dlg, "Display", "video-display-symbolic");
+  /* IQ source: a radio's TCI server, or an HPSDR P1 receiver the skimmer
+   * drives itself (Red Pitaya) — only the chosen one's group shows. */
+  GtkWidget *srcgrp = adw_preferences_group_new();
+  adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(srcgrp), "IQ source");
+  GtkWidget *srcrow = adw_combo_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(srcrow), "Source");
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(srcrow),
+      "A radio's TCI server (spots on its panadapter, a click tunes it), or "
+      "a Red Pitaya receiver the skimmer tunes itself (spots go to the "
+      "telnet feed) — a change reconnects");
+  static const char *SOURCES[] = { "TCI server", "Red Pitaya (HPSDR P1)", NULL };
+  adw_combo_row_set_model(ADW_COMBO_ROW(srcrow),
+                          G_LIST_MODEL(gtk_string_list_new(SOURCES)));
+  adw_combo_row_set_selected(ADW_COMBO_ROW(srcrow),
+                             app->source == SKIM_PIPELINE_SOURCE_HPSDR ? 1 : 0);
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(srcgrp), srcrow);
+  adw_preferences_page_add(p_radio, ADW_PREFERENCES_GROUP(srcgrp));
+
+  GtkWidget *rpgrp = adw_preferences_group_new();
+  adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(rpgrp), "Red Pitaya");
+  adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(rpgrp),
+      "HPSDR Protocol 1 receiver (sdr_receiver_hpsdr), UDP port 1024. It "
+      "serves one client at a time — while another one (Quisk) streams "
+      "from it the skimmer waits, and takes it over only when you say so");
+  GtkWidget *rphrow = adw_entry_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(rphrow), "Host");
+  gtk_editable_set_text(GTK_EDITABLE(rphrow), app->rp_host);
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(rpgrp), rphrow);
+  GtkWidget *rpbrow = adw_combo_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(rpbrow), "Band");
+  {
+    const char *names[G_N_ELEMENTS(RP_BANDS) + 2];
+    for (guint i = 0; i < G_N_ELEMENTS(RP_BANDS); i++) { names[i] = RP_BANDS[i].label; }
+    names[G_N_ELEMENTS(RP_BANDS)] = "Custom";
+    names[G_N_ELEMENTS(RP_BANDS) + 1] = NULL;
+    adw_combo_row_set_model(ADW_COMBO_ROW(rpbrow),
+                            G_LIST_MODEL(gtk_string_list_new(names)));
+  }
+  adw_combo_row_set_selected(ADW_COMBO_ROW(rpbrow), rp_band_index(app->rp_center_hz));
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(rpgrp), rpbrow);
+  GtkWidget *rpcrow = adw_spin_row_new_with_range(100, 62000, 0.1);
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(rpcrow), "Centre (kHz)");
+  adw_spin_row_set_digits(ADW_SPIN_ROW(rpcrow), 1);
+  adw_spin_row_set_value(ADW_SPIN_ROW(rpcrow), app->rp_center_hz / 1000.0);
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(rpgrp), rpcrow);
+  g_signal_connect(rpbrow, "notify::selected", G_CALLBACK(on_pref_rp_band), rpcrow);
+  g_signal_connect(rpcrow, "notify::value", G_CALLBACK(on_pref_rp_centre), rpbrow);
+  GtkWidget *rprrow = adw_combo_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(rprrow), "Sample rate");
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(rprrow),
+      "The width of the skimmed segment. 192 kHz wants a wired link — "
+      "Wi-Fi dropped a third of its packets here, 96 kHz went through "
+      "whole; the status line shows the loss");
+  static const char *RATES[] = { "48 kHz", "96 kHz", "192 kHz", NULL };
+  adw_combo_row_set_model(ADW_COMBO_ROW(rprrow),
+                          G_LIST_MODEL(gtk_string_list_new(RATES)));
+  adw_combo_row_set_selected(ADW_COMBO_ROW(rprrow),
+                             app->rp_rate == 48000 ? 0 : app->rp_rate == 96000 ? 1 : 2);
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(rpgrp), rprrow);
+  GtkWidget *rpprow = adw_spin_row_new_with_range(-100, 100, 0.01);
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(rpprow), "Clock correction (ppm)");
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(rpprow),
+      "The receiver's 125 MHz clock error, so spots land on the true "
+      "frequency. Measure with 0 here: ppm = (true − shown) ÷ true × 10⁶, "
+      "on a known carrier or against RBN spots");
+  adw_spin_row_set_digits(ADW_SPIN_ROW(rpprow), 2);
+  adw_spin_row_set_value(ADW_SPIN_ROW(rpprow), app->rp_ppm);
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(rpgrp), rpprow);
+  adw_preferences_page_add(p_radio, ADW_PREFERENCES_GROUP(rpgrp));
+
   GtkWidget *grp  = adw_preferences_group_new();
   adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(grp), "TCI server");
   adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(grp),
@@ -1793,6 +2101,10 @@ static void prefs_open(GtkButton *btn, gpointer user) {
   adw_spin_row_set_value(ADW_SPIN_ROW(tprow), app->tci_port);
   adw_preferences_group_add(ADW_PREFERENCES_GROUP(grp), tprow);
   adw_preferences_page_add(p_radio, ADW_PREFERENCES_GROUP(grp));
+  g_object_set_data(G_OBJECT(srcrow), "tci-grp", grp);
+  g_object_set_data(G_OBJECT(srcrow), "rp-grp", rpgrp);
+  g_signal_connect(srcrow, "notify::selected", G_CALLBACK(on_pref_source), NULL);
+  on_pref_source(ADW_COMBO_ROW(srcrow), NULL, NULL);
 
   GtkWidget *dgrp = adw_preferences_group_new();
   adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(dgrp), "Decoding");
@@ -1981,6 +2293,11 @@ static void prefs_open(GtkButton *btn, gpointer user) {
   adw_preferences_page_add(p_disp, ADW_PREFERENCES_GROUP(ugrp));
 
   g_object_set_data(G_OBJECT(dlg), "host-row", row);
+  g_object_set_data(G_OBJECT(dlg), "source-row", srcrow);
+  g_object_set_data(G_OBJECT(dlg), "rp-host-row", rphrow);
+  g_object_set_data(G_OBJECT(dlg), "rp-centre-row", rpcrow);
+  g_object_set_data(G_OBJECT(dlg), "rp-rate-row", rprrow);
+  g_object_set_data(G_OBJECT(dlg), "rp-ppm-row", rpprow);
   g_object_set_data(G_OBJECT(dlg), "tci-port-row", tprow);
   g_object_set_data(G_OBJECT(dlg), "mode-row", mrow);
   g_object_set_data(G_OBJECT(dlg), "engine-row", erow);
@@ -2103,8 +2420,11 @@ static void on_wf_call_clicked(const char *call, double hz, gpointer user) {
   }
   /* A replay (SKIM_IQ_FILE) has no radio to echo the tune back as its VFO —
    * and with none the resolver drops the fixation on its next pass, so the
-   * pane never held a word there. The click IS the VFO in that mode. */
-  if (app->replay_thread && hz != app->vfo_hz) {
+   * pane never held a word there. The click IS the VFO in that mode, and
+   * with an HPSDR source too: the receiver is the skimmer's own, nothing
+   * is tuned (the tune/spot-click calls above are no-ops without TCI). */
+  if ((app->replay_thread || app->source == SKIM_PIPELINE_SOURCE_HPSDR) &&
+      hz != app->vfo_hz) {
     app->vfo_hz = hz;
     if (app->wf) { skim_wf_view_set_vfo(app->wf, hz); }
   }
@@ -2277,6 +2597,16 @@ static void on_shutdown(GApplication *a, gpointer user) {
   app_teardown(user);
 }
 
+/* SIGINT/SIGTERM close the window the way its close button does, so the
+ * pipeline stops cleanly. It matters for the HPSDR source: the Red Pitaya
+ * server has no watchdog, and a process killed before sending its stop
+ * leaves the radio streaming to a dead port (busy for every client,
+ * seen 2026-09-29). */
+static gboolean on_unix_signal(gpointer user) {
+  gtk_window_close(GTK_WINDOW(user));
+  return G_SOURCE_REMOVE;
+}
+
 /* --- activate ----------------------------------------------------------------------------- */
 
 static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
@@ -2301,8 +2631,11 @@ static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
   app->window       = GTK_WINDOW(window);
   g_signal_connect(window, "close-request", G_CALLBACK(on_close_request), app);
   g_signal_connect(gtk_app, "shutdown", G_CALLBACK(on_shutdown), app);
+  g_unix_signal_add(SIGINT, on_unix_signal, window);
+  g_unix_signal_add(SIGTERM, on_unix_signal, window);
   app->host         = settings_load_host();
   app->tci_port     = settings_load_tci_port();
+  settings_load_source(app);
   app->dec_mode     = settings_load_mode();
   app->cw_engine    = settings_load_engine();
   app->dcw_device   = settings_load_device();
@@ -2457,6 +2790,13 @@ static void on_activate(GtkApplication *gtk_app, gpointer user_data) {
 
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_box_append(GTK_BOX(box), header);
+  /* HPSDR source: the receiver streams to another client. Taking it over
+   * is the user's call, never the scanner's. */
+  app->rp_banner = ADW_BANNER(adw_banner_new(""));
+  adw_banner_set_button_label(app->rp_banner, "Take over");
+  g_signal_connect(app->rp_banner, "button-clicked",
+                   G_CALLBACK(on_rp_take_over), app);
+  gtk_box_append(GTK_BOX(box), GTK_WIDGET(app->rp_banner));
   /* A hairline under the header, the same faint line that separates the
    * decode pane below (Richard, 2026-09-05 — the waterfall met the header
    * with no edge). Shown ONLY while the waterfall shows, hidden for the
