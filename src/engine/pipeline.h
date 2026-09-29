@@ -42,10 +42,25 @@ typedef enum {
   SKIM_CW_ENGINE_DEEPCW,
 } SkimCwEngine;
 
+/* Where the IQ comes from. TCI: a radio's TCI server (it owns the tuning;
+ * spots go back to its panadapter, a station click tunes it). HPSDR: an
+ * HPSDR Protocol 1 receiver the skimmer drives itself (Red Pitaya — see
+ * hpsdr_p1.h): the pipeline sets the DDC centre; no panadapter, no VFO,
+ * no TX state — spots reach the telnet/RBN sinks only. */
+typedef enum {
+  SKIM_PIPELINE_SOURCE_TCI = 0,
+  SKIM_PIPELINE_SOURCE_HPSDR,
+} SkimPipelineSource;
+
 typedef struct {
-  const char *host;           /* TCI server (default 127.0.0.1)              */
-  guint16     port;           /* default 40001                               */
-  guint       iq_rate;        /* 48/96/192/384 kHz; 0 = keep device rate     */
+  SkimPipelineSource source;  /* default TCI                                 */
+  const char *host;           /* TCI server (default 127.0.0.1) / HPSDR radio */
+  guint16     port;           /* default 40001 (TCI) / 1024 (HPSDR)          */
+  guint       iq_rate;        /* TCI 48/96/192/384 kHz, 0 = keep device rate;
+                               * HPSDR 48/96/192 kHz, 0 = 192               */
+  double      center_hz;      /* HPSDR: DDC centre (TRUE, after correction)  */
+  double      clock_ppm;      /* HPSDR: sampling-clock error, ppm            */
+  gboolean    take_over;      /* HPSDR: start even when the radio is busy    */
   SkimPipelineMode mode;      /* decoded mode (default CW)                   */
   SkimCwEngine cw_engine;     /* CW engine (default v2; see SkimCwEngine)    */
   double      chan_bw_hz;     /* channel spacing (default 125 Hz CW,
@@ -102,7 +117,9 @@ void skim_pipeline_set_spectrum_cb(SkimPipeline *p, SkimPipelineSpectrumCb cb, g
 void     skim_pipeline_set_spectrum_enabled(SkimPipeline *p, gboolean on);
 gboolean skim_pipeline_spectrum_enabled(const SkimPipeline *p);
 
-/* Connect + start decoding. Blocks for the TCI handshake. */
+/* Connect + start decoding. Blocks for the TCI handshake / the first HPSDR
+ * packet. An HPSDR radio streaming to another client fails with
+ * SKIM_HPSDR_ERROR_BUSY (hpsdr_p1.h) unless cfg.take_over. */
 gboolean skim_pipeline_start(SkimPipeline *p, GError **error);
 void     skim_pipeline_stop(SkimPipeline *p);
 
@@ -163,6 +180,8 @@ guint64 skim_pipeline_spots(const SkimPipeline *p);
 guint64 skim_pipeline_rbn_spots(const SkimPipeline *p);
 guint   skim_pipeline_stations(const SkimPipeline *p);
 guint64 skim_pipeline_dropped_blocks(const SkimPipeline *p);
+/* HPSDR source: frames zero-filled for lost UDP packets (0 for TCI). */
+guint64 skim_pipeline_lost_frames(const SkimPipeline *p);
 
 G_END_DECLS
 

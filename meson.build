@@ -44,6 +44,7 @@ dl_dep = cc.find_library('dl', required : false)
 # and expose the architecture; no pipeline wired yet.
 engine_sources = [
   'src/engine/tci_client.c',   # M1: WS client, IQ ingest, conjugate, outgoing SPOT
+  'src/engine/hpsdr_p1.c',     # HPSDR Protocol 1 IQ source (Red Pitaya), no TCI
   'src/engine/channelizer.c',  # M2: polyphase filter bank → complex channels
   'src/engine/decode_cw.c',    # M3: CW backend (implements decode.h)
   'src/engine/decode_cw_v2.c', # CW v2: semi-Markov Viterbi (QSB-proof)
@@ -85,6 +86,26 @@ test('tci-client', skimmer_tci_test, timeout : 60)
 # sdr-for-linux (ws://host:40001).
 executable('skimmer-tci-probe',
   ['src/tci_probe_main.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+
+# Offline gate — mock Red Pitaya sdr-receiver-hpsdr (UDP) + skim_hpsdr_client:
+# discovery, EP2 bytes (rate, one RX, ppm-corrected word), RF-inverted wire
+# conjugated on ingest, gap zero-fill, busy/take-over etiquette, stop, watchdog.
+skimmer_hpsdr_test = executable('skimmer-hpsdr-test',
+  ['src/hpsdr_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('hpsdr-client', skimmer_hpsdr_test, timeout : 60)
+
+# Live gate — discovery + IQ ingest straight from an HPSDR Protocol 1
+# receiver (Red Pitaya sdr_receiver_hpsdr); records cf32 + .meta for replay.
+executable('skimmer-hpsdr-probe',
+  ['src/hpsdr_probe_main.c'],
   include_directories : include_directories('src'),
   dependencies : engine_deps,
   link_with : engine_lib,

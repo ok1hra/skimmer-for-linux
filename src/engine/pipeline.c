@@ -27,6 +27,7 @@
 #include "decode_cw.h"
 #include "decode_deepcw.h"
 #include "decode_rtty.h"
+#include "hpsdr_p1.h"
 #include "spot_out.h"
 #include "tci_client.h"
 #include "tone_split.h"
@@ -145,6 +146,7 @@ struct _SkimPipeline {
   char              *host;
 
   SkimTciClient    *tci;
+  SkimHpsdrClient  *hpsdr;                     /* source HPSDR (tci is NULL) */
   SkimChannelizer  *bank;
   double            bank_rate;
   double            center_hz;                 /* last block's dds centre    */
@@ -322,7 +324,9 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
   SkimPipeline *p = g_new0(SkimPipeline, 1);
   p->cfg = *cfg;
   p->cw_engine = cw_engine_pick(cfg);
-  p->host = g_strdup(cfg->host ? cfg->host : "127.0.0.1");
+  p->host = g_strdup(cfg->host ? cfg->host
+                    : cfg->source == SKIM_PIPELINE_SOURCE_HPSDR ? "192.168.1.21"
+                                                                : "127.0.0.1");
   p->cfg.host = p->host;
   p->dlog_path = g_strdup(cfg->decode_log_path);
   if (p->cfg.chan_bw_hz <= 0) {
@@ -1148,16 +1152,33 @@ gboolean skim_pipeline_start(SkimPipeline *p, GError **error) {
   p->holding = FALSE;
   p->hold_capped = FALSE;
   p->grace_frames = 0;
-  p->tci = skim_tci_client_new(p->cfg.host, p->cfg.port);
-  skim_tci_client_set_iq_cb(p->tci, iq_cb, p);
-  skim_tci_client_set_vfo_cb(p->tci, vfo_fwd_cb, p);
-  skim_tci_client_set_tx_cb(p->tci, tx_fwd_cb, p);
-  skim_tci_client_set_closed_cb(p->tci, closed_cb, p);
-  if (!skim_tci_client_start(p->tci, p->cfg.iq_rate, error)) {
-    g_clear_pointer(&p->tci, skim_tci_client_free);
-    return FALSE;
+  const char *device;
+  double centre;
+  if (p->cfg.source == SKIM_PIPELINE_SOURCE_HPSDR) {
+    p->hpsdr = skim_hpsdr_client_new(p->cfg.host, p->cfg.port);
+    skim_hpsdr_client_set_iq_cb(p->hpsdr, iq_cb, p);
+    skim_hpsdr_client_set_closed_cb(p->hpsdr, closed_cb, p);
+    if (!skim_hpsdr_client_start(p->hpsdr, p->cfg.iq_rate, p->cfg.center_hz,
+                                 p->cfg.clock_ppm, p->cfg.take_over, error)) {
+      g_clear_pointer(&p->hpsdr, skim_hpsdr_client_free);
+      return FALSE;
+    }
+    device = skim_hpsdr_client_device(p->hpsdr);
+    centre = skim_hpsdr_client_center_hz(p->hpsdr);
+  } else {
+    p->tci = skim_tci_client_new(p->cfg.host, p->cfg.port);
+    skim_tci_client_set_iq_cb(p->tci, iq_cb, p);
+    skim_tci_client_set_vfo_cb(p->tci, vfo_fwd_cb, p);
+    skim_tci_client_set_tx_cb(p->tci, tx_fwd_cb, p);
+    skim_tci_client_set_closed_cb(p->tci, closed_cb, p);
+    if (!skim_tci_client_start(p->tci, p->cfg.iq_rate, error)) {
+      g_clear_pointer(&p->tci, skim_tci_client_free);
+      return FALSE;
+    }
+    device = skim_tci_client_device(p->tci);
+    centre = skim_tci_client_center_hz(p->tci);
   }
-  p->spots = skim_spot_out_new(p->tci);
+  p->spots = skim_spot_out_new(p->tci);        /* NULL: telnet/RBN sinks only */
   skim_spot_out_set_clock(p->spots, pipe_clock_cb, p);
   skim_spot_out_set_dup_query(p->spots, p->dupq);
   if (p->dlog_path) {
@@ -1166,7 +1187,7 @@ gboolean skim_pipeline_start(SkimPipeline *p, GError **error) {
       GDateTime *now = g_date_time_new_now_local();
       char *ts = g_date_time_format(now, "%Y-%m-%d %H:%M:%S");
       fprintf(p->dlog, "--- session %s — %s, dds %.0f Hz ---\n", ts,
-              skim_tci_client_device(p->tci), skim_tci_client_center_hz(p->tci));
+              device, centre);
       fflush(p->dlog);
       g_free(ts);
       g_date_time_unref(now);
@@ -1179,9 +1200,7 @@ gboolean skim_pipeline_start(SkimPipeline *p, GError **error) {
   p->thread = g_thread_new("skim-engine", engine_thread, p);
   if (p->state_cb) {
     char detail[160];
-    g_snprintf(detail, sizeof(detail), "%s — dds %.0f Hz",
-               skim_tci_client_device(p->tci),
-               skim_tci_client_center_hz(p->tci));
+    g_snprintf(detail, sizeof(detail), "%s — dds %.0f Hz", device, centre);
     p->state_cb(TRUE, detail, p->state_user);
   }
   return TRUE;
@@ -1246,6 +1265,7 @@ void skim_pipeline_stop(SkimPipeline *p) {
   p->thread = NULL;
   if (p->spots) { p->spots_total = skim_spot_out_count(p->spots); }
   g_clear_pointer(&p->tci, skim_tci_client_free);
+  g_clear_pointer(&p->hpsdr, skim_hpsdr_client_free);
   g_clear_pointer(&p->spots, skim_spot_out_free);
   if (p->dlog) {                    /* engine thread is joined — safe here   */
     fclose(p->dlog);
@@ -1300,3 +1320,7 @@ guint skim_pipeline_stations(const SkimPipeline *p) {
   return skim_station_table_size(p->stations);
 }
 guint64 skim_pipeline_dropped_blocks(const SkimPipeline *p) { return p->dropped; }
+
+guint64 skim_pipeline_lost_frames(const SkimPipeline *p) {
+  return p->hpsdr ? skim_hpsdr_client_lost_frames(p->hpsdr) : 0;
+}
