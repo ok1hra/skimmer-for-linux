@@ -20,7 +20,11 @@
  *     stream keeps going,
  *   - stop sends EF FE 04 00 and no IQ callback fires after it,
  *   - a mock that goes silent fires the closed callback once,
- *   - bad rate and an unanswered discovery fail with the right codes.
+ *   - bad rate and an unanswered discovery fail with the right codes,
+ *   - SIX receivers (the multi-band layout): every RX's frequency word
+ *     reaches its own C0 address, the sample slots demultiplex — RX r's
+ *     tone arrives on RX r's callback only — and more receivers than the
+ *     radio has are refused.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -58,7 +62,8 @@ static gboolean m_active;               /* streaming (discovery says busy)   */
 static gboolean m_mute;                 /* active but sends nothing          */
 static struct sockaddr_in m_dst;        /* EP6 target (last start's sender)  */
 static guint    m_rate_code = 0, m_nrx = 1;
-static guint32  m_freq;
+static guint32  m_freq;                 /* RX1                                */
+static guint32  m_rx_freq[8];
 static guint    m_skip;                 /* packets to swallow (seq gap)      */
 static guint    m_ep2_from[2];          /* EP2 packets per watched port      */
 static guint16  m_watch_port[2];
@@ -73,10 +78,16 @@ static void mock_ep2_frame(const guint8 *f) {
       m_nrx = ((f[4] >> 3) & 7) + 1;
       m_rate_code = f[1] & 3;
       break;
-    case 4: case 5: {
-      guint32 v;
-      memcpy(&v, f + 1, 4);
-      m_freq = ntohl(v);
+    default: {
+      /* RX1..RX7 at C0 0x04..0x10 (MOX bit ignored), RX8 at 0x24 */
+      const guint a = f[0] & 0xFE;
+      const int rx = a >= 0x04 && a <= 0x10 ? (int)(a - 0x04) / 2 : a == 0x24 ? 7 : -1;
+      if (rx >= 0) {
+        guint32 v;
+        memcpy(&v, f + 1, 4);
+        m_rx_freq[rx] = ntohl(v);
+        if (rx == 0) { m_freq = m_rx_freq[0]; }
+      }
       break;
     }
   }
@@ -148,13 +159,18 @@ static gpointer mock_serve(gpointer user) {
           fr[0] = fr[1] = fr[2] = 0x7F;
           guint8 *d = fr + 8;
           for (guint k = 0; k < per_frame; k++, d += slot) {
-            /* RF-inverted like the real DDC: a +f tone as I + j·(−Q). */
-            put24(d, TONE_AMP * cos(phase));
-            put24(d + 3, -TONE_AMP * sin(phase));
+            /* RF-inverted like the real DDC: a +f tone as I + j·(−Q).
+             * RX r carries TONE_HZ − r·2 kHz, so each slot is tellable. */
+            for (guint r = 0; r < m_nrx; r++) {
+              const double ph = phase * (TONE_HZ - 2000.0 * r) / TONE_HZ;
+              put24(d + 6 * r, TONE_AMP * cos(ph));
+              put24(d + 6 * r + 3, -TONE_AMP * sin(ph));
+            }
             phase += 2 * G_PI * TONE_HZ / rate;
           }
         }
-        phase = fmod(phase, 2 * G_PI);
+        phase = fmod(phase, 2 * G_PI * 6);      /* 6 = TONE_HZ/2 kHz: every
+                                                  * RX's phase wraps cleanly */
         sent_pkts++;
         if (m_skip) { m_skip--; continue; }            /* lost on the "wire" */
         if (!m_mute) {
@@ -378,6 +394,51 @@ int main(void) {
   g_mutex_unlock(&m_lock);
   CHECK(wait_for(pred_closed, &sc, 3500), "closed callback after 2 s of silence");
   skim_hpsdr_client_free(cc);
+
+  printf("client D — six receivers (the multi-band layout):\n");
+  g_mutex_lock(&m_lock);
+  m_active = FALSE;                            /* C was freed without a stop  */
+  m_mute = FALSE;
+  g_mutex_unlock(&m_lock);
+  Sink sd[6];
+  SkimHpsdrClient *cd = skim_hpsdr_client_new("127.0.0.1", m_port);
+  const double centres[6] = { 1840000, 3540000, 7040000, 10125000, 14040000, 21040000 };
+  for (int r = 0; r < 6; r++) {
+    memset(&sd[r], 0, sizeof(sd[r]));
+    g_mutex_init(&sd[r].lock);
+    sd[r].skip = 4096;
+    skim_hpsdr_client_set_rx_iq_cb(cd, r, sink_iq, &sd[r]);
+  }
+  ok = skim_hpsdr_client_start_multi(cd, 48000, centres, 6, 3.81, FALSE, &err);
+  CHECK(ok, "start 6 RX (%s)", err ? err->message : "streaming");
+  g_clear_error(&err);
+  g_mutex_lock(&m_lock);
+  gboolean words_ok = m_nrx == 6;
+  for (int r = 0; r < 6; r++) {
+    words_ok &= m_rx_freq[r] == (guint32)llround(centres[r] / (1 + 3.81e-6));
+  }
+  const guint mnrx = m_nrx;
+  g_mutex_unlock(&m_lock);
+  CHECK(words_ok, "EP2: %u receivers, each RX word at its own C0 address", mnrx);
+  gboolean demux_ok = TRUE;
+  for (int r = 0; r < 6; r++) {
+    if (!wait_for(pred_fill, &sd[r], 3000)) { demux_ok = FALSE; continue; }
+    const double own = bin_db(sd[r].buf, FFT_N, 48000, TONE_HZ - 2000.0 * r);
+    const double other = bin_db(sd[r].buf, FFT_N, 48000, TONE_HZ - 2000.0 * ((r + 1) % 6));
+    const double img = bin_db(sd[r].buf, FFT_N, 48000, -(TONE_HZ - 2000.0 * r));
+    if (own - other < 40 || own - img < 40) {
+      printf("       RX%d: own %.1f, neighbour's %.1f, image %.1f dB\n", r + 1, own, other, img);
+      demux_ok = FALSE;
+    }
+  }
+  CHECK(demux_ok, "each RX gets only its own tone, true orientation");
+  skim_hpsdr_client_free(cd);
+  SkimHpsdrClient *ce = skim_hpsdr_client_new("127.0.0.1", m_port);
+  const double nine[9] = { 0 };
+  ok = skim_hpsdr_client_start_multi(ce, 48000, nine, 9, 0, FALSE, &err);
+  CHECK(!ok, "9 receivers refused (%s)", err ? err->message : "started!");
+  g_clear_error(&err);
+  skim_hpsdr_client_free(ce);
 
   g_atomic_int_set(&m_run, 0);
   g_thread_join(mt);

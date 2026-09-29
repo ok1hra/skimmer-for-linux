@@ -50,6 +50,11 @@ typedef enum {
 typedef enum {
   SKIM_PIPELINE_SOURCE_TCI = 0,
   SKIM_PIPELINE_SOURCE_HPSDR,
+  /* Live, but the OWNER feeds the IQ with skim_pipeline_push() — one
+   * multi-receiver radio link serving several pipelines (skimmer-headless:
+   * one Red Pitaya, one pipeline per band). No radio state, no panadapter;
+   * spots reach the telnet/RBN sinks. cfg.host is only a label. */
+  SKIM_PIPELINE_SOURCE_EXTERNAL,
 } SkimPipelineSource;
 
 typedef struct {
@@ -133,6 +138,12 @@ void     skim_pipeline_stop(SkimPipeline *p);
 const char *skim_pipeline_cw_engine_name(const SkimPipeline *p);
 
 gboolean skim_pipeline_start_offline(SkimPipeline *p, GError **error);
+
+/* SOURCE_EXTERNAL: queue one IQ block for the engine thread — any thread,
+ * never blocks (a full queue drops the block and counts it, like the TCI
+ * ingest). A no-op before start / after stop. */
+void     skim_pipeline_push(SkimPipeline *p, const float *iq, guint nframes,
+                            double rate, double center_hz);
 void     skim_pipeline_feed(SkimPipeline *p, const float *iq, guint nframes,
                             double rate, double center_hz);
 
@@ -180,6 +191,8 @@ guint64 skim_pipeline_spots(const SkimPipeline *p);
 guint64 skim_pipeline_rbn_spots(const SkimPipeline *p);
 guint   skim_pipeline_stations(const SkimPipeline *p);
 guint64 skim_pipeline_dropped_blocks(const SkimPipeline *p);
+/* Decoder channels in the bank (0 until the first block sized it). */
+guint   skim_pipeline_channels(const SkimPipeline *p);
 /* HPSDR source: frames zero-filled for lost UDP packets (0 for TCI). */
 guint64 skim_pipeline_lost_frames(const SkimPipeline *p);
 

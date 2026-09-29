@@ -22,6 +22,7 @@
 G_BEGIN_DECLS
 
 #define SKIM_HPSDR_DEFAULT_PORT 1024
+#define SKIM_HPSDR_MAX_RX       8     /* sdr_receiver_hpsdr's receiver count */
 
 #define SKIM_HPSDR_ERROR (g_quark_from_static_string("skim-hpsdr-error"))
 typedef enum {
@@ -63,7 +64,11 @@ typedef void (*SkimHpsdrClosedCb)(gpointer user_data);
 SkimHpsdrClient *skim_hpsdr_client_new(const char *host, guint16 port);
 void             skim_hpsdr_client_free(SkimHpsdrClient *c);
 
+/* RX1's IQ (= set_rx_iq_cb(c, 0, …)). */
 void skim_hpsdr_client_set_iq_cb(SkimHpsdrClient *c, SkimHpsdrIqCb cb, gpointer user_data);
+/* Receiver rx's IQ (0-based, < the nrx given to start_multi). */
+void skim_hpsdr_client_set_rx_iq_cb(SkimHpsdrClient *c, guint rx, SkimHpsdrIqCb cb,
+                                    gpointer user_data);
 void skim_hpsdr_client_set_closed_cb(SkimHpsdrClient *c, SkimHpsdrClosedCb cb, gpointer user_data);
 
 /* Discover, configure (rate, one receiver, DDC centre) and start the stream;
@@ -75,6 +80,14 @@ void skim_hpsdr_client_set_closed_cb(SkimHpsdrClient *c, SkimHpsdrClosedCb cb, g
 gboolean skim_hpsdr_client_start(SkimHpsdrClient *c, guint rate, double center_hz,
                                  double clock_ppm, gboolean take_over,
                                  GError **error);
+/* Several receivers at once (multi-band skimming): nrx ≤ 8 and ≤ what the
+ * radio's discovery reports, each at centers_hz[rx], all at one rate — the
+ * server has a single rate for every receiver. The link carries
+ * nrx × rate × 6 bytes/s plus framing (6 × 96 kHz ≈ 30 Mb/s): wired. */
+gboolean skim_hpsdr_client_start_multi(SkimHpsdrClient *c, guint rate,
+                                       const double *centers_hz, guint nrx,
+                                       double clock_ppm, gboolean take_over,
+                                       GError **error);
 /* Stop the stream (EF FE 04 00 — only while it is still ours) and join the
  * receive thread. Idempotent. */
 void     skim_hpsdr_client_stop(SkimHpsdrClient *c);
@@ -82,7 +95,9 @@ void     skim_hpsdr_client_stop(SkimHpsdrClient *c);
 const char *skim_hpsdr_client_device(SkimHpsdrClient *c);   /* "Red Pitaya 192.168.1.21 (HPSDR P1)" */
 double      skim_hpsdr_client_center_hz(SkimHpsdrClient *c);
 guint       skim_hpsdr_client_rate(SkimHpsdrClient *c);
-guint32     skim_hpsdr_client_freq_word(SkimHpsdrClient *c); /* Hz actually sent */
+guint32     skim_hpsdr_client_freq_word(SkimHpsdrClient *c); /* RX1: Hz actually sent */
+guint32     skim_hpsdr_client_rx_freq_word(SkimHpsdrClient *c, guint rx);
+guint       skim_hpsdr_client_nrx(SkimHpsdrClient *c);
 guint64     skim_hpsdr_client_packets(SkimHpsdrClient *c);
 /* Frames zero-filled for sequence gaps (lost UDP packets). */
 guint64     skim_hpsdr_client_lost_frames(SkimHpsdrClient *c);

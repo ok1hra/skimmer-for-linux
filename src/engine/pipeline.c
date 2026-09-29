@@ -1154,7 +1154,10 @@ gboolean skim_pipeline_start(SkimPipeline *p, GError **error) {
   p->grace_frames = 0;
   const char *device;
   double centre;
-  if (p->cfg.source == SKIM_PIPELINE_SOURCE_HPSDR) {
+  if (p->cfg.source == SKIM_PIPELINE_SOURCE_EXTERNAL) {
+    device = p->cfg.host;                      /* a label, e.g. "RP … RX3"   */
+    centre = p->cfg.center_hz;
+  } else if (p->cfg.source == SKIM_PIPELINE_SOURCE_HPSDR) {
     p->hpsdr = skim_hpsdr_client_new(p->cfg.host, p->cfg.port);
     skim_hpsdr_client_set_iq_cb(p->hpsdr, iq_cb, p);
     skim_hpsdr_client_set_closed_cb(p->hpsdr, closed_cb, p);
@@ -1228,6 +1231,12 @@ gboolean skim_pipeline_start_offline(SkimPipeline *p, GError **error) {
     }
   }
   return TRUE;
+}
+
+void skim_pipeline_push(SkimPipeline *p, const float *iq, guint nframes,
+                        double rate, double center_hz) {
+  if (!g_atomic_int_get(&p->run)) { return; }
+  iq_cb(iq, nframes, rate, center_hz, p);
 }
 
 void skim_pipeline_feed(SkimPipeline *p, const float *iq, guint nframes,
@@ -1320,6 +1329,8 @@ guint skim_pipeline_stations(const SkimPipeline *p) {
   return skim_station_table_size(p->stations);
 }
 guint64 skim_pipeline_dropped_blocks(const SkimPipeline *p) { return p->dropped; }
+
+guint skim_pipeline_channels(const SkimPipeline *p) { return p->nchan; }
 
 guint64 skim_pipeline_lost_frames(const SkimPipeline *p) {
   return p->hpsdr ? skim_hpsdr_client_lost_frames(p->hpsdr) : 0;

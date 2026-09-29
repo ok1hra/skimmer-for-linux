@@ -8,8 +8,9 @@
  *              sends everything and receives the stream.
  *   EP2 (to)   EF FE 01 02 seq[4] + 2 × (7F 7F 7F C0 C1 C2 C3 C4 + 504 B)
  *              C0=0x00: C1[1:0] rate 0/1/2 = 48/96/192 kHz, C4[5:3] nrx−1
- *              C0=0x04: RX1 frequency, Hz, big-endian (the server turns it
- *              into a phase increment against its nominal 125 MHz)
+ *              C0=0x04, 0x06 … 0x10, 0x24: RX1 … RX8 frequency, Hz,
+ *              big-endian (the server turns it into a phase increment
+ *              against its nominal 125 MHz)
  *   EP6 (from) EF FE 01 06 seq[4] + 2 × (7F 7F 7F C0..C4 + 504 B); per
  *              sample and receiver I[3] Q[3] (24-bit BE, signed), then a
  *              16-bit mic word: 504 / (6·nrx + 2) samples per frame.
@@ -33,7 +34,6 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
-#define NRX              1        /* receivers requested (RX1 is ours)        */
 #define PKT_BYTES        1032
 #define FRAME_BYTES      512
 #define FRAME_PAYLOAD    504
@@ -54,13 +54,21 @@
  * (docs/HPSDR-P1.md). */
 #define IQ_CONJ          1
 
+typedef struct {
+  SkimHpsdrIqCb cb;
+  gpointer      user;
+  double        center_hz;
+  guint32       freq_word;
+  float         blk[BLOCK_FRAMES * 2];     /* receive thread only           */
+  guint         fill;
+} Rx;
+
 struct _SkimHpsdrClient {
   char    *host;
   guint16  port;
   char     device[96];
 
-  SkimHpsdrIqCb     iq_cb;
-  gpointer          iq_cb_data;
+  Rx                rx[SKIM_HPSDR_MAX_RX];
   SkimHpsdrClosedCb closed_cb;
   gpointer          closed_cb_data;
 
@@ -72,15 +80,12 @@ struct _SkimHpsdrClient {
   /* Session parameters (fixed while running). */
   guint    rate;
   guint8   rate_code;
-  double   center_hz;
-  guint32  freq_word;
+  guint    nrx;
 
   /* Receive thread only. */
   guint32  ep2_seq;
   guint32  next_seq;
   gboolean have_seq;
-  float    blk[BLOCK_FRAMES * 2];
-  guint    fill;
   gint64   last_refresh_us;
   gint64   last_lost_log_us;
   guint64  lost_since_log;
@@ -192,37 +197,48 @@ gboolean skim_hpsdr_discover(const char *host, guint16 port, guint timeout_ms,
 
 /* ---- EP2 control ------------------------------------------------------------ */
 
-static void send_ep2(SkimHpsdrClient *c) {
-  guint8 pkt[PKT_BYTES] = { 0xEF, 0xFE, 0x01, 0x02 };
-  const guint32 seq = htonl(c->ep2_seq++);
-  memcpy(pkt + 4, &seq, 4);
-  for (int f = 0; f < 2; f++) {
-    guint8 *fr = pkt + 8 + f * FRAME_BYTES;
-    fr[0] = fr[1] = fr[2] = 0x7F;
-    if (f == 0) {                            /* C0=0: rate + receiver count   */
-      fr[3] = 0x00;
-      fr[4] = c->rate_code;
-      fr[7] = (guint8)(((NRX - 1) & 7) << 3);
-    } else {                                 /* C0=0x04: RX1 frequency, BE    */
-      fr[3] = 0x04;
-      const guint32 hz = htonl(c->freq_word);
-      memcpy(fr + 4, &hz, 4);
-    }
+/* C0 address of receiver rx's frequency (0-based): RX1..RX7 sit at
+ * 0x04..0x10, RX8 at 0x24 (the Hermes map sdr-receiver-hpsdr.c follows). */
+static guint8 rx_freq_c0(guint rx) { return rx < 7 ? (guint8)(0x04 + 2 * rx) : 0x24; }
+
+/* Control word k of the session: 0 = rate + receiver count, 1..nrx = the
+ * receivers' frequencies. */
+static void put_ctrl(const SkimHpsdrClient *c, guint k, guint8 *fr) {
+  fr[0] = fr[1] = fr[2] = 0x7F;
+  if (k == 0) {
+    fr[3] = 0x00;
+    fr[4] = c->rate_code;
+    fr[7] = (guint8)(((c->nrx - 1) & 7) << 3);
+  } else {
+    fr[3] = rx_freq_c0(k - 1);
+    const guint32 hz = htonl(c->rx[k - 1].freq_word);
+    memcpy(fr + 4, &hz, 4);
   }
-  sendto(c->fd, pkt, sizeof(pkt), 0, (const struct sockaddr *)&c->dst,
-         sizeof(c->dst));
+}
+
+/* All nrx + 1 control words, two per packet (an odd count repeats the
+ * rate word). */
+static void send_ep2(SkimHpsdrClient *c) {
+  const guint words = c->nrx + 1;
+  for (guint k = 0; k < words; k += 2) {
+    guint8 pkt[PKT_BYTES] = { 0xEF, 0xFE, 0x01, 0x02 };
+    const guint32 seq = htonl(c->ep2_seq++);
+    memcpy(pkt + 4, &seq, 4);
+    put_ctrl(c, k, pkt + 8);
+    put_ctrl(c, k + 1 < words ? k + 1 : 0, pkt + 8 + FRAME_BYTES);
+    sendto(c->fd, pkt, sizeof(pkt), 0, (const struct sockaddr *)&c->dst,
+           sizeof(c->dst));
+  }
 }
 
 /* ---- EP6 ingest ------------------------------------------------------------- */
 
-static void push_frame(SkimHpsdrClient *c, float re, float im) {
-  c->blk[2 * c->fill]     = re;
-  c->blk[2 * c->fill + 1] = im;
-  if (++c->fill == BLOCK_FRAMES) {
-    c->fill = 0;
-    if (c->iq_cb) {
-      c->iq_cb(c->blk, BLOCK_FRAMES, c->rate, c->center_hz, c->iq_cb_data);
-    }
+static void push_frame(SkimHpsdrClient *c, Rx *r, float re, float im) {
+  r->blk[2 * r->fill]     = re;
+  r->blk[2 * r->fill + 1] = im;
+  if (++r->fill == BLOCK_FRAMES) {
+    r->fill = 0;
+    if (r->cb) { r->cb(r->blk, BLOCK_FRAMES, c->rate, r->center_hz, r->user); }
   }
 }
 
@@ -235,7 +251,7 @@ static void handle_ep6(SkimHpsdrClient *c, const guint8 *pkt) {
   guint32 seq;
   memcpy(&seq, pkt + 4, 4);
   seq = ntohl(seq);
-  const guint slot = 6 * NRX + 2;
+  const guint slot = 6 * c->nrx + 2;
   const guint per_frame = FRAME_PAYLOAD / slot;
   guint64 filled = 0;
 
@@ -246,7 +262,9 @@ static void handle_ep6(SkimHpsdrClient *c, const guint8 *pkt) {
     }
     if (gap <= MAX_FILL_PKTS) {              /* keep stream time continuous    */
       filled = (guint64)gap * 2 * per_frame;
-      for (guint64 i = 0; i < filled; i++) { push_frame(c, 0.0f, 0.0f); }
+      for (guint k = 0; k < c->nrx; k++) {
+        for (guint64 i = 0; i < filled; i++) { push_frame(c, &c->rx[k], 0.0f, 0.0f); }
+      }
     }
   }
   c->have_seq = TRUE;
@@ -257,9 +275,11 @@ static void handle_ep6(SkimHpsdrClient *c, const guint8 *pkt) {
     if (fr[0] != 0x7F || fr[1] != 0x7F || fr[2] != 0x7F) { continue; }
     const guint8 *s = fr + 8;
     for (guint k = 0; k < per_frame; k++, s += slot) {
-      const float i = (float)be24(s) * SCALE_24;       /* RX1 = first slot    */
-      const float q = (float)be24(s + 3) * SCALE_24;
-      push_frame(c, i, IQ_CONJ ? -q : q);
+      for (guint r = 0; r < c->nrx; r++) {             /* RX1 … RXn in order  */
+        const float i = (float)be24(s + 6 * r) * SCALE_24;
+        const float q = (float)be24(s + 6 * r + 3) * SCALE_24;
+        push_frame(c, &c->rx[r], i, IQ_CONJ ? -q : q);
+      }
     }
   }
 
@@ -346,8 +366,14 @@ void skim_hpsdr_client_free(SkimHpsdrClient *c) {
 }
 
 void skim_hpsdr_client_set_iq_cb(SkimHpsdrClient *c, SkimHpsdrIqCb cb, gpointer user_data) {
-  c->iq_cb = cb;
-  c->iq_cb_data = user_data;
+  skim_hpsdr_client_set_rx_iq_cb(c, 0, cb, user_data);
+}
+
+void skim_hpsdr_client_set_rx_iq_cb(SkimHpsdrClient *c, guint rx, SkimHpsdrIqCb cb,
+                                    gpointer user_data) {
+  g_return_if_fail(rx < SKIM_HPSDR_MAX_RX);
+  c->rx[rx].cb = cb;
+  c->rx[rx].user = user_data;
 }
 
 void skim_hpsdr_client_set_closed_cb(SkimHpsdrClient *c, SkimHpsdrClosedCb cb,
@@ -359,7 +385,20 @@ void skim_hpsdr_client_set_closed_cb(SkimHpsdrClient *c, SkimHpsdrClosedCb cb,
 gboolean skim_hpsdr_client_start(SkimHpsdrClient *c, guint rate, double center_hz,
                                  double clock_ppm, gboolean take_over,
                                  GError **error) {
+  return skim_hpsdr_client_start_multi(c, rate, &center_hz, 1, clock_ppm,
+                                       take_over, error);
+}
+
+gboolean skim_hpsdr_client_start_multi(SkimHpsdrClient *c, guint rate,
+                                       const double *centers_hz, guint nrx,
+                                       double clock_ppm, gboolean take_over,
+                                       GError **error) {
   g_return_val_if_fail(c->fd < 0, FALSE);
+  if (nrx < 1 || nrx > SKIM_HPSDR_MAX_RX) {
+    g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED,
+                "%u receivers requested (1…%d)", nrx, SKIM_HPSDR_MAX_RX);
+    return FALSE;
+  }
   if (rate == 0) { rate = 192000; }
   switch (rate) {
     case 48000:  c->rate_code = 0; break;
@@ -370,15 +409,19 @@ gboolean skim_hpsdr_client_start(SkimHpsdrClient *c, guint rate, double center_h
                   "HPSDR P1 sample rate %u not supported (48/96/192 kHz)", rate);
       return FALSE;
   }
-  const double word = center_hz / (1.0 + clock_ppm * 1e-6);
-  if (!(word > 0 && word < 4294967295.0)) {
-    g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED,
-                "bad centre frequency %.0f Hz", center_hz);
-    return FALSE;
+  for (guint r = 0; r < nrx; r++) {
+    const double word = centers_hz[r] / (1.0 + clock_ppm * 1e-6);
+    if (!(word > 0 && word < 4294967295.0)) {
+      g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED,
+                  "bad centre frequency %.0f Hz (RX%u)", centers_hz[r], r + 1);
+      return FALSE;
+    }
+    c->rx[r].center_hz = centers_hz[r];
+    c->rx[r].freq_word = (guint32)llround(word);
+    c->rx[r].fill = 0;
   }
   c->rate = rate;
-  c->center_hz = center_hz;
-  c->freq_word = (guint32)llround(word);
+  c->nrx = nrx;
 
   if (!resolve(c->host, c->port, &c->dst, error)) { return FALSE; }
   c->fd = open_socket(error);
@@ -393,6 +436,11 @@ gboolean skim_hpsdr_client_start(SkimHpsdrClient *c, guint rate, double center_h
   const gboolean rp = strcmp(info.name, "R_PITAYA") == 0;
   g_snprintf(c->device, sizeof(c->device), "%s %s (HPSDR P1)",
              rp ? "Red Pitaya" : "HPSDR", c->host);
+  if (info.nrx > 0 && nrx > info.nrx) {
+    g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED,
+                "%s has %u receivers, %u requested", c->device, info.nrx, nrx);
+    goto fail;
+  }
   if (info.busy && !take_over) {
     g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_BUSY,
                 "%s is in use by another client", c->device);
@@ -401,7 +449,6 @@ gboolean skim_hpsdr_client_start(SkimHpsdrClient *c, guint rate, double center_h
 
   c->ep2_seq = 0;
   c->have_seq = FALSE;
-  c->fill = 0;
   c->lost_since_log = 0;
   c->last_lost_log_us = 0;
   g_mutex_lock(&c->lock);
@@ -433,9 +480,14 @@ gboolean skim_hpsdr_client_start(SkimHpsdrClient *c, guint rate, double center_h
     skim_hpsdr_client_stop(c);
     return FALSE;
   }
-  g_message("hpsdr: %s — code %u, board %u, %u RX; streaming %u Hz @ "
-            "%.0f Hz (word %u, %+.2f ppm)", c->device, info.code_version,
-            info.board_id, info.nrx, rate, center_hz, c->freq_word, clock_ppm);
+  GString *cs = g_string_new(NULL);
+  for (guint r = 0; r < nrx; r++) {
+    g_string_append_printf(cs, "%s%.0f", r ? ", " : "", c->rx[r].center_hz);
+  }
+  g_message("hpsdr: %s — code %u, board %u, %u RX; streaming %u × %u Hz @ "
+            "%s Hz (%+.2f ppm)", c->device, info.code_version, info.board_id,
+            info.nrx, nrx, rate, cs->str, clock_ppm);
+  g_string_free(cs, TRUE);
   return TRUE;
 
 fail:
@@ -461,9 +513,14 @@ void skim_hpsdr_client_stop(SkimHpsdrClient *c) {
 }
 
 const char *skim_hpsdr_client_device(SkimHpsdrClient *c) { return c->device; }
-double      skim_hpsdr_client_center_hz(SkimHpsdrClient *c) { return c->center_hz; }
+double      skim_hpsdr_client_center_hz(SkimHpsdrClient *c) { return c->rx[0].center_hz; }
 guint       skim_hpsdr_client_rate(SkimHpsdrClient *c) { return c->rate; }
-guint32     skim_hpsdr_client_freq_word(SkimHpsdrClient *c) { return c->freq_word; }
+guint32     skim_hpsdr_client_freq_word(SkimHpsdrClient *c) { return c->rx[0].freq_word; }
+guint       skim_hpsdr_client_nrx(SkimHpsdrClient *c) { return c->nrx; }
+
+guint32 skim_hpsdr_client_rx_freq_word(SkimHpsdrClient *c, guint rx) {
+  return rx < c->nrx ? c->rx[rx].freq_word : 0;
+}
 
 guint64 skim_hpsdr_client_packets(SkimHpsdrClient *c) {
   g_mutex_lock(&c->lock);
