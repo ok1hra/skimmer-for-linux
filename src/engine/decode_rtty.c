@@ -34,6 +34,7 @@
 #include "decode_rtty.h"
 
 #include <fftw3.h>
+#include "fftw_lock.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -236,8 +237,10 @@ static gpointer rtty_channel_new(double sample_rate) {
   st->ms_len  = CLAMP((guint)(st->bit_len + 0.5), 2u, (guint)RT_MS_MAX);
   st->fin     = fftwf_alloc_complex(RT_FFT);
   st->fout    = fftwf_alloc_complex(RT_FFT);
+  skim_fftw_lock();
   st->plan    = fftwf_plan_dft_1d(RT_FFT, st->fin, st->fout, FFTW_FORWARD,
                                   FFTW_ESTIMATE);
+  skim_fftw_unlock();
   for (guint i = 0; i < RT_FFT; i++) {
     st->win[i] = 0.5f - 0.5f * cosf(2.0f * (float)G_PI * i / (RT_FFT - 1));
   }
@@ -254,7 +257,9 @@ static void rtty_channel_free(gpointer state) {
   RttyState *st = state;
   if (!st)
     return;
+  skim_fftw_lock();
   fftwf_destroy_plan(st->plan);
+  skim_fftw_unlock();
   fftwf_free(st->fin);
   fftwf_free(st->fout);
   g_free(st);
