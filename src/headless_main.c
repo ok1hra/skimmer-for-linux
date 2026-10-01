@@ -449,13 +449,17 @@ static void status_build(Hd *h, gboolean print) {
 
   char *jstate = json_str(h->rp_state);
   char *jhost = json_str(h->host);
+  /* the decoder that actually runs (deepcw falls back to cw-v2 without its
+   * runtime or model) — a feed comparison needs to know which one spotted */
+  const char *engine = h->nb && h->band[0].p ? skim_pipeline_cw_engine_name(h->band[0].p) : "";
   g_string_append_printf(json,
       "{\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
       "\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
+      "\"engine\":\"%s\","
       "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       clock, jstate, h->streaming ? "true" : "false", jhost, h->rate, lost_pct,
-      h->pps, h->cpu_pct, h->feed ? h->feed_port : 0, fclients, flines,
+      h->pps, h->cpu_pct, engine, h->feed ? h->feed_port : 0, fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
   g_free(jhost);
