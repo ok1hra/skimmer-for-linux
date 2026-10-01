@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skimmer compare</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="title">
+    <h1>Skimmer compare</h1>
+    <p class="sub" id="who"><span class="key key-L"></span>L local
+      · <span class="key key-R"></span>R remote</p>
+  </div>
+  <div class="status" id="status"></div>
+</header>
+
+<nav class="filters" id="filters">
+  <label>Comparison
+    <select id="engine"></select>
+  </label>
+  <label>Range
+    <select id="range"></select>
+  </label>
+  <span id="custom" hidden>
+    <label>from <input type="datetime-local" id="from"></label>
+    <label>to <input type="datetime-local" id="to"></label>
+    <span class="muted">UTC</span>
+    <button id="apply-range" type="button">Apply</button>
+  </span>
+  <button id="params-btn" type="button" aria-expanded="false">Matching parameters</button>
+  <button id="theme" type="button" title="Theme">Theme: auto</button>
+  <span class="muted" id="updated"></span>
+</nav>
+<section id="params" class="params card" hidden>
+  <div id="params-grid" class="params-grid"></div>
+  <div class="params-actions">
+    <button id="params-apply" type="button">Apply</button>
+    <button id="params-reset" type="button">Defaults</button>
+  </div>
+</section>
+
+<main id="main" class="busy">
+  <section class="card" id="about-card">
+    <h2>What is compared</h2>
+    <div id="sides" class="sides"></div>
+    <h3>Comparisons in this range — one per decoder of the local skimmer</h3>
+    <div class="table-wrap"><table id="overview"></table></div>
+    <p class="muted" id="overview-note"></p>
+    <details>
+      <summary>How the two skimmers are compared</summary>
+      <ul class="method">
+        <li>Both telnet feeds are recorded with their receive time; only CQ spots are compared (the
+          local skimmer spots nothing else), and only inside the frequency windows both receivers
+          cover and while both feeds are up and the local receiver streams cleanly.</li>
+        <li>Each skimmer re-spots on its own schedule, so spots are merged into <em>episodes</em>
+          (one call on one band) before they are paired: same call, overlapping in time and
+          close in frequency is a <em>match</em>; similar calls at the same spot are a
+          <em>bust pair</em>.</li>
+        <li>The referee for a callsign is the Reverse Beacon Network — another skimmer spotted
+          it there (our own spots never count) — and MASTER.SCP when RBN has nothing.</li>
+        <li><em>Recall</em>: share of real stations each skimmer found; the McNemar test
+          says whether the stations found by one only are lopsided beyond chance.
+          <em>Bust rate</em>: share of a skimmer's episodes with a wrong or unverifiable call.
+          <em>Speed</em>: who spotted a matched station first.</li>
+        <li>A verdict needs p &lt; 0.05 and enough stations; until then it says undecided.</li>
+      </ul>
+    </details>
+  </section>
+
+  <section class="card" id="verdict-card">
+    <h2>Verdict</h2>
+    <div id="verdicts" class="verdicts"></div>
+    <div id="tiles" class="tiles"></div>
+    <div id="cats" class="cats"></div>
+    <h3>Recall and bust rate with 95 % confidence intervals</h3>
+    <div class="legend"><span class="key key-L"></span>L <span class="key key-R"></span>R</div>
+    <div id="ci" class="chart"></div>
+  </section>
+
+  <section class="card" id="diff-card">
+    <h2>Differences</h2>
+    <div class="filters inner">
+      <label>Band <select id="f-band"><option value="">all</option></select></label>
+      <label>Kind <select id="f-cat">
+        <option value="diff">all differences</option>
+        <option value="only-L">only L (real)</option>
+        <option value="only-R">only R (real)</option>
+        <option value="only-L-unv">only L, unverified</option>
+        <option value="only-R-unv">only R, unverified</option>
+        <option value="bust">bust pairs</option>
+        <option value="nonCQ">R heard, not as CQ</option>
+        <option value="match">matches</option>
+        <option value="all">everything</option>
+      </select></label>
+      <label>Referee <select id="f-v">
+        <option value="">any</option>
+        <option value="rbn">RBN</option>
+        <option value="scp">SCP</option>
+        <option value="agree">both agree</option>
+        <option value="none">unverified</option>
+      </select></label>
+      <label>Call <input id="f-call" size="10" placeholder="contains"></label>
+      <span class="muted" id="diff-count"></span>
+    </div>
+    <div class="table-wrap">
+      <table class="diffs" id="diffs">
+        <thead><tr>
+          <th>UTC</th><th>Band</th><th class="num">kHz</th><th>Kind</th>
+          <th>L call</th><th>R call</th><th>Referee</th>
+          <th class="num">SNR</th><th class="num">WPM</th><th>Note</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <button id="more" type="button" hidden>Show more</button>
+  </section>
+
+  <section class="card">
+    <h2>Bands</h2>
+    <div class="table-wrap"><table id="bands"></table></div>
+    <h3>Recall over time</h3>
+    <div class="legend"><span class="key key-L"></span>L <span class="key key-R"></span>R
+      <span class="key key-out"></span>not compared (outage, no recording)
+      <span class="key key-other"></span>local skimmer ran another decoder
+      <span class="key key-sil"></span>suspicious silence</div>
+    <div id="timeline" class="chart"></div>
+    <h3>Real stations per interval</h3>
+    <div id="volume" class="chart"></div>
+    <details><summary>Suspicious silences and outages</summary><div id="silences"></div></details>
+  </section>
+
+  <section class="card">
+    <h2>Sensitivity and speed</h2>
+    <h3 id="snr-title">Recall by SNR (common scale)</h3>
+    <div class="legend"><span class="key key-L"></span>L <span class="key key-R"></span>R</div>
+    <div id="snr" class="chart"></div>
+    <h3>Recall by speed (WPM)</h3>
+    <div class="legend"><span class="key key-L"></span>L <span class="key key-R"></span>R</div>
+    <div id="wpm" class="chart"></div>
+    <h3>Who spotted first: R − L, seconds, matched stations</h3>
+    <div class="legend"><span class="key key-R"></span>R first <span class="key key-L"></span>L first
+      <span class="key key-tie"></span>within ±3 s</div>
+    <div id="latency" class="chart"></div>
+  </section>
+
+  <section class="card">
+    <h2>Spots across each band</h2>
+    <p class="muted">1 kHz bins, CQ spots: L above the line, R below. Shaded: the compared
+      (common) window. Lines: the edges of the L and R receive windows.</p>
+    <div class="legend"><span class="key key-L"></span>L <span class="key key-R"></span>R
+      <span class="key key-common"></span>common window</div>
+    <div id="hists"></div>
+  </section>
+
+  <section class="card">
+    <h2>Sessions</h2>
+    <div class="table-wrap"><table id="sessions"></table></div>
+  </section>
+</main>
+<div id="tip" class="tip" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
