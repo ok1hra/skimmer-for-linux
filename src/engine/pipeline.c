@@ -45,6 +45,11 @@
 #define RBN_RESPOT_S          600
 #define RBN_QSY_HZ            100.0
 #define RBN_MAX_PER_S         5
+/* RBN feed policy beyond the score — see SkimPipelineConfig.rbn_min_hearings
+ * and .rbn_settle_s. Two hearings is what a CQ cycle gives a real station
+ * ("CQ DE X X K"); 8 s covers the rest of the over that tears a call. */
+#define RBN_MIN_HEARINGS_DEFAULT 2
+#define RBN_SETTLE_S_DEFAULT     8.0
 /* A station silent this long leaves the table (and its panadapter label is
  * SPOT_DELETEd). 120 s rides out one side of a QSO; the old 600 s kept a
  * contest band map full of stations long gone (Richard, 2026-07-15). */
@@ -163,6 +168,10 @@ struct _SkimPipeline {
   SkimSpotOut      *rbn_spots;                 /* RBN policy → cfg.rbn feed  */
   SkimDupQuery     *dupq;                      /* logbook dup verdicts       */
   double            rbn_min;
+  guint             rbn_hearings;              /* feed gate: copies read     */
+  gint64            rbn_settle_us;             /* feed hold-back; 0 = none   */
+  GHashTable       *rbn_pending;               /* call → gint64* due time;
+                                                * 0 = settled, send freely  */
 
   GArray           *hits;                      /* Hit — one block's decodes  */
   double           *lvl;                       /* per-channel level snapshot */
@@ -317,6 +326,12 @@ static void station_gone_fwd(const SkimStation *st, gpointer user);
 /* RBN spot_out sink → the telnet feed (user = the borrowed SkimRbnFeed). */
 static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
                          double snr_db, double speed, gpointer user) {
+  /* SKIM_FEED_TRACE=1: every line that goes on the wire, after the policy
+   * AND spot_out's dedup — what an A/B of two feed policies compares. */
+  if (g_getenv("SKIM_FEED_TRACE")) {
+    g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm\n", call,
+               freq_hz / 1000.0, snr_db, speed);
+  }
   skim_rbn_feed_spot(user, call, mode, freq_hz, snr_db, speed);
 }
 
@@ -364,6 +379,13 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     skim_spot_out_set_sink(p->rbn_spots, rbn_sink_fwd, p->cfg.rbn);
     p->rbn_min = p->cfg.rbn_min_score > 0 ? p->cfg.rbn_min_score
                                           : RBN_MIN_SCORE_DEFAULT;
+    p->rbn_hearings = p->cfg.rbn_min_hearings > 0 ? p->cfg.rbn_min_hearings
+                                                  : RBN_MIN_HEARINGS_DEFAULT;
+    const double settle = p->cfg.rbn_settle_s == 0 ? RBN_SETTLE_S_DEFAULT
+                                                   : p->cfg.rbn_settle_s;
+    p->rbn_settle_us = settle > 0 ? (gint64)(settle * G_USEC_PER_SEC) : 0;
+    p->rbn_pending = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                           g_free);
   }
   if (p->cfg.dict_path) {
     GError *err = NULL;
@@ -410,6 +432,7 @@ void skim_pipeline_free(SkimPipeline *p) {
   skim_station_table_free(p->stations);
   g_clear_pointer(&p->spots, skim_spot_out_free);
   g_clear_pointer(&p->rbn_spots, skim_spot_out_free);
+  g_clear_pointer(&p->rbn_pending, g_hash_table_destroy);
   g_clear_pointer(&p->dupq, skim_dup_query_free);
   IqBlock *b;
   while ((b = g_async_queue_try_pop(p->queue)) != NULL) {
@@ -442,7 +465,79 @@ static void station_gone_fwd(const SkimStation *st, gpointer user) {
   /* No delete on the cluster wire — just forget the memo, so a comeback
    * after the TTL re-spots to the RBN at once. */
   if (p->rbn_spots) { skim_spot_out_delete(p->rbn_spots, st->call); }
+  /* A call still held back dies with its record — that is the point of the
+   * hold: a torn "IZ3N" evicted by "IZ3NYG" never reaches the wire. */
+  if (p->rbn_pending && g_hash_table_remove(p->rbn_pending, st->call) &&
+      g_getenv("SKIM_ST_DEBUG")) {
+    g_printerr("rbn: FORGET %s (left the station table)\n", st->call);
+  }
   if (p->gone_cb) { p->gone_cb(st, p->gone_user); }
+}
+
+/* ---- RBN feed policy ------------------------------------------------------------ */
+
+/* May this record go to the network? Calling, confident, and either read
+ * twice or known to the dictionary. */
+static gboolean rbn_gate(const SkimPipeline *p, const SkimStation *st) {
+  return st->cq && st->score >= p->rbn_min &&
+         (st->hearings >= p->rbn_hearings || skim_callsign_dict_has(st->call));
+}
+
+static void rbn_send(SkimPipeline *p, const SkimStation *st) {
+  skim_spot_out_emit(p->rbn_spots, st->call, st->mode, st->freq_hz, st->snr_db,
+                     st->speed);
+}
+
+/* A record that passed the gate: the first time it is HELD for the settle
+ * time; once settled it goes straight to spot_out, whose own dedup and QSY
+ * rules decide what is a new line. */
+static void rbn_offer(SkimPipeline *p, const SkimStation *st) {
+  if (p->rbn_settle_us <= 0) {
+    rbn_send(p, st);
+    return;
+  }
+  gint64 *due = g_hash_table_lookup(p->rbn_pending, st->call);
+  if (!due) {
+    due = g_new(gint64, 1);
+    *due = pipe_now_us(p) + p->rbn_settle_us;
+    g_hash_table_insert(p->rbn_pending, g_strdup(st->call), due);
+    if (g_getenv("SKIM_ST_DEBUG")) {
+      g_printerr("rbn: HOLD %s @ %.0f Hz (heard %u, score %.2f) t=%.0f s\n",
+                 st->call, st->freq_hz, st->hearings, st->score,
+                 pipe_now_us(p) / 1e6);
+    }
+  } else if (*due == 0) {
+    rbn_send(p, st);
+  }
+}
+
+/* Release the held calls whose time is up — from the table's CURRENT record
+ * (frequency, SNR and speed have converged meanwhile), and only while it
+ * still passes the gate. Engine thread (live) or the feeding thread
+ * (offline); now_us on the pipeline clock. */
+static void rbn_settle_tick(SkimPipeline *p, gint64 now_us) {
+  if (!p->rbn_pending || p->rbn_settle_us <= 0)
+    return;
+  GHashTableIter it;
+  gpointer key, val;
+  g_hash_table_iter_init(&it, p->rbn_pending);
+  while (g_hash_table_iter_next(&it, &key, &val)) {
+    gint64 *due = val;
+    if (*due == 0 || now_us < *due)
+      continue;
+    const SkimStation *st = skim_station_table_lookup(p->stations, key);
+    const gboolean ok = st && rbn_gate(p, st);
+    if (g_getenv("SKIM_ST_DEBUG")) {
+      g_printerr("rbn: %s %s t=%.0f s\n", ok ? "SEND" : "DROP", (char *)key,
+                 now_us / 1e6);
+    }
+    if (ok) {
+      *due = 0;
+      rbn_send(p, st);
+    } else {
+      g_hash_table_iter_remove(&it);           /* may qualify again later    */
+    }
+  }
 }
 void skim_pipeline_set_text_cb(SkimPipeline *p, SkimPipelineTextCb cb, gpointer user) {
   p->text_cb = cb;
@@ -861,6 +956,8 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
       st.speed      = d.speed;
       st.snr_db     = d.snr_db;
       st.score      = score;
+      st.hearings   = skim_callsign_extractor_hearings(p->ext[SL(c, h->slot)],
+                                                       call);
       st.cq         = cq;
       st.last_heard = pipe_now_us(p);
       st.first_heard = st.last_heard;
@@ -880,12 +977,10 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
                            merged->freq_hz, merged->snr_db, merged->speed);
       }
       /* RBN etiquette is stricter than the panadapter: only a CALLING
-       * station (regardless of the local CQ-only switch), and only once
-       * the best score seen clears the RBN threshold. */
-      if (p->rbn_spots && merged->cq && merged->score >= p->rbn_min) {
-        skim_spot_out_emit(p->rbn_spots, merged->call, merged->mode,
-                           merged->freq_hz, merged->snr_db, merged->speed);
-      }
+       * station (regardless of the local CQ-only switch), once the best
+       * score seen clears the RBN threshold AND the call was read twice
+       * (or the dictionary knows it) — and only after it settled. */
+      if (p->rbn_spots && rbn_gate(p, merged)) { rbn_offer(p, merged); }
     }
   }
 }
@@ -1128,6 +1223,7 @@ static gpointer engine_thread(gpointer data) {
       p->last_prune = now;
       skim_station_table_prune(p->stations, now, STATION_TTL_US);
     }
+    rbn_settle_tick(p, now);
     /* Logbook verdict flips (answers AND unsolicited "just logged him"
      * pushes) repaint the live label at once — the operator must not wait
      * out the 180 s re-announce to see a station turn gray. */
@@ -1256,6 +1352,7 @@ void skim_pipeline_feed(SkimPipeline *p, const float *iq, guint nframes,
     p->last_prune = p->stream_us;
     skim_station_table_prune(p->stations, p->stream_us, STATION_TTL_US);
   }
+  rbn_settle_tick(p, p->stream_us);
 }
 
 void skim_pipeline_stop(SkimPipeline *p) {
@@ -1321,6 +1418,13 @@ void skim_pipeline_set_spot_round_hz(SkimPipeline *p, guint hz) {
 guint64 skim_pipeline_frames(const SkimPipeline *p) { return p->frames; }
 guint64 skim_pipeline_spots(const SkimPipeline *p) {
   return p->spots ? skim_spot_out_count(p->spots) : p->spots_total;
+}
+void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
+                              guint *min_hearings, double *settle_s) {
+  const gboolean on = p->rbn_spots != NULL;
+  if (min_score)    { *min_score    = on ? p->rbn_min : 0; }
+  if (min_hearings) { *min_hearings = on ? p->rbn_hearings : 0; }
+  if (settle_s)     { *settle_s     = on ? p->rbn_settle_us / 1e6 : 0; }
 }
 guint64 skim_pipeline_rbn_spots(const SkimPipeline *p) {
   return p->rbn_spots ? skim_spot_out_count(p->rbn_spots) : 0;

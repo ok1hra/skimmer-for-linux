@@ -21,7 +21,10 @@
  * enter them.
  * Scores: 0.55 structural+allocation, +0.25 DE, +0.10 CQ, +0.20 repeated
  * (+0.05 at ≥3), +0.15 dictionary — capped at 1.0. The spot threshold 0.70
- * means a lone structurally-valid token is never spotted (the RBN rule).
+ * keeps a BARE structurally-valid token off the panadapter — but one copy
+ * with DE and CQ around it scores 0.90, past the RBN feed's 0.85 too. That
+ * is why the feed policy (pipeline.c) also counts hearings, see
+ * skim_callsign_extractor_hearings().
  *
  * Engine-thread only (no locking), like the rest of the pipeline.
  *
@@ -734,6 +737,16 @@ double skim_callsign_extractor_best_ex(SkimCallsignExtractor *x,
   }
   if (out && out_size) { g_strlcpy(out, bc->call, out_size); }
   return best;
+}
+
+guint skim_callsign_extractor_hearings(const SkimCallsignExtractor *x,
+                                       const char *call) {
+  if (!x || !call)
+    return 0;
+  for (guint i = 0; i < x->ncand; i++) {
+    if (strcmp(x->cand[i].call, call) == 0) { return x->cand[i].count; }
+  }
+  return 0;
 }
 
 double skim_callsign_extractor_best(SkimCallsignExtractor *x,

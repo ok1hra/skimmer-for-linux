@@ -76,9 +76,20 @@ typedef struct {
   /* M6 — RBN telnet feed (borrowed; the app owns it so aggregator sessions
    * survive TCI reconnects). NULL = no RBN. The feed is ALWAYS CQ-only and
    * gated at rbn_min_score (0 = default 0.85): stricter than the 0.70 that
-   * puts a label on the local panadapter — the network wants certainty. */
+   * puts a label on the local panadapter — the network wants certainty.
+   * The score alone is not enough: ONE copy keyed after "CQ DE" scores 0.90,
+   * and so does a garble of it. A call reaches the feed only once it was
+   * read rbn_min_hearings times (0 = default 2; 1 = no such gate) or the
+   * dictionary knows it, and only after it stayed in the station table for
+   * rbn_settle_s (0 = default 8 s; < 0 = send at once): a torn call ("IZ3N"
+   * one token before "YG") is folded away by the table within that time,
+   * but a telnet line cannot be taken back (skimmer-compare vs RBN,
+   * 2026-10-01: 36 % of the feed's calls were never confirmed, VE3NEA's
+   * CW Skimmer Server 2 %). */
   SkimRbnFeed *rbn;
   double       rbn_min_score;
+  guint        rbn_min_hearings;
+  double       rbn_settle_s;
 } SkimPipelineConfig;
 
 typedef struct _SkimPipeline SkimPipeline;
@@ -184,6 +195,12 @@ void   skim_pipeline_set_spot_cq_only(SkimPipeline *p, gboolean cq_only);
 /* Snap outgoing spot frequencies (panadapter AND telnet feed) to a grid;
  * 0/1 = exact. Applies live. */
 void   skim_pipeline_set_spot_round_hz(SkimPipeline *p, guint hz);
+
+/* The RBN feed policy in force, defaults resolved: score threshold, hearings
+ * needed (1 = no such gate), settle time in s (0 = sends at once). All 0
+ * when the pipeline has no RBN feed. */
+void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
+                              guint *min_hearings, double *settle_s);
 
 /* Counters for the status line / gates. */
 guint64 skim_pipeline_frames(const SkimPipeline *p);

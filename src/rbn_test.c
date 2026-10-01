@@ -16,6 +16,14 @@
  * S&P answers do not own the frequency, so they stay off the network even
  * though the station tracker lists them.
  *
+ * Feed policy (hearings + settle): a second band, one pass, with what
+ * skimmer-compare caught going out unconfirmed (2026-10-01) — SM7XYZ keyed
+ * ONCE after "CQ DE" (a lone copy scores 0.90, past the 0.85 threshold),
+ * and IZ3NYG whose fist tears every copy into "IZ3N YG" (IZ3N validates one
+ * token before the join does). Under the default policy neither SM7XYZ nor
+ * IZ3N may reach the wire, IZ3NYG must; with hearings=1 and no settle (the
+ * old policy) both garbles DO go out — proof the band exercises the gate.
+ *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include <gio/gio.h>
@@ -244,6 +252,95 @@ static void build_band(void) {
   g_rand_free(rng);
 }
 
+/* The feed-policy band: one pass, no repeats of the band itself. */
+static float *g_pol;
+static guint  g_pol_frames;
+
+static void build_policy_band(void) {
+  GRand *rng = g_rand_new_with_seed(20261001);
+  GArray *ea = gen_env("VVV CQ DE SM7XYZ K", 22);             /* one copy   */
+  GArray *eb = gen_env("VVV CQ CQ DE IZ3N YG IZ3N YG K", 22); /* torn call  */
+  GArray *ec = gen_env("VVV CQ DE OK1BR OK1BR K", 22);        /* control    */
+  shape_env(ea, RATE);
+  shape_env(eb, RATE);
+  shape_env(ec, RATE);
+  g_pol_frames = MAX(MAX(ea->len, eb->len), ec->len) + RATE / 2;
+  g_pol = g_new0(float, (gsize)g_pol_frames * 2);
+  double pa = 0, pb = 0, pc = 0;
+  const double da = 2.0 * G_PI * 12018.0 / RATE;
+  const double db = 2.0 * G_PI * -7480.0 / RATE;
+  const double dc = 2.0 * G_PI * -15000.0 / RATE;
+  for (guint i = 0; i < g_pol_frames; i++) {
+    double a = i < ea->len ? 0.40 * g_array_index(ea, float, i) : 0.0;
+    double b = i < eb->len ? 0.40 * g_array_index(eb, float, i) : 0.0;
+    double c = i < ec->len ? 0.40 * g_array_index(ec, float, i) : 0.0;
+    g_pol[2 * i]     = (float)(a * cos(pa) + b * cos(pb) + c * cos(pc) +
+                               0.005 * gauss(rng));
+    g_pol[2 * i + 1] = (float)(a * sin(pa) + b * sin(pb) + c * sin(pc) +
+                               0.005 * gauss(rng));
+    pa += da;
+    pb += db;
+    pc += dc;
+  }
+  g_array_free(ea, TRUE);
+  g_array_free(eb, TRUE);
+  g_array_free(ec, TRUE);
+  g_rand_free(rng);
+}
+
+typedef struct { int sm7xyz, iz3n, iz3nyg, ok1br, lines; } PolicyOut;
+
+/* One pass of the policy band through a fresh pipeline + feed, then quiet
+ * band noise long enough for every held call to settle. */
+static PolicyOut policy_run(guint hearings, double settle_s) {
+  PolicyOut o = { 0 };
+  GError *err = NULL;
+  SkimRbnFeed *f = skim_rbn_feed_new("OK1BR", 0, &err);
+  Cap *a = cap_new(skim_rbn_feed_port(f));
+  cap_wait(a, "Please enter your call:", 3000);
+  cap_send(a, "AGGR\r\n");
+  cap_wait(a, "Hello AGGR", 3000);
+  SkimPipelineConfig cfg = {
+    .chan_bw_hz       = 125.0,
+    .rbn              = f,
+    .rbn_min_hearings = hearings,
+    .rbn_settle_s     = settle_s,
+  };
+  SkimPipeline *p = skim_pipeline_new(&cfg);
+  skim_pipeline_start_offline(p, &err);
+  for (guint off = 0; off + BLK <= g_pol_frames; off += BLK) {
+    skim_pipeline_feed(p, g_pol + 2 * (gsize)off, BLK, RATE, CENTER);
+  }
+  GRand *rng = g_rand_new_with_seed(7);
+  static float quiet[BLK * 2];
+  for (guint off = 0; off < 12 * RATE; off += BLK) {   /* > settle time     */
+    for (guint i = 0; i < BLK * 2; i++) { quiet[i] = (float)(0.005 * gauss(rng)); }
+    skim_pipeline_feed(p, quiet, BLK, RATE, CENTER);
+  }
+  g_rand_free(rng);
+  for (int t = 0; t < 5000 && cap_count(a, "OK1BR") == 0; t += 50) {
+    g_usleep(50 * 1000);                               /* broadcast is async */
+  }
+  g_usleep(300 * 1000);
+  o.sm7xyz = cap_count(a, "SM7XYZ");
+  o.iz3n   = cap_count(a, "IZ3N");
+  o.iz3nyg = cap_count(a, "IZ3NYG");
+  o.ok1br  = cap_count(a, "OK1BR");
+  g_mutex_lock(&a->lock);
+  for (const char *q = a->rx->str; (q = strstr(q, "DX de")) != NULL; q++) {
+    o.lines++;
+  }
+  g_mutex_unlock(&a->lock);
+  printf("       hearings %u, settle %+.0f s: SM7XYZ %d, IZ3N %d, IZ3NYG %d, "
+         "OK1BR %d (%d lines)\n", hearings, settle_s, o.sm7xyz, o.iz3n,
+         o.iz3nyg, o.ok1br, o.lines);
+  skim_pipeline_stop(p);
+  skim_pipeline_free(p);
+  cap_free(a);
+  skim_rbn_feed_free(f);
+  return o;
+}
+
 /* --- pipeline station capture ------------------------------------------------------ */
 
 static GMutex   c_lock;
@@ -410,6 +507,11 @@ int main(void) {
     g_mutex_unlock(&a->lock);
     check("no unvalidated call ever hit the wire", bogus == 0);
     check("pipeline RBN counter matches (2)", skim_pipeline_rbn_spots(p) == 2);
+    double pol_s = 0, pol_set = 0;
+    guint pol_h = 0;
+    skim_pipeline_rbn_policy(p, &pol_s, &pol_h, &pol_set);
+    check("default feed policy: 0.85, read twice, 8 s settle",
+          fabs(pol_s - 0.85) < 1e-9 && pol_h == 2 && fabs(pol_set - 8.0) < 1e-9);
 
     skim_pipeline_stop(p);
     skim_pipeline_free(p);
@@ -417,6 +519,22 @@ int main(void) {
     skim_rbn_feed_free(f);
     g_string_free(c_stations, TRUE);
     g_free(g_band);
+  }
+
+  /* -- feed policy: one-off and torn calls stay off the wire --------------------- */
+  {
+    printf("  feed policy (one pass: SM7XYZ once, IZ3N YG torn, OK1BR control)\n");
+    build_policy_band();
+    PolicyOut old = policy_run(1, -1);                 /* the old policy     */
+    check("old policy: the band does carry both garbles (SM7XYZ, IZ3N out)",
+          old.sm7xyz >= 1 && old.iz3n >= 1);
+    PolicyOut now = policy_run(0, 0);                  /* defaults           */
+    check("control OK1BR (read twice) reaches the wire", now.ok1br == 1);
+    check("SM7XYZ read ONCE never reaches the wire", now.sm7xyz == 0);
+    check("torn IZ3N is folded away while held — never on the wire",
+          now.iz3n == 0);
+    check("…and the whole call IZ3NYG goes out once", now.iz3nyg == 1);
+    g_free(g_pol);
   }
 
   printf("\n=== %d checks, %d failures ===\n%s\n", checks, fails,

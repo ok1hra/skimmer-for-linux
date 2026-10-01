@@ -22,6 +22,12 @@
  * SKIM_REPLAY_FROM / SKIM_REPLAY_TO (stream seconds) replay a slice only;
  * hold and mute times stay absolute.
  *
+ * SKIM_REPLAY_FEED=new|old wires an RBN telnet feed (ephemeral port, no
+ * clients) in and traces every line it would put on the wire ("feed:" on
+ * stderr): "new" = the default feed policy (two hearings or MASTER.SCP,
+ * 8 s settle), "old" = the score gate alone, sent at once. After the file
+ * ends the replay feeds 10 s of silence, so calls still held get to settle.
+ *
  * The same MASTER.SCP the app uses (~/.config/skimmer-for-linux/master.scp)
  * is loaded when present — keep it that way for honest A/B against the app.
  *
@@ -34,6 +40,7 @@
 
 #include "app/wf_compose.h"                     /* floor-tracker constants (dump) */
 #include "engine/pipeline.h"
+#include "engine/rbn_feed.h"
 
 #define BLK 2048                       /* frames per feed — the TCI block size */
 
@@ -176,6 +183,23 @@ int main(int argc, char **argv) {
     .dict_path = g_file_test(dict, G_FILE_TEST_EXISTS) ? dict : NULL,
     .decode_log_path = dlog,
   };
+  const char *fenv = g_getenv("SKIM_REPLAY_FEED");
+  SkimRbnFeed *feed = NULL;
+  if (fenv && fenv[0]) {
+    GError *ferr = NULL;
+    feed = skim_rbn_feed_new("REPLAY", 0, &ferr);
+    if (!feed) {
+      fprintf(stderr, "feed: %s\n", ferr ? ferr->message : "?");
+      g_clear_error(&ferr);
+      return 1;
+    }
+    cfg.rbn = feed;
+    if (g_ascii_strcasecmp(fenv, "old") == 0) {
+      cfg.rbn_min_hearings = 1;
+      cfg.rbn_settle_s = -1;
+    }
+    g_setenv("SKIM_FEED_TRACE", "1", FALSE);
+  }
   /* SKIM_CW_ENGINE=v1|v2|deepcw picks the CW engine (the app's "CW engine"
    * preference takes the same config field); the pipeline resolves the
    * DeepCW availability itself and falls back to v2 with a warning. A
@@ -242,6 +266,12 @@ int main(int argc, char **argv) {
     frames += n;
   }
   fclose(f);
+  if (feed) {                          /* let the held calls settle          */
+    memset(buf, 0, sizeof(buf));
+    for (guint64 q = 0; q < (guint64)(10 * rate); q += BLK) {
+      skim_pipeline_feed(p, buf, BLK, rate, center);
+    }
+  }
   g_array_free(holds, TRUE);
   g_array_free(mutes, TRUE);
   double wall   = (double)(g_get_monotonic_time() - t0) / G_USEC_PER_SEC;
@@ -271,10 +301,18 @@ int main(int argc, char **argv) {
          stream, wall, stream / MAX(wall, 0.001), frames, g_fragments,
          rows->len);
   printf("decode log: %s\n", dlog);
+  if (feed) {
+    double ms, ss;
+    guint mh;
+    skim_pipeline_rbn_policy(p, &ms, &mh, &ss);
+    printf("feed policy: score >= %.2f, %u hearings, %.0f s settle — %"
+           G_GUINT64_FORMAT " lines\n", ms, mh, ss, skim_pipeline_rbn_spots(p));
+  }
 
   g_ptr_array_free(rows, TRUE);
   g_hash_table_destroy(g_stations);
   skim_pipeline_free(p);
+  if (feed) { skim_rbn_feed_free(feed); }
   g_free(dlog);
   return 0;
 }

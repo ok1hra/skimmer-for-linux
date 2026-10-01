@@ -186,6 +186,25 @@ int main(void) {
     skim_callsign_extractor_free(x);
   }
 
+  /* -- hearings: copies read, the RBN feed's second gate -------------------------- */
+  {
+    SkimCallsignExtractor *x = skim_callsign_extractor_new();
+    char got[32];
+    /* ONE copy after CQ DE already clears the feed's 0.85 score … */
+    skim_callsign_extractor_feed(x, "CQ DE SM7XYZ K ");
+    double s = skim_callsign_extractor_best(x, got, sizeof(got));
+    check("one copy after CQ DE scores past 0.85 (why hearings exist)",
+          s >= 0.85 && strcmp(got, "SM7XYZ") == 0);
+    check("…but counts as ONE hearing",
+          skim_callsign_extractor_hearings(x, "SM7XYZ") == 1);
+    skim_callsign_extractor_feed(x, "CQ DE SM7XYZ SM7XYZ K ");
+    check("two more copies: three hearings",
+          skim_callsign_extractor_hearings(x, "SM7XYZ") == 3);
+    check("a call that is no candidate: zero hearings",
+          skim_callsign_extractor_hearings(x, "OK1BR") == 0);
+    skim_callsign_extractor_free(x);
+  }
+
   /* -- calling context: leading and trailing markers ---------------------------- */
   {
     SkimCallsignExtractor *x = skim_callsign_extractor_new();
