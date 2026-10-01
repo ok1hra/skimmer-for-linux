@@ -1,5 +1,148 @@
 # Skimmer for Linux
 
+> **This is a fork.** It is maintained by Dan, OK1HRA, from
+> [OK1BR/skimmer-for-linux](https://github.com/OK1BR/skimmer-for-linux).
+> Skimmer for Linux is the work of Richard Fakenberg, OK1BR. Everything after
+> the fork section below is his README, unchanged. `main` here follows
+> upstream. The fork's own work is in the branch
+> [`hpsdr-p1-source`](https://github.com/ok1hra/skimmer-for-linux/tree/hpsdr-p1-source).
+> Please report problems with that branch here, not upstream.
+
+## The `hpsdr-p1-source` branch
+
+This branch skims a **Red Pitaya** directly, with no TCI server in between. It
+can also skim **several bands at once without a GUI**.
+
+### What it adds
+
+- **HPSDR Protocol 1 IQ source.** Talks UDP straight to a receiver running
+  Pavel Demin's `sdr_receiver_hpsdr` (the same server Quisk's "Red Pitaya"
+  profile and CW Skimmer Server's HermesIntf use). Rates are 48, 96 and
+  192 kHz, with a sampling-clock correction in ppm. The wire is RF-inverted
+  and ingest conjugates it. The skimmer never takes a receiver another client
+  is streaming from unless you explicitly say "take over". Protocol facts and
+  measurements: [`docs/HPSDR-P1.md`](https://github.com/ok1hra/skimmer-for-linux/blob/hpsdr-p1-source/docs/HPSDR-P1.md).
+- **The app** has a new section, Preferences → Radio → IQ source → Red Pitaya:
+  host, band, centre, sample rate and clock correction. While the receiver is
+  busy, a banner offers **Take over**. Nothing is sent to the radio until you
+  press it.
+- **`skimmer-headless`**, a multi-band skimmer without a GUI. One Red Pitaya
+  streams up to 8 receivers, and each receiver feeds its own pipeline, one per
+  band. Validated CQ spots from all bands go to **one** telnet feed in the
+  cluster dialect, the CW Skimmer Server model. Status comes as a table on the
+  console and as a small web page with `/status.json`.
+- **`skimmer-hpsdr-probe`** runs a live check against a receiver: discovery,
+  packet loss, effective rate, the strongest peaks at absolute frequencies,
+  and an optional IQ dump that `SKIM_IQ_FILE` / `skimmer-replay` can read.
+- **`skimmer-compare/`** compares the local skimmer with another one (for
+  example CW Skimmer Server), using the Reverse Beacon Network as the referee.
+  It needs bash, curl and Python 3, standard library only.
+- One lock around FFTW plan creation and destruction, because the planner is
+  not thread-safe and several pipelines now run side by side.
+
+### Build
+
+The requirements are the same as upstream (see [Requirements](#requirements)
+below).
+
+```sh
+git clone -b hpsdr-p1-source https://github.com/ok1hra/skimmer-for-linux.git
+cd skimmer-for-linux
+meson setup build
+meson compile -C build
+meson test -C build            # offline gates, no radio needed
+```
+
+The build produces `build/skimmer-for-linux` (the app),
+`build/skimmer-headless` and `build/skimmer-hpsdr-probe`.
+
+### Run the app with a Red Pitaya
+
+1. Start `./build/skimmer-for-linux`.
+2. Open Preferences → Radio → IQ source and choose **Red Pitaya**.
+3. Fill in the host, band, sample rate and clock correction.
+4. Connect from the header bar.
+
+The settings go to `~/.config/skimmer-for-linux/settings.ini` under
+`[source]` and `[hpsdr]`.
+
+### Run `skimmer-headless`
+
+```sh
+./build/skimmer-headless [--config FILE] [--take-over] [--status-every S] [--http-port N]
+```
+
+The first run writes `~/.config/skimmer-for-linux/headless.ini` with defaults.
+Here is an example for six bands at 96 kHz:
+
+```ini
+[radio]
+host=192.168.1.21
+# 48000 / 96000 / 192000, one rate for all receivers
+rate=96000
+clock_ppm=3.81
+
+[bands]
+# name=centre Hz, in receiver order (RX1 first), at most 8
+160m=1840000
+80m=3540000
+40m=7040000
+30m=10125000
+20m=14040000
+15m=21040000
+
+[decode]
+# v2 (classical) or deepcw (needs ONNX Runtime + model)
+engine=v2
+log=false
+
+[feed]
+# telnet spot feed, validated CQ spots only; port 0 = off
+call=YOURCALL
+port=7300
+
+[status]
+# console table every N s (0 = off); web page port (0 = off)
+console_s=10
+http_port=8073
+```
+
+Point a logger or a cluster client at `telnet <host> 7300`. Open
+`http://<host>:8073/` in a browser for the status page. Ctrl+C stops the
+skimmer cleanly and frees the radio.
+
+Six receivers at 96 kHz are about 30 Mb/s of UDP, so **use a wired link**.
+Over Wi-Fi, 192 kHz lost about 30 % of the packets. `--take-over` grabs a busy
+receiver once, on the first start. A stream lost to another client later is
+not taken back.
+
+### Compare two skimmers (`skimmer-compare/`)
+
+```sh
+cd skimmer-compare
+./capture-spots.sh -c YOURCALL -r <cw-skimmer-host>:<port>   # records local, remote and RBN feeds into logs/
+./compare-web.py                                             # live comparison at http://localhost:8074/
+```
+
+`compare.ini` sets the labels, the remote's receive windows and the matching
+defaults. `test-capture.py` and `test-compare.py` are offline self-tests.
+`skimmer-compare-web.service` is a systemd user unit for the web page.
+
+### Credits
+
+- **Richard Fakenberg, OK1BR** ([rifak.cz](https://rifak.cz)) wrote Skimmer
+  for Linux: the engine, the channelizer, the CW and RTTY decoders, callsign
+  validation, the spot pipeline and the app. This branch only builds on his
+  work. Many thanks.
+- **Pavel Demin** wrote [red-pitaya-notes](https://github.com/pavel-demin/red-pitaya-notes)
+  and its `sdr_receiver_hpsdr`, the receiver this branch talks to.
+- **VE3NEA** wrote CW Skimmer Server, the reference used for the comparisons.
+- The fork's changes were written by Dan, OK1HRA, with the help of Claude Code.
+
+Licence unchanged: GPL-3.0-or-later.
+
+---
+
 **A native GTK4 multi-channel CW/RTTY skimmer for Linux — decode every signal
 in a band segment at once, and spot it.** The free-software counterpart of
 CW Skimmer / SDC, built as a **TCI client** for
