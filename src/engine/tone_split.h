@@ -78,6 +78,10 @@ guint skim_tone_split_slot_gen(const SkimToneSplit *ts, guint slot);
  * decode text is beat-garbled; keep it out of the callsign candidates. */
 gboolean skim_tone_split_slot_contested(const SkimToneSplit *ts, guint slot);
 
+/* Noise bandwidth (Hz) of the slot's filter — rate·Σtaps² of the unity-
+ * gain FIR; 0 in passthrough (the channel's own bandwidth applies). */
+double skim_tone_split_slot_enbw(const SkimToneSplit *ts, guint slot);
+
 /* TRUE while narrow slots are engaged (split or focus). FALSE = slot 0 is
  * the verbatim wide passthrough — the owner can keep a PERSISTENT decoder
  * behind it instead of resetting on every engage/collapse generation. */

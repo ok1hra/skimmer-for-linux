@@ -99,6 +99,7 @@ typedef struct {
   GString *text;
   gboolean got_text, got_table, got_feed;
   guint    bad;                           /* wrong feed lines nearest to it  */
+  double   rep_snr;                       /* SNR its first feed line gave    */
 } Station;
 
 typedef struct {
@@ -309,7 +310,7 @@ static void on_station(const SkimStation *st, gpointer user) {
 
 static void on_feed(const char *call, double hz, double snr, double wpm,
                     gpointer user) {
-  (void)snr; (void)wpm;
+  (void)wpm;
   Run *r = user;
   r->feed_lines++;
   Station *s = near_call(r, call, hz, 150.0);
@@ -320,6 +321,7 @@ static void on_feed(const char *call, double hz, double snr, double wpm,
     g_mutex_unlock(&g_out_lock);
   }
   if (s) {
+    if (!s->got_feed) { s->rep_snr = snr; }
     s->got_feed = TRUE;
     return;
   }
@@ -408,6 +410,7 @@ typedef struct {
   double   snr;
   guint    n, text, table, feed, bad, lines;
   double   noise_h;
+  double   snr_sum;                       /* reported SNR over the feed hits */
 } Row;
 
 static Row *row_for(GArray *rows, Scenario sc, int sub, double snr) {
@@ -583,19 +586,21 @@ int main(int argc, char **argv) {
       w->table += s->got_table;
       w->feed += s->got_feed;
       w->bad += s->bad;
+      if (s->got_feed) { w->snr_sum += s->rep_snr; }
     }
   }
   g_array_sort(rows, row_cmp);
 
   FILE *cf = csv ? fopen(csv, "w") : NULL;
-  if (cf) { fprintf(cf, "scenario,sub,snr500,n,text,table,feed,bad,lines,noise_h\n"); }
-  printf("%-7s %4s %6s %4s %6s %6s %6s %5s\n", "scen", "sub", "SNR500", "n",
-         "text%", "table%", "feed%", "bad");
+  if (cf) { fprintf(cf, "scenario,sub,snr500,n,text,table,feed,bad,lines,noise_h,rep_snr\n"); }
+  printf("%-7s %4s %6s %4s %6s %6s %6s %5s %6s\n", "scen", "sub", "SNR500", "n",
+         "text%", "table%", "feed%", "bad", "repSNR");
   for (guint i = 0; i < rows->len; i++) {
     const Row *w = &g_array_index(rows, Row, i);
     if (cf) {
-      fprintf(cf, "%s,%d,%.1f,%u,%u,%u,%u,%u,%u,%.3f\n", SC_NAME[w->sc], w->sub,
-              w->snr, w->n, w->text, w->table, w->feed, w->bad, w->lines, w->noise_h);
+      fprintf(cf, "%s,%d,%.1f,%u,%u,%u,%u,%u,%u,%.3f,%.1f\n", SC_NAME[w->sc], w->sub,
+              w->snr, w->n, w->text, w->table, w->feed, w->bad, w->lines, w->noise_h,
+              w->feed ? w->snr_sum / w->feed : 0.0);
     }
     if (w->sc == SC_NOISE) {
       printf("%-7s %4s %6s %4s %6s %6s %6s %5u  (%.2f h of noise → %.1f bad/h)\n",
@@ -603,9 +608,9 @@ int main(int argc, char **argv) {
              w->bad / MAX(w->noise_h, 1e-9));
       continue;
     }
-    printf("%-7s %4d %6.1f %4u %6.0f %6.0f %6.0f %5u\n", SC_NAME[w->sc], w->sub,
-           w->snr, w->n, pc(w->text, w->n), pc(w->table, w->n), pc(w->feed, w->n),
-           w->bad);
+    printf("%-7s %4d %6.1f %4u %6.0f %6.0f %6.0f %5u %6.1f\n", SC_NAME[w->sc],
+           w->sub, w->snr, w->n, pc(w->text, w->n), pc(w->table, w->n),
+           pc(w->feed, w->n), w->bad, w->feed ? w->snr_sum / w->feed : 0.0);
   }
   if (cf) { fclose(cf); }
 

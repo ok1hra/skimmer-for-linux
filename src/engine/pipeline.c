@@ -38,6 +38,10 @@
 #define HOLD_CAP_S     30.0                   /* a stuck trx must not freeze
                                                  the skimmer forever         */
 #define PRUNE_EVERY_US (2 * G_USEC_PER_SEC)
+/* Noise bandwidth of a channelizer channel / its spacing: the CW
+ * prototype (±62.5 Hz at −6 dB, Blackman-Harris, K = 8) integrates
+ * ~106 Hz on 125 Hz channels (computed from its taps, 2026-10-02). */
+#define CHAN_ENBW 0.85
 /* RBN policy: the network keeps its own history, so re-announce sparsely
  * (the panadapter's 180 s is about keeping labels alive — not needed here)
  * and only re-spot a move that is a real QSY, not estimate convergence. */
@@ -106,6 +110,7 @@ typedef struct {
   guint      slot;
   double     eff_off;   /* slot mix + decode offset = in-channel offset      */
   gboolean   contested; /* slot band held >1 carrier when this decoded       */
+  double     enbw;      /* noise bandwidth the decoder saw (Hz)              */
   SkimDecode d;
   char      *aux;       /* display-only text (take_aux_text) — shown, logged,
                          * NEVER fed to the extractor (hallucination guard)  */
@@ -890,6 +895,8 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
     const Hit *h = &g_array_index(p->hits, Hit, i);
     const guint c = h->chan;
     d = h->d;
+    /* Band SNR → SNR in 500 Hz (decode.h snr_in_band). */
+    if (cw->snr_in_band && h->enbw > 0) { d.snr_db += 10.0 * log10(h->enbw / 500.0); }
     if (cw->level && ghost_suppressed(p, p->lvl, c, h->slot, h->eff_off)) {
       if (G_UNLIKELY(g_getenv("SKIM_GHOST_DEBUG")) && d.text[0]) {
         g_printerr("ghost: ch %u slot %u @ %.0f Hz lvl %.4g |%s| t=%.0f\n", c,
@@ -1254,7 +1261,8 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
           continue;
         if (!got) { hit_placeholder(cw, p->dec[SL(c, WIDE_LANE)], &d); }
         Hit h = { .chan = c, .slot = WIDE_LANE, .eff_off = d.freq_offset_hz,
-                  .contested = FALSE, .d = d, .aux = aux, .ops = ops };
+                  .contested = FALSE, .enbw = CHAN_ENBW * p->cfg.chan_bw_hz,
+                  .d = d, .aux = aux, .ops = ops };
         g_array_append_val(p->hits, h);
         continue;
       }
@@ -1297,6 +1305,8 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
                     .eff_off = skim_tone_split_slot_hz(sp, s) +
                                d.freq_offset_hz,
                     .contested = skim_tone_split_slot_contested(sp, s),
+                    .enbw = insplit ? skim_tone_split_slot_enbw(sp, s)
+                                    : CHAN_ENBW * p->cfg.chan_bw_hz,
                     .d = d, .aux = aux, .ops = ops };
           g_array_append_val(p->hits, h);
         }

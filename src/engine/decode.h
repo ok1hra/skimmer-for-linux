@@ -117,6 +117,13 @@ struct _SkimDecodeBackend {
    * A backend without the hook is left alone through the hold, as before.
    * Optional. */
   void (*hold_begin)(gpointer state);
+
+  /* TRUE when SkimDecode.snr_db is the SNR in the noise bandwidth of the
+   * signal the backend was fed (carrier power over all the noise it saw):
+   * the pipeline knows that bandwidth (channel or narrow slot) and turns it
+   * into SNR in 500 Hz, the scale CW Skimmer and RBN spots carry. FALSE:
+   * the backend's own scale, passed through. */
+  gboolean snr_in_band;
 };
 
 G_END_DECLS
