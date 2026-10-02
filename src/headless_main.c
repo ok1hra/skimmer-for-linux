@@ -18,6 +18,9 @@
  *   [decode] engine=v2|deepcw, log=true|false (per-band decode logs)
  *   [feed]   call, port (0 = no telnet feed)
  *   [status] console_s (0 = quiet), http_port (0 = no web page)
+ *   [record] bands (comma list; empty = off), minutes, dir, start_utc
+ *            (HH:MM, empty = at once) — raw IQ of the chosen bands as
+ *            cf32 + .meta, what skimmer-replay reads, while decoding on
  *
  * The radio is never taken from another client unless --take-over is given
  * (one-shot: for the first start only); a stream lost to another client is
@@ -58,6 +61,8 @@ static double act_now(const Act *a, gint64 now) {
 }
 #define RECENT_STATIONS  10                      /* per band on the web page */
 
+typedef struct _Rec Rec;
+
 typedef struct {
   char          name[16];
   double        centre_hz;
@@ -68,6 +73,7 @@ typedef struct {
   GHashTable   *stations;      /* call → SkimStation copy                     */
   guint64       frames_prev;   /* main loop: for kS/s                         */
   double        ksps;
+  Rec          *rec;           /* [record]: this band's IQ tap, or NULL       */
 } Band;
 
 typedef struct {
@@ -86,6 +92,10 @@ typedef struct {
   double   feed_fresh_s;       /* 0 = default; < 0 = no freshness gate       */
   int      console_s;
   int      http_port;
+  char   **rec_bands;          /* [record] bands, NULL = no recording         */
+  double   rec_minutes;
+  char    *rec_dir;
+  gint64   rec_at_us;          /* real time to start, 0 = at once             */
   gboolean take_over;          /* --take-over: the first start only           */
 
   Band     band[SKIM_HPSDR_MAX_RX];
@@ -135,7 +145,10 @@ static const char *DEFAULT_CONFIG =
   "# fresh_s=0 switch those three off\n"
   "#min_score=0.85\n#min_hearings=2\n#settle_s=8\n#fresh_s=120\n"
   "\n[status]\n# console table every N s (0 = off); web page port (0 = off)\n"
-  "console_s=10\nhttp_port=8073\n";
+  "console_s=10\nhttp_port=8073\n"
+  "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
+  "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
+  "bands=\nminutes=10\ndir=/var/tmp/skimmer-iq\nstart_utc=\n";
 
 static gboolean config_load(Hd *h, GError **error) {
   if (!g_file_test(h->cfg_path, G_FILE_TEST_EXISTS)) {
@@ -189,6 +202,38 @@ static gboolean config_load(Hd *h, GError **error) {
     h->http_port = g_key_file_has_key(kf, "status", "http_port", NULL)
                        ? g_key_file_get_integer(kf, "status", "http_port", NULL) : 8073;
   }
+
+  char *rb = g_key_file_get_string(kf, "record", "bands", NULL);
+  if (rb && g_strstrip(rb)[0]) {
+    h->rec_bands = g_strsplit(rb, ",", -1);
+    for (char **x = h->rec_bands; *x; x++) { g_strstrip(*x); }
+    h->rec_minutes = g_key_file_has_key(kf, "record", "minutes", NULL)
+                         ? g_key_file_get_double(kf, "record", "minutes", NULL) : 10;
+    if (h->rec_minutes <= 0) { h->rec_minutes = 10; }
+    h->rec_dir = g_key_file_get_string(kf, "record", "dir", NULL);
+    if (!h->rec_dir || !g_strstrip(h->rec_dir)[0]) {
+      g_free(h->rec_dir);
+      h->rec_dir = g_strdup("/var/tmp/skimmer-iq");
+    }
+    char *at = g_key_file_get_string(kf, "record", "start_utc", NULL);
+    guint hh, mm;
+    if (at && sscanf(g_strstrip(at), "%u:%u", &hh, &mm) == 2 && hh < 24 && mm < 60) {
+      GDateTime *now = g_date_time_new_now_utc();
+      GDateTime *t = g_date_time_new_utc(g_date_time_get_year(now),
+                                         g_date_time_get_month(now),
+                                         g_date_time_get_day_of_month(now), hh, mm, 0);
+      if (g_date_time_compare(t, now) <= 0) {   /* today's is gone: tomorrow */
+        GDateTime *t2 = g_date_time_add_days(t, 1);
+        g_date_time_unref(t);
+        t = t2;
+      }
+      h->rec_at_us = g_date_time_to_unix(t) * G_USEC_PER_SEC;
+      g_date_time_unref(t);
+      g_date_time_unref(now);
+    }
+    g_free(at);
+  }
+  g_free(rb);
 
   gsize n = 0;
   char **keys = g_key_file_get_keys(kf, "bands", &n, NULL);   /* file order */
@@ -274,8 +319,125 @@ static void state_cb(gboolean connected, const char *detail, gpointer user) {
 
 /* ---- the radio link -------------------------------------------------------------- */
 
+/* ---- [record]: a band's IQ to disk, beside the decoding ------------------------- */
+
+/* The receiver thread copies each block into a queue; a writer thread puts
+ * it on disk — a slow disk never stalls the radio. Exactly the samples the
+ * band's pipeline gets, so a replay of the file is the live input. */
+struct _Rec {
+  char        *path;           /* …/hd-<band>-<UTC>.cf32                       */
+  char         label[96];
+  double       ppm;
+  gint64       at_us;          /* real time to start, 0 = at once              */
+  guint64      max_frames;
+  double       minutes;
+  /* receiver thread */
+  gboolean     started, ended;
+  guint64      frames;
+  double       rate, centre;
+  gint64       t0_us;          /* real time of the first block                 */
+  /* writer */
+  GAsyncQueue *q;
+  GThread     *th;
+};
+
+static gpointer REC_END = (gpointer)&REC_END;  /* queue sentinel              */
+
+static void rec_meta(Rec *r, gint64 t1_us) {
+  GDateTime *t = g_date_time_new_from_unix_local_usec(r->t0_us);
+  char *start = g_date_time_format(t, "%Y-%m-%d %H:%M:%S %z");
+  g_date_time_unref(t);
+  char *meta = g_strdup_printf(
+      "file: %s\nstart: %s\nstart_unix: %.3f\n"
+      "source: skimmer-headless %s\n"
+      "format: cf32 interleaved I,Q — TRUE spectrum orientation\n"
+      "center_hz: %.0f\nrate_hz: %.0f\nclock_ppm: %.3f\nframes: %" G_GUINT64_FORMAT "\n"
+      "duration_s: %.1f\nwall_s: %.1f\n---\n",
+      r->path, start, r->t0_us / 1e6, r->label, r->centre, r->rate, r->ppm, r->frames,
+      r->rate > 0 ? r->frames / r->rate : 0.0, (t1_us - r->t0_us) / 1e6);
+  char *mp = g_strdup_printf("%s.meta", r->path);
+  GError *err = NULL;
+  if (!g_file_set_contents(mp, meta, -1, &err)) {
+    g_warning("record: %s: %s", mp, err->message);
+    g_clear_error(&err);
+  }
+  g_free(mp);
+  g_free(meta);
+  g_free(start);
+}
+
+static gpointer rec_writer(gpointer data) {
+  Rec *r = data;
+  FILE *f = fopen(r->path, "wb");
+  if (!f) { g_warning("record: cannot write %s", r->path); }
+  for (;;) {
+    GBytes *b = g_async_queue_pop(r->q);
+    if ((gpointer)b == REC_END) { break; }
+    gsize len;
+    const void *d = g_bytes_get_data(b, &len);
+    if (f && fwrite(d, 1, len, f) != len) {
+      g_warning("record: %s: write failed — recording stopped", r->path);
+      fclose(f);
+      f = NULL;
+    }
+    g_bytes_unref(b);
+  }
+  if (f) { fclose(f); }
+  rec_meta(r, g_get_real_time());
+  g_message("record: %s done (%.1f min)", r->path, r->frames / r->rate / 60.0);
+  return NULL;
+}
+
+/* Receiver thread: start at the set time, stop after the set length. */
+static void rec_push(Rec *r, const float *iq, guint n, double rate, double centre) {
+  if (r->ended) { return; }
+  const gint64 now = g_get_real_time();
+  if (!r->started) {
+    if (r->at_us && now < r->at_us) { return; }
+    GDateTime *t = g_date_time_new_from_unix_utc_usec(now);
+    char *ts = g_date_time_format(t, "%Y%m%d-%H%M%SZ");
+    g_date_time_unref(t);
+    char *dir = g_path_get_dirname(r->path);   /* path holds dir/band so far  */
+    char *band = g_path_get_basename(r->path);
+    g_free(r->path);
+    r->path = g_strdup_printf("%s/hd-%s-%s.cf32", dir, band, ts);
+    g_free(dir);
+    g_free(band);
+    g_free(ts);
+    r->rate = rate;
+    r->centre = centre;
+    r->t0_us = now;
+    r->max_frames = (guint64)(r->minutes * 60.0 * rate);
+    r->q = g_async_queue_new();
+    r->th = g_thread_new("record", rec_writer, r);
+    r->started = TRUE;
+    g_message("record: %s started (%.1f min)", r->path, r->minutes);
+  }
+  const guint take = (guint)MIN((guint64)n, r->max_frames - r->frames);
+  g_async_queue_push(r->q, g_bytes_new(iq, (gsize)take * 2 * sizeof(float)));
+  r->frames += take;
+  if (r->frames >= r->max_frames) {
+    r->ended = TRUE;
+    g_async_queue_push(r->q, REC_END);
+  }
+}
+
+/* Teardown: an unfinished recording is closed with what it has. */
+static void rec_free(Rec *r) {
+  if (!r) { return; }
+  if (r->started) {
+    if (!r->ended) { g_async_queue_push(r->q, REC_END); }
+    g_thread_join(r->th);
+    g_async_queue_unref(r->q);
+  }
+  g_free(r->path);
+  g_free(r);
+}
+
 static void rx_iq_cb(const float *iq, guint n, double rate, double centre, gpointer user) {
-  skim_pipeline_push(((Band *)user)->p, iq, n, rate, centre);
+  Band *b = user;
+  if (b->rec) { rec_push(b->rec, iq, n, rate, centre); }
+  skim_pipeline_push(b->p, iq, n, rate, centre);
 }
 
 static void rp_closed_cb(gpointer user) { g_atomic_int_set(&((Hd *)user)->closed, 1); }
@@ -759,6 +921,31 @@ int main(int argc, char **argv) {
   }
   g_free(logdir);
   g_free(day);
+  for (char **x = h->rec_bands; x && *x; x++) {
+    Band *b = NULL;
+    for (guint i = 0; i < h->nb; i++) {
+      if (strcmp(h->band[i].name, *x) == 0) { b = &h->band[i]; }
+    }
+    if (!b) {
+      g_warning("record: no band %s in [bands] — not recorded", *x);
+      continue;
+    }
+    g_mkdir_with_parents(h->rec_dir, 0755);
+    b->rec = g_new0(Rec, 1);
+    b->rec->path = g_build_filename(h->rec_dir, b->name, NULL);
+    g_strlcpy(b->rec->label, b->label, sizeof(b->rec->label));
+    b->rec->ppm = h->ppm;
+    b->rec->at_us = h->rec_at_us;
+    b->rec->minutes = h->rec_minutes;
+    if (h->rec_at_us) {
+      GDateTime *t = g_date_time_new_from_unix_utc_usec(h->rec_at_us);
+      char *ts = g_date_time_format(t, "%Y-%m-%d %H:%M UTC");
+      g_message("record: %s for %.0f min from %s into %s", b->name, h->rec_minutes,
+                ts, h->rec_dir);
+      g_free(ts);
+      g_date_time_unref(t);
+    }
+  }
   g_message("decode: %u pipelines, engine %s", h->nb,
             skim_pipeline_cw_engine_name(h->band[0].p));
   if (h->feed) {
@@ -802,6 +989,7 @@ int main(int argc, char **argv) {
   g_clear_pointer(&h->rp, skim_hpsdr_client_free);
   for (guint i = 0; i < h->nb; i++) {
     skim_pipeline_free(h->band[i].p);
+    rec_free(h->band[i].rec);
   }
   g_clear_pointer(&h->feed, skim_rbn_feed_free);
   g_clear_pointer(&h->scp, skim_scp_updater_free);

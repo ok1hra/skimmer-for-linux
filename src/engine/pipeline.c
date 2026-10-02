@@ -331,13 +331,15 @@ static void station_gone_fwd(const SkimStation *st, gpointer user);
 /* RBN spot_out sink → the telnet feed and/or cfg.rbn_cb (user = the pipeline). */
 static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
                          double snr_db, double speed, gpointer user) {
-  /* SKIM_FEED_TRACE=1: every line that goes on the wire, after the policy
-   * AND spot_out's dedup — what an A/B of two feed policies compares. */
-  if (g_getenv("SKIM_FEED_TRACE")) {
-    g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm\n", call,
-               freq_hz / 1000.0, snr_db, speed);
-  }
   SkimPipeline *p = user;
+  /* SKIM_FEED_TRACE=1: every line that goes on the wire, after the policy
+   * AND spot_out's dedup — what an A/B of two feed policies compares. The
+   * time is the pipeline clock: stream seconds offline (a replay lines its
+   * feed up with a live log of the same recording), monotonic live. */
+  if (g_getenv("SKIM_FEED_TRACE")) {
+    g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm t=%.1f\n", call,
+               freq_hz / 1000.0, snr_db, speed, pipe_now_us(p) / 1e6);
+  }
   if (p->cfg.rbn) { skim_rbn_feed_spot(p->cfg.rbn, call, mode, freq_hz, snr_db, speed); }
   if (p->cfg.rbn_cb) { p->cfg.rbn_cb(call, freq_hz, snr_db, speed, p->cfg.rbn_user); }
 }
