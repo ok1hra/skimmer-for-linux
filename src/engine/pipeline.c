@@ -1310,6 +1310,11 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
           if (!got && !aux && !ops)
             continue;
           if (!got) { hit_placeholder(cw, p->dec[SL(c, lane)], &d); }
+          if (G_UNLIKELY(g_getenv("SKIM_HIT_DEBUG")) && d.text[0]) {
+            g_printerr("hit: ch %u lane %u mix %+.1f conf %.2f snr %.0f |%s| t=%.1f\n",
+                       c, lane, skim_tone_split_slot_hz(sp, s), d.confidence,
+                       d.snr_db, d.text, pipe_now_us(p) / 1e6);
+          }
           Hit h = { .chan = c, .slot = lane,
                     .eff_off = skim_tone_split_slot_hz(sp, s) +
                                d.freq_offset_hz,

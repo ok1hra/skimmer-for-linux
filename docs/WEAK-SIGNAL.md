@@ -29,7 +29,8 @@ Each item was measured on the bench and confirmed in the code.
 How it works:
 
 - The tone splitter's focus slot (a mix onto the carrier and a 1.3 × WPM low-pass) runs on every clean detected carrier. The wide channel runs where no carrier is detected.
-- Carriers are searched to ±85 Hz but owned only within half the channel spacing. A neighbour's carrier also owns its skirt.
+- Carriers are searched to ±85 Hz but owned only within half the channel spacing. A neighbour's carrier also owns its skirt (to 45 Hz).
+- The mirror and skirt tests compare carrier and sideband powers with the channel response taken back out. Next to a channel edge, the filter leaves a keying sideband pair lopsided, and the inner sideband used to read as a second station. That flagged a strong station's channel "contested" and dropped its text.
 - Narrow slots are arbitrated by carrier frequency, not by envelope level.
 - A strong carrier (over the old 21 dB focus bar) gets the 55 Hz cutoff. The speed-riding cutoff fused its dits, the F5IN lesson again (N8RYH → T8RYH).
 
@@ -50,7 +51,8 @@ SNR500 at 50 % of calls in the feed, wide → both (2–3 × 12 stations a point
 Further results:
 
 - **Noise.** There was no feed line in 30 min of pure noise on either path.
-- **Wrong lines.** 0.8 per 100 stations below 14 dB and 1.2 above, against 0.1 on the wide path. Above ~22 dB, a channel-edge tone still loses ~10 % of calls that the wide path keeps.
+- **Wrong lines.** 0.5 per 100 stations below 14 dB and 1.2 above, against 0.4 on the wide path.
+- **Channel-edge tone above 22 dB.** 95 % of calls, against 100 % on the wide path. Before the channel-response compensation it was 87–90 %.
 - **CPU.** About 2× per band (a 96 kHz band replays 14× real time instead of 28×).
 
 ## Tried and rejected (the bench said no)
@@ -61,6 +63,8 @@ Further results:
 - **Focus cutoff floor 15 / 20 / 25 Hz:** identical within 0.3 dB, because 1.3 × WPM sits above the floor at 16–33 WPM.
 - **Candidate age clock skipping the lone E / T / I of noise:** no measurable effect.
 - **Spotting a MASTER.SCP call after one "CQ CALL" read** (score 0.80): +1.2 points of recall, but a large share of the lines it added were torn calls the dictionary also knows (UT7E for UT7TM, SP4Z for SP4ZH). Neither the decoder's confidence nor a 20 s hold for the full call to evict the torn one filtered them.
+- **Wide lane decoding beside a strong carrier's slot** (both texts to the station table): +1 point on channel-edge tones, the rest unchanged, within noise. The loss it was meant to cover was the contested flag, fixed at its cause.
+- **A strong carrier's slot as the mixer alone, with no filter:** identical to the 55 Hz cutoff, with more wrong lines next to a neighbour.
 - **Rician/Rayleigh LLR in the Viterbi** (instead of the span + Rayleigh heuristic): QSB 73 → 44 % of calls at ≥ 12 dB, everything else slightly worse, at sample weights 0.15–0.6.
 
 ## SNR in spots
@@ -77,5 +81,4 @@ Above ~15 dB the new estimate compresses (30 → 22). Whether CW Skimmer's scale
 ## Still ahead
 
 - A +20 dB neighbour within 100 Hz. The splitter drops a second carrier more than 12 dB under the first (`TS_REL_DB`).
-- Strong tones on a channel edge.
 - Live verdict: real-air A/B on long `[record]` recordings with `skimmer-compare/replay-vs-r.py`, then a night in skimmer-compare.

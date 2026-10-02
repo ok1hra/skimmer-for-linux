@@ -64,9 +64,12 @@
  * mirror test passes the inner sideband as a station of its own — a narrow
  * slot on it decoded "TEST MD3M" for KD3M one channel over (skimmer-sweep
  * 2026-10-02, 30 dB on a channel boundary). The same slope can leave the
- * inner sideband STRONGER here than the carrier it belongs to, so an own
- * peak within this of a foreign one at most 6 dB weaker is its skirt. */
-#define TS_SKIRT_HZ  30.0
+ * inner sideband STRONGER here than the carrier it belongs to — so both
+ * this rule and the mirror test compare powers with the channel response
+ * taken back out (chan_gain): an own peak within this of a foreign one
+ * that is, unfiltered, stronger is its skirt. 45 Hz: keying harmonics of
+ * a strong runner reach that far (a slot camped on one 37 Hz off KN1MT). */
+#define TS_SKIRT_HZ  45.0
 #define TS_FLOOR_DB  8.0                    /* peak over median floor        */
 #define TS_REL_DB    12.0                   /* 2nd carrier within of primary */
 
@@ -317,7 +320,8 @@ static void retap_all(SkimToneSplit *ts) {
        * its frequency ownership) needs no noise rejection and loses its
        * element edges to a speed-riding cutoff — dit·gap·dit fused into a
        * dah, the head of every call mutated (N8RYH → T8RYH, CE6RLA →
-       * GE6RLA; skimmer-sweep 2026-10-02, the F5IN fusion again). */
+       * GE6RLA; skimmer-sweep 2026-10-02, the F5IN fusion again). The
+       * mixer alone (no filter) measured the same as 55 Hz. */
       fc = TS_FOCUS_FC_MAX;
     } else if (ts->nslots == 1) {           /* FOCUS: ride the decoded speed */
       const double wpm = ts->slot[0].wpm_hint > 0 ? ts->slot[0].wpm_hint
@@ -327,6 +331,10 @@ static void retap_all(SkimToneSplit *ts) {
       fc = CLAMP(0.55 * dmin, TS_CUT_MIN, TS_CUT_MAX);
     }
     if (fabs(fc - ts->slot[s].fc_hz) > TS_RETAP_HZ) {
+      if (ts->debug) {
+        g_printerr("tone-split %p: slot %u fc %.1f Hz%s\n", (void *)ts, s, fc,
+                   ts->nslots == 1 && ts->slot[0].strong ? " (strong)" : "");
+      }
       slot_design_fir(&ts->slot[s], ts->rate, fc);
     }
   }
@@ -399,6 +407,29 @@ typedef struct {
   double pw;
 } Peak;
 
+/* Power gain of the channelizer's CW prototype at hz off the channel
+ * centre (computed from its taps, 2026-10-02: −0.2 dB at 0.24 of the
+ * spacing, −0.9 at 0.32, −2.3 at 0.40, −6.0 at 0.50, −12.6 at 0.60;
+ * beyond, the same slope). The channel is 2× oversampled: spacing = rate/2.
+ * A keying sideband pair straddling the passband edge comes out of the
+ * channel lopsided — the outer one up to ~10 dB down — and the mirror test
+ * read the inner one as a second station: a CONTESTED channel whose text
+ * never reached the extractor, ~10 % of strong stations on a channel
+ * boundary lost (skimmer-sweep, sideband 12 Hz inside KN1MT's carrier). */
+static double chan_gain(const SkimToneSplit *ts, double hz) {
+  static const double X[] = { 0.0, 0.24, 0.32, 0.40, 0.50, 0.60 };
+  static const double G[] = { 0.0, -0.2, -0.9, -2.3, -6.0, -12.6 };
+  const double x = fabs(hz) / (0.5 * ts->rate);
+  double db = G[5] + (x - X[5]) * (G[5] - G[4]) / (X[5] - X[4]);
+  for (guint k = 1; k < G_N_ELEMENTS(X); k++) {
+    if (x <= X[k]) {
+      db = G[k - 1] + (x - X[k - 1]) * (G[k] - G[k - 1]) / (X[k] - X[k - 1]);
+      break;
+    }
+  }
+  return pow(10.0, db / 10.0);
+}
+
 static int peak_cmp(const void *a, const void *b) {
   const double d = ((const Peak *)b)->pw - ((const Peak *)a)->pw;
   return d > 0 ? 1 : d < 0 ? -1 : 0;
@@ -466,7 +497,9 @@ static guint find_carriers(const SkimToneSplit *ts, Peak *out, guint max,
       continue;                             /* the neighbour's — an anchor   */
     gboolean skirt = FALSE;
     for (guint m = 0; m < nc && !skirt; m++) {
-      skirt = fabs(cand[m].hz) > own && cand[m].pw > 0.25 * cand[i].pw &&
+      skirt = fabs(cand[m].hz) > own &&
+              cand[m].pw / chan_gain(ts, cand[m].hz) >
+                  cand[i].pw / chan_gain(ts, cand[i].hz) &&
               fabs(cand[m].hz - cand[i].hz) < TS_SKIRT_HZ;
     }
     if (skirt)
@@ -493,8 +526,9 @@ static guint find_carriers(const SkimToneSplit *ts, Peak *out, guint max,
       const double mirror = 2.0 * cand[m].hz - cand[i].hz;
       if (fabs(mirror - cand[i].hz) < TS_SAME_HZ)
         continue;
-      if (arr_near(ts, ts->psd, mirror, TS_SAME_HZ) >=
-          TS_MIRROR * cand[i].pw) {
+      /* (unfiltered powers: see chan_gain) */
+      if (arr_near(ts, ts->psd, mirror, TS_SAME_HZ) / chan_gain(ts, mirror) >=
+          TS_MIRROR * cand[i].pw / chan_gain(ts, cand[i].hz)) {
         drop = TRUE;                        /* keying sideband pair member   */
       }
     }
