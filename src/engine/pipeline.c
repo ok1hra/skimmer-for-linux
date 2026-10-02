@@ -328,7 +328,7 @@ static const char *pipe_mode_str(const SkimPipeline *p) {
 
 static void station_gone_fwd(const SkimStation *st, gpointer user);
 
-/* RBN spot_out sink → the telnet feed (user = the borrowed SkimRbnFeed). */
+/* RBN spot_out sink → the telnet feed and/or cfg.rbn_cb (user = the pipeline). */
 static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
                          double snr_db, double speed, gpointer user) {
   /* SKIM_FEED_TRACE=1: every line that goes on the wire, after the policy
@@ -337,7 +337,9 @@ static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
     g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm\n", call,
                freq_hz / 1000.0, snr_db, speed);
   }
-  skim_rbn_feed_spot(user, call, mode, freq_hz, snr_db, speed);
+  SkimPipeline *p = user;
+  if (p->cfg.rbn) { skim_rbn_feed_spot(p->cfg.rbn, call, mode, freq_hz, snr_db, speed); }
+  if (p->cfg.rbn_cb) { p->cfg.rbn_cb(call, freq_hz, snr_db, speed, p->cfg.rbn_user); }
 }
 
 SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
@@ -374,14 +376,14 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
   /* Logbook dup lookup — pipeline-lifetime like the RBN memo: the verdict
    * cache rides out reconnects. Harmless when no logbook listens. */
   p->dupq     = skim_dup_query_new();
-  if (p->cfg.rbn) {
+  if (p->cfg.rbn || p->cfg.rbn_cb) {
     /* Lives for the pipeline's whole life (not per-connection like the TCI
      * sink): the dedup memo rides out reconnects, no re-spot burst. */
     p->rbn_spots = skim_spot_out_new(NULL);
     skim_spot_out_set_clock(p->rbn_spots, pipe_clock_cb, p);
     skim_spot_out_set_policy(p->rbn_spots, RBN_RESPOT_S, RBN_QSY_HZ,
                              RBN_MAX_PER_S);
-    skim_spot_out_set_sink(p->rbn_spots, rbn_sink_fwd, p->cfg.rbn);
+    skim_spot_out_set_sink(p->rbn_spots, rbn_sink_fwd, p);
     p->rbn_min = p->cfg.rbn_min_score > 0 ? p->cfg.rbn_min_score
                                           : RBN_MIN_SCORE_DEFAULT;
     p->rbn_hearings = p->cfg.rbn_min_hearings > 0 ? p->cfg.rbn_min_hearings

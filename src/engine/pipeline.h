@@ -91,6 +91,12 @@ typedef struct {
    * an hour later (2026-10-02: 21 of the 48 unconfirmed spots left after
    * the hearings gate were such ghosts of real stations). */
   SkimRbnFeed *rbn;
+  /* Every line the RBN policy sends — with or without .rbn: an offline
+   * bench (skimmer-sweep) reads the feed's decisions without a socket.
+   * Called on the feeding thread (offline) or the engine thread (live). */
+  void       (*rbn_cb)(const char *call, double freq_hz, double snr_db,
+                       double speed, gpointer user);
+  gpointer     rbn_user;
   double       rbn_min_score;
   guint        rbn_min_hearings;
   double       rbn_settle_s;

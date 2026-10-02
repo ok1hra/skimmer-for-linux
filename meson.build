@@ -201,6 +201,17 @@ skimmer_split_test = executable('skimmer-split-test',
 )
 test('tone-split', skimmer_split_test, timeout : 120)
 
+# Weak-signal bench: P(call reaches the RBN feed) vs SNR500 through the whole
+# offline pipeline (src/sweep_test.c). The test runs the quick --gate subset
+# against a fixed SCP; run the binary without --gate for the full sweep.
+skimmer_sweep = executable('skimmer-sweep',
+  ['src/sweep_test.c', 'src/synth.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('weak-sweep', skimmer_sweep, args : ['--gate'], timeout : 600)
+
 # M4: offline gate — callsign validity (ITU allocation), labelled-corpus
 # precision/recall, fragment feeds, dictionary boost, noise fuzz.
 skimmer_call_test = executable('skimmer-call-test',
