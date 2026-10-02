@@ -15,7 +15,8 @@
  *   [radio]  host, rate (48000/96000/192000 — one rate for all receivers),
  *            clock_ppm
  *   [bands]  <name>=<centre Hz>, in receiver order (RX1 first), ≤ 8
- *   [decode] engine=v2|deepcw, log=true|false (per-band decode logs)
+ *   [decode] engine=v2|deepcw, path=both|narrow|wide (pipeline.h
+ *            SkimDecodePath), log=true|false (per-band decode logs)
  *   [feed]   call, port (0 = no telnet feed)
  *   [status] console_s (0 = quiet), http_port (0 = no web page)
  *   [record] bands (comma list; empty = off), minutes, dir, start_utc
@@ -83,6 +84,7 @@ typedef struct {
   guint    rate;
   double   ppm;
   char    *engine;
+  char    *path;               /* [decode] path: both (default), narrow, wide */
   gboolean decode_log;
   char    *feed_call;
   int      feed_port;
@@ -135,7 +137,10 @@ static const char *DEFAULT_CONFIG =
   "160m=1840000\n80m=3540000\n40m=7040000\n30m=10125000\n20m=14040000\n"
   "15m=21040000\n"
   "\n[decode]\n# v2 (classical) or deepcw (needs ONNX Runtime + model)\n"
-  "engine=v2\n# per-band raw decode logs in ~/.local/share/skimmer-for-linux/headless\n"
+  "engine=v2\n"
+  "# CW path: both = a narrow filter on every detected carrier, the whole\n"
+  "# channel elsewhere; narrow = carriers only; wide = whole channels only\n"
+  "path=both\n# per-band raw decode logs in ~/.local/share/skimmer-for-linux/headless\n"
   "log=false\n"
   "\n[feed]\n# telnet spot feed (validated CQ spots only); port 0 = off\n"
   "call=\nport=7300\n"
@@ -175,6 +180,18 @@ static gboolean config_load(Hd *h, GError **error) {
   h->ppm = g_key_file_has_key(kf, "radio", "clock_ppm", NULL)
                ? g_key_file_get_double(kf, "radio", "clock_ppm", NULL) : 0;
   h->engine = g_key_file_get_string(kf, "decode", "engine", NULL);
+  h->path = g_key_file_get_string(kf, "decode", "path", NULL);
+  if (h->path) { g_strstrip(h->path); }
+  if (!h->path || !h->path[0]) {
+    g_free(h->path);
+    h->path = g_strdup("both");
+  }
+  if (strcmp(h->path, "both") && strcmp(h->path, "narrow") && strcmp(h->path, "wide")) {
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                "%s: [decode] path=%s (both, narrow or wide)", h->cfg_path, h->path);
+    g_key_file_free(kf);
+    return FALSE;
+  }
   h->decode_log = g_key_file_has_key(kf, "decode", "log", NULL) &&
                   g_key_file_get_boolean(kf, "decode", "log", NULL);
   h->feed_call = g_key_file_get_string(kf, "feed", "call", NULL);
@@ -636,7 +653,14 @@ static void status_build(Hd *h, gboolean print) {
   char *jhost = json_str(h->host);
   /* the decoder that actually runs (deepcw falls back to cw-v2 without its
    * runtime or model) — a feed comparison needs to know which one spotted */
-  const char *engine = h->nb && h->band[0].p ? skim_pipeline_cw_engine_name(h->band[0].p) : "";
+  /* A narrow path is a different decoder for that purpose: "cw-v2+both". */
+  char engine[48] = "";
+  if (h->nb && h->band[0].p) {
+    const char *pn = skim_pipeline_decode_path_name(h->band[0].p);
+    g_snprintf(engine, sizeof(engine), "%s%s%s",
+               skim_pipeline_cw_engine_name(h->band[0].p),
+               strcmp(pn, "wide") ? "+" : "", strcmp(pn, "wide") ? pn : "");
+  }
   /* the feed policy that let the spots out — a comparison before and after
    * a policy change must be able to tell the two apart */
   double pol_score = 0, pol_settle = 0, pol_fresh = 0;
@@ -901,6 +925,9 @@ int main(int argc, char **argv) {
       .mode = SKIM_PIPELINE_MODE_CW,
       .cw_engine = g_strcmp0(h->engine, "deepcw") == 0 ? SKIM_CW_ENGINE_DEEPCW
                                                        : SKIM_CW_ENGINE_V2,
+      .decode_path = !strcmp(h->path, "wide")   ? SKIM_DECODE_PATH_WIDE
+                   : !strcmp(h->path, "narrow") ? SKIM_DECODE_PATH_NARROW
+                                                : SKIM_DECODE_PATH_BOTH,
       .decode_log_path = dlog,
       .rbn = h->feed,
       .rbn_min_score = h->feed_min_score,
@@ -946,8 +973,9 @@ int main(int argc, char **argv) {
       g_date_time_unref(t);
     }
   }
-  g_message("decode: %u pipelines, engine %s", h->nb,
-            skim_pipeline_cw_engine_name(h->band[0].p));
+  g_message("decode: %u pipelines, engine %s, path %s", h->nb,
+            skim_pipeline_cw_engine_name(h->band[0].p),
+            skim_pipeline_decode_path_name(h->band[0].p));
   if (h->feed) {
     double fs, fset, ffr;
     guint fh;

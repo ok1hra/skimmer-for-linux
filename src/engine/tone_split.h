@@ -47,6 +47,12 @@ void           skim_tone_split_free(SkimToneSplit *ts);
  * the wide passthrough (and its candidate block) untouched. */
 void skim_tone_split_set_focus(SkimToneSplit *ts, double fc_hz);
 
+/* The focus bar: a carrier at most this many dB over the channel's floor
+ * gets the narrow slot (default TS_FOCUS_MAX_DB, see tone_split.c). A
+ * NARROW-only pipeline lifts it out of reach — with no wide decoding every
+ * carrier needs its slot. */
+void skim_tone_split_set_focus_max_db(SkimToneSplit *ts, double db);
+
 /* Decoded-speed feedback for the focus cutoff (the pipeline calls this on
  * every decode hit). Harmless on split slots — spacing rules their cutoff. */
 void skim_tone_split_slot_hint_wpm(SkimToneSplit *ts, guint slot, double wpm);

@@ -48,7 +48,25 @@
 #define TS_RING      1024                   /* frames per slot ring (2^n)    */
 #define TS_EVAL_S    1.0                    /* topology evaluation cadence   */
 #define TS_AVG_TC_S  2.0                    /* periodogram EMA time constant */
-#define TS_EDGE_HZ   60.0                   /* peak search span (passband)   */
+#define TS_EDGE_HZ   60.0                   /* floor quartile span (passband) */
+/* Peaks are SEARCHED past the channel edge but OWNED only inside it (half
+ * the channel spacing = rate/4 on the 2× oversampled output). A tone on
+ * the boundary between two channels sits a hair outside one of them —
+ * with the search stopping at ±60 Hz, NEITHER channel saw its carrier,
+ * only its keying sidebands, and with no carrier to mirror them about
+ * those read as two stations: a contested channel, then a split onto the
+ * sidebands — a 24 dB station lost in both channels (skimmer-sweep
+ * 2026-10-02, "edge"). A neighbour's carrier now anchors the mirror test
+ * and is left to its own channel. */
+#define TS_SEARCH_HZ 85.0
+/* … and a neighbour's carrier owns its skirt: the channel filter cuts its
+ * keying sidebands ASYMMETRICALLY (the outer one ~10 dB deeper), so the
+ * mirror test passes the inner sideband as a station of its own — a narrow
+ * slot on it decoded "TEST MD3M" for KD3M one channel over (skimmer-sweep
+ * 2026-10-02, 30 dB on a channel boundary). The same slope can leave the
+ * inner sideband STRONGER here than the carrier it belongs to, so an own
+ * peak within this of a foreign one at most 6 dB weaker is its skirt. */
+#define TS_SKIRT_HZ  30.0
 #define TS_FLOOR_DB  8.0                    /* peak over median floor        */
 #define TS_REL_DB    12.0                   /* 2nd carrier within of primary */
 
@@ -129,6 +147,7 @@ typedef struct {
   gboolean contested;
   guint    clean;                           /* contested-free evals in a row */
   double   wpm_hint;                        /* decoded speed; 0 = none yet   */
+  gboolean strong;                          /* carrier over the focus bar    */
   float    ring[2 * TS_RING];
   guint    rw, rr;                          /* free-running frame counters   */
 } TsSlot;
@@ -153,6 +172,7 @@ struct _SkimToneSplit {
   guint          hold;
   double         hold_hz[2];
   double         focus_fc;                  /* single-carrier cutoff; 0 = off */
+  double         focus_max_db;              /* the focus bar (dB over floor)  */
   double         wide_solid_s;              /* wide lane solid for this long */
   guint          fhold;                     /* focus stability counter       */
   double         fhold_hz;
@@ -184,7 +204,12 @@ SkimToneSplit *skim_tone_split_new(double sample_rate) {
   ts->prim_bin = -1;
   ts->eval_due = TS_EVAL_S * sample_rate;
   ts->debug = g_getenv("SKIM_TS_DEBUG") != NULL;
+  ts->focus_max_db = TS_FOCUS_MAX_DB;
   return ts;
+}
+
+void skim_tone_split_set_focus_max_db(SkimToneSplit *ts, double db) {
+  ts->focus_max_db = db;
 }
 
 void skim_tone_split_set_focus(SkimToneSplit *ts, double fc_hz) {
@@ -266,6 +291,7 @@ static void slot_start(SkimToneSplit *ts, TsSlot *sl, double hz) {
   sl->contested = FALSE;
   sl->clean     = 0;
   sl->wpm_hint  = 0.0;
+  sl->strong    = FALSE;
   sl->dpos      = 0;
   sl->fc_hz     = 0.0;                      /* forces the first retap        */
   memset(sl->dl, 0, sizeof(sl->dl));
@@ -286,7 +312,14 @@ static void retap_all(SkimToneSplit *ts) {
       dmin = MIN(dmin, fabs(ts->slot[o].mix_hz - ts->slot[s].mix_hz));
     }
     double fc;
-    if (ts->nslots == 1) {                  /* FOCUS: ride the decoded speed */
+    if (ts->nslots == 1 && ts->slot[0].strong) {
+      /* A strong carrier (a focus bar lifted out of reach lets it in, for
+       * its frequency ownership) needs no noise rejection and loses its
+       * element edges to a speed-riding cutoff — dit·gap·dit fused into a
+       * dah, the head of every call mutated (N8RYH → T8RYH, CE6RLA →
+       * GE6RLA; skimmer-sweep 2026-10-02, the F5IN fusion again). */
+      fc = TS_FOCUS_FC_MAX;
+    } else if (ts->nslots == 1) {           /* FOCUS: ride the decoded speed */
       const double wpm = ts->slot[0].wpm_hint > 0 ? ts->slot[0].wpm_hint
                                                   : TS_FOCUS_WPM0;
       fc = CLAMP(1.3 * wpm, ts->focus_fc, TS_FOCUS_FC_MAX);
@@ -408,7 +441,7 @@ static guint find_carriers(const SkimToneSplit *ts, Peak *out, guint max,
   guint nc = 0;
   for (gint i = 0; i < TS_FFT && nc < G_N_ELEMENTS(cand); i++) {
     const double f = bin_hz(ts, i);
-    if (fabs(f) > TS_EDGE_HZ)
+    if (fabs(f) > TS_SEARCH_HZ)
       continue;
     const double p  = ts->psd[i];
     const double pl = ts->psd[(i + TS_FFT - 1) % TS_FFT];
@@ -426,8 +459,18 @@ static guint find_carriers(const SkimToneSplit *ts, Peak *out, guint max,
   }
   qsort(cand, nc, sizeof(Peak), peak_cmp);
 
+  const double own = 0.25 * ts->rate;       /* half the channel spacing      */
   guint na = 0;
   for (guint i = 0; i < nc && na < max; i++) {
+    if (fabs(cand[i].hz) > own)
+      continue;                             /* the neighbour's — an anchor   */
+    gboolean skirt = FALSE;
+    for (guint m = 0; m < nc && !skirt; m++) {
+      skirt = fabs(cand[m].hz) > own && cand[m].pw > 0.25 * cand[i].pw &&
+              fabs(cand[m].hz - cand[i].hz) < TS_SKIRT_HZ;
+    }
+    if (skirt)
+      continue;
     if (na && cand[i].pw < out[0].pw * pow(10.0, -TS_REL_DB / 10.0))
       break;                                /* sorted: the rest is weaker    */
     gboolean drop = FALSE;
@@ -508,12 +551,13 @@ static void engage(SkimToneSplit *ts, const Peak *c, guint nc) {
  * genuinely new second line spawns a real split, the TTL releases back to
  * passthrough. Entering costs a slot generation (decoder reset) — the wide
  * state a weak station accumulated was noise-fed anyway. */
-static void focus_engage(SkimToneSplit *ts, double hz) {
+static void focus_engage(SkimToneSplit *ts, double hz, double ratio_db) {
   ts->split  = TRUE;
   ts->nslots = 1;
   ts->hold   = 0;
   ts->fhold  = 0;
   slot_start(ts, &ts->slot[0], hz);
+  ts->slot[0].strong = ratio_db > TS_FOCUS_MAX_DB;
   retap_all(ts);
   if (ts->debug) {
     g_printerr("tone-split %p: FOCUS %+.1f Hz (fc %.0f)\n", (void *)ts, hz,
@@ -594,7 +638,7 @@ static void eval_topology(SkimToneSplit *ts) {
       ts->fhold = 0;
     } else if (ts->focus_fc > 0 && nc == 1 && !ts->slot[0].contested &&
                ts->wide_solid_s <= 0 &&
-               c[0].pw < floor_med * pow(10.0, TS_FOCUS_MAX_DB / 10.0)) {
+               c[0].pw < floor_med * pow(10.0, ts->focus_max_db / 10.0)) {
       /* Exactly one clean, stable, WEAK carrier: tighten onto it. Strong
        * stations decode fine wide and only stand to lose (the F5IN fusion).
        * Contested (or pending-unverifiable) channels keep the wide
@@ -606,7 +650,9 @@ static void eval_topology(SkimToneSplit *ts) {
         ts->fhold = 1;
       }
       ts->fhold_hz = c[0].hz;
-      if (ts->fhold >= TS_HOLD) { focus_engage(ts, c[0].hz); }
+      if (ts->fhold >= TS_HOLD) {
+        focus_engage(ts, c[0].hz, 10.0 * log10(c[0].pw / MAX(floor_med, 1e-30)));
+      }
     } else {
       ts->hold  = 0;
       ts->fhold = 0;
@@ -633,6 +679,10 @@ static void eval_topology(SkimToneSplit *ts) {
     if (best >= 0) {
       claimed[best] = TRUE;
       sl->unseen_s  = 0.0;
+      /* the TS_FOCUS_MAX_DB bar, ±2 dB of hysteresis */
+      const double r = 10.0 * log10(c[best].pw / MAX(floor_med, 1e-30));
+      if (r > TS_FOCUS_MAX_DB + 2.0) { sl->strong = TRUE; }
+      if (r < TS_FOCUS_MAX_DB - 2.0) { sl->strong = FALSE; }
       sl->mix_hz += 0.25 * (c[best].hz - sl->mix_hz);
       sl->dphi = -2.0 * G_PI * sl->mix_hz / ts->rate;
     } else {
@@ -701,6 +751,29 @@ static void eval_topology(SkimToneSplit *ts) {
 
 /* ---- the sample path ------------------------------------------------------------ */
 
+/* One sample through a slot: NCO to ~0 Hz, then the FIR, into its ring. */
+static void slot_feed(TsSlot *sl, float I, float Q) {
+  const float cp = (float)cos(sl->phi), sp = (float)sin(sl->phi);
+  const float mr = I * cp - Q * sp;         /* ×e^{jφ}, φ runs at −mix_hz    */
+  const float mi = I * sp + Q * cp;
+  sl->phi += sl->dphi;
+  if (sl->phi > G_PI) { sl->phi -= 2.0 * G_PI; }
+  if (sl->phi < -G_PI) { sl->phi += 2.0 * G_PI; }
+
+  sl->dl[2 * sl->dpos]     = mr;
+  sl->dl[2 * sl->dpos + 1] = mi;
+  float or_ = 0.0f, oi = 0.0f;
+  guint at = sl->dpos;
+  for (guint k = 0; k < TS_TAPS; k++) {
+    or_ += sl->taps[k] * sl->dl[2 * at];
+    oi  += sl->taps[k] * sl->dl[2 * at + 1];
+    at = (at == 0) ? TS_TAPS - 1 : at - 1;
+  }
+  sl->dpos = (sl->dpos + 1) % TS_TAPS;
+  ring_put(sl, or_, oi);
+}
+
+
 void skim_tone_split_push(SkimToneSplit *ts, const float *iq, guint nframes) {
   for (guint i = 0; i < nframes; i++) {
     const float I = iq[2 * i], Q = iq[2 * i + 1];
@@ -717,27 +790,7 @@ void skim_tone_split_push(SkimToneSplit *ts, const float *iq, guint nframes) {
     if (!ts->split) {
       ring_put(&ts->slot[0], I, Q);         /* passthrough: sample-exact     */
     } else {
-      for (guint s = 0; s < ts->nslots; s++) {
-        TsSlot *sl = &ts->slot[s];
-        const float cp = (float)cos(sl->phi), sp = (float)sin(sl->phi);
-        const float mr = I * cp - Q * sp;   /* ×e^{jφ}, φ runs at −mix_hz    */
-        const float mi = I * sp + Q * cp;
-        sl->phi += sl->dphi;
-        if (sl->phi > G_PI) { sl->phi -= 2.0 * G_PI; }
-        if (sl->phi < -G_PI) { sl->phi += 2.0 * G_PI; }
-
-        sl->dl[2 * sl->dpos]     = mr;
-        sl->dl[2 * sl->dpos + 1] = mi;
-        float or_ = 0.0f, oi = 0.0f;
-        guint at = sl->dpos;
-        for (guint k = 0; k < TS_TAPS; k++) {
-          or_ += sl->taps[k] * sl->dl[2 * at];
-          oi  += sl->taps[k] * sl->dl[2 * at + 1];
-          at = (at == 0) ? TS_TAPS - 1 : at - 1;
-        }
-        sl->dpos = (sl->dpos + 1) % TS_TAPS;
-        ring_put(sl, or_, oi);
-      }
+      for (guint s = 0; s < ts->nslots; s++) { slot_feed(&ts->slot[s], I, Q); }
     }
   }
 

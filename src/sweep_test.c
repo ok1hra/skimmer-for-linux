@@ -31,6 +31,7 @@
  *
  *   skimmer-sweep [--gate] [--scenarios a,b,..] [--snr lo:hi:step] [--reps N]
  *                 [--threads N] [--scp PATH] [--csv PATH] [--noise-s S]
+ *                 [--path wide|both|narrow]
  *
  * --gate runs a quick subset against a fixed SCP and checks the regression
  * floor (meson test 'weak-sweep'). Without --scp the full sweep loads
@@ -114,6 +115,9 @@ typedef struct {
 /* --- the call pools ------------------------------------------------------------- */
 
 static GPtrArray *g_scp_calls;           /* calls the loaded SCP has         */
+static SkimDecodePath g_path;            /* --path; DEFAULT = env-driven     */
+static gboolean g_list;                  /* --list: every station and line   */
+static GMutex   g_out_lock;
 
 static void load_scp_list(const char *path) {
   g_scp_calls = g_ptr_array_new_with_free_func(g_free);
@@ -309,6 +313,12 @@ static void on_feed(const char *call, double hz, double snr, double wpm,
   Run *r = user;
   r->feed_lines++;
   Station *s = near_call(r, call, hz, 150.0);
+  if (g_list && !s) {
+    g_mutex_lock(&g_out_lock);
+    printf("  bad  %s %+.0f dB: %-10s %.1f Hz\n", SC_NAME[r->sc], r->snr, call,
+           hz - CENTER);
+    g_mutex_unlock(&g_out_lock);
+  }
   if (s) {
     s->got_feed = TRUE;
     return;
@@ -335,6 +345,7 @@ static void run_one(gpointer data, gpointer user) {
     .chan_bw_hz = CHAN_HZ,
     .mode = SKIM_PIPELINE_MODE_CW,
     .cw_engine = SKIM_CW_ENGINE_V2,
+    .decode_path = g_path,
     .rbn_cb = on_feed,
     .rbn_user = r,
   };
@@ -360,6 +371,19 @@ static void run_one(gpointer data, gpointer user) {
   for (guint j = 0; j < r->nst; j++) {
     Station *s = &r->st[j];
     s->got_text = s->text && strstr(s->text->str, s->call) != NULL;
+  }
+  if (g_list) {
+    g_mutex_lock(&g_out_lock);
+    for (guint j = 0; j < r->nst; j++) {
+      Station *s = &r->st[j];
+      if (s->neighbour) { continue; }
+      const double off = s->f - CHAN_HZ * floor(s->f / CHAN_HZ + 0.5);
+      printf("  sta  %s %+.0f dB rep %u: %-10s %8.1f Hz (%+5.1f in ch) %s%s%s %s\n",
+             SC_NAME[r->sc], r->snr, r->rep, s->call, s->f, off,
+             s->got_text ? "T" : "-", s->got_table ? "S" : "-",
+             s->got_feed ? "F" : "-", s->in_scp ? "scp" : "");
+    }
+    g_mutex_unlock(&g_out_lock);
   }
   g_free(iq);
   g_free(osc);
@@ -422,11 +446,11 @@ static double snr50(GArray *rows, guint from, guint to) {
 
 /* --- main ----------------------------------------------------------------------- */
 
-typedef struct { Scenario sc; double snr; double recall_min; } Floor;
+typedef struct { Scenario sc; int sub; double snr; double recall_min; } Floor;
 
 int main(int argc, char **argv) {
   gboolean gate = FALSE;
-  char *scen = NULL, *snr_s = NULL, *scp = NULL, *csv = NULL;
+  char *scen = NULL, *snr_s = NULL, *scp = NULL, *csv = NULL, *path = NULL;
   gint reps = 2, threads = 0;
   double noise_s = 600.0;
   GOptionEntry opts[] = {
@@ -438,6 +462,8 @@ int main(int argc, char **argv) {
     { "scp", 0, 0, G_OPTION_ARG_FILENAME, &scp, "MASTER.SCP", "PATH" },
     { "csv", 0, 0, G_OPTION_ARG_FILENAME, &csv, "write rows as CSV", "PATH" },
     { "noise-s", 0, 0, G_OPTION_ARG_DOUBLE, &noise_s, "noise-only run length", "S" },
+    { "path", 0, 0, G_OPTION_ARG_STRING, &path, "decode path", "wide|both|narrow" },
+    { "list", 0, 0, G_OPTION_ARG_NONE, &g_list, "list every station and bad line", NULL },
     { NULL },
   };
   GOptionContext *oc = g_option_context_new("— weak-signal bench");
@@ -448,6 +474,12 @@ int main(int argc, char **argv) {
     return 2;
   }
   g_option_context_free(oc);
+  if (path) {
+    g_path = !strcmp(path, "wide") ? SKIM_DECODE_PATH_WIDE
+           : !strcmp(path, "both") ? SKIM_DECODE_PATH_BOTH
+           : !strcmp(path, "narrow") ? SKIM_DECODE_PATH_NARROW
+           : SKIM_DECODE_PATH_DEFAULT;
+  }
 
   /* The SCP: the gate (and a missing user file) gets the fixed pool. */
   char *tmp_scp = NULL;
@@ -480,7 +512,8 @@ int main(int argc, char **argv) {
 
   /* What to run. */
   gboolean want[SC_COUNT] = { 0 };
-  if (gate && !scen) { scen = g_strdup("centre,edge,noise"); }
+  if (gate && !scen) { scen = g_strdup("centre,edge,nb10,noise"); }
+  if (gate && !path) { g_path = SKIM_DECODE_PATH_BOTH; }   /* what headless runs */
   if (!scen) { scen = g_strdup("centre,edge,qsb,hand,drift,chirp,nb10,nb20,noise"); }
   char **names = g_strsplit(scen, ",", -1);
   for (char **n = names; *n; n++) {
@@ -520,8 +553,8 @@ int main(int argc, char **argv) {
       }
     }
   }
-  printf("=== skimmer-sweep: %u runs on %d threads, SCP %s (%u calls) ===\n",
-         runs->len, threads, scp, g_scp_calls->len);
+  printf("=== skimmer-sweep: %u runs on %d threads, SCP %s (%u calls), path %s ===\n",
+         runs->len, threads, scp, g_scp_calls->len, path ? path : "default");
   fflush(stdout);
   const gint64 t0 = g_get_monotonic_time();
   GThreadPool *pool = g_thread_pool_new(run_one, NULL, threads, TRUE, NULL);
@@ -597,21 +630,24 @@ int main(int argc, char **argv) {
 
   int fails = 0;
   if (gate) {
-    /* Regression floor — the v2 baseline of 2026-10-02 less a margin; raise
-     * it as the weak-signal work lands. */
+    /* Regression floor on the BOTH path — measured less a margin; raise it
+     * as the weak-signal work lands. The wide path of 2026-10-02 had centre
+     * 4 dB 100 %, edge 4 dB 0-8 %, and a +10 dB neighbour 200 Hz away cost
+     * the call at any SNR. */
     static const Floor FLOORS[] = {
-      { SC_CENTRE,  8, 90.0 }, { SC_CENTRE, 20, 95.0 },  /* baseline 100, 100 */
-      { SC_EDGE,   12, 75.0 }, { SC_EDGE,   20, 90.0 },  /* baseline  83, 100 */
+      { SC_CENTRE, 0,   4, 85.0 }, { SC_CENTRE, 0, 20, 95.0 },
+      { SC_EDGE,   0,   4, 75.0 }, { SC_EDGE,   0, 20, 85.0 },
+      { SC_NB10,   200, 8, 75.0 }, { SC_NB10, 200, 12, 75.0 },
     };
     printf("=== gate ===\n");
     for (guint k = 0; k < G_N_ELEMENTS(FLOORS); k++) {
       const Floor *f = &FLOORS[k];
-      const Row *w = row_for(rows, f->sc, 0, f->snr);
+      const Row *w = row_for(rows, f->sc, f->sub, f->snr);
       const double y = pc(w->feed, w->n);
       const gboolean ok = w->n && y >= f->recall_min;
       fails += !ok;
-      printf("  %-4s %s at %.0f dB: feed %.0f %% ≥ %.0f %%\n", ok ? "ok" : "FAIL",
-             SC_NAME[f->sc], f->snr, y, f->recall_min);
+      printf("  %-4s %s/%d at %.0f dB: feed %.0f %% ≥ %.0f %%\n", ok ? "ok" : "FAIL",
+             SC_NAME[f->sc], f->sub, f->snr, y, f->recall_min);
     }
     const Row *nz = row_for(rows, SC_NOISE, 0, 0);
     const gboolean ok = nz->bad == 0;
