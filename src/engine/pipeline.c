@@ -380,6 +380,15 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
   if (p->cfg.mode == SKIM_PIPELINE_MODE_CW) {
     const char *fenv = g_getenv("SKIM_TONE_FOCUS");
     const double fv = fenv ? g_ascii_strtod(fenv, NULL) : 0.0;
+    /* SKIM_DECODE_PATH=wide|both|narrow picks the path where the owner
+     * left it at DEFAULT (skimmer-replay, the app) — A/B on recordings. */
+    const char *penv = g_getenv("SKIM_DECODE_PATH");
+    if (p->cfg.decode_path == SKIM_DECODE_PATH_DEFAULT && penv) {
+      p->cfg.decode_path = !strcmp(penv, "wide")   ? SKIM_DECODE_PATH_WIDE
+                         : !strcmp(penv, "both")   ? SKIM_DECODE_PATH_BOTH
+                         : !strcmp(penv, "narrow") ? SKIM_DECODE_PATH_NARROW
+                                                   : SKIM_DECODE_PATH_DEFAULT;
+    }
     switch (p->cfg.decode_path) {
       case SKIM_DECODE_PATH_WIDE:
         break;

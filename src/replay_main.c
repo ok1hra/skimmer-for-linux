@@ -22,6 +22,9 @@
  * SKIM_REPLAY_FROM / SKIM_REPLAY_TO (stream seconds) replay a slice only;
  * hold and mute times stay absolute.
  *
+ * SKIM_DECODE_PATH=wide|both|narrow picks the CW decode path (pipeline.h
+ * SkimDecodePath; unset = the app's default).
+ *
  * SKIM_REPLAY_FEED=new|old wires an RBN telnet feed (ephemeral port, no
  * clients) in and traces every line it would put on the wire ("feed:" on
  * stderr): "new" = the default feed policy (two hearings or MASTER.SCP,
@@ -210,9 +213,10 @@ int main(int argc, char **argv) {
   g_setenv("SKIM_DEEPCW_SYNC", "1", FALSE);
   SkimPipeline *p = skim_pipeline_new(&cfg);
   printf("=== skimmer-replay %s — %.0f Hz, centre %.0f Hz, %s, engine %s, "
-         "dict %s ===\n",
+         "path %s, dict %s ===\n",
          path, rate, center, rtty ? "RTTY" : "CW",
-         skim_pipeline_cw_engine_name(p), cfg.dict_path ? "yes" : "NO");
+         skim_pipeline_cw_engine_name(p), skim_pipeline_decode_path_name(p),
+         cfg.dict_path ? "yes" : "NO");
   g_free(dict);
   g_stations = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
   skim_pipeline_set_text_cb(p, text_cb, NULL);
