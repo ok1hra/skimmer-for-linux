@@ -171,7 +171,8 @@ function render() {
   renderBands(S);
   renderTimeline(S);
   renderBins('#snr', S.snr.bins, ' dB');
-  $('#snr-title').textContent = `Recall by SNR (common scale: R shifted by ${signed(-S.snr.offset, ' dB')}, ${S.snr.offset_n} matched pairs)`;
+  const curve = (S.snr.curve || []).map(([x, d]) => `${x}→${signed(d, '')}`).join(' ');
+  $('#snr-title').textContent = `Recall by SNR (R's scale; L-only mapped by R − L at L's SNR: ${curve} dB, ${S.snr.offset_n} matched pairs)`;
   renderBins('#wpm', S.wpm.bins, ' WPM');
   renderLatency(S.latency);
   renderHists(S);
@@ -596,12 +597,15 @@ function renderBins(sel, bins, unit) {
       const r = bar(cx + 1, y(0), w, y(0) - y(b.R.p), cR);
       if (l) g.append(l);
       if (r) g.append(r);
+      if (b.LofR && b.LofR.n)
+        g.append(sv('line', { cls: 'lofr', x1: cx - w - 4, x2: cx + w + 4, y1: y(b.LofR.p), y2: y(b.LofR.p) }));
     }
     g.append(sv('text', { cls: 'lbl', x: cx, y: H - 24, 'text-anchor': 'middle' }, binLabel(b) + unit));
     g.append(sv('text', { x: cx, y: H - 10, 'text-anchor': 'middle' }, 'n = ' + b.n));
     g.append(sv('rect', { cls: 'hit', x: cx - band / 2 + 2, y: m.t, width: band - 4, height: H - m.t - m.b }));
     hover(g, () => [`${binLabel(b)}${unit} · ${b.n} stations`, [
       [cL, pct(b.L.p), `L ${b.L.k} of ${b.n}`], [cR, pct(b.R.p), `R ${b.R.k} of ${b.n}`],
+      [null, b.LofR && b.LofR.n ? pct(b.LofR.p) : '—', `L caught ${b.LofR ? b.LofR.k : 0} of R's ${b.LofR ? b.LofR.n : 0} (line)`],
       [null, `${b.b} / ${b.c}`, 'only L / only R'], [null, fmtP(b.p), 'McNemar']]]);
     svg.append(g);
   });

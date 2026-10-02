@@ -6,7 +6,8 @@ checks that the comparison finds exactly that:
 
   session A (12:00–14:00 UTC, stopped cleanly)
     DL1AAA  L and R CQ, RBN confirms          → match, R − L latency +60 s,
-                                                 SNR offset R − L = +5 dB
+                                                 SNR offset R − L = +5 dB; events
+                                                 sit on R's SNR scale
     OK1BBB  L only, RBN confirms              → only-L, real
     G4CCC   R only, in MASTER.SCP, no RBN     → only-R, real (SCP fallback)
     EA3G / EA3GEH  same spot, RBN knows EA3GEH → bust pair, L busted
@@ -40,7 +41,7 @@ sys.path.insert(0, HERE)
 from skimcmp.arbiter import RbnIndex, load_scp  # noqa: E402
 from skimcmp.config import Config               # noqa: E402
 from skimcmp.logs import Store                  # noqa: E402
-from skimcmp.match import analyze, compared_time, engine_summary  # noqa: E402
+from skimcmp.match import analyze, compared_time, curve_at, engine_summary, snr_curve  # noqa: E402
 from skimcmp.stats import summarize             # noqa: E402
 from skimcmp.windows import loose_bands         # noqa: E402
 
@@ -198,6 +199,19 @@ def core(root, logs, A_T, B_T):
     check(bu["L"]["k"] == 2 and bu["L"]["n"] == 5 and bu["R"]["k"] == 0 and bu["R"]["n"] == 3,
           "bust rate: L 2 of 5 episodes, R 0 of 3")
     check(S["snr"]["offset"] == 5 and S["snr"]["offset_n"] == 1, "SNR offset R − L = +5 dB from 1 pair")
+    check(m is not None and m["snr"] == 25, "DL1AAA: a matched event sits at R's SNR (25 dB)")
+    lofr = [(b["LofR"]["k"], b["LofR"]["n"]) for b in S["snr"]["bins"] if b["n"]]
+    check(sum(k for k, _ in lofr) == 1 and sum(n for _, n in lofr) == 3,
+          "L of R's catches: 1 of 3 (%s)" % lofr)
+    check(ev[("only-L", "OK1BBB")]["snr"] == 25,
+          "OK1BBB: L-only 20 dB mapped to R's scale by the +5 dB curve")
+    pts = snr_curve([6, 7, 8, 9, 9, 31, 32, 33, 30, 34, 20],
+                    [-8, -7, -9, -8, -8, 8, 7, 9, 8, 8, 0], 0)
+    check([(p[1], p[2]) for p in pts] == [(-8, 5), (8, 5)],
+          "SNR curve: one point per bin with ≥ 5 pairs (%s)" % pts)
+    check(curve_at(pts, 5) == -8 and curve_at(pts, 40) == 8
+          and abs(curve_at(pts, (pts[0][0] + pts[1][0]) / 2)) < 1e-9,
+          "SNR curve: flat beyond the ends, linear between points")
     check(S["time"]["common_s"] == 7200 - 600 - 300,
           "common time 6300 s: 10 min feed outage and 5 min packet loss removed (%d)"
           % S["time"]["common_s"])

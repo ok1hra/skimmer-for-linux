@@ -152,6 +152,11 @@ def bins_block(evs, key, edges):
                     "hi": None if hi == math.inf else hi, "n": len(g),
                     "L": prop(sum(e["cL"] for e in g), len(g)),
                     "R": prop(sum(e["cR"] for e in g), len(g)),
+                    # of the stations R caught, how many L caught too: with
+                    # events on R's scale this is the one per-bin number no
+                    # side's SNR estimate can bias
+                    "LofR": prop(sum(e["cL"] and e["cR"] for e in g),
+                                 sum(e["cR"] for e in g)),
                     "b": b, "c": c, "p": binom_two_sided(b, b + c)})
     return out
 
@@ -284,7 +289,8 @@ def summarize(A, ta, tb):
             "events": len(evs), "rbn_spots": A.rbn_n, "rbn_own": A.rbn_own},
         "cats": cats,
         "recall": rec, "bust": bust, "latency": lat,
-        "snr": {"offset": A.snr_offset, "offset_n": A.snr_offset_n,
+        "snr": {"offset": A.snr_offset, "offset_n": A.snr_offset_n, "scale": "R",
+                "curve": [list(p) for p in A.snr_curve],
                 "bins": bins_block(evs, "snr", snr_edges(evs))},
         "wpm": {"bins": bins_block(evs, "wpm", WPM_EDGES)},
         "bands": band_rows(A, evs),

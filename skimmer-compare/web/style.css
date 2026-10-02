@@ -173,6 +173,7 @@ svg .axis { stroke: var(--axis); stroke-width: 1; }
 svg .hit { fill: transparent; }
 svg .hit:hover, svg .hit:focus { fill: var(--surface-2); fill-opacity: .5; outline: none; }
 svg .cross { stroke: var(--axis); stroke-width: 1; }
+svg .lofr { stroke: var(--ink); stroke-width: 2; stroke-dasharray: 3 2; }
 .hband { margin-top: 10px; }
 .hband .name { font-size: 12px; color: var(--ink-2); font-weight: 600; }
 

@@ -95,6 +95,36 @@ class Analysis:
     pass
 
 
+CURVE_STEP = 5      # dB of L's SNR per curve point
+CURVE_MIN_N = 5     # fewer pairs in a bin than this → the bin has no point
+
+
+def snr_curve(l_snr, diffs, fallback):
+    """R − L as a function of L's SNR: [(L centre, median R − L, n)].
+
+    The two scales do not differ by a constant — L's peak/noise ratio is
+    floored near its squelch and squashed against R's — so one median would
+    misplace the weak and the strong ends. One point per CURVE_STEP bin of
+    L's SNR with enough pairs; with no such bin, one point at the overall
+    median (a constant shift)."""
+    bins = defaultdict(list)
+    for x, d in zip(l_snr, diffs):
+        bins[int(x // CURVE_STEP)].append((x, d))
+    pts = [(round(median(x for x, _ in g), 1), median(d for _, d in g), len(g))
+           for _, g in sorted(bins.items()) if len(g) >= CURVE_MIN_N]
+    return pts or [(0.0, fallback, len(diffs))]
+
+
+def curve_at(pts, x):
+    """R − L at L's SNR x: linear between points, flat beyond the ends."""
+    if x <= pts[0][0]:
+        return pts[0][1]
+    for (x0, y0, _), (x1, y1, _) in zip(pts, pts[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return pts[-1][1]
+
+
 def compared_time(store, P, now, default_engine):
     """Sessions, recorded spans, RBN coverage and the common time split by
     local decoder: [(a, b, engine)]."""
@@ -234,7 +264,7 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
         busts.append((le, re_))
 
     # ---- SNR offset R − L from the matched pairs ----------------------------------
-    diffs = []
+    diffs, pairs_l = [], []
     for le, re_ in pairs:
         rts = [s.t for s in re_.spots]
         for s in le.spots:
@@ -244,8 +274,10 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
             if near:
                 r = min(near, key=lambda r: abs(r.t - s.t))
                 diffs.append(r.snr - s.snr)
+                pairs_l.append(s.snr)
     A.snr_offset = median(diffs) if diffs else 0.0
     A.snr_offset_n = len(diffs)
+    A.snr_curve = snr_curve(pairs_l, diffs, A.snr_offset)
 
     # ---- events -------------------------------------------------------------------
     Lt = [sp.t for _, sp in Lin]
@@ -263,12 +295,14 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
                 [["RBN", k, n] for k, n in r.most_common(3)])
 
     def common_snr(le, re_):
-        v = []
-        if le is not None:
-            v.append(le.snr)
+        # R is the referee scale: L's SNR is a peak/noise envelope ratio,
+        # floored near its squelch and squashed, so averaging it in would put
+        # every weak station L caught into a higher bin than the ones it missed.
         if re_ is not None:
-            v.append(re_.snr - A.snr_offset)
-        return round(sum(v) / len(v), 1) if v else None
+            return round(re_.snr, 1)
+        if le is not None:
+            return round(le.snr + curve_at(A.snr_curve, le.snr), 1)
+        return None
 
     def common_wpm(le, re_):
         v = [e.wpm for e in (le, re_) if e is not None]
