@@ -23,6 +23,11 @@
  * token before the join does). Under the default policy neither SM7XYZ nor
  * IZ3N may reach the wire, IZ3NYG must; with hearings=1 and no settle (the
  * old policy) both garbles DO go out — proof the band exercises the gate.
+ * Then the ghost: the band falls quiet past the station table's TTL, and
+ * "VVV VVV" is keyed on OK1BR's frequency. The extractor ages by tokens, so
+ * OK1BR is still its best candidate and gets reported again — the default
+ * policy must not send it a second time (it was last READ 140 s ago), the
+ * old policy and the hearings + settle policy without freshness do.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -288,11 +293,47 @@ static void build_policy_band(void) {
   g_rand_free(rng);
 }
 
-typedef struct { int sm7xyz, iz3n, iz3nyg, ok1br, lines; } PolicyOut;
+typedef struct { int sm7xyz, iz3n, iz3nyg, ok1br, ok1br_ghost, lines; } PolicyOut;
+
+static void feed_quiet(SkimPipeline *p, GRand *rng, double secs) {
+  static float quiet[BLK * 2];
+  for (guint off = 0; off < secs * RATE; off += BLK) {
+    for (guint i = 0; i < BLK * 2; i++) { quiet[i] = (float)(0.005 * gauss(rng)); }
+    skim_pipeline_feed(p, quiet, BLK, RATE, CENTER);
+  }
+}
+
+/* Keying without a call on OK1BR's frequency (-15 kHz) — the noise that
+ * brings a stale candidate back. */
+static void feed_ghost(SkimPipeline *p, GRand *rng) {
+  GArray *e = gen_env("VVV VVV", 22);
+  shape_env(e, RATE);
+  float *buf = g_new(float, BLK * 2);
+  double ph = 0;
+  const double dph = 2.0 * G_PI * -15000.0 / RATE;
+  for (guint off = 0; off + BLK <= e->len; off += BLK) {
+    for (guint i = 0; i < BLK; i++) {
+      const double a = 0.40 * g_array_index(e, float, off + i);
+      buf[2 * i]     = (float)(a * cos(ph) + 0.005 * gauss(rng));
+      buf[2 * i + 1] = (float)(a * sin(ph) + 0.005 * gauss(rng));
+      ph += dph;
+    }
+    skim_pipeline_feed(p, buf, BLK, RATE, CENTER);
+  }
+  g_free(buf);
+  g_array_free(e, TRUE);
+}
+
+static void wait_lines(Cap *a, const char *call, int n) {
+  for (int t = 0; t < 5000 && cap_count(a, call) < n; t += 50) {
+    g_usleep(50 * 1000);                               /* broadcast is async */
+  }
+  g_usleep(300 * 1000);
+}
 
 /* One pass of the policy band through a fresh pipeline + feed, then quiet
  * band noise long enough for every held call to settle. */
-static PolicyOut policy_run(guint hearings, double settle_s) {
+static PolicyOut policy_run(guint hearings, double settle_s, double fresh_s) {
   PolicyOut o = { 0 };
   GError *err = NULL;
   SkimRbnFeed *f = skim_rbn_feed_new("OK1BR", 0, &err);
@@ -305,6 +346,7 @@ static PolicyOut policy_run(guint hearings, double settle_s) {
     .rbn              = f,
     .rbn_min_hearings = hearings,
     .rbn_settle_s     = settle_s,
+    .rbn_fresh_s      = fresh_s,
   };
   SkimPipeline *p = skim_pipeline_new(&cfg);
   skim_pipeline_start_offline(p, &err);
@@ -312,28 +354,27 @@ static PolicyOut policy_run(guint hearings, double settle_s) {
     skim_pipeline_feed(p, g_pol + 2 * (gsize)off, BLK, RATE, CENTER);
   }
   GRand *rng = g_rand_new_with_seed(7);
-  static float quiet[BLK * 2];
-  for (guint off = 0; off < 12 * RATE; off += BLK) {   /* > settle time     */
-    for (guint i = 0; i < BLK * 2; i++) { quiet[i] = (float)(0.005 * gauss(rng)); }
-    skim_pipeline_feed(p, quiet, BLK, RATE, CENTER);
-  }
-  g_rand_free(rng);
-  for (int t = 0; t < 5000 && cap_count(a, "OK1BR") == 0; t += 50) {
-    g_usleep(50 * 1000);                               /* broadcast is async */
-  }
-  g_usleep(300 * 1000);
+  feed_quiet(p, rng, 12);                              /* > settle time     */
+  wait_lines(a, "OK1BR", 1);
   o.sm7xyz = cap_count(a, "SM7XYZ");
   o.iz3n   = cap_count(a, "IZ3N");
   o.iz3nyg = cap_count(a, "IZ3NYG");
   o.ok1br  = cap_count(a, "OK1BR");
+  /* the ghost: past the station TTL (120 s), then keying without a call */
+  feed_quiet(p, rng, 130);
+  feed_ghost(p, rng);
+  feed_quiet(p, rng, 12);
+  g_rand_free(rng);
+  wait_lines(a, "OK1BR", o.ok1br + 1);
+  o.ok1br_ghost = cap_count(a, "OK1BR") - o.ok1br;
   g_mutex_lock(&a->lock);
   for (const char *q = a->rx->str; (q = strstr(q, "DX de")) != NULL; q++) {
     o.lines++;
   }
   g_mutex_unlock(&a->lock);
-  printf("       hearings %u, settle %+.0f s: SM7XYZ %d, IZ3N %d, IZ3NYG %d, "
-         "OK1BR %d (%d lines)\n", hearings, settle_s, o.sm7xyz, o.iz3n,
-         o.iz3nyg, o.ok1br, o.lines);
+  printf("       hearings %u, settle %+.0f s, fresh %+.0f s: SM7XYZ %d, IZ3N %d, "
+         "IZ3NYG %d, OK1BR %d, ghost OK1BR %d (%d lines)\n", hearings, settle_s,
+         fresh_s, o.sm7xyz, o.iz3n, o.iz3nyg, o.ok1br, o.ok1br_ghost, o.lines);
   skim_pipeline_stop(p);
   skim_pipeline_free(p);
   cap_free(a);
@@ -507,11 +548,12 @@ int main(void) {
     g_mutex_unlock(&a->lock);
     check("no unvalidated call ever hit the wire", bogus == 0);
     check("pipeline RBN counter matches (2)", skim_pipeline_rbn_spots(p) == 2);
-    double pol_s = 0, pol_set = 0;
+    double pol_s = 0, pol_set = 0, pol_fr = 0;
     guint pol_h = 0;
-    skim_pipeline_rbn_policy(p, &pol_s, &pol_h, &pol_set);
-    check("default feed policy: 0.85, read twice, 8 s settle",
-          fabs(pol_s - 0.85) < 1e-9 && pol_h == 2 && fabs(pol_set - 8.0) < 1e-9);
+    skim_pipeline_rbn_policy(p, &pol_s, &pol_h, &pol_set, &pol_fr);
+    check("default feed policy: 0.85, read twice, 8 s settle, read within 120 s",
+          fabs(pol_s - 0.85) < 1e-9 && pol_h == 2 && fabs(pol_set - 8.0) < 1e-9 &&
+          fabs(pol_fr - 120.0) < 1e-9);
 
     skim_pipeline_stop(p);
     skim_pipeline_free(p);
@@ -525,15 +567,21 @@ int main(void) {
   {
     printf("  feed policy (one pass: SM7XYZ once, IZ3N YG torn, OK1BR control)\n");
     build_policy_band();
-    PolicyOut old = policy_run(1, -1);                 /* the old policy     */
+    PolicyOut old = policy_run(1, -1, -1);             /* the old policy     */
     check("old policy: the band does carry both garbles (SM7XYZ, IZ3N out)",
           old.sm7xyz >= 1 && old.iz3n >= 1);
-    PolicyOut now = policy_run(0, 0);                  /* defaults           */
+    check("old policy: the stale OK1BR comes back as a ghost spot",
+          old.ok1br_ghost >= 1);
+    PolicyOut hs = policy_run(0, 0, -1);               /* no freshness gate  */
+    check("hearings + settle alone do not stop the ghost", hs.ok1br_ghost >= 1);
+    PolicyOut now = policy_run(0, 0, 0);               /* defaults           */
     check("control OK1BR (read twice) reaches the wire", now.ok1br == 1);
     check("SM7XYZ read ONCE never reaches the wire", now.sm7xyz == 0);
     check("torn IZ3N is folded away while held — never on the wire",
           now.iz3n == 0);
     check("…and the whole call IZ3NYG goes out once", now.iz3nyg == 1);
+    check("the ghost of OK1BR (last read 140 s ago) stays off the wire",
+          now.ok1br_ghost == 0);
     g_free(g_pol);
   }
 

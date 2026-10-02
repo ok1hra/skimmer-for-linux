@@ -50,6 +50,10 @@
  * ("CQ DE X X K"); 8 s covers the rest of the over that tears a call. */
 #define RBN_MIN_HEARINGS_DEFAULT 2
 #define RBN_SETTLE_S_DEFAULT     8.0
+/* A call older than this since its last READ copy is a stale candidate, not
+ * a station: the same as the station table's TTL — a station silent that
+ * long has left the table anyway. */
+#define RBN_FRESH_S_DEFAULT      120.0
 /* A station silent this long leaves the table (and its panadapter label is
  * SPOT_DELETEd). 120 s rides out one side of a QSO; the old 600 s kept a
  * contest band map full of stations long gone (Richard, 2026-07-15). */
@@ -170,6 +174,7 @@ struct _SkimPipeline {
   double            rbn_min;
   guint             rbn_hearings;              /* feed gate: copies read     */
   gint64            rbn_settle_us;             /* feed hold-back; 0 = none   */
+  gint64            rbn_fresh_us;              /* last read ≤ this; 0 = any  */
   GHashTable       *rbn_pending;               /* call → gint64* due time;
                                                 * 0 = settled, send freely  */
 
@@ -384,6 +389,9 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     const double settle = p->cfg.rbn_settle_s == 0 ? RBN_SETTLE_S_DEFAULT
                                                    : p->cfg.rbn_settle_s;
     p->rbn_settle_us = settle > 0 ? (gint64)(settle * G_USEC_PER_SEC) : 0;
+    const double fresh = p->cfg.rbn_fresh_s == 0 ? RBN_FRESH_S_DEFAULT
+                                                 : p->cfg.rbn_fresh_s;
+    p->rbn_fresh_us = fresh > 0 ? (gint64)(fresh * G_USEC_PER_SEC) : 0;
     p->rbn_pending = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
   }
@@ -476,9 +484,12 @@ static void station_gone_fwd(const SkimStation *st, gpointer user) {
 
 /* ---- RBN feed policy ------------------------------------------------------------ */
 
-/* May this record go to the network? Calling, confident, and either read
- * twice or known to the dictionary. */
+/* May this record go to the network? Calling, confident, either read twice
+ * or known to the dictionary — and read lately, not a stale candidate that
+ * noise on a quiet channel brought back. */
 static gboolean rbn_gate(const SkimPipeline *p, const SkimStation *st) {
+  if (p->rbn_fresh_us > 0 && pipe_now_us(p) - st->heard_us > p->rbn_fresh_us)
+    return FALSE;
   return st->cq && st->score >= p->rbn_min &&
          (st->hearings >= p->rbn_hearings || skim_callsign_dict_has(st->call));
 }
@@ -934,6 +945,8 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
                      c, h->slot, sig_hz, d.text);
         }
       } else {
+        skim_callsign_extractor_set_now(p->ext[SL(c, h->slot)],
+                                        pipe_now_us(p));
         skim_callsign_extractor_feed(p->ext[SL(c, h->slot)], d.text);
       }
       char call[24];
@@ -958,6 +971,8 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
       st.score      = score;
       st.hearings   = skim_callsign_extractor_hearings(p->ext[SL(c, h->slot)],
                                                        call);
+      st.heard_us   = skim_callsign_extractor_last_heard(p->ext[SL(c, h->slot)],
+                                                         call);
       st.cq         = cq;
       st.last_heard = pipe_now_us(p);
       st.first_heard = st.last_heard;
@@ -1420,8 +1435,10 @@ guint64 skim_pipeline_spots(const SkimPipeline *p) {
   return p->spots ? skim_spot_out_count(p->spots) : p->spots_total;
 }
 void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
-                              guint *min_hearings, double *settle_s) {
+                              guint *min_hearings, double *settle_s,
+                              double *fresh_s) {
   const gboolean on = p->rbn_spots != NULL;
+  if (fresh_s)      { *fresh_s      = on ? p->rbn_fresh_us / 1e6 : 0; }
   if (min_score)    { *min_score    = on ? p->rbn_min : 0; }
   if (min_hearings) { *min_hearings = on ? p->rbn_hearings : 0; }
   if (settle_s)     { *settle_s     = on ? p->rbn_settle_us / 1e6 : 0; }

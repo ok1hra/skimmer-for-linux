@@ -85,11 +85,16 @@ typedef struct {
    * one token before "YG") is folded away by the table within that time,
    * but a telnet line cannot be taken back (skimmer-compare vs RBN,
    * 2026-10-01: 36 % of the feed's calls were never confirmed, VE3NEA's
-   * CW Skimmer Server 2 %). */
+   * CW Skimmer Server 2 %). And the call must have been READ within the
+   * last rbn_fresh_s (0 = default 120 s; < 0 = no such gate): a candidate
+   * outlives its station, and noise on the quiet channel reports it again
+   * an hour later (2026-10-02: 21 of the 48 unconfirmed spots left after
+   * the hearings gate were such ghosts of real stations). */
   SkimRbnFeed *rbn;
   double       rbn_min_score;
   guint        rbn_min_hearings;
   double       rbn_settle_s;
+  double       rbn_fresh_s;
 } SkimPipelineConfig;
 
 typedef struct _SkimPipeline SkimPipeline;
@@ -197,10 +202,11 @@ void   skim_pipeline_set_spot_cq_only(SkimPipeline *p, gboolean cq_only);
 void   skim_pipeline_set_spot_round_hz(SkimPipeline *p, guint hz);
 
 /* The RBN feed policy in force, defaults resolved: score threshold, hearings
- * needed (1 = no such gate), settle time in s (0 = sends at once). All 0
- * when the pipeline has no RBN feed. */
+ * needed (1 = no such gate), settle time in s (0 = sends at once), freshness
+ * in s (0 = no such gate). All 0 when the pipeline has no RBN feed. */
 void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
-                              guint *min_hearings, double *settle_s);
+                              guint *min_hearings, double *settle_s,
+                              double *fresh_s);
 
 /* Counters for the status line / gates. */
 guint64 skim_pipeline_frames(const SkimPipeline *p);

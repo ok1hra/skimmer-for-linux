@@ -203,7 +203,33 @@ int main(void) {
     check("a call that is no candidate: zero hearings",
           skim_callsign_extractor_hearings(x, "OK1BR") == 0);
     skim_callsign_extractor_free(x);
+
+    /* the time of the last copy READ — stale reports do not move it */
+    x = skim_callsign_extractor_new();
+    skim_callsign_extractor_set_now(x, 1000);
+    skim_callsign_extractor_feed(x, "CQ DE SM7XYZ SM7XYZ K ");
+    skim_callsign_extractor_set_now(x, 9000000);
+    skim_callsign_extractor_feed(x, "VVV E T ");
+    double s2 = skim_callsign_extractor_best(x, got, sizeof(got));
+    check("a quiet channel's noise still reports the old call (token ageing)",
+          s2 > 0 && strcmp(got, "SM7XYZ") == 0);
+    check("…but its last hearing is the old one",
+          skim_callsign_extractor_last_heard(x, "SM7XYZ") == 1000);
+    skim_callsign_extractor_feed(x, "DE SM7XYZ ");
+    check("a new copy moves the last hearing",
+          skim_callsign_extractor_last_heard(x, "SM7XYZ") == 9000000);
+    check("no candidate: last hearing -1",
+          skim_callsign_extractor_last_heard(x, "OK1BR") == -1);
+    skim_callsign_extractor_free(x);
   }
+
+  /* -- designators: letters and digits only ---------------------------------------- */
+  check("OK1BR/P is a call", skim_callsign_is_valid("OK1BR/P"));
+  check("F/OK1BR is a call", skim_callsign_is_valid("F/OK1BR"));
+  check("PA3BUL/D + over-break mark is NOT a call",
+        !skim_callsign_is_valid("PA3BUL/D\xC2\xB7"));
+  check("a mark in front of the slash is NOT a call either",
+        !skim_callsign_is_valid("\xC2\xB7/OK1BR"));
 
   /* -- calling context: leading and trailing markers ---------------------------- */
   {

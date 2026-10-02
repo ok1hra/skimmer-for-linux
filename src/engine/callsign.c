@@ -126,6 +126,14 @@ static gboolean core_valid(const char *s) {
 gboolean skim_callsign_is_valid(const char *s) {
   if (!s || !s[0])
     return FALSE;
+  /* Letters, digits and '/' only — on BOTH sides of a designator. The core
+   * checks its own characters, the designator side was taken by length
+   * alone: "PA3BUL/D·" (the over-break mark is 2 bytes) went to the RBN
+   * feed twice (skimmer-compare, 2026-10-02). */
+  for (const char *c = s; *c; c++) {
+    if (!is_letter(*c) && !is_digit(*c) && *c != '/')
+      return FALSE;
+  }
   const char *slash = strchr(s, '/');
   if (!slash)
     return core_valid(s);
@@ -302,6 +310,7 @@ typedef struct {
   char     call[CALL_MAX];
   guint    count;
   guint    last_tok;                           /* x->tok_n at the last hit   */
+  gint64   last_us;                            /* x->now_us at the last hit  */
   guint    parts;                              /* fewest tokens it came in   */
   gboolean de_marked;
   gboolean cq_context;
@@ -314,6 +323,7 @@ struct _SkimCallsignExtractor {
   guint    cq_pairs;                           /* adjacent "C","Q" pairs seen */
   gboolean cq_half;                            /* last token was a lone "C"  */
   guint    tok_n;                              /* tokens processed (age clock)*/
+  gint64   now_us;                             /* caller's clock (set_now)   */
   char     prev_tok[CALL_MAX];                 /* previous token (join hyp.) */
   gboolean prev_valid;                         /* it was a valid call itself */
   gboolean prev_de;                            /* DE applied to it           */
@@ -407,6 +417,7 @@ static void cand_add(SkimCallsignExtractor *x, const char *call, guint parts,
   c->parts = MIN(c->parts, parts);
   c->count++;
   c->last_tok = x->tok_n;
+  c->last_us  = x->now_us;
   if (de_marked)  { c->de_marked  = TRUE; }
   if (cq_context) { c->cq_context = TRUE; }
 }
@@ -737,6 +748,20 @@ double skim_callsign_extractor_best_ex(SkimCallsignExtractor *x,
   }
   if (out && out_size) { g_strlcpy(out, bc->call, out_size); }
   return best;
+}
+
+void skim_callsign_extractor_set_now(SkimCallsignExtractor *x, gint64 now_us) {
+  if (x) { x->now_us = now_us; }
+}
+
+gint64 skim_callsign_extractor_last_heard(const SkimCallsignExtractor *x,
+                                          const char *call) {
+  if (!x || !call)
+    return -1;
+  for (guint i = 0; i < x->ncand; i++) {
+    if (strcmp(x->cand[i].call, call) == 0) { return x->cand[i].last_us; }
+  }
+  return -1;
 }
 
 guint skim_callsign_extractor_hearings(const SkimCallsignExtractor *x,

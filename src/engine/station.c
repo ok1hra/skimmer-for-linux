@@ -187,6 +187,7 @@ const SkimStation *skim_station_table_report(SkimStationTable *t,
       }
       e->score      = MAX(e->score, st->score);
       e->hearings   = MAX(e->hearings, st->hearings);
+      e->heard_us   = MAX(e->heard_us, st->heard_us);
       if (st->cq) { e->cq = TRUE; }            /* calling here — owns it     */
       e->last_heard = st->last_heard;
       e->reports++;
@@ -207,6 +208,7 @@ const SkimStation *skim_station_table_report(SkimStationTable *t,
       e->speed      = st->speed;
       e->score      = MAX(e->score, st->score);
       e->hearings   = MAX(e->hearings, st->hearings);
+      e->heard_us   = MAX(e->heard_us, st->heard_us);
       e->cq         = st->cq;                  /* new place, new context     */
       e->last_heard = st->last_heard;
       e->reports++;

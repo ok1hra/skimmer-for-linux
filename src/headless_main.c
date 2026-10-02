@@ -83,6 +83,7 @@ typedef struct {
   double   feed_min_score;     /* 0 = the pipeline's default                  */
   guint    feed_min_hearings;  /* 0 = default; 1 = no hearings gate          */
   double   feed_settle_s;      /* 0 = default; < 0 = send at once            */
+  double   feed_fresh_s;       /* 0 = default; < 0 = no freshness gate       */
   int      console_s;
   int      http_port;
   gboolean take_over;          /* --take-over: the first start only           */
@@ -129,9 +130,10 @@ static const char *DEFAULT_CONFIG =
   "\n[feed]\n# telnet spot feed (validated CQ spots only); port 0 = off\n"
   "call=\nport=7300\n"
   "# a call is spotted once it scored min_score, was read min_hearings times\n"
-  "# (or MASTER.SCP knows it) and stayed settle_s seconds in the station table;\n"
-  "# min_hearings=1 and settle_s=0 switch those two off\n"
-  "#min_score=0.85\n#min_hearings=2\n#settle_s=8\n"
+  "# (or MASTER.SCP knows it), stayed settle_s seconds in the station table and\n"
+  "# was last read at most fresh_s seconds ago; min_hearings=1, settle_s=0 and\n"
+  "# fresh_s=0 switch those three off\n"
+  "#min_score=0.85\n#min_hearings=2\n#settle_s=8\n#fresh_s=120\n"
   "\n[status]\n# console table every N s (0 = off); web page port (0 = off)\n"
   "console_s=10\nhttp_port=8073\n";
 
@@ -173,6 +175,11 @@ static gboolean config_load(Hd *h, GError **error) {
   if (g_key_file_has_key(kf, "feed", "settle_s", NULL)) {
     const double v = g_key_file_get_double(kf, "feed", "settle_s", NULL);
     h->feed_settle_s = v > 0 ? v : -1;          /* 0 in the file = off        */
+  }
+  h->feed_fresh_s = 0;
+  if (g_key_file_has_key(kf, "feed", "fresh_s", NULL)) {
+    const double v = g_key_file_get_double(kf, "feed", "fresh_s", NULL);
+    h->feed_fresh_s = v > 0 ? v : -1;           /* 0 in the file = off        */
   }
   if (h->console_s < 0) {
     h->console_s = g_key_file_has_key(kf, "status", "console_s", NULL)
@@ -470,20 +477,21 @@ static void status_build(Hd *h, gboolean print) {
   const char *engine = h->nb && h->band[0].p ? skim_pipeline_cw_engine_name(h->band[0].p) : "";
   /* the feed policy that let the spots out — a comparison before and after
    * a policy change must be able to tell the two apart */
-  double pol_score = 0, pol_settle = 0;
+  double pol_score = 0, pol_settle = 0, pol_fresh = 0;
   guint pol_hear = 0;
   if (h->feed && h->nb && h->band[0].p) {
-    skim_pipeline_rbn_policy(h->band[0].p, &pol_score, &pol_hear, &pol_settle);
+    skim_pipeline_rbn_policy(h->band[0].p, &pol_score, &pol_hear, &pol_settle,
+                             &pol_fresh);
   }
   g_string_append_printf(json,
       "{\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
       "\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"engine\":\"%s\","
-      "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f},"
+      "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,\"fresh_s\":%.1f},"
       "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       clock, jstate, h->streaming ? "true" : "false", jhost, h->rate, lost_pct,
-      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle,
+      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_fresh,
       h->feed ? h->feed_port : 0, fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
@@ -736,6 +744,7 @@ int main(int argc, char **argv) {
       .rbn_min_score = h->feed_min_score,
       .rbn_min_hearings = h->feed_min_hearings,
       .rbn_settle_s = h->feed_settle_s,
+      .rbn_fresh_s = h->feed_fresh_s,
     };
     b->p = skim_pipeline_new(&pc);
     g_free(dlog);
@@ -753,11 +762,12 @@ int main(int argc, char **argv) {
   g_message("decode: %u pipelines, engine %s", h->nb,
             skim_pipeline_cw_engine_name(h->band[0].p));
   if (h->feed) {
-    double fs, fset;
+    double fs, fset, ffr;
     guint fh;
-    skim_pipeline_rbn_policy(h->band[0].p, &fs, &fh, &fset);
+    skim_pipeline_rbn_policy(h->band[0].p, &fs, &fh, &fset, &ffr);
     g_message("feed: spots a call at score >= %.2f, read %u times (or in "
-              "MASTER.SCP), after %.0f s settled", fs, fh, fset);
+              "MASTER.SCP), after %.0f s settled, last read <= %.0f s ago "
+              "(0 = any)", fs, fh, fset, ffr);
   }
 
   GSocketService *web = NULL;
