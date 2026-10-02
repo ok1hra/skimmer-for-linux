@@ -38,10 +38,6 @@
 #define HOLD_CAP_S     30.0                   /* a stuck trx must not freeze
                                                  the skimmer forever         */
 #define PRUNE_EVERY_US (2 * G_USEC_PER_SEC)
-/* Noise bandwidth of a channelizer channel / its spacing: the CW
- * prototype (±62.5 Hz at −6 dB, Blackman-Harris, K = 8) integrates
- * ~106 Hz on 125 Hz channels (computed from its taps, 2026-10-02). */
-#define CHAN_ENBW 0.85
 /* RBN policy: the network keeps its own history, so re-announce sparsely
  * (the panadapter's 180 s is about keeping labels alive — not needed here)
  * and only re-spot a move that is a real QSY, not estimate convergence. */
@@ -54,10 +50,6 @@
  * ("CQ DE X X K"); 8 s covers the rest of the over that tears a call. */
 #define RBN_MIN_HEARINGS_DEFAULT 2
 #define RBN_SETTLE_S_DEFAULT     8.0
-/* A call older than this since its last READ copy is a stale candidate, not
- * a station: the same as the station table's TTL — a station silent that
- * long has left the table anyway. */
-#define RBN_FRESH_S_DEFAULT      120.0
 /* A station silent this long leaves the table (and its panadapter label is
  * SPOT_DELETEd). 120 s rides out one side of a QSO; the old 600 s kept a
  * contest band map full of stations long gone (Richard, 2026-07-15). */
@@ -110,7 +102,6 @@ typedef struct {
   guint      slot;
   double     eff_off;   /* slot mix + decode offset = in-channel offset      */
   gboolean   contested; /* slot band held >1 carrier when this decoded       */
-  double     enbw;      /* noise bandwidth the decoder saw (Hz)              */
   SkimDecode d;
   char      *aux;       /* display-only text (take_aux_text) — shown, logged,
                          * NEVER fed to the extractor (hallucination guard)  */
@@ -170,9 +161,6 @@ struct _SkimPipeline {
   guint            *sgen;                      /* slot generations last seen */
   gboolean          use_split;
   double            focus_fc;                  /* single-carrier cutoff; 0=off */
-  double            focus_max_db;              /* focus bar; 0 = splitter's    */
-  gboolean          wide_mute;                 /* NARROW: no wide decoding     */
-  gboolean          freq_arb;                  /* narrow slots: ghosts by Hz   */
   guint             nchan;
 
   SkimStationTable *stations;
@@ -182,7 +170,6 @@ struct _SkimPipeline {
   double            rbn_min;
   guint             rbn_hearings;              /* feed gate: copies read     */
   gint64            rbn_settle_us;             /* feed hold-back; 0 = none   */
-  gint64            rbn_fresh_us;              /* last read ≤ this; 0 = any  */
   GHashTable       *rbn_pending;               /* call → gint64* due time;
                                                 * 0 = settled, send freely  */
 
@@ -321,12 +308,6 @@ static const SkimDecodeBackend *pipe_backend(const SkimPipeline *p) {
                                                 : cw_backend(p);
 }
 
-const char *skim_pipeline_decode_path_name(const SkimPipeline *p) {
-  if (!p->use_split) { return "wide"; }
-  if (p->wide_mute) { return "narrow"; }
-  return p->focus_fc > 0 ? "both" : "split";
-}
-
 const char *skim_pipeline_cw_engine_name(const SkimPipeline *p) {
   if (p->cfg.mode == SKIM_PIPELINE_MODE_RTTY) { return "rtty"; }
   switch (p->cw_engine) {
@@ -342,20 +323,16 @@ static const char *pipe_mode_str(const SkimPipeline *p) {
 
 static void station_gone_fwd(const SkimStation *st, gpointer user);
 
-/* RBN spot_out sink → the telnet feed and/or cfg.rbn_cb (user = the pipeline). */
+/* RBN spot_out sink → the telnet feed (user = the borrowed SkimRbnFeed). */
 static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
                          double snr_db, double speed, gpointer user) {
-  SkimPipeline *p = user;
   /* SKIM_FEED_TRACE=1: every line that goes on the wire, after the policy
-   * AND spot_out's dedup — what an A/B of two feed policies compares. The
-   * time is the pipeline clock: stream seconds offline (a replay lines its
-   * feed up with a live log of the same recording), monotonic live. */
+   * AND spot_out's dedup — what an A/B of two feed policies compares. */
   if (g_getenv("SKIM_FEED_TRACE")) {
-    g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm t=%.1f\n", call,
-               freq_hz / 1000.0, snr_db, speed, pipe_now_us(p) / 1e6);
+    g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm\n", call,
+               freq_hz / 1000.0, snr_db, speed);
   }
-  if (p->cfg.rbn) { skim_rbn_feed_spot(p->cfg.rbn, call, mode, freq_hz, snr_db, speed); }
-  if (p->cfg.rbn_cb) { p->cfg.rbn_cb(call, freq_hz, snr_db, speed, p->cfg.rbn_user); }
+  skim_rbn_feed_spot(user, call, mode, freq_hz, snr_db, speed);
 }
 
 SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
@@ -379,44 +356,11 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
    * the mode ignores both env vars. */
   if (p->cfg.mode == SKIM_PIPELINE_MODE_CW) {
     const char *fenv = g_getenv("SKIM_TONE_FOCUS");
-    const double fv = fenv ? g_ascii_strtod(fenv, NULL) : 0.0;
-    /* SKIM_DECODE_PATH=wide|both|narrow picks the path where the owner
-     * left it at DEFAULT (skimmer-replay, the app) — A/B on recordings. */
-    const char *penv = g_getenv("SKIM_DECODE_PATH");
-    if (p->cfg.decode_path == SKIM_DECODE_PATH_DEFAULT && penv) {
-      p->cfg.decode_path = !strcmp(penv, "wide")   ? SKIM_DECODE_PATH_WIDE
-                         : !strcmp(penv, "both")   ? SKIM_DECODE_PATH_BOTH
-                         : !strcmp(penv, "narrow") ? SKIM_DECODE_PATH_NARROW
-                                                   : SKIM_DECODE_PATH_DEFAULT;
+    if (fenv) {
+      const double v = g_ascii_strtod(fenv, NULL);
+      p->focus_fc = (v >= 5.0) ? v : 25.0;
     }
-    switch (p->cfg.decode_path) {
-      case SKIM_DECODE_PATH_WIDE:
-        break;
-      case SKIM_DECODE_PATH_NARROW:
-        p->wide_mute = TRUE;                   /* no wide fallback           */
-        /* fall through */
-      case SKIM_DECODE_PATH_BOTH:
-        p->use_split = TRUE;
-        p->focus_fc = (fv >= 5.0) ? fv : 25.0;
-        /* Every clean carrier gets its slot, strong ones included: kept
-         * wide, a strong station next to a stronger one lost to the +6 dB
-         * level rule what its slot keeps by frequency (skimmer-sweep
-         * 2026-10-02, mean feed recall ≥ 12 dB with a +10 dB neighbour
-         * 200 Hz away: 59 % with the 21 dB bar, 94 % without; centre,
-         * edge and hand-keyed unchanged). The cutoff rides 1.3 × WPM, the
-         * guard that F5IN's fused dits asked for. */
-        p->focus_max_db = 1000.0;
-        break;
-      default:
-        if (fenv) { p->focus_fc = (fv >= 5.0) ? fv : 25.0; }
-        p->use_split = g_getenv("SKIM_TONE_SPLIT") != NULL || fenv != NULL;
-        break;
-    }
-    p->freq_arb = p->cfg.decode_path == SKIM_DECODE_PATH_BOTH ||
-                  p->cfg.decode_path == SKIM_DECODE_PATH_NARROW;
-    /* SKIM_FOCUS_MAX_DB: the focus bar for bench runs (tone_split.c). */
-    const char *mdb = g_getenv("SKIM_FOCUS_MAX_DB");
-    if (mdb && mdb[0]) { p->focus_max_db = g_ascii_strtod(mdb, NULL); }
+    p->use_split = g_getenv("SKIM_TONE_SPLIT") != NULL || fenv != NULL;
   }
   p->stations = skim_station_table_new();
   skim_station_table_set_gone_cb(p->stations, station_gone_fwd, p);
@@ -425,14 +369,14 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
   /* Logbook dup lookup — pipeline-lifetime like the RBN memo: the verdict
    * cache rides out reconnects. Harmless when no logbook listens. */
   p->dupq     = skim_dup_query_new();
-  if (p->cfg.rbn || p->cfg.rbn_cb) {
+  if (p->cfg.rbn) {
     /* Lives for the pipeline's whole life (not per-connection like the TCI
      * sink): the dedup memo rides out reconnects, no re-spot burst. */
     p->rbn_spots = skim_spot_out_new(NULL);
     skim_spot_out_set_clock(p->rbn_spots, pipe_clock_cb, p);
     skim_spot_out_set_policy(p->rbn_spots, RBN_RESPOT_S, RBN_QSY_HZ,
                              RBN_MAX_PER_S);
-    skim_spot_out_set_sink(p->rbn_spots, rbn_sink_fwd, p);
+    skim_spot_out_set_sink(p->rbn_spots, rbn_sink_fwd, p->cfg.rbn);
     p->rbn_min = p->cfg.rbn_min_score > 0 ? p->cfg.rbn_min_score
                                           : RBN_MIN_SCORE_DEFAULT;
     p->rbn_hearings = p->cfg.rbn_min_hearings > 0 ? p->cfg.rbn_min_hearings
@@ -440,9 +384,6 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     const double settle = p->cfg.rbn_settle_s == 0 ? RBN_SETTLE_S_DEFAULT
                                                    : p->cfg.rbn_settle_s;
     p->rbn_settle_us = settle > 0 ? (gint64)(settle * G_USEC_PER_SEC) : 0;
-    const double fresh = p->cfg.rbn_fresh_s == 0 ? RBN_FRESH_S_DEFAULT
-                                                 : p->cfg.rbn_fresh_s;
-    p->rbn_fresh_us = fresh > 0 ? (gint64)(fresh * G_USEC_PER_SEC) : 0;
     p->rbn_pending = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
   }
@@ -535,12 +476,9 @@ static void station_gone_fwd(const SkimStation *st, gpointer user) {
 
 /* ---- RBN feed policy ------------------------------------------------------------ */
 
-/* May this record go to the network? Calling, confident, either read twice
- * or known to the dictionary — and read lately, not a stale candidate that
- * noise on a quiet channel brought back. */
+/* May this record go to the network? Calling, confident, and either read
+ * twice or known to the dictionary. */
 static gboolean rbn_gate(const SkimPipeline *p, const SkimStation *st) {
-  if (p->rbn_fresh_us > 0 && pipe_now_us(p) - st->heard_us > p->rbn_fresh_us)
-    return FALSE;
   return st->cq && st->score >= p->rbn_min &&
          (st->hearings >= p->rbn_hearings || skim_callsign_dict_has(st->call));
 }
@@ -672,13 +610,6 @@ static void iq_cb(const float *iq, guint nframes, double rate, double center,
 
 /* ---- engine thread ------------------------------------------------------------ */
 
-static SkimToneSplit *split_new(const SkimPipeline *p, double out_rate) {
-  SkimToneSplit *ts = skim_tone_split_new(out_rate);
-  if (p->focus_fc > 0) { skim_tone_split_set_focus(ts, p->focus_fc); }
-  if (p->focus_max_db > 0) { skim_tone_split_set_focus_max_db(ts, p->focus_max_db); }
-  return ts;
-}
-
 static void bank_build(SkimPipeline *p, double rate) {
   bank_teardown(p);
   /* RTTY: wide passband (0.9·spacing — 225 Hz at the default 250, holding
@@ -707,7 +638,12 @@ static void bank_build(SkimPipeline *p, double rate) {
   for (guint c = 0; c < p->nchan; c++) {
     p->dec[SL(c, WIDE_LANE)] = cw->channel_new(out_rate);
     p->ext[SL(c, WIDE_LANE)] = skim_callsign_extractor_new();
-    if (p->split) { p->split[c] = split_new(p, out_rate); }
+    if (p->split) {
+      p->split[c] = skim_tone_split_new(out_rate);
+      if (p->focus_fc > 0) {
+        skim_tone_split_set_focus(p->split[c], p->focus_fc);
+      }
+    }
   }
   if (p->state_cb) {
     char detail[128];
@@ -726,68 +662,21 @@ static void bank_build(SkimPipeline *p, double rate) {
  * in-channel stations stay near their own centre, leakage sits at the
  * passband edge) — that margin protects a genuinely weaker station one
  * channel away from a big gun. */
-/* Narrow slots (the BOTH / NARROW paths) are arbitrated by FREQUENCY, not
- * level: a slot sits on a carrier its splitter detected and OWNS (inside
- * half the channel spacing, tone_split.c TS_SEARCH_HZ), and its envelope
- * peak is not comparable with a wide lane's — a 106 Hz channel's noise
- * peaks outgrow a weak station behind a 40 Hz filter, and the +6 dB rule
- * killed exactly the stations the narrow path exists for (skimmer-sweep
- * 2026-10-02: a tone on a channel boundary decoded "CQ DE UR1KE" clean in
- * its slot and was suppressed by the noise of the next channel). So:
- *   - a narrow slot yields only to a narrow slot of a DIRECT neighbour on
- *     the same carrier (≤ GHOST_SAME_HZ): the carrier nearer its own
- *     channel centre keeps it, a dead tie goes to the lower channel;
- *   - a wide lane yields to any narrow slot within ±2 channels whose
- *     carrier its own tone estimate lands on (≤ GHOST_LEAK_HZ) — it is
- *     hearing that carrier's leak — and otherwise to the classic level
- *     rules, against WIDE neighbours only. */
-#define GHOST_SAME_HZ 15.0
-#define GHOST_LEAK_HZ 30.0
-
-static gboolean lane_narrow(const SkimPipeline *p, guint c, guint slot) {
-  return p->freq_arb && slot != WIDE_LANE && p->split && p->split[c] &&
-         skim_tone_split_is_split(p->split[c]) &&
-         slot < skim_tone_split_slots(p->split[c]);
-}
-
 static gboolean ghost_suppressed(SkimPipeline *p, const double *lvl, guint c,
                                  guint slot, double eff_off) {
   const SkimDecodeBackend *cw = pipe_backend(p);
   const gint M = (gint)p->nchan;
   const gint k = (c <= p->nchan / 2) ? (gint)c : (gint)c - M;
   const double mine = lvl[SL(c, slot)];
-  const gboolean narrow = lane_narrow(p, c, slot);
-  const double my_abs = skim_channelizer_offset_hz(p->bank, c) +
-      (narrow ? skim_tone_split_slot_hz(p->split[c], slot) : eff_off);
   for (gint s = -2; s <= 2; s++) {
     if (s == 0)
       continue;
     const gint kn = k + s;
     const guint cn = (guint)((kn % M + M) % M);
-    const SkimToneSplit *tn = p->freq_arb && p->split ? p->split[cn] : NULL;
-    const guint nar_n = tn && skim_tone_split_is_split(tn) ? skim_tone_split_slots(tn) : 0;
-    for (guint j = 0; j < nar_n; j++) {
-      const double nb_mix = skim_tone_split_slot_hz(tn, j);
-      const double nb_abs = skim_channelizer_offset_hz(p->bank, cn) + nb_mix;
-      if (narrow) {
-        if (ABS(s) == 1 && fabs(my_abs - nb_abs) <= GHOST_SAME_HZ) {
-          const double my_d = fabs(skim_tone_split_slot_hz(p->split[c], slot));
-          const double nb_d = fabs(nb_mix);
-          if (my_d > nb_d + 1.0 || (fabs(my_d - nb_d) <= 1.0 && kn < k)) { return TRUE; }
-        }
-      } else if (fabs(my_abs - nb_abs) <= GHOST_LEAK_HZ) {
-        return TRUE;                           /* a narrow carrier's leak    */
-      }
-    }
-    if (narrow)
-      continue;
-    /* The neighbour's strongest WIDE-comparable lane: "does that channel
-     * hold a clearly stronger signal" is a per-channel question. Narrow
-     * slots answered by frequency above. */
+    /* The neighbour's strongest slot: "does that channel hold a clearly
+     * stronger signal" is a per-channel question either way. */
     double nb_lvl = 0.0;
-    for (guint j = 0; j < NSLOT; j++) {
-      if (!lane_narrow(p, cn, j)) { nb_lvl = MAX(nb_lvl, lvl[SL(cn, j)]); }
-    }
+    for (guint j = 0; j < NSLOT; j++) { nb_lvl = MAX(nb_lvl, lvl[SL(cn, j)]); }
     const double ratio = nb_lvl / MAX(mine, 1e-12);
     if (ratio >= 2.0) { return TRUE; }                     /* +6 dB          */
     if (ABS(s) == 1 && ratio >= 1.41 &&                     /* +3 dB          */
@@ -904,14 +793,7 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
     const Hit *h = &g_array_index(p->hits, Hit, i);
     const guint c = h->chan;
     d = h->d;
-    /* Band SNR → SNR in 500 Hz (decode.h snr_in_band). */
-    if (cw->snr_in_band && h->enbw > 0) { d.snr_db += 10.0 * log10(h->enbw / 500.0); }
     if (cw->level && ghost_suppressed(p, p->lvl, c, h->slot, h->eff_off)) {
-      if (G_UNLIKELY(g_getenv("SKIM_GHOST_DEBUG")) && d.text[0]) {
-        g_printerr("ghost: ch %u slot %u @ %.0f Hz lvl %.4g |%s| t=%.0f\n", c,
-                   h->slot, b->center_hz + skim_channelizer_offset_hz(p->bank, c) +
-                   h->eff_off, p->lvl[SL(c, h->slot)], d.text, pipe_now_us(p) / 1e6);
-      }
       p->ghosts++;
       g_free(h->aux);
       hit_free_ops(h->ops);
@@ -1052,8 +934,6 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
                      c, h->slot, sig_hz, d.text);
         }
       } else {
-        skim_callsign_extractor_set_now(p->ext[SL(c, h->slot)],
-                                        pipe_now_us(p));
         skim_callsign_extractor_feed(p->ext[SL(c, h->slot)], d.text);
       }
       char call[24];
@@ -1078,8 +958,6 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
       st.score      = score;
       st.hearings   = skim_callsign_extractor_hearings(p->ext[SL(c, h->slot)],
                                                        call);
-      st.heard_us   = skim_callsign_extractor_last_heard(p->ext[SL(c, h->slot)],
-                                                         call);
       st.cq         = cq;
       st.last_heard = pipe_now_us(p);
       st.first_heard = st.last_heard;
@@ -1230,7 +1108,10 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
         }
         if (p->split) {                /* fresh detection: old carriers gone */
           skim_tone_split_free(p->split[c]);
-          p->split[c] = split_new(p, out_rate);
+          p->split[c] = skim_tone_split_new(out_rate);
+          if (p->focus_fc > 0) {
+            skim_tone_split_set_focus(p->split[c], p->focus_fc);
+          }
         }
       }
       memset(p->flock, 0, p->nchan * NSLOT * sizeof(FreqLock));
@@ -1270,8 +1151,7 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
           continue;
         if (!got) { hit_placeholder(cw, p->dec[SL(c, WIDE_LANE)], &d); }
         Hit h = { .chan = c, .slot = WIDE_LANE, .eff_off = d.freq_offset_hz,
-                  .contested = FALSE, .enbw = CHAN_ENBW * p->cfg.chan_bw_hz,
-                  .d = d, .aux = aux, .ops = ops };
+                  .contested = FALSE, .d = d, .aux = aux, .ops = ops };
         g_array_append_val(p->hits, h);
         continue;
       }
@@ -1292,8 +1172,6 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
         float sbuf[DRAIN_FRAMES * 2];
         guint m;
         while ((m = skim_tone_split_read(sp, s, sbuf, DRAIN_FRAMES)) > 0) {
-          if (!insplit && p->wide_mute)
-            continue;                          /* NARROW: no carrier, no decode */
           const gboolean got = cw->process(p->dec[SL(c, lane)], sbuf, m, &d);
           if (got && d.speed > 0) {          /* focus cutoff rides the WPM   */
             skim_tone_split_slot_hint_wpm(sp, s, d.speed);
@@ -1310,17 +1188,10 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
           if (!got && !aux && !ops)
             continue;
           if (!got) { hit_placeholder(cw, p->dec[SL(c, lane)], &d); }
-          if (G_UNLIKELY(g_getenv("SKIM_HIT_DEBUG")) && d.text[0]) {
-            g_printerr("hit: ch %u lane %u mix %+.1f conf %.2f snr %.0f |%s| t=%.1f\n",
-                       c, lane, skim_tone_split_slot_hz(sp, s), d.confidence,
-                       d.snr_db, d.text, pipe_now_us(p) / 1e6);
-          }
           Hit h = { .chan = c, .slot = lane,
                     .eff_off = skim_tone_split_slot_hz(sp, s) +
                                d.freq_offset_hz,
                     .contested = skim_tone_split_slot_contested(sp, s),
-                    .enbw = insplit ? skim_tone_split_slot_enbw(sp, s)
-                                    : CHAN_ENBW * p->cfg.chan_bw_hz,
                     .d = d, .aux = aux, .ops = ops };
           g_array_append_val(p->hits, h);
         }
@@ -1330,8 +1201,7 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
     for (guint s = 0; s < NSLOT; s++) {
       const gboolean live = c_split ? (s < skim_tone_split_slots(sp))
                                     : (s == WIDE_LANE);
-      p->lvl[SL(c, s)] = (live && p->dec[SL(c, s)] && cw->level &&
-                          !(s == WIDE_LANE && p->wide_mute))
+      p->lvl[SL(c, s)] = (live && p->dec[SL(c, s)] && cw->level)
                              ? cw->level(p->dec[SL(c, s)]) : 0.0;
     }
   }
@@ -1550,10 +1420,8 @@ guint64 skim_pipeline_spots(const SkimPipeline *p) {
   return p->spots ? skim_spot_out_count(p->spots) : p->spots_total;
 }
 void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
-                              guint *min_hearings, double *settle_s,
-                              double *fresh_s) {
+                              guint *min_hearings, double *settle_s) {
   const gboolean on = p->rbn_spots != NULL;
-  if (fresh_s)      { *fresh_s      = on ? p->rbn_fresh_us / 1e6 : 0; }
   if (min_score)    { *min_score    = on ? p->rbn_min : 0; }
   if (min_hearings) { *min_hearings = on ? p->rbn_hearings : 0; }
   if (settle_s)     { *settle_s     = on ? p->rbn_settle_us / 1e6 : 0; }

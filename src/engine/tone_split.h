@@ -47,12 +47,6 @@ void           skim_tone_split_free(SkimToneSplit *ts);
  * the wide passthrough (and its candidate block) untouched. */
 void skim_tone_split_set_focus(SkimToneSplit *ts, double fc_hz);
 
-/* The focus bar: a carrier at most this many dB over the channel's floor
- * gets the narrow slot (default TS_FOCUS_MAX_DB, see tone_split.c). A
- * NARROW-only pipeline lifts it out of reach — with no wide decoding every
- * carrier needs its slot. */
-void skim_tone_split_set_focus_max_db(SkimToneSplit *ts, double db);
-
 /* Decoded-speed feedback for the focus cutoff (the pipeline calls this on
  * every decode hit). Harmless on split slots — spacing rules their cutoff. */
 void skim_tone_split_slot_hint_wpm(SkimToneSplit *ts, guint slot, double wpm);
@@ -77,10 +71,6 @@ guint skim_tone_split_slot_gen(const SkimToneSplit *ts, guint slot);
 /* TRUE while the slot's band holds a second unresolvable carrier — its
  * decode text is beat-garbled; keep it out of the callsign candidates. */
 gboolean skim_tone_split_slot_contested(const SkimToneSplit *ts, guint slot);
-
-/* Noise bandwidth (Hz) of the slot's filter — rate·Σtaps² of the unity-
- * gain FIR; 0 in passthrough (the channel's own bandwidth applies). */
-double skim_tone_split_slot_enbw(const SkimToneSplit *ts, guint slot);
 
 /* TRUE while narrow slots are engaged (split or focus). FALSE = slot 0 is
  * the verbatim wide passthrough — the owner can keep a PERSISTENT decoder

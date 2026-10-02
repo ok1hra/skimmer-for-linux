@@ -1,5 +1,7 @@
 # Weak-signal CW: why the narrow path, and what was measured
 
+> **Status: reverted.** The code described here (commits c8d03b7…99ceb7d, together with the fresh_s feed gate 7911b37) ran live on 2026-10-02 from 10:50Z as `cw-v2+both`. Measured in skimmer-compare against the previous session (`cw-v2`, f34a1d0), it did worse than the code it replaced. The skimmer source went back to f34a1d0; the synthetic bench below did not predict live air. The skimmer-compare changes stay. Anyone picking this up again must verify against recordings of real air (`[record]` in f45793d, `replay-vs-r.py`) before trusting the sweep.
+
 Skimmer-compare (2026-10-02) compared the headless skimmer (L, cw-v2) with CW Skimmer Server (R). Both listen to the same antenna. Taken on R's SNR scale, L caught 20 / 35 / 54 / 62 / 72 / 79 % of R's stations at < 5 / 5–10 / 10–15 / 15–20 / 20–25 / ≥ 25 dB. L trailed at every SNR below ~25 dB, not only below 10. Note that binning by each side's own SNR hides this. L's old SNR was floored near 9 dB, so every weak station L caught landed in a higher bin than the ones it missed (skimmer-compare now bins on R's scale).
 
 ## The bench

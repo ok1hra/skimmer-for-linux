@@ -22,14 +22,10 @@
  * SKIM_REPLAY_FROM / SKIM_REPLAY_TO (stream seconds) replay a slice only;
  * hold and mute times stay absolute.
  *
- * SKIM_DECODE_PATH=wide|both|narrow picks the CW decode path (pipeline.h
- * SkimDecodePath; unset = the app's default).
- *
  * SKIM_REPLAY_FEED=new|old wires an RBN telnet feed (ephemeral port, no
  * clients) in and traces every line it would put on the wire ("feed:" on
  * stderr): "new" = the default feed policy (two hearings or MASTER.SCP,
- * 8 s settle, read within 120 s), "old" = the score gate alone, sent at
- * once. After the file
+ * 8 s settle), "old" = the score gate alone, sent at once. After the file
  * ends the replay feeds 10 s of silence, so calls still held get to settle.
  *
  * The same MASTER.SCP the app uses (~/.config/skimmer-for-linux/master.scp)
@@ -201,7 +197,6 @@ int main(int argc, char **argv) {
     if (g_ascii_strcasecmp(fenv, "old") == 0) {
       cfg.rbn_min_hearings = 1;
       cfg.rbn_settle_s = -1;
-      cfg.rbn_fresh_s = -1;
     }
     g_setenv("SKIM_FEED_TRACE", "1", FALSE);
   }
@@ -213,10 +208,9 @@ int main(int argc, char **argv) {
   g_setenv("SKIM_DEEPCW_SYNC", "1", FALSE);
   SkimPipeline *p = skim_pipeline_new(&cfg);
   printf("=== skimmer-replay %s — %.0f Hz, centre %.0f Hz, %s, engine %s, "
-         "path %s, dict %s ===\n",
+         "dict %s ===\n",
          path, rate, center, rtty ? "RTTY" : "CW",
-         skim_pipeline_cw_engine_name(p), skim_pipeline_decode_path_name(p),
-         cfg.dict_path ? "yes" : "NO");
+         skim_pipeline_cw_engine_name(p), cfg.dict_path ? "yes" : "NO");
   g_free(dict);
   g_stations = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
   skim_pipeline_set_text_cb(p, text_cb, NULL);
@@ -308,12 +302,11 @@ int main(int argc, char **argv) {
          rows->len);
   printf("decode log: %s\n", dlog);
   if (feed) {
-    double ms, ss, fs;
+    double ms, ss;
     guint mh;
-    skim_pipeline_rbn_policy(p, &ms, &mh, &ss, &fs);
-    printf("feed policy: score >= %.2f, %u hearings, %.0f s settle, %.0f s "
-           "fresh — %" G_GUINT64_FORMAT " lines\n", ms, mh, ss, fs,
-           skim_pipeline_rbn_spots(p));
+    skim_pipeline_rbn_policy(p, &ms, &mh, &ss);
+    printf("feed policy: score >= %.2f, %u hearings, %.0f s settle — %"
+           G_GUINT64_FORMAT " lines\n", ms, mh, ss, skim_pipeline_rbn_spots(p));
   }
 
   g_ptr_array_free(rows, TRUE);

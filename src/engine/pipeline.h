@@ -42,24 +42,6 @@ typedef enum {
   SKIM_CW_ENGINE_DEEPCW,
 } SkimCwEngine;
 
-/* Which signal a CW decoder sees (2026-10-02, the weak-signal work). The
- * whole 125 Hz channel integrates ~106 Hz of noise into the envelope and
- * loses up to 6 dB on a tone between two channels; a narrow slot mixed onto
- * the detected carrier (tone_split.h focus) keeps neither loss.
- *   DEFAULT  the wide channel — or what SKIM_TONE_SPLIT / SKIM_TONE_FOCUS
- *            ask for (the pre-2026-10 behaviour)
- *   WIDE     the wide channel, no splitter
- *   BOTH     a narrow slot on every clean detected carrier, splits where
- *            two share a channel, the wide channel where none is detected
- *   NARROW   narrow slots only: a channel with no detected carrier is not
- *            decoded at all */
-typedef enum {
-  SKIM_DECODE_PATH_DEFAULT = 0,
-  SKIM_DECODE_PATH_WIDE,
-  SKIM_DECODE_PATH_BOTH,
-  SKIM_DECODE_PATH_NARROW,
-} SkimDecodePath;
-
 /* Where the IQ comes from. TCI: a radio's TCI server (it owns the tuning;
  * spots go back to its panadapter, a station click tunes it). HPSDR: an
  * HPSDR Protocol 1 receiver the skimmer drives itself (Red Pitaya — see
@@ -86,7 +68,6 @@ typedef struct {
   gboolean    take_over;      /* HPSDR: start even when the radio is busy    */
   SkimPipelineMode mode;      /* decoded mode (default CW)                   */
   SkimCwEngine cw_engine;     /* CW engine (default v2; see SkimCwEngine)    */
-  SkimDecodePath decode_path; /* CW: wide / narrow slots (SkimDecodePath)   */
   double      chan_bw_hz;     /* channel spacing (default 125 Hz CW,
                                * 250 Hz RTTY)                                */
   const char *dict_path;      /* optional MASTER.SCP; NULL = none            */
@@ -104,22 +85,11 @@ typedef struct {
    * one token before "YG") is folded away by the table within that time,
    * but a telnet line cannot be taken back (skimmer-compare vs RBN,
    * 2026-10-01: 36 % of the feed's calls were never confirmed, VE3NEA's
-   * CW Skimmer Server 2 %). And the call must have been READ within the
-   * last rbn_fresh_s (0 = default 120 s; < 0 = no such gate): a candidate
-   * outlives its station, and noise on the quiet channel reports it again
-   * an hour later (2026-10-02: 21 of the 48 unconfirmed spots left after
-   * the hearings gate were such ghosts of real stations). */
+   * CW Skimmer Server 2 %). */
   SkimRbnFeed *rbn;
-  /* Every line the RBN policy sends — with or without .rbn: an offline
-   * bench (skimmer-sweep) reads the feed's decisions without a socket.
-   * Called on the feeding thread (offline) or the engine thread (live). */
-  void       (*rbn_cb)(const char *call, double freq_hz, double snr_db,
-                       double speed, gpointer user);
-  gpointer     rbn_user;
   double       rbn_min_score;
   guint        rbn_min_hearings;
   double       rbn_settle_s;
-  double       rbn_fresh_s;
 } SkimPipelineConfig;
 
 typedef struct _SkimPipeline SkimPipeline;
@@ -177,8 +147,6 @@ void     skim_pipeline_stop(SkimPipeline *p);
  * resolved at skim_pipeline_new from the config, the env override and the
  * DeepCW availability check (About, replay header, logs). */
 const char *skim_pipeline_cw_engine_name(const SkimPipeline *p);
-/* "wide", "both" or "narrow" — the path the CW decoders actually run. */
-const char *skim_pipeline_decode_path_name(const SkimPipeline *p);
 
 gboolean skim_pipeline_start_offline(SkimPipeline *p, GError **error);
 
@@ -229,11 +197,10 @@ void   skim_pipeline_set_spot_cq_only(SkimPipeline *p, gboolean cq_only);
 void   skim_pipeline_set_spot_round_hz(SkimPipeline *p, guint hz);
 
 /* The RBN feed policy in force, defaults resolved: score threshold, hearings
- * needed (1 = no such gate), settle time in s (0 = sends at once), freshness
- * in s (0 = no such gate). All 0 when the pipeline has no RBN feed. */
+ * needed (1 = no such gate), settle time in s (0 = sends at once). All 0
+ * when the pipeline has no RBN feed. */
 void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
-                              guint *min_hearings, double *settle_s,
-                              double *fresh_s);
+                              guint *min_hearings, double *settle_s);
 
 /* Counters for the status line / gates. */
 guint64 skim_pipeline_frames(const SkimPipeline *p);

@@ -228,8 +228,6 @@ typedef struct {
   double snr_latch;                     /* SNR at the last mark commit — the
                                          * peak tracker has decayed by the
                                          * time a trailing break emits      */
-  double snr_band;                      /* SNR in the input band (dB), EMA
-                                         * over mark commits; 0 = none yet  */
 
   /* --- run dump (SKIM_CW_DUMP_RUNS — offline ML corpus) ------------------------
    * An independent v1-style Schmitt keyer with the bootstrap's 3-sample
@@ -1144,20 +1142,6 @@ static void lattice_commit(Cw2State *st, double lag_dits, SkimDecode *out,
       st->brk_out = FALSE;
       st->char_live = st->word_live = FALSE;   /* a new space will come      */
       st->snr_latch = 20.0 * log10(st->env_hi / MAX(st->env_lo, 1e-9));
-      {
-        /* Carrier power over noise power in the input band, from the
-         * discriminator's two means: µ_space is Rayleigh (mean 1.2533·σ,
-         * noise power 2σ² = 1.273·µ_s²), µ_mark Rician (E[m²] = A² + 2σ²
-         * — µ_m rides the mark peaks, yet on skimmer-sweep the
-         * estimate lands within ~1.5 dB of the true SNR from 2 to 14 dB
-         * in 500 Hz; above it compresses, filter ringing fills the gaps
-         * and lifts µ_s: 30 dB reads ~22). */
-        const double pn = 1.273 * st->mu_s * st->mu_s;
-        const double v = 10.0 * log10(MAX(st->mu_m * st->mu_m - pn, 1e-3 * pn) /
-                                      MAX(pn, 1e-30));
-        st->snr_band = st->snr_band != 0.0 ? st->snr_band + 0.3 * (v - st->snr_band)
-                                           : v;
-      }
       break;
     case SEG_ESP:
       st->esp = st->esp > 0 ? st->esp + 0.2 * (d - st->esp) : d;
@@ -1725,10 +1709,8 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
   out->freq_offset_hz = st->foff_hz;
   const double dit_ub = st->esp > 0 ? 0.5 * (st->dit + st->esp) : st->dit;
   out->speed          = st->dit > 0 ? 1.2 * st->rate / dit_ub : 0.0;
-  /* SNR in the input band (decode.h snr_in_band); before the first
-   * committed mark, the envelope's own band ratio. */
-  out->snr_db         = st->snr_band != 0.0
-                            ? st->snr_band
+  out->snr_db         = st->snr_latch != 0.0
+                            ? st->snr_latch
                             : 20.0 * log10(st->env_hi / MAX(st->env_lo, 1e-9));
   return TRUE;
 }
@@ -1764,7 +1746,6 @@ const SkimDecodeBackend *skim_decode_cw_v2(void) {
     .process        = cw2_process,
     .level          = cw2_level,
     .tone_offset_hz = cw2_tone_offset_hz,
-    .snr_in_band    = TRUE,
   };
   return &backend;
 }

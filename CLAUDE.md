@@ -106,7 +106,7 @@ here; what was done and why is in git.
   receiver; `skimmer-headless` runs up to 8 (one pipeline per band, one
   telnet feed, console + web status). The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 16 gates** (`weak-sweep` = `skimmer-sweep --gate`; the binary without `--gate` is the full weak-signal sweep). It does NOT relink the app — build
+- **`meson test` = 15 gates.** It does NOT relink the app — build
   `ninja skimmer-for-linux` explicitly or an old binary keeps running.
 - Richard's live instance runs from `builddir`; recorded IQ fixtures live in
   `/var/tmp/skimmer-iq/` (a fresh one takes minutes:

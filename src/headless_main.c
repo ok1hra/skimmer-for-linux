@@ -15,13 +15,9 @@
  *   [radio]  host, rate (48000/96000/192000 — one rate for all receivers),
  *            clock_ppm
  *   [bands]  <name>=<centre Hz>, in receiver order (RX1 first), ≤ 8
- *   [decode] engine=v2|deepcw, path=both|narrow|wide (pipeline.h
- *            SkimDecodePath), log=true|false (per-band decode logs)
+ *   [decode] engine=v2|deepcw, log=true|false (per-band decode logs)
  *   [feed]   call, port (0 = no telnet feed)
  *   [status] console_s (0 = quiet), http_port (0 = no web page)
- *   [record] bands (comma list; empty = off), minutes, dir, start_utc
- *            (HH:MM, empty = at once) — raw IQ of the chosen bands as
- *            cf32 + .meta, what skimmer-replay reads, while decoding on
  *
  * The radio is never taken from another client unless --take-over is given
  * (one-shot: for the first start only); a stream lost to another client is
@@ -62,8 +58,6 @@ static double act_now(const Act *a, gint64 now) {
 }
 #define RECENT_STATIONS  10                      /* per band on the web page */
 
-typedef struct _Rec Rec;
-
 typedef struct {
   char          name[16];
   double        centre_hz;
@@ -74,7 +68,6 @@ typedef struct {
   GHashTable   *stations;      /* call → SkimStation copy                     */
   guint64       frames_prev;   /* main loop: for kS/s                         */
   double        ksps;
-  Rec          *rec;           /* [record]: this band's IQ tap, or NULL       */
 } Band;
 
 typedef struct {
@@ -84,20 +77,14 @@ typedef struct {
   guint    rate;
   double   ppm;
   char    *engine;
-  char    *path;               /* [decode] path: both (default), narrow, wide */
   gboolean decode_log;
   char    *feed_call;
   int      feed_port;
   double   feed_min_score;     /* 0 = the pipeline's default                  */
   guint    feed_min_hearings;  /* 0 = default; 1 = no hearings gate          */
   double   feed_settle_s;      /* 0 = default; < 0 = send at once            */
-  double   feed_fresh_s;       /* 0 = default; < 0 = no freshness gate       */
   int      console_s;
   int      http_port;
-  char   **rec_bands;          /* [record] bands, NULL = no recording         */
-  double   rec_minutes;
-  char    *rec_dir;
-  gint64   rec_at_us;          /* real time to start, 0 = at once             */
   gboolean take_over;          /* --take-over: the first start only           */
 
   Band     band[SKIM_HPSDR_MAX_RX];
@@ -137,23 +124,16 @@ static const char *DEFAULT_CONFIG =
   "160m=1840000\n80m=3540000\n40m=7040000\n30m=10125000\n20m=14040000\n"
   "15m=21040000\n"
   "\n[decode]\n# v2 (classical) or deepcw (needs ONNX Runtime + model)\n"
-  "engine=v2\n"
-  "# CW path: both = a narrow filter on every detected carrier, the whole\n"
-  "# channel elsewhere; narrow = carriers only; wide = whole channels only\n"
-  "path=both\n# per-band raw decode logs in ~/.local/share/skimmer-for-linux/headless\n"
+  "engine=v2\n# per-band raw decode logs in ~/.local/share/skimmer-for-linux/headless\n"
   "log=false\n"
   "\n[feed]\n# telnet spot feed (validated CQ spots only); port 0 = off\n"
   "call=\nport=7300\n"
   "# a call is spotted once it scored min_score, was read min_hearings times\n"
-  "# (or MASTER.SCP knows it), stayed settle_s seconds in the station table and\n"
-  "# was last read at most fresh_s seconds ago; min_hearings=1, settle_s=0 and\n"
-  "# fresh_s=0 switch those three off\n"
-  "#min_score=0.85\n#min_hearings=2\n#settle_s=8\n#fresh_s=120\n"
+  "# (or MASTER.SCP knows it) and stayed settle_s seconds in the station table;\n"
+  "# min_hearings=1 and settle_s=0 switch those two off\n"
+  "#min_score=0.85\n#min_hearings=2\n#settle_s=8\n"
   "\n[status]\n# console table every N s (0 = off); web page port (0 = off)\n"
-  "console_s=10\nhttp_port=8073\n"
-  "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
-  "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
-  "bands=\nminutes=10\ndir=/var/tmp/skimmer-iq\nstart_utc=\n";
+  "console_s=10\nhttp_port=8073\n";
 
 static gboolean config_load(Hd *h, GError **error) {
   if (!g_file_test(h->cfg_path, G_FILE_TEST_EXISTS)) {
@@ -180,18 +160,6 @@ static gboolean config_load(Hd *h, GError **error) {
   h->ppm = g_key_file_has_key(kf, "radio", "clock_ppm", NULL)
                ? g_key_file_get_double(kf, "radio", "clock_ppm", NULL) : 0;
   h->engine = g_key_file_get_string(kf, "decode", "engine", NULL);
-  h->path = g_key_file_get_string(kf, "decode", "path", NULL);
-  if (h->path) { g_strstrip(h->path); }
-  if (!h->path || !h->path[0]) {
-    g_free(h->path);
-    h->path = g_strdup("both");
-  }
-  if (strcmp(h->path, "both") && strcmp(h->path, "narrow") && strcmp(h->path, "wide")) {
-    g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                "%s: [decode] path=%s (both, narrow or wide)", h->cfg_path, h->path);
-    g_key_file_free(kf);
-    return FALSE;
-  }
   h->decode_log = g_key_file_has_key(kf, "decode", "log", NULL) &&
                   g_key_file_get_boolean(kf, "decode", "log", NULL);
   h->feed_call = g_key_file_get_string(kf, "feed", "call", NULL);
@@ -206,11 +174,6 @@ static gboolean config_load(Hd *h, GError **error) {
     const double v = g_key_file_get_double(kf, "feed", "settle_s", NULL);
     h->feed_settle_s = v > 0 ? v : -1;          /* 0 in the file = off        */
   }
-  h->feed_fresh_s = 0;
-  if (g_key_file_has_key(kf, "feed", "fresh_s", NULL)) {
-    const double v = g_key_file_get_double(kf, "feed", "fresh_s", NULL);
-    h->feed_fresh_s = v > 0 ? v : -1;           /* 0 in the file = off        */
-  }
   if (h->console_s < 0) {
     h->console_s = g_key_file_has_key(kf, "status", "console_s", NULL)
                        ? g_key_file_get_integer(kf, "status", "console_s", NULL) : 10;
@@ -219,38 +182,6 @@ static gboolean config_load(Hd *h, GError **error) {
     h->http_port = g_key_file_has_key(kf, "status", "http_port", NULL)
                        ? g_key_file_get_integer(kf, "status", "http_port", NULL) : 8073;
   }
-
-  char *rb = g_key_file_get_string(kf, "record", "bands", NULL);
-  if (rb && g_strstrip(rb)[0]) {
-    h->rec_bands = g_strsplit(rb, ",", -1);
-    for (char **x = h->rec_bands; *x; x++) { g_strstrip(*x); }
-    h->rec_minutes = g_key_file_has_key(kf, "record", "minutes", NULL)
-                         ? g_key_file_get_double(kf, "record", "minutes", NULL) : 10;
-    if (h->rec_minutes <= 0) { h->rec_minutes = 10; }
-    h->rec_dir = g_key_file_get_string(kf, "record", "dir", NULL);
-    if (!h->rec_dir || !g_strstrip(h->rec_dir)[0]) {
-      g_free(h->rec_dir);
-      h->rec_dir = g_strdup("/var/tmp/skimmer-iq");
-    }
-    char *at = g_key_file_get_string(kf, "record", "start_utc", NULL);
-    guint hh, mm;
-    if (at && sscanf(g_strstrip(at), "%u:%u", &hh, &mm) == 2 && hh < 24 && mm < 60) {
-      GDateTime *now = g_date_time_new_now_utc();
-      GDateTime *t = g_date_time_new_utc(g_date_time_get_year(now),
-                                         g_date_time_get_month(now),
-                                         g_date_time_get_day_of_month(now), hh, mm, 0);
-      if (g_date_time_compare(t, now) <= 0) {   /* today's is gone: tomorrow */
-        GDateTime *t2 = g_date_time_add_days(t, 1);
-        g_date_time_unref(t);
-        t = t2;
-      }
-      h->rec_at_us = g_date_time_to_unix(t) * G_USEC_PER_SEC;
-      g_date_time_unref(t);
-      g_date_time_unref(now);
-    }
-    g_free(at);
-  }
-  g_free(rb);
 
   gsize n = 0;
   char **keys = g_key_file_get_keys(kf, "bands", &n, NULL);   /* file order */
@@ -336,125 +267,8 @@ static void state_cb(gboolean connected, const char *detail, gpointer user) {
 
 /* ---- the radio link -------------------------------------------------------------- */
 
-/* ---- [record]: a band's IQ to disk, beside the decoding ------------------------- */
-
-/* The receiver thread copies each block into a queue; a writer thread puts
- * it on disk — a slow disk never stalls the radio. Exactly the samples the
- * band's pipeline gets, so a replay of the file is the live input. */
-struct _Rec {
-  char        *path;           /* …/hd-<band>-<UTC>.cf32                       */
-  char         label[96];
-  double       ppm;
-  gint64       at_us;          /* real time to start, 0 = at once              */
-  guint64      max_frames;
-  double       minutes;
-  /* receiver thread */
-  gboolean     started, ended;
-  guint64      frames;
-  double       rate, centre;
-  gint64       t0_us;          /* real time of the first block                 */
-  /* writer */
-  GAsyncQueue *q;
-  GThread     *th;
-};
-
-static gpointer REC_END = (gpointer)&REC_END;  /* queue sentinel              */
-
-static void rec_meta(Rec *r, gint64 t1_us) {
-  GDateTime *t = g_date_time_new_from_unix_local_usec(r->t0_us);
-  char *start = g_date_time_format(t, "%Y-%m-%d %H:%M:%S %z");
-  g_date_time_unref(t);
-  char *meta = g_strdup_printf(
-      "file: %s\nstart: %s\nstart_unix: %.3f\n"
-      "source: skimmer-headless %s\n"
-      "format: cf32 interleaved I,Q — TRUE spectrum orientation\n"
-      "center_hz: %.0f\nrate_hz: %.0f\nclock_ppm: %.3f\nframes: %" G_GUINT64_FORMAT "\n"
-      "duration_s: %.1f\nwall_s: %.1f\n---\n",
-      r->path, start, r->t0_us / 1e6, r->label, r->centre, r->rate, r->ppm, r->frames,
-      r->rate > 0 ? r->frames / r->rate : 0.0, (t1_us - r->t0_us) / 1e6);
-  char *mp = g_strdup_printf("%s.meta", r->path);
-  GError *err = NULL;
-  if (!g_file_set_contents(mp, meta, -1, &err)) {
-    g_warning("record: %s: %s", mp, err->message);
-    g_clear_error(&err);
-  }
-  g_free(mp);
-  g_free(meta);
-  g_free(start);
-}
-
-static gpointer rec_writer(gpointer data) {
-  Rec *r = data;
-  FILE *f = fopen(r->path, "wb");
-  if (!f) { g_warning("record: cannot write %s", r->path); }
-  for (;;) {
-    GBytes *b = g_async_queue_pop(r->q);
-    if ((gpointer)b == REC_END) { break; }
-    gsize len;
-    const void *d = g_bytes_get_data(b, &len);
-    if (f && fwrite(d, 1, len, f) != len) {
-      g_warning("record: %s: write failed — recording stopped", r->path);
-      fclose(f);
-      f = NULL;
-    }
-    g_bytes_unref(b);
-  }
-  if (f) { fclose(f); }
-  rec_meta(r, g_get_real_time());
-  g_message("record: %s done (%.1f min)", r->path, r->frames / r->rate / 60.0);
-  return NULL;
-}
-
-/* Receiver thread: start at the set time, stop after the set length. */
-static void rec_push(Rec *r, const float *iq, guint n, double rate, double centre) {
-  if (r->ended) { return; }
-  const gint64 now = g_get_real_time();
-  if (!r->started) {
-    if (r->at_us && now < r->at_us) { return; }
-    GDateTime *t = g_date_time_new_from_unix_utc_usec(now);
-    char *ts = g_date_time_format(t, "%Y%m%d-%H%M%SZ");
-    g_date_time_unref(t);
-    char *dir = g_path_get_dirname(r->path);   /* path holds dir/band so far  */
-    char *band = g_path_get_basename(r->path);
-    g_free(r->path);
-    r->path = g_strdup_printf("%s/hd-%s-%s.cf32", dir, band, ts);
-    g_free(dir);
-    g_free(band);
-    g_free(ts);
-    r->rate = rate;
-    r->centre = centre;
-    r->t0_us = now;
-    r->max_frames = (guint64)(r->minutes * 60.0 * rate);
-    r->q = g_async_queue_new();
-    r->th = g_thread_new("record", rec_writer, r);
-    r->started = TRUE;
-    g_message("record: %s started (%.1f min)", r->path, r->minutes);
-  }
-  const guint take = (guint)MIN((guint64)n, r->max_frames - r->frames);
-  g_async_queue_push(r->q, g_bytes_new(iq, (gsize)take * 2 * sizeof(float)));
-  r->frames += take;
-  if (r->frames >= r->max_frames) {
-    r->ended = TRUE;
-    g_async_queue_push(r->q, REC_END);
-  }
-}
-
-/* Teardown: an unfinished recording is closed with what it has. */
-static void rec_free(Rec *r) {
-  if (!r) { return; }
-  if (r->started) {
-    if (!r->ended) { g_async_queue_push(r->q, REC_END); }
-    g_thread_join(r->th);
-    g_async_queue_unref(r->q);
-  }
-  g_free(r->path);
-  g_free(r);
-}
-
 static void rx_iq_cb(const float *iq, guint n, double rate, double centre, gpointer user) {
-  Band *b = user;
-  if (b->rec) { rec_push(b->rec, iq, n, rate, centre); }
-  skim_pipeline_push(b->p, iq, n, rate, centre);
+  skim_pipeline_push(((Band *)user)->p, iq, n, rate, centre);
 }
 
 static void rp_closed_cb(gpointer user) { g_atomic_int_set(&((Hd *)user)->closed, 1); }
@@ -653,31 +467,23 @@ static void status_build(Hd *h, gboolean print) {
   char *jhost = json_str(h->host);
   /* the decoder that actually runs (deepcw falls back to cw-v2 without its
    * runtime or model) — a feed comparison needs to know which one spotted */
-  /* A narrow path is a different decoder for that purpose: "cw-v2+both". */
-  char engine[48] = "";
-  if (h->nb && h->band[0].p) {
-    const char *pn = skim_pipeline_decode_path_name(h->band[0].p);
-    g_snprintf(engine, sizeof(engine), "%s%s%s",
-               skim_pipeline_cw_engine_name(h->band[0].p),
-               strcmp(pn, "wide") ? "+" : "", strcmp(pn, "wide") ? pn : "");
-  }
+  const char *engine = h->nb && h->band[0].p ? skim_pipeline_cw_engine_name(h->band[0].p) : "";
   /* the feed policy that let the spots out — a comparison before and after
    * a policy change must be able to tell the two apart */
-  double pol_score = 0, pol_settle = 0, pol_fresh = 0;
+  double pol_score = 0, pol_settle = 0;
   guint pol_hear = 0;
   if (h->feed && h->nb && h->band[0].p) {
-    skim_pipeline_rbn_policy(h->band[0].p, &pol_score, &pol_hear, &pol_settle,
-                             &pol_fresh);
+    skim_pipeline_rbn_policy(h->band[0].p, &pol_score, &pol_hear, &pol_settle);
   }
   g_string_append_printf(json,
       "{\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
       "\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"engine\":\"%s\","
-      "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,\"fresh_s\":%.1f},"
+      "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f},"
       "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       clock, jstate, h->streaming ? "true" : "false", jhost, h->rate, lost_pct,
-      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_fresh,
+      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle,
       h->feed ? h->feed_port : 0, fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
@@ -925,15 +731,11 @@ int main(int argc, char **argv) {
       .mode = SKIM_PIPELINE_MODE_CW,
       .cw_engine = g_strcmp0(h->engine, "deepcw") == 0 ? SKIM_CW_ENGINE_DEEPCW
                                                        : SKIM_CW_ENGINE_V2,
-      .decode_path = !strcmp(h->path, "wide")   ? SKIM_DECODE_PATH_WIDE
-                   : !strcmp(h->path, "narrow") ? SKIM_DECODE_PATH_NARROW
-                                                : SKIM_DECODE_PATH_BOTH,
       .decode_log_path = dlog,
       .rbn = h->feed,
       .rbn_min_score = h->feed_min_score,
       .rbn_min_hearings = h->feed_min_hearings,
       .rbn_settle_s = h->feed_settle_s,
-      .rbn_fresh_s = h->feed_fresh_s,
     };
     b->p = skim_pipeline_new(&pc);
     g_free(dlog);
@@ -948,41 +750,14 @@ int main(int argc, char **argv) {
   }
   g_free(logdir);
   g_free(day);
-  for (char **x = h->rec_bands; x && *x; x++) {
-    Band *b = NULL;
-    for (guint i = 0; i < h->nb; i++) {
-      if (strcmp(h->band[i].name, *x) == 0) { b = &h->band[i]; }
-    }
-    if (!b) {
-      g_warning("record: no band %s in [bands] — not recorded", *x);
-      continue;
-    }
-    g_mkdir_with_parents(h->rec_dir, 0755);
-    b->rec = g_new0(Rec, 1);
-    b->rec->path = g_build_filename(h->rec_dir, b->name, NULL);
-    g_strlcpy(b->rec->label, b->label, sizeof(b->rec->label));
-    b->rec->ppm = h->ppm;
-    b->rec->at_us = h->rec_at_us;
-    b->rec->minutes = h->rec_minutes;
-    if (h->rec_at_us) {
-      GDateTime *t = g_date_time_new_from_unix_utc_usec(h->rec_at_us);
-      char *ts = g_date_time_format(t, "%Y-%m-%d %H:%M UTC");
-      g_message("record: %s for %.0f min from %s into %s", b->name, h->rec_minutes,
-                ts, h->rec_dir);
-      g_free(ts);
-      g_date_time_unref(t);
-    }
-  }
-  g_message("decode: %u pipelines, engine %s, path %s", h->nb,
-            skim_pipeline_cw_engine_name(h->band[0].p),
-            skim_pipeline_decode_path_name(h->band[0].p));
+  g_message("decode: %u pipelines, engine %s", h->nb,
+            skim_pipeline_cw_engine_name(h->band[0].p));
   if (h->feed) {
-    double fs, fset, ffr;
+    double fs, fset;
     guint fh;
-    skim_pipeline_rbn_policy(h->band[0].p, &fs, &fh, &fset, &ffr);
+    skim_pipeline_rbn_policy(h->band[0].p, &fs, &fh, &fset);
     g_message("feed: spots a call at score >= %.2f, read %u times (or in "
-              "MASTER.SCP), after %.0f s settled, last read <= %.0f s ago "
-              "(0 = any)", fs, fh, fset, ffr);
+              "MASTER.SCP), after %.0f s settled", fs, fh, fset);
   }
 
   GSocketService *web = NULL;
@@ -1017,7 +792,6 @@ int main(int argc, char **argv) {
   g_clear_pointer(&h->rp, skim_hpsdr_client_free);
   for (guint i = 0; i < h->nb; i++) {
     skim_pipeline_free(h->band[i].p);
-    rec_free(h->band[i].rec);
   }
   g_clear_pointer(&h->feed, skim_rbn_feed_free);
   g_clear_pointer(&h->scp, skim_scp_updater_free);

@@ -46,8 +46,6 @@ typedef struct {
   guint   reports;      /* decode events folded into this record */
   guint   hearings;     /* most copies of the call one extractor counted —
                          * keyed-and-read, not reported (callsign.h) */
-  gint64  heard_us;     /* when the call was last actually READ — a report
-                         * may come from a candidate long gone quiet */
 } SkimStation;
 
 typedef struct _SkimStationTable SkimStationTable;
