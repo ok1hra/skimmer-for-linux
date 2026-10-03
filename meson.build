@@ -63,6 +63,7 @@ engine_sources = [
   'src/engine/rbn_feed.c',     # M6: RBN telnet server (CW Skimmer dialect)
   'src/engine/spectrum.c',     # M8: band spectrum rows for the waterfall
   'src/engine/pipeline.c',     # M5: the engine assembled end to end
+  'src/engine/gatelog.c',      # feed-gate learning logs (decode tap + rows)
 ]
 engine_deps = [glib_dep, gio_dep, lws_dep, wdsp_dep, fftw3f_dep, m_dep, dl_dep]
 
@@ -116,6 +117,15 @@ executable('skimmer-hpsdr-probe',
 # full pipeline — decoder versions diff on the same off-air corpus.
 executable('skimmer-replay',
   ['src/replay_main.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+
+# Feed-gate learning: replay a decode tap (headless [feed] tap=) through the
+# extractor → station table → RBN gate, offline, on the tap's own clock.
+executable('skimmer-tap-replay',
+  ['src/tap_replay_main.c'],
   include_directories : include_directories('src'),
   dependencies : engine_deps,
   link_with : engine_lib,

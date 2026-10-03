@@ -23,14 +23,28 @@
  * token before the join does). Under the default policy neither SM7XYZ nor
  * IZ3N may reach the wire, IZ3NYG must; with hearings=1 and no settle (the
  * old policy) both garbles DO go out — proof the band exercises the gate.
+ * Then the ghost: the band falls quiet past the station table's TTL, and
+ * "VVV VVV" is keyed on OK1BR's frequency. The extractor ages by tokens, so
+ * OK1BR is still its best candidate and gets reported again — with the
+ * freshness gate (fresh_s 120) it must not go out a second time (it was
+ * last READ 140 s ago); the old policy and hearings + settle alone (today's
+ * default: the freshness gate is opt-in) do send it.
+ *
+ * Learning logs (gatelog.h): the same band with the decode tap and the gate
+ * rows on. The rows must hold what a learned gate needs (a station record
+ * with the hand gate's verdict, candidates below the spot threshold, the
+ * feed's events), and the tap replayed through skim_pipeline_tap_* must
+ * write the tap back byte for byte and the same rows again.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include <gio/gio.h>
 #include <locale.h>
 #include <glib.h>
+#include <glib/gstdio.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "engine/pipeline.h"
@@ -288,11 +302,47 @@ static void build_policy_band(void) {
   g_rand_free(rng);
 }
 
-typedef struct { int sm7xyz, iz3n, iz3nyg, ok1br, lines; } PolicyOut;
+typedef struct { int sm7xyz, iz3n, iz3nyg, ok1br, ok1br_ghost, lines; } PolicyOut;
+
+static void feed_quiet(SkimPipeline *p, GRand *rng, double secs) {
+  static float quiet[BLK * 2];
+  for (guint off = 0; off < secs * RATE; off += BLK) {
+    for (guint i = 0; i < BLK * 2; i++) { quiet[i] = (float)(0.005 * gauss(rng)); }
+    skim_pipeline_feed(p, quiet, BLK, RATE, CENTER);
+  }
+}
+
+/* Keying without a call on OK1BR's frequency (-15 kHz) — the noise that
+ * brings a stale candidate back. */
+static void feed_ghost(SkimPipeline *p, GRand *rng) {
+  GArray *e = gen_env("VVV VVV", 22);
+  shape_env(e, RATE);
+  float *buf = g_new(float, BLK * 2);
+  double ph = 0;
+  const double dph = 2.0 * G_PI * -15000.0 / RATE;
+  for (guint off = 0; off + BLK <= e->len; off += BLK) {
+    for (guint i = 0; i < BLK; i++) {
+      const double a = 0.40 * g_array_index(e, float, off + i);
+      buf[2 * i]     = (float)(a * cos(ph) + 0.005 * gauss(rng));
+      buf[2 * i + 1] = (float)(a * sin(ph) + 0.005 * gauss(rng));
+      ph += dph;
+    }
+    skim_pipeline_feed(p, buf, BLK, RATE, CENTER);
+  }
+  g_free(buf);
+  g_array_free(e, TRUE);
+}
+
+static void wait_lines(Cap *a, const char *call, int n) {
+  for (int t = 0; t < 5000 && cap_count(a, call) < n; t += 50) {
+    g_usleep(50 * 1000);                               /* broadcast is async */
+  }
+  g_usleep(300 * 1000);
+}
 
 /* One pass of the policy band through a fresh pipeline + feed, then quiet
  * band noise long enough for every held call to settle. */
-static PolicyOut policy_run(guint hearings, double settle_s) {
+static PolicyOut policy_run(guint hearings, double settle_s, double fresh_s) {
   PolicyOut o = { 0 };
   GError *err = NULL;
   SkimRbnFeed *f = skim_rbn_feed_new("OK1BR", 0, &err);
@@ -305,6 +355,7 @@ static PolicyOut policy_run(guint hearings, double settle_s) {
     .rbn              = f,
     .rbn_min_hearings = hearings,
     .rbn_settle_s     = settle_s,
+    .rbn_fresh_s      = fresh_s,
   };
   SkimPipeline *p = skim_pipeline_new(&cfg);
   skim_pipeline_start_offline(p, &err);
@@ -312,33 +363,150 @@ static PolicyOut policy_run(guint hearings, double settle_s) {
     skim_pipeline_feed(p, g_pol + 2 * (gsize)off, BLK, RATE, CENTER);
   }
   GRand *rng = g_rand_new_with_seed(7);
-  static float quiet[BLK * 2];
-  for (guint off = 0; off < 12 * RATE; off += BLK) {   /* > settle time     */
-    for (guint i = 0; i < BLK * 2; i++) { quiet[i] = (float)(0.005 * gauss(rng)); }
-    skim_pipeline_feed(p, quiet, BLK, RATE, CENTER);
-  }
-  g_rand_free(rng);
-  for (int t = 0; t < 5000 && cap_count(a, "OK1BR") == 0; t += 50) {
-    g_usleep(50 * 1000);                               /* broadcast is async */
-  }
-  g_usleep(300 * 1000);
+  feed_quiet(p, rng, 12);                              /* > settle time     */
+  wait_lines(a, "OK1BR", 1);
   o.sm7xyz = cap_count(a, "SM7XYZ");
   o.iz3n   = cap_count(a, "IZ3N");
   o.iz3nyg = cap_count(a, "IZ3NYG");
   o.ok1br  = cap_count(a, "OK1BR");
+  /* the ghost: past the station TTL (120 s), then keying without a call */
+  feed_quiet(p, rng, 130);
+  feed_ghost(p, rng);
+  feed_quiet(p, rng, 12);
+  g_rand_free(rng);
+  wait_lines(a, "OK1BR", o.ok1br + 1);
+  o.ok1br_ghost = cap_count(a, "OK1BR") - o.ok1br;
   g_mutex_lock(&a->lock);
   for (const char *q = a->rx->str; (q = strstr(q, "DX de")) != NULL; q++) {
     o.lines++;
   }
   g_mutex_unlock(&a->lock);
-  printf("       hearings %u, settle %+.0f s: SM7XYZ %d, IZ3N %d, IZ3NYG %d, "
-         "OK1BR %d (%d lines)\n", hearings, settle_s, o.sm7xyz, o.iz3n,
-         o.iz3nyg, o.ok1br, o.lines);
+  printf("       hearings %u, settle %+.0f s, fresh %+.0f s: SM7XYZ %d, IZ3N %d, "
+         "IZ3NYG %d, OK1BR %d, ghost OK1BR %d (%d lines)\n", hearings, settle_s,
+         fresh_s, o.sm7xyz, o.iz3n, o.iz3nyg, o.ok1br, o.ok1br_ghost, o.lines);
   skim_pipeline_stop(p);
   skim_pipeline_free(p);
   cap_free(a);
   skim_rbn_feed_free(f);
   return o;
+}
+
+/* --- learning logs (gatelog.h): tap round trip ------------------------------------ */
+
+/* The time fields of a gate row: {"ev":"…","w":W,"t":T,…}. The rest of the
+ * line (the row with both numbers cut out) lands in rest. */
+static gboolean row_split(const char *line, double *w, double *t, GString *rest) {
+  const char *pw = strstr(line, "\"w\":"), *pt = strstr(line, ",\"t\":");
+  if (!pw || !pt || pt < pw)
+    return FALSE;
+  const char *after = strchr(pt + 5, ',');
+  if (!after)
+    return FALSE;
+  *w = g_ascii_strtod(pw + 4, NULL);
+  *t = g_ascii_strtod(pt + 5, NULL);
+  g_string_assign(rest, "");
+  g_string_append_len(rest, line, pw - line);
+  g_string_append(rest, after);
+  return TRUE;
+}
+
+/* Same rows, in the same order: decode ("c") rows exactly, feed events
+ * (hold/send/spot/drop/gone) with their times within 0.2 s — offline the IQ
+ * feed ticks the settle hold every 43 ms block, the tap replay every 100 ms
+ * of tap time, as the live engine thread does. Prints the first difference. */
+static gboolean rows_equiv(const char *a_path, const char *b_path, guint *n_out) {
+  char *a = NULL, *b = NULL;
+  if (!g_file_get_contents(a_path, &a, NULL, NULL) ||
+      !g_file_get_contents(b_path, &b, NULL, NULL)) {
+    g_free(a);
+    g_free(b);
+    return FALSE;
+  }
+  gchar **la = g_strsplit(a, "\n", -1), **lb = g_strsplit(b, "\n", -1);
+  GString *ra = g_string_new(NULL), *rb = g_string_new(NULL);
+  gboolean ok = g_strv_length(la) == g_strv_length(lb);
+  if (!ok) {
+    printf("       %u vs %u rows\n", g_strv_length(la), g_strv_length(lb));
+  }
+  guint i = 0;
+  for (; ok && la[i]; i++) {
+    if (g_str_has_prefix(la[i], "{\"ev\":\"c\"")) {
+      ok = strcmp(la[i], lb[i]) == 0;
+    } else if (la[i][0]) {
+      double wa, ta, wb, tb;
+      ok = row_split(la[i], &wa, &ta, ra) && row_split(lb[i], &wb, &tb, rb) &&
+           strcmp(ra->str, rb->str) == 0 && fabs(ta - tb) <= 0.2 &&
+           fabs(wa - wb) <= 0.2;
+    }
+    if (!ok) {
+      printf("       row %u differs:\n       live   %s\n       replay %s\n", i,
+             la[i], lb[i] ? lb[i] : "(none)");
+    }
+  }
+  *n_out = i;
+  g_string_free(ra, TRUE);
+  g_string_free(rb, TRUE);
+  g_strfreev(la);
+  g_strfreev(lb);
+  g_free(a);
+  g_free(b);
+  return ok;
+}
+
+/* Replay a tap through a fresh OFFLINE pipeline the way skimmer-tap-replay
+ * does (header → tap_begin, T → tap_text, R → tap_reset). */
+static guint tap_replay(const char *tap, const char *tap_out, const char *rows_out,
+                        SkimRbnFeed *f) {
+  SkimPipelineConfig cfg = {
+    .chan_bw_hz = 125.0, .rbn = f, .tap_path = tap_out, .gatelog_path = rows_out,
+  };
+  SkimPipeline *p = skim_pipeline_new(&cfg);
+  GError *err = NULL;
+  skim_pipeline_start_offline(p, &err);
+  char *text = NULL;
+  g_file_get_contents(tap, &text, NULL, NULL);
+  gchar **lines = g_strsplit(text ? text : "", "\n", -1);
+  guint n = 0;
+  for (gchar **l = lines; *l; l++) {
+    if (g_str_has_prefix(*l, "# skimmer tap v1")) {
+      const char *ns = strstr(*l, "nslot=");
+      skim_pipeline_tap_begin(p, 4096, ns ? (guint)atoi(ns + 6) : 0);
+    } else if ((*l)[0] == 'T') {
+      const char *bar = strchr(*l, '|'), *end = strrchr(*l, '|');
+      gint64 t, w;
+      guint ix, ct;
+      double hz;
+      SkimDecode d;
+      memset(&d, 0, sizeof(d));
+      char khz[32], wpm[32], snr[32], conf[32];
+      if (sscanf(*l, "T %" G_GINT64_FORMAT " %" G_GINT64_FORMAT " %u %31s %31s %31s %31s %u",
+                 &t, &w, &ix, khz, wpm, snr, conf, &ct) == 8 && bar && end > bar) {
+        hz = g_ascii_strtod(khz, NULL);
+        d.speed = g_ascii_strtod(wpm, NULL);
+        d.snr_db = g_ascii_strtod(snr, NULL);
+        d.confidence = g_ascii_strtod(conf, NULL);
+        memcpy(d.text, bar + 1, MIN((gsize)(end - bar - 1), sizeof(d.text) - 1));
+        skim_pipeline_tap_text(p, t, w, ix, hz, &d, ct != 0);
+        n++;
+      }
+    } else if ((*l)[0] == 'C') {
+      gint64 t, w;
+      if (sscanf(*l, "C %" G_GINT64_FORMAT " %" G_GINT64_FORMAT, &t, &w) == 2) {
+        skim_pipeline_tap_tick(p, t, w);
+      }
+    } else if ((*l)[0] == 'R') {
+      gint64 t, w;
+      gint ix;
+      if (sscanf(*l, "R %" G_GINT64_FORMAT " %" G_GINT64_FORMAT " %d", &t, &w, &ix) == 3) {
+        skim_pipeline_tap_reset(p, t, w, ix);
+      }
+    }
+  }
+  g_strfreev(lines);
+  g_free(text);
+  skim_pipeline_stop(p);
+  skim_pipeline_free(p);
+  return n;
 }
 
 /* --- pipeline station capture ------------------------------------------------------ */
@@ -509,9 +677,11 @@ int main(void) {
     check("pipeline RBN counter matches (2)", skim_pipeline_rbn_spots(p) == 2);
     double pol_s = 0, pol_set = 0;
     guint pol_h = 0;
-    skim_pipeline_rbn_policy(p, &pol_s, &pol_h, &pol_set);
-    check("default feed policy: 0.85, read twice, 8 s settle",
-          fabs(pol_s - 0.85) < 1e-9 && pol_h == 2 && fabs(pol_set - 8.0) < 1e-9);
+    double pol_fr = -1;
+    skim_pipeline_rbn_policy(p, &pol_s, &pol_h, &pol_set, &pol_fr);
+    check("default feed policy: 0.85, read twice, 8 s settle, no freshness gate",
+          fabs(pol_s - 0.85) < 1e-9 && pol_h == 2 && fabs(pol_set - 8.0) < 1e-9 &&
+          pol_fr == 0);
 
     skim_pipeline_stop(p);
     skim_pipeline_free(p);
@@ -525,17 +695,86 @@ int main(void) {
   {
     printf("  feed policy (one pass: SM7XYZ once, IZ3N YG torn, OK1BR control)\n");
     build_policy_band();
-    PolicyOut old = policy_run(1, -1);                 /* the old policy     */
+    PolicyOut old = policy_run(1, -1, -1);             /* the old policy     */
     check("old policy: the band does carry both garbles (SM7XYZ, IZ3N out)",
           old.sm7xyz >= 1 && old.iz3n >= 1);
-    PolicyOut now = policy_run(0, 0);                  /* defaults           */
+    check("old policy: the stale OK1BR comes back as a ghost spot",
+          old.ok1br_ghost >= 1);
+    PolicyOut now = policy_run(0, 0, 0);               /* defaults           */
+    check("defaults (no freshness gate yet): hearings + settle do not stop "
+          "the ghost", now.ok1br_ghost >= 1);
     check("control OK1BR (read twice) reaches the wire", now.ok1br == 1);
     check("SM7XYZ read ONCE never reaches the wire", now.sm7xyz == 0);
     check("torn IZ3N is folded away while held — never on the wire",
           now.iz3n == 0);
     check("…and the whole call IZ3NYG goes out once", now.iz3nyg == 1);
-    g_free(g_pol);
+    PolicyOut fr = policy_run(0, 0, 120);              /* + freshness gate   */
+    check("fresh_s 120: OK1BR still goes out once, IZ3NYG once, no garble",
+          fr.ok1br == 1 && fr.iz3nyg == 1 && fr.sm7xyz == 0 && fr.iz3n == 0);
+    check("fresh_s 120: the ghost of OK1BR (last read 140 s ago) stays off "
+          "the wire", fr.ok1br_ghost == 0);
   }
+
+  /* -- learning logs: the decode tap replays to the same gate rows ------------- */
+  {
+    printf("  learning logs (policy band → tap + rows, tap replayed → rows again)\n");
+    char *dir = g_dir_make_tmp("skim-gatelog-XXXXXX", NULL);
+    char *tap1 = g_build_filename(dir, "tap1.log", NULL);
+    char *rows1 = g_build_filename(dir, "rows1.jsonl", NULL);
+    char *tap2 = g_build_filename(dir, "tap2.log", NULL);
+    char *rows2 = g_build_filename(dir, "rows2.jsonl", NULL);
+    GError *err = NULL;
+    SkimRbnFeed *f = skim_rbn_feed_new("OK1BR", 0, &err);
+    SkimPipelineConfig cfg = {
+      .chan_bw_hz = 125.0, .rbn = f, .tap_path = tap1, .gatelog_path = rows1,
+    };
+    SkimPipeline *p = skim_pipeline_new(&cfg);
+    skim_pipeline_start_offline(p, &err);
+    for (guint off = 0; off + BLK <= g_pol_frames; off += BLK) {
+      skim_pipeline_feed(p, g_pol + 2 * (gsize)off, BLK, RATE, CENTER);
+    }
+    GRand *rng = g_rand_new_with_seed(7);
+    static float quiet[BLK * 2];
+    for (guint off = 0; off < 12 * RATE; off += BLK) {   /* > settle time     */
+      for (guint i = 0; i < BLK * 2; i++) { quiet[i] = (float)(0.005 * gauss(rng)); }
+      skim_pipeline_feed(p, quiet, BLK, RATE, CENTER);
+    }
+    g_rand_free(rng);
+    skim_pipeline_stop(p);
+    skim_pipeline_free(p);
+
+    char *rows = NULL;
+    g_file_get_contents(rows1, &rows, NULL, NULL);
+    check("gate rows: a decode row carries a station record and the hand gate's yes",
+          rows && strstr(rows, "\"call\":\"OK1BR\"") && strstr(rows, "\"gate\":1"));
+    check("gate rows: a candidate BELOW the 0.70 spot threshold is recorded too",
+          rows && (strstr(rows, "\"sc\":0.55") || strstr(rows, "\"sc\":0.65")));
+    check("gate rows: the feed's hold and its line on the wire are events",
+          rows && strstr(rows, "{\"ev\":\"hold\"") && strstr(rows, "{\"ev\":\"spot\""));
+    g_free(rows);
+
+    const guint n = tap_replay(tap1, tap2, rows2, f);
+    char *t1 = NULL, *t2 = NULL;
+    g_file_get_contents(tap1, &t1, NULL, NULL);
+    g_file_get_contents(tap2, &t2, NULL, NULL);
+    check("tap replay: the replayed decodes write the tap back byte for byte",
+          n > 0 && t1 && t2 && strcmp(t1, t2) == 0);
+    guint nrows = 0;
+    const gboolean same = rows_equiv(rows1, rows2, &nrows);
+    printf("       %u decodes replayed, %u gate rows compared\n", n, nrows);
+    check("tap replay: the same gate rows (feed events within 0.2 s)", same);
+    g_free(t1);
+    g_free(t2);
+    skim_rbn_feed_free(f);
+    char *files[] = { tap1, rows1, tap2, rows2 };
+    for (guint i = 0; i < G_N_ELEMENTS(files); i++) {
+      g_remove(files[i]);
+      g_free(files[i]);
+    }
+    g_rmdir(dir);
+    g_free(dir);
+  }
+  g_free(g_pol);
 
   printf("\n=== %d checks, %d failures ===\n%s\n", checks, fails,
          fails ? "FAIL" : "PASS — validated CQ spots flow to the RBN sink, "

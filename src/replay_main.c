@@ -28,6 +28,10 @@
  * 8 s settle), "old" = the score gate alone, sent at once. After the file
  * ends the replay feeds 10 s of silence, so calls still held get to settle.
  *
+ * SKIM_REPLAY_TAP=<file> / SKIM_REPLAY_ROWS=<file> write the feed-gate
+ * learning logs (a decode tap and the gate's rows, gatelog.h) — with
+ * SKIM_REPLAY_FEED set the rows carry the feed's events too.
+ *
  * The same MASTER.SCP the app uses (~/.config/skimmer-for-linux/master.scp)
  * is loaded when present — keep it that way for honest A/B against the app.
  *
@@ -182,6 +186,11 @@ int main(int argc, char **argv) {
     .chan_bw_hz = 0,                   /* mode default: 125 Hz CW, 250 RTTY  */
     .dict_path = g_file_test(dict, G_FILE_TEST_EXISTS) ? dict : NULL,
     .decode_log_path = dlog,
+    /* SKIM_REPLAY_TAP / SKIM_REPLAY_ROWS: the feed-gate learning logs
+     * (gatelog.h) of this replay — a decode tap for skimmer-tap-replay and
+     * the gate's rows, as skimmer-headless writes them with [feed] learn. */
+    .tap_path = g_getenv("SKIM_REPLAY_TAP"),
+    .gatelog_path = g_getenv("SKIM_REPLAY_ROWS"),
   };
   const char *fenv = g_getenv("SKIM_REPLAY_FEED");
   SkimRbnFeed *feed = NULL;
@@ -302,11 +311,12 @@ int main(int argc, char **argv) {
          rows->len);
   printf("decode log: %s\n", dlog);
   if (feed) {
-    double ms, ss;
+    double ms, ss, fs;
     guint mh;
-    skim_pipeline_rbn_policy(p, &ms, &mh, &ss);
-    printf("feed policy: score >= %.2f, %u hearings, %.0f s settle — %"
-           G_GUINT64_FORMAT " lines\n", ms, mh, ss, skim_pipeline_rbn_spots(p));
+    skim_pipeline_rbn_policy(p, &ms, &mh, &ss, &fs);
+    printf("feed policy: score >= %.2f, %u hearings, %.0f s settle, %.0f s "
+           "fresh — %" G_GUINT64_FORMAT " lines\n", ms, mh, ss, fs,
+           skim_pipeline_rbn_spots(p));
   }
 
   g_ptr_array_free(rows, TRUE);

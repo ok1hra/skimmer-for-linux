@@ -302,6 +302,7 @@ typedef struct {
   char     call[CALL_MAX];
   guint    count;
   guint    last_tok;                           /* x->tok_n at the last hit   */
+  gint64   last_us;                            /* x->now_us at the last hit  */
   guint    parts;                              /* fewest tokens it came in   */
   gboolean de_marked;
   gboolean cq_context;
@@ -314,6 +315,7 @@ struct _SkimCallsignExtractor {
   guint    cq_pairs;                           /* adjacent "C","Q" pairs seen */
   gboolean cq_half;                            /* last token was a lone "C"  */
   guint    tok_n;                              /* tokens processed (age clock)*/
+  gint64   now_us;                             /* caller's clock (set_now)   */
   char     prev_tok[CALL_MAX];                 /* previous token (join hyp.) */
   gboolean prev_valid;                         /* it was a valid call itself */
   gboolean prev_de;                            /* DE applied to it           */
@@ -407,6 +409,7 @@ static void cand_add(SkimCallsignExtractor *x, const char *call, guint parts,
   c->parts = MIN(c->parts, parts);
   c->count++;
   c->last_tok = x->tok_n;
+  c->last_us  = x->now_us;
   if (de_marked)  { c->de_marked  = TRUE; }
   if (cq_context) { c->cq_context = TRUE; }
 }
@@ -709,9 +712,8 @@ void skim_callsign_extractor_feed(SkimCallsignExtractor *x, const char *text) {
   }
 }
 
-double skim_callsign_extractor_best_ex(SkimCallsignExtractor *x,
-                                       char *out, gsize out_size,
-                                       gboolean *cq_context) {
+/* The leading candidate, threshold aside (best_ex and top share it). */
+static const Cand *best_pick(const SkimCallsignExtractor *x, double *score) {
   double best = 0.0;
   const Cand *bc = NULL;
   for (guint i = 0; i < x->ncand; i++) {
@@ -730,6 +732,48 @@ double skim_callsign_extractor_best_ex(SkimCallsignExtractor *x,
       bc = &x->cand[i];
     }
   }
+  *score = best;
+  return bc;
+}
+
+gboolean skim_callsign_extractor_top(const SkimCallsignExtractor *x,
+                                     SkimCallsignCand *out) {
+  double s = 0.0;
+  const Cand *c = x ? best_pick(x, &s) : NULL;
+  memset(out, 0, sizeof(*out));
+  if (!c || s <= 0.0)
+    return FALSE;
+  g_strlcpy(out->call, c->call, sizeof(out->call));
+  out->score       = s;
+  out->count       = c->count;
+  out->parts       = c->parts;
+  out->idle_tokens = x->tok_n - c->last_tok;
+  out->de_marked   = c->de_marked;
+  out->cq_context  = c->cq_context;
+  out->dict        = dict_has(c->call);
+  out->last_us     = c->last_us;
+  return TRUE;
+}
+
+void skim_callsign_extractor_set_now(SkimCallsignExtractor *x, gint64 now_us) {
+  if (x) { x->now_us = now_us; }
+}
+
+gint64 skim_callsign_extractor_last_heard(const SkimCallsignExtractor *x,
+                                          const char *call) {
+  if (!x || !call)
+    return -1;
+  for (guint i = 0; i < x->ncand; i++) {
+    if (strcmp(x->cand[i].call, call) == 0) { return x->cand[i].last_us; }
+  }
+  return -1;
+}
+
+double skim_callsign_extractor_best_ex(SkimCallsignExtractor *x,
+                                       char *out, gsize out_size,
+                                       gboolean *cq_context) {
+  double best = 0.0;
+  const Cand *bc = best_pick(x, &best);
   if (cq_context) { *cq_context = bc ? bc->cq_context : FALSE; }
   if (!bc || best < SKIM_CALLSIGN_SPOT_THRESHOLD) {
     if (out && out_size) { out[0] = '\0'; }

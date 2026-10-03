@@ -85,6 +85,35 @@ double skim_callsign_extractor_best_ex(SkimCallsignExtractor *x,
 guint  skim_callsign_extractor_hearings(const SkimCallsignExtractor *x,
                                         const char *call);
 
+/* The candidate best() would pick were there no spot threshold, with the
+ * parts of its score — what the feed-gate learning log records (gatelog,
+ * pipeline.h), so a learned gate can see the calls the hand gate drops
+ * below 0.70 too. FALSE when the extractor holds no live candidate. */
+typedef struct {
+  char     call[16];
+  double   score;          /* the plausibility best() would report, unclamped
+                            * by the threshold (0 when stale)               */
+  guint    count;          /* copies read (= hearings)                      */
+  guint    parts;          /* fewest tokens it was glued from               */
+  guint    idle_tokens;    /* tokens decoded since it was last read         */
+  gboolean de_marked;
+  gboolean cq_context;
+  gboolean dict;           /* MASTER.SCP knows it                           */
+  gint64   last_us;        /* caller's clock at its last copy (set_now)     */
+} SkimCallsignCand;
+gboolean skim_callsign_extractor_top(const SkimCallsignExtractor *x,
+                                     SkimCallsignCand *out);
+
+/* The caller's clock, for the time of each hearing: set it before feed().
+ * Candidates age by TOKENS (traffic on the channel), not by time — a call
+ * stays the best candidate through an hour of silence, and the first noise
+ * after it reports the call again. last_heard() tells such a stale report
+ * from a fresh one: the time of the last copy actually read, -1 when the
+ * call is no candidate (0 while no clock was ever set). */
+void   skim_callsign_extractor_set_now(SkimCallsignExtractor *x, gint64 now_us);
+gint64 skim_callsign_extractor_last_heard(const SkimCallsignExtractor *x,
+                                          const char *call);
+
 /* One-shot convenience over a complete text buffer (same scoring). */
 double skim_callsign_extract(const char *text, char *out, gsize out_size);
 

@@ -83,6 +83,8 @@ typedef struct {
   double   feed_min_score;     /* 0 = the pipeline's default                  */
   guint    feed_min_hearings;  /* 0 = default; 1 = no hearings gate          */
   double   feed_settle_s;      /* 0 = default; < 0 = send at once            */
+  double   feed_fresh_s;       /* 0 = default (off); < 0 = off               */
+  gboolean feed_learn;         /* decode tap (gatelog.h)                      */
   int      console_s;
   int      http_port;
   gboolean take_over;          /* --take-over: the first start only           */
@@ -132,6 +134,13 @@ static const char *DEFAULT_CONFIG =
   "# (or MASTER.SCP knows it) and stayed settle_s seconds in the station table;\n"
   "# min_hearings=1 and settle_s=0 switch those two off\n"
   "#min_score=0.85\n#min_hearings=2\n#settle_s=8\n"
+  "# fresh_s=N also wants the call READ within the last N s: a stale candidate\n"
+  "# on a quiet channel is not a station (off unless set; 120 = the station TTL)\n"
+  "#fresh_s=120\n"
+  "# learn=true records what the feed gate saw, for learning a better one: per\n"
+  "# band a decode tap in ~/.local/share/skimmer-for-linux/headless/learn —\n"
+  "# skimmer-tap-replay turns it into the gate's rows (~80 MB/day/band raw)\n"
+  "#learn=false\n"
   "\n[status]\n# console table every N s (0 = off); web page port (0 = off)\n"
   "console_s=10\nhttp_port=8073\n";
 
@@ -174,6 +183,13 @@ static gboolean config_load(Hd *h, GError **error) {
     const double v = g_key_file_get_double(kf, "feed", "settle_s", NULL);
     h->feed_settle_s = v > 0 ? v : -1;          /* 0 in the file = off        */
   }
+  h->feed_fresh_s = 0;
+  if (g_key_file_has_key(kf, "feed", "fresh_s", NULL)) {
+    const double v = g_key_file_get_double(kf, "feed", "fresh_s", NULL);
+    h->feed_fresh_s = v > 0 ? v : -1;           /* 0 in the file = off        */
+  }
+  h->feed_learn = g_key_file_has_key(kf, "feed", "learn", NULL) &&
+                  g_key_file_get_boolean(kf, "feed", "learn", NULL);
   if (h->console_s < 0) {
     h->console_s = g_key_file_has_key(kf, "status", "console_s", NULL)
                        ? g_key_file_get_integer(kf, "status", "console_s", NULL) : 10;
@@ -470,20 +486,22 @@ static void status_build(Hd *h, gboolean print) {
   const char *engine = h->nb && h->band[0].p ? skim_pipeline_cw_engine_name(h->band[0].p) : "";
   /* the feed policy that let the spots out — a comparison before and after
    * a policy change must be able to tell the two apart */
-  double pol_score = 0, pol_settle = 0;
+  double pol_score = 0, pol_settle = 0, pol_fresh = 0;
   guint pol_hear = 0;
   if (h->feed && h->nb && h->band[0].p) {
-    skim_pipeline_rbn_policy(h->band[0].p, &pol_score, &pol_hear, &pol_settle);
+    skim_pipeline_rbn_policy(h->band[0].p, &pol_score, &pol_hear, &pol_settle,
+                             &pol_fresh);
   }
   g_string_append_printf(json,
       "{\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
       "\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"engine\":\"%s\","
-      "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f},"
+      "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
+      "\"fresh_s\":%.1f},"
       "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       clock, jstate, h->streaming ? "true" : "false", jhost, h->rate, lost_pct,
-      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle,
+      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_fresh,
       h->feed ? h->feed_port : 0, fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
@@ -715,6 +733,16 @@ int main(int argc, char **argv) {
   char *day = g_date_time_format(now, "%Y-%m-%d");
   g_date_time_unref(now);
   if (h->decode_log) { g_mkdir_with_parents(logdir, 0755); }
+  /* Learning log: a decode tap per band and START (UTC) — a restart begins
+   * a fresh tap, as the extractors and the station table begin fresh. Only
+   * the tap: the gate rows are four times its size live (2026-10-03, 20 m:
+   * 16 MB in 32 min), and skimmer-tap-replay writes them byte for byte from
+   * the tap — under any policy, with any features added since. */
+  char *learndir = g_build_filename(logdir, "learn", NULL);
+  GDateTime *utc = g_date_time_new_now_utc();
+  char *start = g_date_time_format(utc, "%Y%m%d-%H%M%S");
+  g_date_time_unref(utc);
+  if (h->feed_learn) { g_mkdir_with_parents(learndir, 0755); }
   for (guint i = 0; i < h->nb; i++) {
     Band *b = &h->band[i];
     g_mutex_init(&b->lock);
@@ -723,6 +751,8 @@ int main(int argc, char **argv) {
     g_snprintf(b->label, sizeof(b->label), "%s RX%u %s", h->host, i + 1, b->name);
     char *dlog = h->decode_log ? g_strdup_printf("%s/decodes-%s-%s.log", logdir, b->name, day)
                                : NULL;
+    char *tap = h->feed_learn ? g_strdup_printf("%s/tap-%s-%s.log", learndir, b->name, start)
+                              : NULL;
     SkimPipelineConfig pc = {
       .source = SKIM_PIPELINE_SOURCE_EXTERNAL,
       .host = b->label,
@@ -736,9 +766,12 @@ int main(int argc, char **argv) {
       .rbn_min_score = h->feed_min_score,
       .rbn_min_hearings = h->feed_min_hearings,
       .rbn_settle_s = h->feed_settle_s,
+      .rbn_fresh_s = h->feed_fresh_s,
+      .tap_path = tap,
     };
     b->p = skim_pipeline_new(&pc);
     g_free(dlog);
+    g_free(tap);
     skim_pipeline_set_text_cb(b->p, text_cb, b);
     skim_pipeline_set_station_cb(b->p, station_cb, b);
     skim_pipeline_set_station_gone_cb(b->p, gone_cb, b);
@@ -748,16 +781,20 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
+  if (h->feed_learn) { g_message("learn: decode tap in %s", learndir); }
+  g_free(learndir);
+  g_free(start);
   g_free(logdir);
   g_free(day);
   g_message("decode: %u pipelines, engine %s", h->nb,
             skim_pipeline_cw_engine_name(h->band[0].p));
   if (h->feed) {
-    double fs, fset;
+    double fs, fset, ffr;
     guint fh;
-    skim_pipeline_rbn_policy(h->band[0].p, &fs, &fh, &fset);
+    skim_pipeline_rbn_policy(h->band[0].p, &fs, &fh, &fset, &ffr);
     g_message("feed: spots a call at score >= %.2f, read %u times (or in "
-              "MASTER.SCP), after %.0f s settled", fs, fh, fset);
+              "MASTER.SCP), after %.0f s settled, last read <= %.0f s ago "
+              "(0 = any)", fs, fh, fset, ffr);
   }
 
   GSocketService *web = NULL;

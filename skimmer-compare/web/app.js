@@ -166,6 +166,7 @@ function render() {
   renderEngineSelect(S);
   renderRange(S);
   renderParams(S);
+  renderNotice(S);
   renderVerdict(S);
   renderDiffs();
   renderBands(S);
@@ -178,6 +179,22 @@ function render() {
   renderHists(S);
   renderSessions(S);
   $('#updated').textContent = `${S.range.label} · updated ${hms(S.now)} UTC`;
+}
+
+// The chosen comparison may have no compared time in the range — typically
+// the local skimmer switched decoder and the URL still names the old one.
+// Say so loudly instead of showing an empty page.
+function renderNotice(S) {
+  const box = $('#notice');
+  const cur = S.overview.find((o) => o.key === S.engine);
+  const others = S.overview.filter((o) => o.key !== S.engine && o.common_s > 0);
+  if (!cur || cur.common_s > 0) { box.hidden = true; return; }
+  box.replaceChildren(
+    el('span', null, el('b', null, `Nothing compared for ${engLabel(S, S.engine)} in ${S.range.label}.`),
+      others.length ? ' In this range the local skimmer ran:' : ' Pick a wider range.'),
+    ...others.map((o) => el('button', { type: 'button', onclick: () => setEngine(o.key) },
+      `${o.label} (${dur(o.common_s)})`)));
+  box.hidden = false;
 }
 
 function renderStatus(S) {

@@ -85,11 +85,24 @@ typedef struct {
    * one token before "YG") is folded away by the table within that time,
    * but a telnet line cannot be taken back (skimmer-compare vs RBN,
    * 2026-10-01: 36 % of the feed's calls were never confirmed, VE3NEA's
-   * CW Skimmer Server 2 %). */
+   * CW Skimmer Server 2 %). With rbn_fresh_s > 0 the call must also have
+   * been READ within that many seconds (0 = default: no such gate yet,
+   * until it is measured; < 0 = off): a candidate outlives its station, and
+   * noise on the quiet channel reports it again an hour later (2026-10-03:
+   * 98 % of the feed's unconfirmed "heard on the band today" spots were sent
+   * with the call not decoded in the 90 s before; a hand check of ten:
+   * all ten busted). */
   SkimRbnFeed *rbn;
   double       rbn_min_score;
   guint        rbn_min_hearings;
   double       rbn_settle_s;
+  double       rbn_fresh_s;
+
+  /* Feed-gate learning logs (gatelog.h), appended for the pipeline's whole
+   * life; NULL = off. tap: every decode the extractors eat, replayable by
+   * skimmer-tap-replay; gatelog: the gate's view as JSON lines. */
+  const char  *tap_path;
+  const char  *gatelog_path;
 } SkimPipelineConfig;
 
 typedef struct _SkimPipeline SkimPipeline;
@@ -150,6 +163,21 @@ const char *skim_pipeline_cw_engine_name(const SkimPipeline *p);
 
 gboolean skim_pipeline_start_offline(SkimPipeline *p, GError **error);
 
+/* Tap replay (skimmer-tap-replay): drive an OFFLINE pipeline from a decode
+ * tap (gatelog.h) instead of IQ — the decodes go through the same
+ * extractor → station table → spot/RBN path as live, on the tap's clock.
+ * begin sizes the extractors (nchan × nslot as the tap header says); text,
+ * reset and tick (the tap's T, R and C lines) take its t_us (engine clock)
+ * and wall_us (UTC), and each first runs the station prune and the feed's
+ * settle hold up to t_us. nslot must match the build (FALSE otherwise). */
+gboolean skim_pipeline_tap_begin(SkimPipeline *p, guint nchan, guint nslot);
+void     skim_pipeline_tap_text(SkimPipeline *p, gint64 t_us, gint64 wall_us,
+                                guint ix, double hz, const SkimDecode *d,
+                                gboolean contested);
+void     skim_pipeline_tap_reset(SkimPipeline *p, gint64 t_us, gint64 wall_us,
+                                 gint ix);
+void     skim_pipeline_tap_tick(SkimPipeline *p, gint64 t_us, gint64 wall_us);
+
 /* SOURCE_EXTERNAL: queue one IQ block for the engine thread — any thread,
  * never blocks (a full queue drops the block and counts it, like the TCI
  * ingest). A no-op before start / after stop. */
@@ -197,10 +225,11 @@ void   skim_pipeline_set_spot_cq_only(SkimPipeline *p, gboolean cq_only);
 void   skim_pipeline_set_spot_round_hz(SkimPipeline *p, guint hz);
 
 /* The RBN feed policy in force, defaults resolved: score threshold, hearings
- * needed (1 = no such gate), settle time in s (0 = sends at once). All 0
- * when the pipeline has no RBN feed. */
+ * needed (1 = no such gate), settle time in s (0 = sends at once), freshness
+ * in s (0 = no such gate). All 0 when the pipeline has no RBN feed. */
 void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
-                              guint *min_hearings, double *settle_s);
+                              guint *min_hearings, double *settle_s,
+                              double *fresh_s);
 
 /* Counters for the status line / gates. */
 guint64 skim_pipeline_frames(const SkimPipeline *p);
