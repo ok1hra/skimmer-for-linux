@@ -12,9 +12,11 @@ the chosen decoder, inside RBN coverage, gets:
             (--hindsight adds episode length and spot count, an upper bound)
   label     POS     another RBN spotter (±10 min, ±1 kHz) or R heard the call
             ERR     provably wrong at the first spot: RBN or R heard, on the
-                    spot's frequency both BEFORE and AFTER it (so the other
-                    station held it at that moment, not one that came along a
-                    minute later), a SIMILAR call within 100 Hz (a misread) or a
+                    spot's frequency both BEFORE and AFTER it, in two
+                    observations ≥ 30 s apart (so the other station held it at
+                    that moment, not one that came along a minute later — a
+                    single spot next to ours is only SUSPECT), a SIMILAR call
+                    within 100 Hz (a misread) or a
                     DIFFERENT station calling within 60 Hz (the frequency was
                     taken — L's call is a ghost or misplaced)
             SUSPECT a similar call within 300 Hz or another caller within 60 Hz
@@ -77,7 +79,9 @@ WIDE_S, WIDE_KHZ = 30 * 60, 3.0            # UNSURE: present, frequency off
 ERR_S = 300                                # ERR evidence is looked for this far
                                            # around the FIRST spot, and must HOLD
                                            # the frequency across it: heard there
-BRACKET_S = 10                             # both before and after t0 (± this)
+                                           # at or before t0 AND at or after t0,
+HOLD_GAP_S = 30                            # in two observations this far apart
+                                           # (not one CQ that two spotters reported)
 MISREAD_KHZ = 0.1                          # a similar call this close, or …
 TAKEN_KHZ = 0.06                           # … a different caller this close (two
                                            # CQs 100–150 Hz apart are normal on a
@@ -180,10 +184,12 @@ def label(ep, rbn, Rs, r_heard):
     near = [x for x in near if x[1] != call]
 
     def holds(c, df, calling):
-        """c was heard within df of the spot both before and after t0."""
+        """c was heard within df of the spot both before and after t0, in two
+        separate observations — one spot near t0 is merely NEAR (SUSPECT)."""
         ts = [t for t, x, fr, cq in near
               if x == c and abs(fr - f0) <= df and (cq or not calling)]
-        return bool(ts) and min(ts) <= t0 + BRACKET_S and max(ts) >= t0 - BRACKET_S
+        before, after = [t for t in ts if t <= t0], [t for t in ts if t >= t0]
+        return bool(before and after) and max(after) - min(before) >= HOLD_GAP_S
 
     alike = sorted({c for _, c, _, _ in near if similar(c, call, 2) is not None})
     callers = sorted({c for _, c, fr, cq in near if cq and abs(fr - f0) <= TAKEN_KHZ})
