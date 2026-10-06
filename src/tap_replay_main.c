@@ -12,6 +12,9 @@
  *     --min-score X --min-hearings N --settle-s S --fresh-s S
  *                       the hand gate's policy, as headless.ini [feed] takes it
  *     --nchan N         extractor slots to size for (default 4096 channels)
+ *     --gate-ini FILE   the learned feed gate in shadow (feed_gate.h): every
+ *                       "spot" row gets its p ("lr") and features ("x")
+ *     --band NAME       the tap's band for the model's band feature ("40m")
  *
  * A decode tap (gatelog.h) is what skimmer-headless's extractors ate live,
  * one line per decode, after ghost arbitration and the frequency lock. This
@@ -32,7 +35,7 @@
 #include "engine/rbn_feed.h"
 
 typedef struct {
-  const char *rows, *tap_out, *scp;
+  const char *rows, *tap_out, *scp, *gate_ini, *band;
   double      min_score, settle_s, fresh_s;
   guint       min_hearings, nchan;
 } Opts;
@@ -64,6 +67,8 @@ static gboolean run_begin(Run *r, const Opts *o, guint nslot) {
     .rbn_fresh_s      = o->fresh_s,
     .tap_path         = o->tap_out,
     .gatelog_path     = o->rows,
+    .feed_gate_path   = o->gate_ini,
+    .band             = o->band,
   };
   r->p = skim_pipeline_new(&cfg);
   GError *err = NULL;
@@ -174,7 +179,7 @@ int main(int argc, char **argv) {
   char *scp_default = g_build_filename(g_get_user_config_dir(),
                                        "skimmer-for-linux", "master.scp", NULL);
   Opts o = { .scp = scp_default, .nchan = 4096 };
-  gchar *rows = NULL, *tap_out = NULL, *scp = NULL;
+  gchar *rows = NULL, *tap_out = NULL, *scp = NULL, *gate_ini = NULL, *band = NULL;
   gint hearings = 0, nchan = 0;
   gchar **files = NULL;
   GOptionEntry ent[] = {
@@ -187,6 +192,9 @@ int main(int argc, char **argv) {
     { "fresh-s", 0, 0, G_OPTION_ARG_DOUBLE, &o.fresh_s,
       "the call must have been READ within S s (0 = default: off; < 0 = off)", "S" },
     { "nchan", 0, 0, G_OPTION_ARG_INT, &nchan, "channels to size for", "N" },
+    { "gate-ini", 0, 0, G_OPTION_ARG_FILENAME, &gate_ini,
+      "learned feed gate in shadow: p and features on every spot row", "FILE" },
+    { "band", 0, 0, G_OPTION_ARG_STRING, &band, "the tap's band (\"40m\")", "NAME" },
     { G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &files, NULL, "TAP…" },
     { NULL },
   };
@@ -201,6 +209,8 @@ int main(int argc, char **argv) {
   if (scp) { o.scp = scp; }
   o.rows = rows;
   o.tap_out = tap_out;
+  o.gate_ini = gate_ini;
+  o.band = band;
   o.min_hearings = hearings > 0 ? (guint)hearings : 0;
   if (nchan > 0) { o.nchan = (guint)nchan; }
 
@@ -221,6 +231,8 @@ int main(int argc, char **argv) {
   g_free(rows);
   g_free(tap_out);
   g_free(scp);
+  g_free(gate_ini);
+  g_free(band);
   g_free(scp_default);
   return 0;
 }

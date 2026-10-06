@@ -76,6 +76,14 @@ void skim_gatelog_event(SkimGateLog *g, gint64 t_us, gint64 wall_us,
                         const char *ev, const char *call, double hz,
                         double snr_db, double wpm);
 
+/* A "spot" event scored by the learned gate in shadow (feed_gate.h): the
+ * same line as skim_gatelog_event(…, "spot", …) plus "lr" (its p) and "x"
+ * (the feature vector, feed_gate names order) — the offline parity check
+ * against learn.py reads both. */
+void skim_gatelog_spot(SkimGateLog *g, gint64 t_us, gint64 wall_us,
+                       const char *call, double hz, double snr_db, double wpm,
+                       double lr, const double *x, guint nx);
+
 G_END_DECLS
 
 #endif /* SKIMMER_GATELOG_H */

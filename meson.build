@@ -64,6 +64,7 @@ engine_sources = [
   'src/engine/spectrum.c',     # M8: band spectrum rows for the waterfall
   'src/engine/pipeline.c',     # M5: the engine assembled end to end
   'src/engine/gatelog.c',      # feed-gate learning logs (decode tap + rows)
+  'src/engine/feed_gate.c',    # the learned feed gate (shadow mode)
 ]
 engine_deps = [glib_dep, gio_dep, lws_dep, wdsp_dep, fftw3f_dep, m_dep, dl_dep]
 
@@ -220,6 +221,16 @@ skimmer_call_test = executable('skimmer-call-test',
   link_with : engine_lib,
 )
 test('callsign', skimmer_call_test, timeout : 60)
+
+# Learned feed gate: a known ini gives a known p, bad inis are refused,
+# the tracker's window/neighbour features, likeness as skimcmp's similar().
+skimmer_feed_gate_test = executable('skimmer-feed-gate-test',
+  ['src/feed_gate_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('feed-gate', skimmer_feed_gate_test, timeout : 60)
 
 # Logbook dup lookup gate: mock log-for-linux UDP responder — verdict
 # round-trips (newline answers), silence→UNKNOWN, TTL cache, re-ask

@@ -124,6 +124,23 @@ void skim_gatelog_cand(SkimGateLog *g, gint64 t_us, gint64 wall_us, guint ix,
   fflush(g->rows);
 }
 
+void skim_gatelog_spot(SkimGateLog *g, gint64 t_us, gint64 wall_us,
+                       const char *call, double hz, double snr_db, double wpm,
+                       double lr, const double *x, guint nx) {
+  if (!g || !g->rows)
+    return;
+  fprintf(g->rows,
+          "{\"ev\":\"spot\",\"w\":%s,\"t\":%s,\"call\":\"%s\",\"hz\":%s,"
+          "\"snr\":%s,\"wpm\":%s,\"lr\":%s,\"x\":[",
+          num(wall_us / 1e6, 3), num(t_us / 1e6, 3), call, num(hz, 1),
+          num(snr_db, 1), num(wpm, 1), num(lr, 4));
+  for (guint i = 0; i < nx; i++) {
+    fprintf(g->rows, "%s%s", i ? "," : "", num(x[i], 4));
+  }
+  fputs("]}\n", g->rows);
+  fflush(g->rows);
+}
+
 void skim_gatelog_event(SkimGateLog *g, gint64 t_us, gint64 wall_us,
                         const char *ev, const char *call, double hz,
                         double snr_db, double wpm) {

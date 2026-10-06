@@ -27,6 +27,7 @@
 #include "decode_cw.h"
 #include "decode_deepcw.h"
 #include "decode_rtty.h"
+#include "feed_gate.h"
 #include "gatelog.h"
 #include "hpsdr_p1.h"
 #include "spot_out.h"
@@ -205,6 +206,10 @@ struct _SkimPipeline {
   char             *dlog_path;                 /* decode log (engine thread) */
   FILE             *dlog;
   SkimGateLog      *glog;                      /* feed-gate learning logs    */
+  SkimFeedGate      *fgate;                     /* learned gate, shadow       */
+  SkimFeedGateTrack *fgtrack;                   /* its features               */
+  char              *band;
+  gint              fg_spots, fg_below;        /* atomic: status thread reads */
   gint64            wall_off_us;               /* tap replay: UTC − stream   */
   gint64            tap_clock_us;              /* last clock line in the tap */
 
@@ -349,8 +354,20 @@ static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
     g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm\n", call,
                freq_hz / 1000.0, snr_db, speed);
   }
-  skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "spot", call,
-                     freq_hz, snr_db, speed);
+  if (p->fgate) {
+    /* shadow: score the line, report it — the hand gate already decided */
+    double x[SKIM_FEED_GATE_NFEAT];
+    skim_feed_gate_track_features(p->fgtrack, pipe_now_us(p), pipe_wall_us(p),
+                                  call, freq_hz, p->band, x);
+    const double lr = skim_feed_gate_p(p->fgate, x);
+    g_atomic_int_inc(&p->fg_spots);
+    if (lr < skim_feed_gate_threshold(p->fgate)) { g_atomic_int_inc(&p->fg_below); }
+    skim_gatelog_spot(p->glog, pipe_now_us(p), pipe_wall_us(p), call, freq_hz,
+                      snr_db, speed, lr, x, SKIM_FEED_GATE_NFEAT);
+  } else {
+    skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "spot", call,
+                       freq_hz, snr_db, speed);
+  }
   skim_rbn_feed_spot(p->cfg.rbn, call, mode, freq_hz, snr_db, speed);
 }
 
@@ -413,6 +430,21 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     p->glog = skim_gatelog_open(p->cfg.tap_path, p->cfg.gatelog_path,
                                 skim_pipeline_cw_engine_name(p), NSLOT);
   }
+  p->band = g_strdup(cfg->band);
+  p->cfg.band = p->band;
+  if (p->cfg.feed_gate_path && p->cfg.rbn) {
+    GError *err = NULL;
+    p->fgate = skim_feed_gate_load(p->cfg.feed_gate_path, &err);
+    if (p->fgate) {
+      p->fgtrack = skim_feed_gate_track_new(skim_feed_gate_win_s(p->fgate),
+                                            skim_feed_gate_near_khz(p->fgate));
+    } else {
+      g_warning("pipeline: feed gate not loaded, running without: %s",
+                err ? err->message : "?");
+      g_clear_error(&err);
+    }
+  }
+  p->cfg.feed_gate_path = NULL;                /* borrowed: not kept         */
   if (p->cfg.dict_path) {
     GError *err = NULL;
     if (!skim_callsign_dict_load(p->cfg.dict_path, &err)) {
@@ -461,6 +493,9 @@ void skim_pipeline_free(SkimPipeline *p) {
   g_clear_pointer(&p->rbn_pending, g_hash_table_destroy);
   g_clear_pointer(&p->dupq, skim_dup_query_free);
   g_clear_pointer(&p->glog, skim_gatelog_close);
+  g_clear_pointer(&p->fgate, skim_feed_gate_free);
+  g_clear_pointer(&p->fgtrack, skim_feed_gate_track_free);
+  g_free(p->band);
   IqBlock *b;
   while ((b = g_async_queue_try_pop(p->queue)) != NULL) {
     g_free(b->iq);
@@ -841,10 +876,14 @@ static void spec_feed(SkimPipeline *p, const IqBlock *b) {
 static void gatelog_cand(SkimPipeline *p, guint ix, double sig_hz,
                          const SkimDecode *d, gboolean contested,
                          const SkimStation *st) {
-  if (!p->glog)
+  if (!p->glog && !p->fgtrack)
     return;
   SkimCallsignCand cand;
   if (!skim_callsign_extractor_top(p->ext[ix], &cand))
+    return;
+  skim_feed_gate_track_row(p->fgtrack, pipe_now_us(p), sig_hz, d->speed,
+                           d->snr_db, d->confidence, &cand, st);
+  if (!p->glog)
     return;
   skim_gatelog_cand(p->glog, pipe_now_us(p), pipe_wall_us(p), ix, sig_hz,
                     d->speed, d->snr_db, d->confidence, contested, &cand, st,
@@ -1573,6 +1612,14 @@ void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
   if (min_score)    { *min_score    = on ? p->rbn_min : 0; }
   if (min_hearings) { *min_hearings = on ? p->rbn_hearings : 0; }
   if (settle_s)     { *settle_s     = on ? p->rbn_settle_us / 1e6 : 0; }
+}
+const char *skim_pipeline_feed_gate_stats(const SkimPipeline *p,
+                                          double *threshold, guint64 *spots,
+                                          guint64 *below) {
+  if (threshold) { *threshold = p->fgate ? skim_feed_gate_threshold(p->fgate) : 0; }
+  if (spots)     { *spots = (guint)g_atomic_int_get(&p->fg_spots); }
+  if (below)     { *below = (guint)g_atomic_int_get(&p->fg_below); }
+  return p->fgate ? skim_feed_gate_id(p->fgate) : NULL;
 }
 guint64 skim_pipeline_rbn_spots(const SkimPipeline *p) {
   return p->rbn_spots ? skim_spot_out_count(p->rbn_spots) : 0;

@@ -103,6 +103,14 @@ typedef struct {
    * skimmer-tap-replay; gatelog: the gate's view as JSON lines. */
   const char  *tap_path;
   const char  *gatelog_path;
+
+  /* The learned feed gate (feed_gate.h), SHADOW mode: p is computed for
+   * every line the RBN feed sends and only reported — gatelog "spot" rows,
+   * skim_pipeline_feed_gate_stats(). The hand gate still decides. NULL =
+   * none; a bad ini warns and runs without. band names the pipeline's band
+   * for the model's band feature ("40m"; NULL = none). */
+  const char  *feed_gate_path;
+  const char  *band;
 } SkimPipelineConfig;
 
 typedef struct _SkimPipeline SkimPipeline;
@@ -230,6 +238,13 @@ void   skim_pipeline_set_spot_round_hz(SkimPipeline *p, guint hz);
 void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
                               guint *min_hearings, double *settle_s,
                               double *fresh_s);
+
+/* The learned feed gate in shadow (cfg.feed_gate_path): its ini name
+ * (NULL = none loaded), threshold, the RBN lines it scored and how many of
+ * them scored below the threshold — the ones it would have held back. */
+const char *skim_pipeline_feed_gate_stats(const SkimPipeline *p,
+                                          double *threshold, guint64 *spots,
+                                          guint64 *below);
 
 /* Counters for the status line / gates. */
 guint64 skim_pipeline_frames(const SkimPipeline *p);

@@ -85,6 +85,7 @@ typedef struct {
   double   feed_settle_s;      /* 0 = default; < 0 = send at once            */
   double   feed_fresh_s;       /* 0 = default (off); < 0 = off               */
   gboolean feed_learn;         /* decode tap (gatelog.h)                      */
+  char    *feed_gate;          /* learned gate ini, shadow (feed_gate.h)      */
   int      console_s;
   int      http_port;
   gboolean take_over;          /* --take-over: the first start only           */
@@ -141,6 +142,9 @@ static const char *DEFAULT_CONFIG =
   "# band a decode tap in ~/.local/share/skimmer-for-linux/headless/learn —\n"
   "# skimmer-tap-replay turns it into the gate's rows (~80 MB/day/band raw)\n"
   "#learn=false\n"
+  "# gate=FILE scores every spot with the learned feed gate (skimmer-compare\n"
+  "# gate/learn.py) — SHADOW: reported in the status, the hand gate decides\n"
+  "#gate=feed-gate.ini\n"
   "\n[status]\n# console table every N s (0 = off); web page port (0 = off)\n"
   "console_s=10\nhttp_port=8073\n";
 
@@ -190,6 +194,17 @@ static gboolean config_load(Hd *h, GError **error) {
   }
   h->feed_learn = g_key_file_has_key(kf, "feed", "learn", NULL) &&
                   g_key_file_get_boolean(kf, "feed", "learn", NULL);
+  g_clear_pointer(&h->feed_gate, g_free);
+  char *gate = g_key_file_get_string(kf, "feed", "gate", NULL);
+  if (gate && gate[0]) {
+    char *dir = g_path_get_dirname(h->cfg_path);   /* relative: next to the ini */
+    char *x = gate[0] == '~' ? g_build_filename(g_get_home_dir(), gate + 1, NULL)
+                             : g_strdup(gate);
+    h->feed_gate = g_path_is_absolute(x) ? g_strdup(x) : g_build_filename(dir, x, NULL);
+    g_free(x);
+    g_free(dir);
+  }
+  g_free(gate);
   if (h->console_s < 0) {
     h->console_s = g_key_file_has_key(kf, "status", "console_s", NULL)
                        ? g_key_file_get_integer(kf, "status", "console_s", NULL) : 10;
@@ -492,19 +507,39 @@ static void status_build(Hd *h, gboolean print) {
     skim_pipeline_rbn_policy(h->band[0].p, &pol_score, &pol_hear, &pol_settle,
                              &pol_fresh);
   }
+  /* the learned gate in shadow: what it would have held back, all bands */
+  const char *fg_id = NULL;
+  double fg_thr = 0;
+  guint64 fg_spots = 0, fg_below = 0;
+  for (guint i = 0; i < h->nb; i++) {
+    guint64 n = 0, k = 0;
+    const char *id = h->band[i].p ? skim_pipeline_feed_gate_stats(h->band[i].p, &fg_thr,
+                                                                  &n, &k) : NULL;
+    if (id) { fg_id = id; }
+    fg_spots += n;
+    fg_below += k;
+  }
+  char *jgid = fg_id ? json_str(fg_id) : NULL;
+  char *jgate = fg_id
+      ? g_strdup_printf("{\"id\":\"%s\",\"mode\":\"shadow\",\"threshold\":%.2f,"
+                        "\"spots\":%" G_GUINT64_FORMAT ",\"below\":%" G_GUINT64_FORMAT "}",
+                        jgid, fg_thr, fg_spots, fg_below)
+      : g_strdup("null");
+  g_free(jgid);
   g_string_append_printf(json,
       "{\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
       "\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
-      "\"fresh_s\":%.1f},"
+      "\"fresh_s\":%.1f},\"feed_gate\":%s,"
       "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       clock, jstate, h->streaming ? "true" : "false", jhost, h->rate, lost_pct,
-      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_fresh,
+      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_fresh, jgate,
       h->feed ? h->feed_port : 0, fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
+  g_free(jgate);
   g_free(jhost);
 
   GString *cards = g_string_new("<div class=bands>");
@@ -768,6 +803,8 @@ int main(int argc, char **argv) {
       .rbn_settle_s = h->feed_settle_s,
       .rbn_fresh_s = h->feed_fresh_s,
       .tap_path = tap,
+      .feed_gate_path = h->feed_gate,
+      .band = b->name,
     };
     b->p = skim_pipeline_new(&pc);
     g_free(dlog);
@@ -782,6 +819,11 @@ int main(int argc, char **argv) {
     }
   }
   if (h->feed_learn) { g_message("learn: decode tap in %s", learndir); }
+  if (h->feed_gate) {
+    const char *id = h->nb ? skim_pipeline_feed_gate_stats(h->band[0].p, NULL, NULL, NULL)
+                           : NULL;
+    if (id) { g_message("feed gate: %s in SHADOW (logged only)", h->feed_gate); }
+  }
   g_free(learndir);
   g_free(start);
   g_free(logdir);
