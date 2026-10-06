@@ -2,12 +2,16 @@
 
 Only spots inside the common frequency windows and the common time (both
 feeds connected, local skimmer healthy, running the chosen decoder) take
-part — each local decoder is a comparison of its own. Both sides re-spot on
+part — the local windows being the bands it was listening to at the time — each local decoder is a comparison of its own. Both sides re-spot on
 their own schedule, so spots are first merged into EPISODES: one call on
 one band, spots joined while the gap is at most gap_min. Then:
 
   match    an L and an R episode of the same call overlap in time (± slack)
-           and frequency (± df)
+           and frequency (± df); an episode left over still counts as caught
+           by the other side when that side spotted the call near it (one
+           long episode of one side may span several of the other's) — the
+           event then lists the leftover episode only, its partner being
+           counted where it was matched
   nonCQ    an L episode the remote heard only as DE / without CQ — neither
            a catch nor a plain miss for R
   bust     unmatched L and R episodes of DIFFERENT but similar calls at the
@@ -18,15 +22,20 @@ Each event carries the referee's verdict (rbn / scp / none) and whether it
 belongs to the recall universe (a real station: confirmed, or both skimmers
 agree), who caught it and who busted it.
 """
+import time
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from statistics import median
 
 from .arbiter import RANK, Arbiter
-from .intervals import Membership, intersect, normalize, subtract
+from .intervals import Membership, intersect, normalize, subtract, total
 from .windows import Windows
 
 CQ_WORDS = {"CQ", "TEST", "QRZ"}
+
+
+def hm(t):
+    return time.strftime("%H:%M", time.gmtime(t))
 
 
 class Episode:
@@ -125,12 +134,13 @@ def curve_at(pts, x):
     return pts[-1][1]
 
 
-def compared_time(store, P, now, default_engine):
-    """Sessions, recorded spans, RBN coverage and the common time split by
-    local decoder: [(a, b, engine)]."""
+def compared_time(store, P, now, default_engine, default_windows=()):
+    """Sessions, recorded spans, RBN coverage, the common time split by
+    local decoder: [(a, b, engine)] and by local band plan: [(a, b, windows)]."""
     sessions = store.ordered()
-    latest = sessions[-1].T if sessions else None
-    info, spans, rbn_up, segs = [], [], [], []
+    cur = store.current(now)
+    latest = cur.T if cur else None
+    info, spans, rbn_up, segs, wsegs = [], [], [], [], []
     for s in sessions:
         end = s.end(s.T == latest, now)
         if end <= s.start:
@@ -143,6 +153,8 @@ def compared_time(store, P, now, default_engine):
             for x, y in intersect(c, [(a, b)]):
                 segs.append((x, y, eng))
                 engines[eng] = engines.get(eng, 0) + y - x
+        for a, b, w in s.windows(lup):
+            wsegs.extend((x, y, w) for x, y in intersect(c, [(a, b)]))
         rbn_up += s.up("rbn", end)
         spans.append((s.start, end))
         info.append({"T": s.T, "start": s.start, "end": end,
@@ -150,7 +162,35 @@ def compared_time(store, P, now, default_engine):
                      "common_s": sum(b - a for a, b in c), "engines": engines,
                      "has_rbn": "rbn" in s.tails})
     segs.sort()
-    return info, spans, normalize(rbn_up), segs
+    wsegs.sort(key=lambda w: w[0])
+    # a connection that never said its bands: the plan nearest in time that
+    # did, not today's config — that may already list a band added since
+    known = [(a, w) for a, _, w in wsegs if w]
+    for i, (a, b, w) in enumerate(wsegs):
+        if w is None:
+            near = min(known, key=lambda k: abs(k[0] - a), default=None)
+            wsegs[i] = (a, b, near[1] if near else default_windows)
+    return info, spans, normalize(rbn_up), segs, wsegs
+
+
+class BandPlan:
+    """The local band plan in force at time t: the common-window band of a
+    spot heard then, or None. Adding a band must not count it as missed by
+    the local skimmer in the time before it listened there."""
+
+    def __init__(self, wsegs, remote_w, guard_khz):
+        self.segs = wsegs
+        self.starts = [a for a, _, _ in wsegs]
+        self.win = {}
+        for _, _, w in wsegs:
+            if w not in self.win:
+                self.win[w] = Windows(list(w), remote_w, guard_khz)
+
+    def band(self, t, f):
+        i = bisect_right(self.starts, t) - 1
+        if i < 0 or t > self.segs[i][1]:
+            return None
+        return self.win[self.segs[i][2]].band(f)
 
 
 def engine_summary(segs):
@@ -172,23 +212,32 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
     A = Analysis()
     A.params, A.version, A.computed = dict(P), store.version, now
     A.engine = engine
-    win = A.win = Windows(local_w, remote_w, P["guard_khz"])
     gap, slack = P["gap_min"] * 60, P["slack_min"] * 60
     df, bust_df, bust_dt = P["df_khz"], P["bust_df_hz"] / 1000.0, P["bust_dt_s"]
 
     # ---- time: sessions, common time (of this decoder), RBN coverage ------------
-    A.sessions, A.spans, A.rbn_up, segs = compared_time(store, P, now, default_engine)
+    A.sessions, A.spans, A.rbn_up, segs, wsegs = compared_time(store, P, now, default_engine,
+                                                               tuple(local_w))
     A.segments = segs
     A.common = normalize([(a, b) for a, b, eng in segs if engine is None or eng == engine])
     inside = Membership(A.common)
+    plan = BandPlan(wsegs, remote_w, P["guard_khz"])
+    # the bands shown: every band listened to in the compared time, at its
+    # newest centre; the configured ones when nothing was compared
+    newest = {}
+    for a, b, w in wsegs:
+        if total(intersect(A.common, [(a, b)])) > 0:
+            newest.update((n, (n, lo, hi)) for n, lo, hi in w)
+    win = A.win = Windows(sorted(newest.values(), key=lambda w: w[1]) or local_w,
+                          remote_w, P["guard_khz"])
 
     # ---- spots inside the compared range ---------------------------------------
     A.Lall, A.Rall = list(store.L), list(store.R)
     Lin, Rin = [], []
     for src, dst in ((A.Lall, Lin), (A.Rall, Rin)):
         for sp in src:
-            b = win.band(sp.f)
-            if b and sp.t in inside:
+            b = plan.band(sp.t, sp.f) if sp.t in inside else None
+            if b:
                 dst.append((b, sp))
     Lin = [(b, sp) for b, sp in Lin if sp.cm in CQ_WORDS]
     Rcq = [(b, sp) for b, sp in Rin if sp.cm in CQ_WORDS]
@@ -220,6 +269,37 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
         if best:
             le.used = best[1].used = True
             pairs.append((le, best[1]))
+
+    # ---- 1b. leftovers the other side spotted anyway ---------------------------------
+    # Episodes split on each side's own re-spot schedule, so one L episode can
+    # overlap several R episodes but match only one of them. A leftover whose
+    # call the other side spotted (CQ) within ± slack and ± df was caught by
+    # both: paired with that spot's episode if still free, otherwise covered.
+    def spot_index(eps):
+        idx = defaultdict(list)
+        for ep in eps:
+            for sp in ep.spots:
+                idx[(ep.band, ep.call)].append((sp.t, sp.f, ep))
+        for v in idx.values():
+            v.sort(key=lambda x: x[0])
+        return idx
+
+    covered = []                                 # (leftover episode, covering episode)
+    for mine, theirs in ((Reps, spot_index(Leps)), (Leps, spot_index(Reps))):
+        for ep in mine:
+            if ep.used:
+                continue
+            near = [o for t, f, o in theirs.get((ep.band, ep.call), ())
+                    if ep.t0 - slack <= t <= ep.t1 + slack and abs(f - ep.f) <= df]
+            if not near:
+                continue
+            free = [o for o in near if not o.used]
+            ep.used = True
+            if free:
+                free[0].used = True
+                pairs.append((free[0], ep) if ep.side == "R" else (ep, free[0]))
+            else:
+                covered.append((ep, near[0]))
 
     # ---- 2. R heard it, but not as CQ ---------------------------------------------
     noncq = []
@@ -330,6 +410,15 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
         if v[0] == "none":
             v = ("agree", 0)
         add("match", le, re_, le.call, v, True, True, True, lat=re_.t0 - le.t0)
+
+    for ep, other in covered:
+        v = verdict(ep)
+        if v[0] == "none":
+            v = ("agree", 0)
+        le, re_ = (ep, None) if ep.side == "L" else (None, ep)
+        add("match", le, re_, ep.call, v, True, True, True,
+            note="%s spotted it too, in its %s–%s episode (counted there)"
+                 % (other.side, hm(other.t0), hm(other.t1)))
 
     for le, hits in noncq:
         v = verdict(le)

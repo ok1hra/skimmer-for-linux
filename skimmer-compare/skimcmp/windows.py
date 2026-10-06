@@ -1,7 +1,8 @@
 """windows.py — which frequencies both skimmers can hear.
 
-Local windows come from skimmer-headless's own config (centre ± rate/2 per
-band), remote windows from compare.ini. Only the intersection is compared,
+Local windows come from what skimmer-headless reported it was listening to
+(centre ± rate/2 per band in its status snapshots; its own config where a
+connection has no snapshot), remote windows from compare.ini. Only the intersection is compared,
 minus a guard at each edge where one receiver's filter may already roll off.
 All frequencies are kHz.
 """
@@ -22,6 +23,21 @@ def load_local(path):
             continue
         out.append((name, c - rate / 2000.0, c + rate / 2000.0))
     return sorted(out, key=lambda w: w[1])
+
+
+def snapshot_windows(d):
+    """((band, lo, hi), ...) from a /status.json snapshot, or None."""
+    rate, bands = d.get("rate"), d.get("bands")
+    if not rate or not isinstance(bands, list):
+        return None
+    out = []
+    for b in bands:
+        try:
+            name, c = str(b["band"]), float(b["centre_hz"]) / 1000.0
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append((name, c - rate / 2000.0, c + rate / 2000.0))
+    return tuple(sorted(out, key=lambda w: w[1])) or None
 
 
 def parse_ranges(text):

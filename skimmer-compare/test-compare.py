@@ -23,6 +23,18 @@ checks that the comparison finds exactly that:
     one L line written in two halves across polls → parsed exactly once
   decoders: session A's status snapshots name no decoder (→ the configured
     default cw-v2), session B's say deepcw → two separate comparisons
+  current session: a recorder still running, and a newer one that was
+    started and stopped beside it within a second → the running one is
+    "the session", live, not the empty newer one
+  band plan: L adds 17 m mid-session (restart, its status snapshots list
+    the bands) → an R station on 17 m before that is ignored, one after it
+    is only-R; both bands are shown; an earlier session with no status
+    snapshots takes the nearest plan (40 m only), not the config's 17 m
+  episodes split differently: L spots YU1AAA every 10 min for an hour (one
+    episode), R at the start and 45 min later (two) → one match and one
+    covered match, no only-R; mirrored for S5BBB (R long, L twice); and an
+    L/R pair whose episode medians sit 4 kHz apart but whose spots meet is
+    paired by the spots
 
   ./test-compare.py            exit 0 = everything passed
 """
@@ -295,11 +307,151 @@ def web(root):
         p.wait(5)
 
 
+def current_session():
+    print("=== current session — a short run beside a running recorder")
+    root = tempfile.mkdtemp(prefix="compare-cur-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    now = time.time()
+    stamp = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+    name = lambda t: time.strftime("%Y%m%d-%H%M%S", time.gmtime(t))
+    run, short = name(now - 600), name(now - 120)
+    with open(os.path.join(logs, "events-%s.log" % run), "w") as fh:
+        fh.write("%s recording as OK1HRA since %s UTC\n" % (stamp(now - 600), run))
+        fh.write("%s local up: 1 spots (+1)\n" % stamp(now - 30))
+    with open(os.path.join(logs, "local-%s.log" % run), "w") as fh:
+        fh.write("#%s\tconnected to 127.0.0.1:7302\n" % stamp(now - 600))
+    with open(os.path.join(logs, "events-%s.log" % short), "w") as fh:
+        fh.write("%s recording as OK1HRA since %s UTC\n" % (stamp(now - 120), short))
+        fh.write("%s stopped — write check OK\n" % stamp(now - 119))
+    store = Store(logs, lambda: RbnIndex(loose_bands([("40m", 7000, 7091)], 2.0), set()))
+    store.poll()
+    cur = store.current(time.time())
+    check(cur is not None and cur.T == run,
+          "Store.current() is the running recorder, not the newer stopped one")
+    info = compared_time(store, {"lost_pct": 1.0}, time.time(), "cw-v2")[0]
+    live = [i["T"] for i in info if i["live"]]
+    check(live == [run], "only the running session is live (%s)" % live)
+
+
+def split_episodes():
+    print("=== split episodes — one long episode spans two of the other side")
+    root = tempfile.mkdtemp(prefix="compare-split-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    with open(os.path.join(root, "headless.ini"), "w") as fh:
+        fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n")
+    with open(os.path.join(root, "master.scp"), "w") as fh:
+        fh.write("# test\nYU1AAA\nS5BBB\nHA1CCC\n")
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\n"
+                 "[remote]\nwindows = 7000-7091\n[rbn]\nexclude = OK1HRA\n")
+    T = "20261001-120000"
+    loc = [mark("12:00:00", "connected to 127.0.0.1:7302")]
+    loc += [L("12:%02d:00" % m, 7010.0, "YU1AAA") for m in range(5, 56, 10)]
+    loc += [L("13:10:00", 7020.0, "S5BBB"), L("13:55:00", 7020.0, "S5BBB")]
+    loc += [L("14:10:00", 7031.0, "HA1CCC"), L("14:12:00", 7031.0, "HA1CCC"),
+            L("14:14:00", 7031.0, "HA1CCC")]
+    rem = [mark("12:00:00", "connected to 192.168.1.201:7301"),
+           R("12:06:00", 7010.0, "YU1AAA"), R("12:50:00", 7010.0, "YU1AAA")]
+    rem += [R("13:%02d:00" % m, 7020.0, "S5BBB") for m in range(5, 56, 10)]
+    rem += [R("14:11:00", 7031.0, "HA1CCC"), R("14:13:00", 7035.0, "HA1CCC"),
+            R("14:15:00", 7035.0, "HA1CCC")]
+    events = ["%s recording as OK1HRA since %s UTC\n" % (ts("12:00:00"), T),
+              "%s stopped — write check OK\n" % ts("15:00:00")]
+    for kind, lines in (("local", loc), ("remote", rem), ("events", events)):
+        with open(os.path.join(logs, "%s-%s.log" % (kind, T)), "w") as fh:
+            fh.writelines(lines)
+    cfg = Config(os.path.join(root, "compare.ini"))
+    store = Store(cfg.logs, lambda: RbnIndex(loose_bands(cfg.local_windows, 2.0), cfg.exclude))
+    store.poll()
+    An = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
+                 epoch("23:00:00"))
+    by = {}
+    for e in An.events:
+        by.setdefault(e["call"], []).append(e)
+    for call, side in (("YU1AAA", "R"), ("S5BBB", "L")):
+        g = by.get(call, [])
+        cov = [e for e in g if e["cat"] == "match" and (e["L"] is None or e["R"] is None)]
+        check(len(g) == 2 and all(e["cat"] == "match" and e["cL"] and e["cR"] for e in g)
+              and len(cov) == 1 and cov[0][side] is not None and "counted there" in cov[0]["note"],
+              "%s: one match + one covered %s episode, no only-%s (%s)"
+              % (call, side, side, [(e["cat"], e["L"] is not None, e["R"] is not None) for e in g]))
+    g = by.get("HA1CCC", [])
+    check(len(g) == 1 and g[0]["cat"] == "match" and g[0]["L"] and g[0]["R"],
+          "HA1CCC: medians 4 kHz apart, spots meet → paired (%s)" % [e["cat"] for e in g])
+    S = summarize(An, 0, epoch("23:00:00"))
+    check(S["recall"]["n"] == 5 and S["recall"]["L"]["k"] == 5 and S["recall"]["R"]["k"] == 5,
+          "recall: 5 real events, each caught by both")
+    check(S["bust"]["L"]["n"] == 4 and S["bust"]["R"]["n"] == 4,
+          "episodes counted once each: L 4, R 4 (%d, %d)" % (S["bust"]["L"]["n"], S["bust"]["R"]["n"]))
+
+
+def band_plan():
+    print("=== band plan — a band added later is not missed before it")
+    root = tempfile.mkdtemp(prefix="compare-plan-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    with open(os.path.join(root, "headless.ini"), "w") as fh:
+        fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n17m=18110000\n")
+    with open(os.path.join(root, "master.scp"), "w") as fh:
+        fh.write("# test\nUA9AAA\nUA9BBB\nUA9CCC\n")
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\n"
+                 "[remote]\nwindows = 7000-7091 18068-18159\n[rbn]\nexclude = OK1HRA\n")
+    E = "20261001-100000"                        # no status file at all
+    for kind, lines in (("local", [mark("10:00:00", "connected to 127.0.0.1:7302")]),
+                        ("remote", [mark("10:00:00", "connected to 192.168.1.201:7301"),
+                                    R("10:30:00", 18080.0, "UA9CCC")]),
+                        ("rbn", [mark("10:00:00", "connected to telnet.reversebeacon.net:7000"),
+                                 B("10:31:00", "DK0XX-#", 18080.0, "UA9CCC")]),
+                        ("events", ["%s recording\n%s stopped — write check OK\n"
+                                    % (ts("10:00:00"), ts("11:00:00"))])):
+        with open(os.path.join(logs, "%s-%s.log" % (kind, E)), "w") as fh:
+            fh.writelines(lines)
+    T = "20261001-120000"
+    loc = [mark("12:00:00", "connected to 127.0.0.1:7302"),
+           mark("13:00:00", "disconnected — retry in 10 s"),
+           mark("13:00:10", "connected to 127.0.0.1:7302")]
+    rem = [mark("12:00:00", "connected to 192.168.1.201:7301"),
+           R("12:30:00", 18070.0, "UA9AAA"), R("13:30:00", 18075.0, "UA9BBB")]
+    rbn = [mark("12:00:00", "connected to telnet.reversebeacon.net:7000"),
+           B("12:31:00", "DK0XX-#", 18070.0, "UA9AAA"), B("13:31:00", "DK0XX-#", 18075.0, "UA9BBB")]
+    events = ["%s recording as OK1HRA since %s UTC\n" % (ts("12:00:00"), T),
+              "%s stopped — write check OK\n" % ts("14:00:00")]
+    for kind, lines in (("local", loc), ("remote", rem), ("rbn", rbn), ("events", events)):
+        with open(os.path.join(logs, "%s-%s.log" % (kind, T)), "w") as fh:
+            fh.writelines(lines)
+    plan = lambda *b: [{"band": n, "centre_hz": c} for n, c in b]
+    with open(os.path.join(logs, "status-%s.jsonl" % T), "w") as fh:
+        for h, bands in ((12, plan(("40m", 7040000))),
+                         (13, plan(("40m", 7040000), ("17m", 18110000)))):
+            for m in range(5, 60, 5):
+                fh.write("%s\t%s\n" % (ts("%02d:%02d:00" % (h, m)), json.dumps(
+                    {"streaming": True, "lost_pct": 0, "rate": 96000, "bands": bands})))
+    cfg = Config(os.path.join(root, "compare.ini"))
+    store = Store(cfg.logs, lambda: RbnIndex(loose_bands(cfg.local_windows, 2.0), cfg.exclude))
+    store.poll()
+    An = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
+                 epoch("23:00:00"))
+    ev = {e["call"]: e for e in An.events}
+    check("UA9CCC" not in ev,
+          "a session that never named its bands takes the nearest plan, not the config's 17 m")
+    check("UA9AAA" not in ev, "17 m before L listened there: R's UA9AAA is ignored")
+    check("UA9BBB" in ev and ev["UA9BBB"]["cat"] == "only-R" and ev["UA9BBB"]["inU"],
+          "17 m after L added it: R's UA9BBB is only-R, real")
+    check([n for n, _, _ in An.win.common] == ["40m", "17m"],
+          "the bands shown: 40 m and 17 m (%s)" % [n for n, _, _ in An.win.common])
+
+
 if __name__ == "__main__":
     root = tempfile.mkdtemp(prefix="compare-test-")
     root, logs, A, Bs = build(root)
     core(root, logs, A, Bs)
     web(root)
+    current_session()
+    band_plan()
+    split_episodes()
     print("  (files in %s)" % root)
     print("\n%s (%d failure%s)" % ("FAIL" if fails else "PASS", fails, "" if fails == 1 else "s"))
     sys.exit(1 if fails else 0)

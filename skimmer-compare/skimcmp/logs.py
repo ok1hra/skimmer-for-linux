@@ -18,6 +18,8 @@ import os
 import re
 import threading
 
+from .windows import snapshot_windows
+
 FILE_RE = re.compile(r"^(local|remote|rbn|events|status)-(\d{8}-\d{6})\.(?:log|jsonl)$")
 # one regex for all three dialects:
 #   DX de OK1HRA-#:   1825.8  OK1CF        CW    30 dB  25 WPM  CQ      1727Z   skimmer-for-linux
@@ -98,7 +100,7 @@ class Session:
         self.start = session_epoch(T)
         self.tails = {}
         self.conn = {"local": [], "remote": [], "rbn": []}   # [(t, up)]
-        self.health = []          # [(t, streaming, lost_pct, engine or None)]
+        self.health = []          # [(t, streaming, lost_pct, engine or None, windows or None)]
         self.stopped = None       # time of "stopped — write check"
         self.last_t = self.start  # newest timestamp seen in any of its files
         self.last_event = None    # newest events-log line
@@ -144,11 +146,19 @@ class Session:
             out.append((a, b, eng or ("unknown" if named else default)))
         return out
 
+    def windows(self, local_up):
+        """[(a, b, local windows or None)] for each local connection: the
+        bands its first status snapshot lists — changing them restarts the
+        local skimmer, like changing the decoder. None: no snapshot, or an
+        old one without bands."""
+        return [(a, b, next((h[4] for h in self.health if a <= h[0] <= b and h[4]), None))
+                for a, b in local_up]
+
     def unhealthy(self, lost_limit):
         """[(a, b)] covered by a status snapshot that says the local skimmer
         was not streaming or was losing packets."""
         out, prev = [], None
-        for t, streaming, lost, _ in self.health:
+        for t, streaming, lost, *_ in self.health:
             if not streaming or lost >= lost_limit:
                 a = prev if prev is not None else t - 300
                 out.append((max(a, t - 600), t))
@@ -174,6 +184,17 @@ class Store:
 
     def ordered(self):
         return [self.sessions[T] for T in sorted(self.sessions)]
+
+    def current(self, now):
+        """The session recording right now: the newest one with no stop line
+        whose events log is still written; else simply the newest. A short
+        run started and stopped beside a running recorder must not hide it."""
+        ss = self.ordered()
+        for s in reversed(ss):
+            if (s.stopped is None and s.last_event is not None
+                    and now - s.last_event < STALE_S):
+                return s
+        return ss[-1] if ss else None
 
     def poll(self):
         with self.lock:
@@ -233,7 +254,8 @@ class Store:
             except ValueError:
                 return
             s.health.append((t, bool(d.get("streaming", True)),
-                             float(d.get("lost_pct") or 0.0), d.get("engine") or None))
+                             float(d.get("lost_pct") or 0.0), d.get("engine") or None,
+                             snapshot_windows(d)))
             s.seen(t)
             return
         if line.startswith("#"):

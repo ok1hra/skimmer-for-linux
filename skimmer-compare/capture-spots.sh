@@ -8,14 +8,18 @@
 #
 #   capture-spots.sh [-c CALL] [-o DIR] [-t SECONDS] [-l HOST:PORT]
 #                    [-r HOST:PORT] [-b HOST:PORT] [-w URL] [-k SECONDS]
-#                    [-S SECONDS] [-n]
+#                    [-S SECONDS] [-L REGEX] [-R REGEX] [-n]
 #
 #   -c CALL       login callsign for all feeds           (default OK1HRA)
 #   -o DIR        output directory          (default <script dir>/logs)
 #   -t SECONDS    stop after this long             (default: until Ctrl+C)
-#   -l HOST:PORT  local feed                        (default 127.0.0.1:7300)
-#   -r HOST:PORT  remote feed                   (default 192.168.1.201:7301)
+#   -l HOST:PORT  local feed                        (default 127.0.0.1:7302)
+#   -r HOST:PORT  remote feed                       (default 127.0.0.1:7301)
 #   -b HOST:PORT  RBN feed, "" = off      (default telnet.reversebeacon.net:7000)
+#   -L REGEX      the local feed's greeting must match this (case-insensitive),
+#                 "" = no check                (default skimmer-for-linux)
+#   -R REGEX      the same for the remote feed
+#                                  (default "skimmer server|de skimmer")
 #   -w URL        local skimmer status JSON, "" = off
 #                                   (default http://127.0.0.1:8073/status.json)
 #   -k SECONDS    keepalive: an empty line to each feed this often (300)
@@ -34,14 +38,26 @@
 #   status-<T>.jsonl local skimmer status (/status.json) every -S seconds
 #
 # A dropped feed reconnects every 10 s; the others keep recording.
+#
+# The recorder runs on the same PC as both skimmers, and that PC serves more
+# than one telnet port: 7300 is the filtering proxy in front of CW Skimmer
+# Server, 7301 the CW Skimmer Server itself, so skimmer-headless needs a port
+# of its own ([feed] port=7302 in headless.ini). A wrong port must not be
+# recorded as the wrong skimmer: every connection is checked by its greeting
+# (-L/-R) before the first spot is accepted; a feed that answers with the
+# wrong greeting is dropped, logged as WRONG SERVICE and retried in 5 min.
+# The local skimmer's /status.json also tells whether its feed is really on
+# the -l port (feed_port 0 = the feed is off, its port was probably taken).
 
 set -u
 
 CALL=OK1HRA
 OUT="$(cd "$(dirname "$0")" && pwd)/logs"
 DURATION=0
-LOCAL=127.0.0.1:7300
-REMOTE=192.168.1.201:7301
+LOCAL=127.0.0.1:7302
+REMOTE=127.0.0.1:7301
+LOCAL_ID=skimmer-for-linux
+REMOTE_ID="skimmer server|de skimmer"
 RBN=telnet.reversebeacon.net:7000
 STATUS_URL=http://127.0.0.1:8073/status.json
 KEEPALIVE=300
@@ -51,7 +67,7 @@ TICK=${CAPTURE_TICK:-60}          # heartbeat period (tests shorten it)
 READ_T=${CAPTURE_READ_T:-10}      # socket read wake-up (keepalive, state)
 IDLE_NOTE=1800                    # heartbeat mentions a feed silent this long
 
-while getopts "c:o:t:l:r:b:w:k:S:nh" opt; do
+while getopts "c:o:t:l:r:b:w:k:S:L:R:nh" opt; do
   case $opt in
     c) CALL=$OPTARG ;;
     o) OUT=$OPTARG ;;
@@ -62,8 +78,10 @@ while getopts "c:o:t:l:r:b:w:k:S:nh" opt; do
     w) STATUS_URL=$OPTARG ;;
     k) KEEPALIVE=$OPTARG ;;
     S) SNAP_EVERY=$OPTARG ;;
+    L) LOCAL_ID=$OPTARG ;;
+    R) REMOTE_ID=$OPTARG ;;
     n) INHIBIT=0 ;;
-    *) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
 
@@ -93,13 +111,18 @@ note() {
 
 # ---- one feed: connect, log in, record every line, reconnect on drop -----------
 
-capture() {           # name host port file
-  local name=$1 host=$2 port=$3 file=$4
+capture() {           # name host port file [greeting regex, "" = no check]
+  local name=$1 host=$2 port=$3 file=$4 expect=${5:-}
   local rx=0 wr=0 spots=0 werr=0 werr_noted=0 last_rx=0 connected=0
   local line part rc now last_ka last_state=$EPOCHSECONDS
+  local verified=0 t_conn wrong="" wrong_noted=""
+  local -a pending=()
 
   trap '' PIPE        # a write to a dead socket must fail, not kill us
-  trap 'exit 0' TERM
+  # a pending sleep goes with us; "sleep & wait" lets TERM in at once
+  trap 'kill $(jobs -p) 2>/dev/null; exit 0' TERM
+  shopt -s nocasematch
+  : 2>/dev/null >>"$file"   # exists from the start, even while nothing passes
 
   put() {             # line → data file; count; report failures (throttled)
     # the timestamp comes from printf itself: no fork per line (RBN is busy)
@@ -121,22 +144,52 @@ capture() {           # name host port file
     printf '%d %d %d %d %d %d\n' "$rx" "$wr" "$spots" "$werr" "$last_rx" \
       "$connected" 2>/dev/null >"$STATE/$name"
   }
-  got() {             # one complete received line
-    local l=${1//$'\r'/}
-    [[ -z $l ]] && return
+  take() {            # one line of the right service → data file
     ((rx++))
     last_rx=$EPOCHSECONDS
-    [[ $l == "DX de "* ]] && ((spots++))
-    put "$l"
+    [[ $1 == "DX de "* ]] && ((spots++))
+    put "$1"
     state
+  }
+  got() {             # one complete received line
+    local l=${1//$'\r'/} p
+    [[ -z $l ]] && return
+    if ((!verified)); then
+      # Until the greeting matched, lines wait here: a wrong service leaves
+      # nothing in the data file but the WRONG SERVICE event.
+      if [[ $l =~ $expect ]]; then
+        verified=1
+        connected=1
+        wrong_noted=""
+        mark "connected to $host:$port"
+        for p in "${pending[@]}"; do take "$p"; done
+        pending=()
+      elif [[ $l == "DX de "* ]] || ((${#pending[@]} >= 20)); then
+        wrong=$l
+        return
+      else
+        pending+=("$l")
+        return
+      fi
+    fi
+    take "$l"
   }
 
   while :; do
-    if exec 3<>"/dev/tcp/$host/$port" 2>/dev/null; then
-      connected=1
+    # the braces: bash reports a refused /dev/tcp connect before a plain
+    # "2>/dev/null" on exec takes effect
+    if { exec 3<>"/dev/tcp/$host/$port"; } 2>/dev/null; then
       part=""
+      wrong=""
+      pending=()
+      verified=0
+      t_conn=$EPOCHSECONDS
       last_ka=$EPOCHSECONDS
-      mark "connected to $host:$port"
+      if [[ -z $expect ]]; then
+        verified=1
+        connected=1
+        mark "connected to $host:$port"
+      fi
       # Both servers prompt for a callsign without a newline; answer at once.
       printf '%s\r\n' "$CALL" >&3 2>/dev/null
       state
@@ -153,11 +206,16 @@ capture() {           # name host port file
             break
           fi
         fi
+        [[ -n $wrong ]] && break
         now=$EPOCHSECONDS
+        if ((!verified && now - t_conn >= 30)); then
+          wrong=${pending[0]:-${part:-no greeting at all}}
+          break
+        fi
         if ((KEEPALIVE > 0 && now - last_ka >= KEEPALIVE)); then
           last_ka=$now
           if ! printf '\r\n' >&3 2>/dev/null; then
-            mark "keepalive write failed — connection is dead"
+            ((verified)) && mark "keepalive write failed — connection is dead"
             break
           fi
         fi
@@ -165,13 +223,28 @@ capture() {           # name host port file
       done
       exec 3<&- 3>&- 2>/dev/null
       connected=0
-      mark "disconnected — retry in 10 s"
+      if ((verified)); then
+        mark "disconnected — retry in 10 s"
+      else
+        # first unmatched line, not the 20th: that one names the service
+        ((${#pending[@]})) && wrong=${pending[0]}
+        wrong=${wrong:-closed before any greeting}
+        # the same wrong answer again is logged once, not every 5 min
+        if [[ $wrong != "$wrong_noted" ]]; then
+          mark "WRONG SERVICE on $host:$port — expected a greeting matching /$expect/, got: ${wrong:0:120} — nothing recorded, retry every 5 min"
+          wrong_noted=$wrong
+        fi
+        connected=2         # the heartbeat shows WRONG SERVICE, not DOWN
+        state
+        sleep 300 & wait $!
+        continue
+      fi
     else
       connected=0
       mark "cannot connect to $host:$port — retry in 10 s"
     fi
     state
-    sleep 10
+    sleep 10 & wait $!
   done
 }
 
@@ -205,7 +278,11 @@ check_feed() {        # name file
     note "$name: WRITE CHECK FAILED — $werr received lines could not be written"
     WRITE_OK=0
   fi
-  st=$([[ $connected == 1 ]] && echo up || echo DOWN)
+  case $connected in
+    1) st=up ;;
+    2) st="WRONG SERVICE" ;;
+    *) st=DOWN ;;
+  esac
   if ((last_rx > 0)); then
     age=$((EPOCHSECONDS - last_rx))
     ((age >= IDLE_NOTE)) && st+=", silent $((age / 60)) min"
@@ -224,9 +301,28 @@ snapshot() {
     printf '%s\t%s\n' "$(ts)" "$j" 2>/dev/null >>"$SNAPS" ||
       note "WRITE ERROR — $SNAPS not writable"
     SNAP_FAILED=0
+    check_feed_port "$j"
   elif ((!SNAP_FAILED)); then
     note "local skimmer status $STATUS_URL unavailable (is skimmer-headless running?)"
     SNAP_FAILED=1
+  fi
+}
+
+# Is the local skimmer's telnet feed on the port we record? Its status says
+# which port it serves ("feed_port", 0 = feed off). Noted on every change.
+FEED_PORT_SEEN=
+check_feed_port() {   # status JSON
+  local fp
+  [[ $1 =~ \"feed_port\":([0-9]+) ]] || return
+  fp=${BASH_REMATCH[1]}
+  [[ $fp == "$FEED_PORT_SEEN" ]] && return
+  FEED_PORT_SEEN=$fp
+  if ((fp == 0)); then
+    note "WARNING: the local skimmer reports its telnet feed OFF (feed_port 0) — headless.ini [feed] call= empty, or port= taken by another service (ss -tlnp)?"
+  elif [[ $fp != "${LOCAL##*:}" ]]; then
+    note "WARNING: the local skimmer serves its feed on port $fp, but the recorder reads ${LOCAL} (-l)"
+  else
+    note "local skimmer feed confirmed on port $fp"
   fi
 }
 
@@ -258,14 +354,14 @@ stop() {
 trap stop INT TERM HUP
 
 note "recording as $CALL since $START UTC$( ((DURATION > 0)) && echo " for $DURATION s")"
-note "  local  $LOCAL  → $LOCAL_FILE"
-note "  remote $REMOTE → $REMOTE_FILE"
+note "  local  $LOCAL  → $LOCAL_FILE${LOCAL_ID:+  (greeting /$LOCAL_ID/)}"
+note "  remote $REMOTE → $REMOTE_FILE${REMOTE_ID:+  (greeting /$REMOTE_ID/)}"
 note "  rbn    ${RBN:-off}$([[ -n $RBN ]] && echo " → $RBN_FILE")"
 note "  events → $EVENTS"
 
 if ((INHIBIT)) && command -v systemd-inhibit >/dev/null; then
   systemd-inhibit --what=sleep:idle --who=capture-spots \
-    --why="recording skimmer telnet feeds" --mode=block sleep infinity &
+    --why="recording skimmer telnet feeds" --mode=block sleep infinity 2>/dev/null &
   INHIBIT_PID=$!
   sleep 0.5
   if kill -0 "$INHIBIT_PID" 2>/dev/null; then
@@ -278,14 +374,15 @@ else
   note "no sleep inhibitor (-n) — a suspend will stop the recording"
 fi
 
-capture local "${LOCAL%:*}" "${LOCAL##*:}" "$LOCAL_FILE" & PIDS+=($!)
-capture remote "${REMOTE%:*}" "${REMOTE##*:}" "$REMOTE_FILE" & PIDS+=($!)
+capture local "${LOCAL%:*}" "${LOCAL##*:}" "$LOCAL_FILE" "$LOCAL_ID" & PIDS+=($!)
+capture remote "${REMOTE%:*}" "${REMOTE##*:}" "$REMOTE_FILE" "$REMOTE_ID" & PIDS+=($!)
 [[ -n $RBN ]] && { capture rbn "${RBN%:*}" "${RBN##*:}" "$RBN_FILE" & PIDS+=($!); }
 
 SNAP_FAILED=0
 T0=$EPOCHSECONDS
 last_tick=$EPOCHSECONDS
-last_snap=0
+snapshot                        # at once: a feed that is off shows now
+last_snap=$EPOCHSECONDS
 while :; do
   step=$TICK
   if ((DURATION > 0)); then

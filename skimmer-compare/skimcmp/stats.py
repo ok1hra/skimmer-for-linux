@@ -175,7 +175,7 @@ def band_rows(A, evs):
     for band, lo, hi in A.win.common:
         g = [e for e in evs if e["band"] == band]
         U = [e for e in g if e["inU"]]
-        lat = [e["lat"] for e in g if e["cat"] == "match"]
+        lat = [e["lat"] for e in g if e["cat"] == "match" and e["lat"] is not None]
         rows.append({
             "band": band, "lo": lo, "hi": hi, "n": len(U),
             "L": prop(sum(e["cL"] for e in U), len(U)),

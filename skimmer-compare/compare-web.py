@@ -141,7 +141,8 @@ class App:
             ta, label = now - now % 86400, "today (UTC)"
         elif r == "session" or r.startswith("session:"):
             T = r.partition(":")[2]
-            ss = [s for s in A.sessions if s["T"] == T] if T else A.sessions[-1:]
+            ss = ([s for s in A.sessions if s["T"] == T] if T else
+                  [s for s in A.sessions if s["live"]] or A.sessions[-1:])
             if ss:
                 ta, tb, label = ss[0]["start"], ss[0]["end"], "session " + ss[0]["T"]
         elif r == "custom":
@@ -152,12 +153,11 @@ class App:
         return ta, tb + 1, label
 
     def feeds(self):
-        """Is each feed of the newest session connected right now?"""
+        """Is each feed of the current session connected right now?"""
         with self.store.lock:
-            ss = self.store.ordered()
-            if not ss:
+            s = self.store.current(time.time())
+            if s is None:
                 return {}
-            s = ss[-1]
             out = {}
             for kind in ("local", "remote", "rbn"):
                 ev = s.conn[kind]

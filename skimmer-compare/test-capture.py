@@ -10,6 +10,10 @@ actually sent.
           25 s of silence (keepalives must arrive), a server-side drop and
           the reconnect, 200 more spots; every spot must be in the file
           exactly once, in order, intact.
+  run 3 — wrong services: the local port answers as CW Skimmer Server, the
+          remote one as skimmer-for-linux, and /status.json says the
+          local feed is off; nothing may be recorded, WRONG SERVICE and the
+          feed_port warning must be logged once each.
   run 2 — the alarms: a read-only data file (WRITE ERROR), a truncated
           file (WRITE CHECK FAILED), the recorder frozen for 45 s like a
           suspended machine, and a killed recorder process; the RBN
@@ -83,7 +87,10 @@ class Feed(threading.Thread):
                     self.logins.append(line.decode())
 
     def send(self, c, text):
-        c.sendall(text.encode())
+        try:
+            c.sendall(text.encode())
+        except OSError:           # the recorder hung up (run 3: wrong service)
+            pass
 
     def run(self):
         while not self.stop:
@@ -134,6 +141,23 @@ class Status(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *a):
         pass
+
+
+class StatusFeedOff(Status):
+    def do_GET(self):
+        body = b'{"radio":"mock","feed_port":0,"bands":[]}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def can_inhibit():
+    """A sleep inhibitor may be refused here (polkit, a session over ssh)."""
+    return subprocess.run(["systemd-inhibit", "--what=sleep", "--who=test",
+                           "--why=probe", "--mode=block", "true"],
+                          capture_output=True).returncode == 0
 
 
 def free_port():
@@ -228,7 +252,11 @@ def run1():
     check(len(beats) >= 5 and set(beats) == {"OK"},
           "events: %d heartbeats, all 'write OK'" % len(beats))
     check("stopped — write check OK" in ev, "events: final write check OK")
-    check("sleep inhibitor held" in ev, "events: sleep inhibitor held")
+    if can_inhibit():
+        check("sleep inhibitor held" in ev, "events: sleep inhibitor held")
+    else:
+        print("  skip sleep inhibitor held — systemd-inhibit is refused on this machine")
+        ev = ev.replace("WARNING: could not hold a sleep inhibitor", "")
     check("WARNING" not in ev and "ERROR" not in ev, "events: no warnings or errors")
     check(re.search(r"local\s+3201 spots", ev) and re.search(r"remote\s+3201 spots", ev)
           and re.search(r"rbn\s+3201 spots", ev),
@@ -293,8 +321,43 @@ def run2():
     print("  (files in %s)" % out)
 
 
+def run3():
+    print("=== run 3 — wrong services")
+    out = tempfile.mkdtemp(prefix="capture-test3-")
+    lp, rp, sp = free_port(), free_port(), free_port()
+    local = Feed("R", lp, "Welcome to the Skimmer Server Telnet cluster port!\r\n",
+                 "Please enter your callsign:", "OK1HRA de SKIMMER 2026-09-30 10:00Z CwSkimmer >",
+                 burst=50, more=50)
+    remote = Feed("L", rp, "skimmer-for-linux telnet feed\r\n", "Please enter your call: ",
+                  "OK1HRA-#: Hello OK1HRA, spots follow.", burst=50, more=50)
+    httpd = http.server.HTTPServer(("127.0.0.1", sp), StatusFeedOff)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    local.start()
+    remote.start()
+    t0 = time.time()
+    p = start_capture(out, lp, rp, sp, 45)
+    output, _ = p.communicate(timeout=120)
+    took = time.time() - t0
+    local.stop = remote.stop = True
+    httpd.shutdown()
+    f = files(out)
+    ev = open(f["events"]).read()
+    for name in ("local", "remote"):
+        check(dx_lines(f[name]) == [], "%s: no spot of the wrong service recorded" % name)
+        check(ev.count("%s: WRONG SERVICE" % name) == 1,
+              "%s: WRONG SERVICE logged once" % name)
+        check(re.search(r"%s WRONG SERVICE" % name, ev), "%s: the heartbeat says WRONG SERVICE" % name)
+    check(re.search(r"local: WRONG SERVICE .* got: Welcome to the Skimmer Server", ev),
+          "local: the event names what answered")
+    check(ev.count("feed_port 0") == 1, "status feed_port 0 → warned once")
+    check("stopped — write check OK" in ev, "final write check OK (no false alarm)")
+    check(took < 60, "-t 45 stops in time while the feeds wait for a retry (%.0f s)" % took)
+    print("  (files in %s)" % out)
+
+
 if __name__ == "__main__":
     run1()
     run2()
+    run3()
     print("\n%s (%d failure%s)" % ("FAIL" if fails else "PASS", fails, "" if fails == 1 else "s"))
     sys.exit(1 if fails else 0)
