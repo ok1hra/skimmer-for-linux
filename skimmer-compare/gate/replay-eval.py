@@ -19,6 +19,9 @@ feed, over the stretch the taps cover:
   ./replay-eval.py                                  default vs fresh_s 60/120
   ./replay-eval.py --policy base= --policy fresh90=--fresh-s=90
   ./replay-eval.py --taps 20261003-115202           one headless start only
+  ./replay-eval.py --policy base=--fresh-s=120 \
+      --policy cq=--fresh-s=120,@builddir-cq           another build of the engine
+                                                    (@<dir under the tree>)
 
 The replays run inside the flatpak SDK when ~/.cache/skimmer-flatpak exists
 (Dan's Debian 12), natively otherwise. Rows land in --out (scratch).
@@ -53,7 +56,9 @@ MATCH_S, MATCH_KHZ = 10, 0.15
 
 
 def replay(tap, rows, args):
-    exe = os.path.join(TREE, "builddir", "skimmer-tap-replay")
+    build = next((x[1:] for x in args if x.startswith("@")), "builddir")
+    args = [x for x in args if not x.startswith("@")]
+    exe = os.path.join(TREE, build, "skimmer-tap-replay")
     cmd = [exe, "--rows", rows] + args + [tap]
     if os.path.isdir(FLATPAK) and not os.path.exists("/.flatpak-info"):
         sh = "LD_LIBRARY_PATH=%s/deps/lib %s" % (
