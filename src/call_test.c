@@ -266,6 +266,50 @@ int main(void) {
           s >= SKIM_CALLSIGN_SPOT_THRESHOLD && strcmp(got, "DE1ABC") == 0);
     skim_callsign_extractor_free(x);
 
+    /* CQ-strip: the marker glued onto DE / DE+call / the call (tap of
+     * 2026-10-04..06 — CQDE, CQCQCQDEIZ8BRI, CQDXDEF8GFA; one past a call's
+     * length) — the call must come out flagged calling */
+    {
+      static const struct { const char *text, *call; } glued[] = {
+        { "CQDE IQ6MW IQ6MW K ", "IQ6MW" },
+        { "CQCQCQDEIZ8BRI IZ8BRI IZ8BRI K ", "IZ8BRI" },
+        { "CQDXDEF8GFA F8GFA K ", "F8GFA" },
+        { "CQCQCQCQDEON4LDL ON4LDL K ", "ON4LDL" },
+        { "CQTEST SF6W SF6W ", "SF6W" },
+      };
+      for (guint i = 0; i < G_N_ELEMENTS(glued); i++) {
+        x = skim_callsign_extractor_new();
+        skim_callsign_extractor_feed(x, glued[i].text);
+        cq = FALSE;
+        s = skim_callsign_extractor_best_ex(x, got, sizeof(got), &cq);
+        char what[96];
+        g_snprintf(what, sizeof(what), "CQ-strip: %s→ %s, flagged calling",
+                   glued[i].text, glued[i].call);
+        check(what, s >= SKIM_CALLSIGN_SPOT_THRESHOLD &&
+                    strcmp(got, glued[i].call) == 0 && cq);
+        skim_callsign_extractor_free(x);
+      }
+    }
+
+    /* a valid call that begins with CQ (Portugal) is never stripped */
+    x = skim_callsign_extractor_new();
+    skim_callsign_extractor_feed(x, "CQ DE CQ7MEL CQ7MEL K ");
+    s = skim_callsign_extractor_best(x, got, sizeof(got));
+    check("valid CQ-prefixed call stays whole (CQ7MEL never stripped)",
+          !skim_callsign_is_valid("CQ7MEL") ||
+          (s >= SKIM_CALLSIGN_SPOT_THRESHOLD && strcmp(got, "CQ7MEL") == 0));
+    skim_callsign_extractor_free(x);
+
+    /* a glued CQ in front of garble flags nothing: no remainder that is DE,
+     * DE + a call or a call — and an answer after it is not blessed */
+    x = skim_callsign_extractor_new();
+    skim_callsign_extractor_feed(x, "CQDEM CQXYZ CQC EA2BTN EA2BTN 5NN ");
+    cq = FALSE;
+    s = skim_callsign_extractor_best_ex(x, got, sizeof(got), &cq);
+    check("glued CQ before garble flags nothing (EA2BTN not calling)",
+          strcmp(got, "EA2BTN") == 0 && !cq);
+    skim_callsign_extractor_free(x);
+
     /* strict shapes only: DE-glued garbage and almost-CQ runs all die */
     x = skim_callsign_extractor_new();
     skim_callsign_extractor_feed(x, "DEEE DE5NN DETEST CQC CQCQC ");

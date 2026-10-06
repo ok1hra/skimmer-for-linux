@@ -282,6 +282,7 @@ gboolean skim_callsign_dict_has(const char *call) {
  * hearing could lift it over the spot threshold (live, 2026-07-15). */
 #define MAX_CAND    24
 #define CALL_MAX    16
+#define TOK_MAX     (2 * CALL_MAX)             /* a glued CQ chain + a call  */
 #define CQ_WINDOW   3                          /* tokens after CQ that count */
 #define RUN_MAX     12                         /* fragments between two edges */
 #define RUN_PARTS   6                          /* a torn call: ≤ 6 of them   */
@@ -449,6 +450,49 @@ static gboolean cq_run_token(const char *s) {
   return TRUE;
 }
 
+/* CQ-strip — the CQ half of the degenerate fist: the gap AFTER the calling
+ * marker collapses as well, and CQ arrives glued to what follows ("CQDE",
+ * "CQCQDEIZ8BRE", "CQDXDEF8GFA", "CQTEST"). Two days of decode tap
+ * (2026-10-06): of the stations VE3NEA spotted calling that L read but
+ * never saw calling, 98 had no CQ but a glued one. Strictly a fallback like
+ * the DE-strip: a token that is a valid call itself stays whole (CQ7A), and
+ * the remainder must be nothing, DE, DE + a call, or a call — "CQC",
+ * "CQDEM" and the rest of the garble keep their old fate. Returns the
+ * length of the marker head to peel off, 0 when the token is no such run. */
+static gsize cq_glued_head(const char *tok) {
+  gsize i = 0, ncq = 0;
+  gboolean word = FALSE;
+  for (;;) {
+    if (tok[i] == 'C' && tok[i + 1] == 'Q') {
+      i += 2;
+      ncq++;
+    } else if (ncq && strncmp(tok + i, "DX", 2) == 0) {
+      i += 2;
+      word = TRUE;
+    } else if (ncq && strncmp(tok + i, "TEST", 4) == 0) {
+      i += 4;
+      word = TRUE;
+    } else {
+      break;
+    }
+  }
+  if (!ncq)
+    return 0;
+  char bare[CALL_MAX];
+  if (strlen(tok + i) >= sizeof(bare))
+    return 0;
+  g_strlcpy(bare, tok + i, sizeof(bare));
+  const gsize bl = strlen(bare);
+  if (bl > 2 && strcmp(bare + bl - 2, "\xC2\xB7") == 0) { bare[bl - 2] = '\0'; }
+  if (bare[0] == '\0')
+    return word ? i : 0;                       /* pure CQ runs: cq_run_token */
+  if (strcmp(bare, "DE") == 0 || skim_callsign_is_valid(bare) ||
+      (bare[0] == 'D' && bare[1] == 'E' && strlen(bare) >= 5 &&
+       skim_callsign_is_valid(bare + 2)))
+    return i;
+  return 0;
+}
+
 /* The torn call — gh#3. An operator who leaves a word gap after EVERY group
  * sends "UA 6 H NU" (live 2026-09-11, 14039: four tokens in 16 of 28 overs,
  * three in the rest, six when it got worse). Gluing neighbours token by
@@ -560,6 +604,14 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     run_clear(x);
     x->prev_gap = x->prev_tok[0] != '\0';
     return;
+  }
+  if (!skim_callsign_is_valid(tok)) {
+    const gsize head = cq_glued_head(tok);
+    if (head) {
+      take_token(x, "CQ");                     /* as if the gap were keyed   */
+      if (tok[head]) { take_token(x, tok + head); }
+      return;
+    }
   }
   x->tok_n++;
   /* Letter-spaced CQ chain — the TORN twin of the fused "CQCQ" run: the
@@ -702,13 +754,16 @@ void skim_callsign_extractor_feed(SkimCallsignExtractor *x, const char *text) {
     const char c = *p;
     if (c == ' ' || c == '\n' || c == '\t') {
       if (x->tok->len) {
-        if (x->tok->len < CALL_MAX) { take_token(x, x->tok->str); }
+        /* a glued CQ chain may run past a call's length ("CQCQCQDEON4LDL") */
+        if (x->tok->len < CALL_MAX || cq_glued_head(x->tok->str)) {
+          take_token(x, x->tok->str);
+        }
         g_string_set_size(x->tok, 0);
       }
       continue;
     }
     g_string_append_c(x->tok, g_ascii_toupper(c));
-    if (x->tok->len > CALL_MAX) { g_string_set_size(x->tok, 0); }
+    if (x->tok->len > TOK_MAX) { g_string_set_size(x->tok, 0); }
   }
 }
 
