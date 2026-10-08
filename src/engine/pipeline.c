@@ -551,10 +551,32 @@ static void tap_clock(SkimPipeline *p) {
 
 /* ---- RBN feed policy ------------------------------------------------------------ */
 
-/* May this record go to the network? Calling, confident, and either read
- * twice or known to the dictionary — and, with the freshness gate on, read
- * lately, not a stale candidate that noise on a quiet channel brought back. */
+/* The amateur allocations, the widest any ITU region has (Hz). A receiver
+ * hears past the band edge — 6992–7000 kHz with 7040 kHz ± 48 — and a
+ * "station" there is no amateur to spot (skimmer-compare 2026-10-08: CW
+ * Skimmer Server never spots outside its segments, the feed did). */
+static const struct { double lo, hi; } HAM_BANDS[] = {
+  {   135700,   137800 }, {   472000,   479000 }, {  1800000,  2000000 },
+  {  3500000,  4000000 }, {  5351500,  5366500 }, {  7000000,  7300000 },
+  { 10100000, 10150000 }, { 14000000, 14350000 }, { 18068000, 18168000 },
+  { 21000000, 21450000 }, { 24890000, 24990000 }, { 28000000, 29700000 },
+  { 50000000, 54000000 },
+};
+
+static gboolean in_ham_band(double hz) {
+  for (guint i = 0; i < G_N_ELEMENTS(HAM_BANDS); i++) {
+    if (hz >= HAM_BANDS[i].lo && hz <= HAM_BANDS[i].hi) { return TRUE; }
+  }
+  return FALSE;
+}
+
+/* May this record go to the network? Inside an amateur band, calling,
+ * confident, and either read twice or known to the dictionary — and, with
+ * the freshness gate on, read lately, not a stale candidate that noise on a
+ * quiet channel brought back. */
 static gboolean rbn_gate(const SkimPipeline *p, const SkimStation *st) {
+  if (!in_ham_band(st->freq_hz))
+    return FALSE;
   if (p->rbn_fresh_us > 0 && pipe_now_us(p) - st->heard_us > p->rbn_fresh_us)
     return FALSE;
   return st->cq && st->score >= p->rbn_min &&

@@ -14,7 +14,8 @@
  * The telnet sink must capture exactly the two CALLING stations at the right
  * kHz, ONCE each (dedup across two passes of the band), and never IK2ABC:
  * S&P answers do not own the frequency, so they stay off the network even
- * though the station tracker lists them.
+ * though the station tracker lists them. The same band tuned 30 kHz lower
+ * puts DL1ABC on 6982.5 kHz, below the 40 m band: it must stay off too.
  *
  * Feed policy (hearings + settle): a second band, one pass, with what
  * skimmer-compare caught going out unconfirmed (2026-10-01) — SM7XYZ keyed
@@ -688,6 +689,37 @@ int main(void) {
     cap_free(a);
     skim_rbn_feed_free(f);
     g_string_free(c_stations, TRUE);
+
+    /* The same band tuned 30 kHz lower: OK1BR lands on 7002.0 kHz, DL1ABC
+     * on 6982.5 — a receiver hears past the band edge, the feed must not. */
+    printf("  band edge (the band 30 kHz lower: DL1ABC at 6982.5 kHz)\n");
+    f = skim_rbn_feed_new("OK1BR", 0, &err);
+    a = cap_new(skim_rbn_feed_port(f));
+    cap_wait(a, "Please enter your call:", 3000);
+    cap_send(a, "AGGR\r\n");
+    cap_wait(a, "Hello AGGR", 3000);
+    cfg.rbn = f;
+    p = skim_pipeline_new(&cfg);
+    check("offline pipeline starts (band edge)", skim_pipeline_start_offline(p, &err));
+    for (int pass = 0; pass < 2; pass++) {        /* the settle needs time  */
+      for (guint off = 0; off + BLK <= g_band_frames; off += BLK) {
+        skim_pipeline_feed(p, g_band + 2 * (gsize)off, BLK, RATE, CENTER - 30000.0);
+      }
+    }
+    for (int t = 0; t < 10000 && cap_count(a, "OK1BR") == 0; t += 50) {
+      g_usleep(50 * 1000);
+    }
+    g_usleep(500 * 1000);                          /* DL1ABC is decoded too */
+    char *le = cap_line(a, "OK1BR");
+    check("band edge: OK1BR at 7002.0 kHz goes out",
+          le && strstr(le, "7002.0") != NULL);
+    g_free(le);
+    check("band edge: DL1ABC at 6982.5 kHz (below 7000) never does",
+          cap_count(a, "DL1ABC") == 0);
+    skim_pipeline_stop(p);
+    skim_pipeline_free(p);
+    cap_free(a);
+    skim_rbn_feed_free(f);
     g_free(g_band);
   }
 
