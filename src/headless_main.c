@@ -13,7 +13,9 @@
  * Config (default ~/.config/skimmer-for-linux/headless.ini, written with
  * defaults when missing):
  *   [radio]  host — one radio or a list (comma separated, tried in order),
- *            rate (48000/96000/192000 — one rate for all receivers), clock_ppm
+ *            each optionally host@ppm: that radio's own clock error;
+ *            rate (48000/96000/192000 — one rate for all receivers),
+ *            clock_ppm (the radios without @ppm)
  *   [bands]  <name>=<centre Hz>, in receiver order (RX1 first), ≤ 8
  *   [decode] engine=v2|deepcw, log=true|false (per-band decode logs)
  *   [feed]   call, port (0 = no telnet feed)
@@ -84,7 +86,9 @@ typedef struct {
   /* config */
   char    *cfg_path;
   char   **hosts;              /* [radio] host, in search order               */
+  double  *host_ppm;           /* each radio's clock_ppm (host@ppm)           */
   const char *host;            /* the radio streaming now (or hosts[0])       */
+  double   ppm_now;            /* … and its clock correction                  */
   char    *hosts_text;         /* "a, b" for messages                         */
   guint    rate;
   double   ppm;
@@ -133,9 +137,11 @@ static const char *DEFAULT_CONFIG =
   "# skimmer-headless — one Red Pitaya, one pipeline per band.\n"
   "# Bands are receivers in order (RX1 first), at most 8, all at one rate.\n"
   "# 6 x 96 kHz is ~30 Mb/s of UDP: use a wired link.\n"
-  "\n[radio]\n# one radio, or a list tried in order: the first idle one is used\n"
+  "\n[radio]\n# one radio, or a list tried in order: the first idle one is used;\n"
+  "# host@ppm gives that radio its own clock_ppm (192.168.1.21@3.81,192.168.1.71)\n"
   "host=192.168.1.21\nrate=96000\n"
-  "# sampling-clock error: (true - shown) / true * 1e6, measured with 0 here\n"
+  "# sampling-clock error: (true - shown) / true * 1e6, measured with 0 here;\n"
+  "# for the radios without @ppm\n"
   "clock_ppm=0\n"
   "\n[bands]\n"
   "# name=centre Hz; with 96 kHz each band spans centre +-48 kHz\n"
@@ -176,25 +182,54 @@ static gboolean config_load(Hd *h, GError **error) {
     g_key_file_free(kf);
     return FALSE;
   }
+  h->ppm = g_key_file_has_key(kf, "radio", "clock_ppm", NULL)
+               ? g_key_file_get_double(kf, "radio", "clock_ppm", NULL) : 0;
+  /* host[@ppm], …: each radio has its own sampling clock */
   char *hv = g_key_file_get_string(kf, "radio", "host", NULL);
   GPtrArray *hl = g_ptr_array_new();
+  GArray *pl = g_array_new(FALSE, FALSE, sizeof(double));
   char **parts = g_strsplit_set(hv ? hv : "", ",; \t", -1);
-  for (char **q = parts; *q; q++) {
-    if (**q) { g_ptr_array_add(hl, g_strdup(*q)); }
+  gboolean bad = FALSE;
+  for (char **q = parts; *q && !bad; q++) {
+    if (!**q) { continue; }
+    char *at = strchr(*q, '@');
+    double ppm = h->ppm;
+    if (at) {
+      char *end = NULL;
+      ppm = g_ascii_strtod(at + 1, &end);
+      if (end == at + 1 || *end || at == *q) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                    "%s: [radio] host \"%s\" (host or host@ppm)", h->cfg_path, *q);
+        bad = TRUE;
+        break;
+      }
+      *at = '\0';
+    }
+    g_ptr_array_add(hl, g_strdup(*q));
+    g_array_append_val(pl, ppm);
   }
   g_strfreev(parts);
   g_free(hv);
-  if (hl->len == 0) { g_ptr_array_add(hl, g_strdup("192.168.1.21")); }
+  if (bad) {
+    g_ptr_array_free(hl, TRUE);
+    g_array_free(pl, TRUE);
+    g_key_file_free(kf);
+    return FALSE;
+  }
+  if (hl->len == 0) {
+    g_ptr_array_add(hl, g_strdup("192.168.1.21"));
+    g_array_append_val(pl, h->ppm);
+  }
   g_ptr_array_add(hl, NULL);
   h->hosts = (char **)g_ptr_array_free(hl, FALSE);
+  h->host_ppm = (double *)g_array_free(pl, FALSE);
   h->host = h->hosts[0];
+  h->ppm_now = h->host_ppm[0];
   h->hosts_text = g_strjoinv(", ", h->hosts);
   h->rate = 96000;
   if (g_key_file_has_key(kf, "radio", "rate", NULL)) {
     h->rate = (guint)g_key_file_get_integer(kf, "radio", "rate", NULL);
   }
-  h->ppm = g_key_file_has_key(kf, "radio", "clock_ppm", NULL)
-               ? g_key_file_get_double(kf, "radio", "clock_ppm", NULL) : 0;
   h->engine = g_key_file_get_string(kf, "decode", "engine", NULL);
   h->decode_log = g_key_file_has_key(kf, "decode", "log", NULL) &&
                   g_key_file_get_boolean(kf, "decode", "log", NULL);
@@ -340,19 +375,22 @@ static void rp_state(Hd *h, const char *fmt, ...) {
   }
 }
 
-/* Start streaming from `host`; FALSE (state set) when the start fails. */
-static gboolean rp_start_on(Hd *h, const char *host, gboolean took) {
+/* Start streaming from hosts[i] at its clock_ppm; FALSE (state set) when the
+ * start fails. */
+static gboolean rp_start_on(Hd *h, guint i, gboolean took) {
+  const char *host = h->hosts[i];
+  const double ppm = h->host_ppm[i];
   GError *err = NULL;
   double centres[SKIM_HPSDR_MAX_RX];
   h->take_over = FALSE;                         /* one-shot: the first start   */
   h->rp = skim_hpsdr_client_new(host, SKIM_HPSDR_DEFAULT_PORT);
-  for (guint i = 0; i < h->nb; i++) {
-    centres[i] = h->band[i].centre_hz;
-    skim_hpsdr_client_set_rx_iq_cb(h->rp, i, rx_iq_cb, &h->band[i]);
+  for (guint b = 0; b < h->nb; b++) {
+    centres[b] = h->band[b].centre_hz;
+    skim_hpsdr_client_set_rx_iq_cb(h->rp, b, rx_iq_cb, &h->band[b]);
   }
   skim_hpsdr_client_set_closed_cb(h->rp, rp_closed_cb, h);
   g_atomic_int_set(&h->closed, 0);
-  if (!skim_hpsdr_client_start_multi(h->rp, h->rate, centres, h->nb, h->ppm, took,
+  if (!skim_hpsdr_client_start_multi(h->rp, h->rate, centres, h->nb, ppm, took,
                                      &err)) {
     rp_state(h, "%s: start failed: %s", host, err->message);
     g_clear_error(&err);
@@ -360,11 +398,13 @@ static gboolean rp_start_on(Hd *h, const char *host, gboolean took) {
     return FALSE;
   }
   h->host = host;
+  h->ppm_now = ppm;
   h->streaming = TRUE;
   h->packets_prev = 0;
   h->search_since_us = 0;
-  rp_state(h, "streaming — %s, %u RX × %u kHz%s", skim_hpsdr_client_device(h->rp),
-           h->nb, h->rate / 1000, took ? " (taken over)" : "");
+  rp_state(h, "streaming — %s, %u RX × %u kHz, clock %+.2f ppm%s",
+           skim_hpsdr_client_device(h->rp), h->nb, h->rate / 1000, ppm,
+           took ? " (taken over)" : "");
   return TRUE;
 }
 
@@ -376,35 +416,36 @@ static void rp_try_start(Hd *h) {
   if (!h->search_since_us) { h->search_since_us = now; }
   const gboolean take = h->take_over;
   GString *why = g_string_new(NULL);
-  const char *first_busy = NULL;
+  int first_busy = -1;
   gboolean all_answered = TRUE;
-  for (char **hp = h->hosts; *hp; hp++) {
+  for (guint i = 0; h->hosts[i]; i++) {
+    const char *hp = h->hosts[i];
     SkimHpsdrInfo info;
     GError *err = NULL;
     if (why->len) { g_string_append(why, ", "); }
-    if (!skim_hpsdr_discover(*hp, SKIM_HPSDR_DEFAULT_PORT, 1000, &info, &err)) {
-      g_string_append_printf(why, "%s no reply", *hp);
+    if (!skim_hpsdr_discover(hp, SKIM_HPSDR_DEFAULT_PORT, 1000, &info, &err)) {
+      g_string_append_printf(why, "%s no reply", hp);
       g_clear_error(&err);
       all_answered = FALSE;
     } else if (info.busy) {
-      g_string_append_printf(why, "%s busy", *hp);
-      if (!first_busy) { first_busy = *hp; }
-    } else if (rp_start_on(h, *hp, FALSE)) {
+      g_string_append_printf(why, "%s busy", hp);
+      if (first_busy < 0) { first_busy = (int)i; }
+    } else if (rp_start_on(h, i, FALSE)) {
       g_string_free(why, TRUE);
       return;
     } else {
-      g_string_append_printf(why, "%s start failed", *hp);
+      g_string_append_printf(why, "%s start failed", hp);
       all_answered = FALSE;                     /* may work on the next round  */
     }
   }
-  if (take && first_busy && rp_start_on(h, first_busy, TRUE)) {
+  if (take && first_busy >= 0 && rp_start_on(h, (guint)first_busy, TRUE)) {
     g_string_free(why, TRUE);
     return;
   }
   if (all_answered || now - h->search_since_us >= RADIO_SEARCH_S * G_USEC_PER_SEC) {
     rp_state(h, "no free radio (%s) — stopping", why->str);
     g_printerr("skimmer-headless: no free radio (%s)%s\n", why->str,
-               first_busy ? " — another client streams from it; "
+               first_busy >= 0 ? " — another client streams from it; "
                             "--take-over grabs the first busy one" : "");
     h->exit_code = EXIT_NO_RADIO;
     if (h->loop) { g_main_loop_quit(h->loop); }
@@ -589,13 +630,13 @@ static void status_build(Hd *h, gboolean print) {
   g_free(jgid);
   g_string_append_printf(json,
       "{\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
-      "\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
+      "\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
       "\"fresh_s\":%.1f},\"feed_gate\":%s,"
       "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
-      clock, jstate, h->streaming ? "true" : "false", jhost, h->rate, lost_pct,
+      clock, jstate, h->streaming ? "true" : "false", jhost, h->ppm_now, h->rate, lost_pct,
       h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_fresh, jgate,
       h->feed ? h->feed_port : 0, fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
