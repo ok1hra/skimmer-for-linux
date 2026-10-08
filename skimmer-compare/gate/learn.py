@@ -33,6 +33,8 @@ cannot hold: on ordinary days L is below R before any filter.)
   ./learn.py --rows DIR                    rows replayed earlier (<policy>-<band>-<start>.jsonl)
   ./learn.py                               replay every tap now (fresh_s 120)
   ./learn.py --ini feed-gate.ini           also write the weights and threshold
+  ./learn.py --eval feed-gate.ini          no fit: score those fixed weights on the
+                                           reserve (the data after the test)
 """
 import argparse
 import glob
@@ -206,6 +208,8 @@ def main():
     ap.add_argument("--max-lost", type=float, default=1.0,
                     help="%% of L's confirmed stations the threshold may lose on VAL")
     ap.add_argument("--ini", help="write the weights and the threshold here")
+    ap.add_argument("--eval", metavar="INI",
+                    help="no fit: score this gate (weights + threshold) on the reserve")
     a = ap.parse_args()
     a.split_file = a.split_file or os.path.join(HERE, "split-%s-tap.json" % a.engine)
 
@@ -300,24 +304,51 @@ def main():
     print("  left out: %d straddling a boundary, %d after the test (reserve)"
           % (pc["straddle"], pc["reserve"]))
 
-    # ---- fit on TRAIN: POS vs provable errors -------------------------------------------
-    tr = [d for d in data if part[d["key"]] == "train" and d["lab"] in ("POS", "ERR")]
-    X = np.array([[d["f"][k] for k in NAMES] for d in tr], float)
-    y = np.array([d["lab"] == "POS" for d in tr], float)
-    mu, sd = X.mean(0), X.std(0)
-    sd[sd == 0] = 1
-    w = fit_lr((X - mu) / sd, y)
-    print("\nfitted on TRAIN: %d POS / %d ERR" % (int(y.sum()), int(len(y) - y.sum())))
-    print("coefficients (per 1 sd; + = more likely real):\n  " + "  ".join(
-        "%s %+.2f" % (k, c) for k, c in sorted(zip(NAMES, w[1:]), key=lambda x: -abs(x[1]))
-        if abs(c) >= 0.05))
+    # a reserve episode whose label evidence is not all recorded yet stays out
+    for d in data:
+        if part[d["key"]] == "reserve" and d["ep"].t1 + EVIDENCE_S > store.rbn.last_t:
+            part[d["key"]] = "unripe"
+    if a.eval:
+        # ---- the fixed gate of an ini, no fit ------------------------------------------
+        import configparser
+        g = configparser.ConfigParser()
+        if not g.read(a.eval):
+            raise SystemExit("cannot read %s" % a.eval)
+        wk = {k: [float(x) for x in v.split()] for k, v in g.items("weights")}
+        w = np.array([g.getfloat("gate", "bias")] + [wk[k][0] for k in NAMES])
+        mu = np.array([wk[k][1] for k in NAMES])
+        sd = np.array([wk[k][2] for k in NAMES])
+        thr_ini = g.getfloat("gate", "threshold")
+        c = Counter(d["lab"] for d in data if part[d["key"]] == "reserve")
+        rs = [d["t0"] for d in data if part[d["key"]] == "reserve"]
+        print("\nEVAL %s (threshold %.2f) — reserve %s – %s: POS %d  ERR %d  SUSPECT %d  "
+              "UNCONF %d  UNSURE %d  (%d still unripe)"
+              % (os.path.basename(a.eval), thr_ini, utc(min(rs)) if rs else "-",
+                 utc(max(rs)) if rs else "-", c["POS"], c["ERR"], c["SUSPECT"], c["UNCONF"],
+                 c["UNSURE"], sum(v == "unripe" for v in part.values())))
+    else:
+        # ---- fit on TRAIN: POS vs provable errors ---------------------------------------
+        tr = [d for d in data if part[d["key"]] == "train" and d["lab"] in ("POS", "ERR")]
+        X = np.array([[d["f"][k] for k in NAMES] for d in tr], float)
+        y = np.array([d["lab"] == "POS" for d in tr], float)
+        mu, sd = X.mean(0), X.std(0)
+        sd[sd == 0] = 1
+        w = fit_lr((X - mu) / sd, y)
+        print("\nfitted on TRAIN: %d POS / %d ERR" % (int(y.sum()), int(len(y) - y.sum())))
+        print("coefficients (per 1 sd; + = more likely real):\n  " + "  ".join(
+            "%s %+.2f" % (k, c) for k, c in sorted(zip(NAMES, w[1:]), key=lambda x: -abs(x[1]))
+            if abs(c) >= 0.05))
 
     def probs(name):
         ds = [d for d in data if part[d["key"]] == name]
+        if not ds:
+            return ds, np.zeros(0)
         return ds, predict(w, (np.array([[d["f"][k] for k in NAMES] for d in ds], float) - mu) / sd)
 
-    for name in ("train", "val", "test"):
+    for name in ("train", "val", "test") + (("reserve",) if a.eval else ()):
         ds, p = probs(name)
+        if not ds:
+            continue
         m = np.array([d["lab"] in ("POS", "ERR") for d in ds])
         yy = np.array([d["lab"] == "POS" for d in ds], float)
         um = np.array([d["lab"] != "UNSURE" for d in ds])
@@ -327,7 +358,8 @@ def main():
     # ---- sweep / pick / test -------------------------------------------------------------
     def evs_of(name, which):
         return [e for e in A[which].events if e["t0"] in covered and e["t0"] in inside
-                and part_of(e["t0"], e["t1"]) == name]
+                and part_of(e["t0"], e["t1"]) == name
+                and not (name == "reserve" and e["t1"] + EVIDENCE_S > store.rbn.last_t)]
 
     def sweep(name, thrs):
         ds, p = probs(name)
@@ -344,7 +376,10 @@ def main():
         return out
 
     def show(name, res):
-        print("\n%s %s – %s" % (name.upper(), utc(span[name][0]), utc(span[name][1])))
+        if name in span:
+            print("\n%s %s – %s" % (name.upper(), utc(span[name][0]), utc(span[name][1])))
+        else:
+            print("\n%s (after %s)" % (name.upper(), utc(span["test"][1])))
         print("   thr  dropped POS/ERR/UNC  lost |  compare: recall L  R   bust L   R |"
               "  strict: recall L  R   bust L   R | ERR L")
         for thr, dr, s, err, _ in res:
@@ -355,6 +390,10 @@ def main():
                      100 * st["rL"], 100 * st["rR"], 100 * st["bL"], 100 * st["bR"], 100 * err))
 
     grid = [0.0] + [x / 100 for x in range(5, 100, 5)]
+    if a.eval:
+        show("reserve", sweep("reserve", sorted({0.0, thr_ini, 0.05, 0.15, 0.2, 0.3})))
+        print("  (the gate's own threshold is %.2f; 0.00 = today's feed)" % thr_ini)
+        return
     val = sweep("val", grid)
     show("val", val)
     bust = lambda s, err: {"err": err, "strict": s["strict"]["bL"],
