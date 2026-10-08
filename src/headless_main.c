@@ -12,16 +12,20 @@
  *
  * Config (default ~/.config/skimmer-for-linux/headless.ini, written with
  * defaults when missing):
- *   [radio]  host, rate (48000/96000/192000 — one rate for all receivers),
- *            clock_ppm
+ *   [radio]  host — one radio or a list (comma separated, tried in order),
+ *            rate (48000/96000/192000 — one rate for all receivers), clock_ppm
  *   [bands]  <name>=<centre Hz>, in receiver order (RX1 first), ≤ 8
  *   [decode] engine=v2|deepcw, log=true|false (per-band decode logs)
  *   [feed]   call, port (0 = no telnet feed)
  *   [status] console_s (0 = quiet), http_port (0 = no web page)
  *
  * The radio is never taken from another client unless --take-over is given
- * (one-shot: for the first start only); a stream lost to another client is
- * not re-grabbed — the scanner waits until the radio is idle again.
+ * (one-shot: for the first start only — it then takes the first busy radio of
+ * the list). The scanner streams from the first IDLE radio of the list, at
+ * start and again whenever the stream is lost. When every radio answers busy,
+ * or none is free within RADIO_SEARCH_S, it reports which and exits (3) —
+ * waiting on a busy radio once left it silent for 15 h unnoticed
+ * (2026-10-07: CW Skimmer Server took .21 when its own radio dropped out).
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -58,6 +62,12 @@ static double act_now(const Act *a, gint64 now) {
 }
 #define RECENT_STATIONS  10                      /* per band on the web page */
 
+/* How long the radios may stay silent (no discovery reply — the network not
+ * up yet after a boot, a radio rebooting) before the search gives up. A busy
+ * reply is final at once. */
+#define RADIO_SEARCH_S   30
+#define EXIT_NO_RADIO    3
+
 typedef struct {
   char          name[16];
   double        centre_hz;
@@ -73,7 +83,9 @@ typedef struct {
 typedef struct {
   /* config */
   char    *cfg_path;
-  char    *host;
+  char   **hosts;              /* [radio] host, in search order               */
+  const char *host;            /* the radio streaming now (or hosts[0])       */
+  char    *hosts_text;         /* "a, b" for messages                         */
   guint    rate;
   double   ppm;
   char    *engine;
@@ -95,6 +107,8 @@ typedef struct {
 
   SkimHpsdrClient *rp;
   gboolean  streaming;
+  gint64    search_since_us;   /* 0 = not searching                           */
+  int       exit_code;         /* != 0: stop the main loop with it            */
   volatile gint closed;        /* set by the client's thread                 */
   char      rp_state[160];
   guint64   packets_prev;
@@ -119,7 +133,8 @@ static const char *DEFAULT_CONFIG =
   "# skimmer-headless — one Red Pitaya, one pipeline per band.\n"
   "# Bands are receivers in order (RX1 first), at most 8, all at one rate.\n"
   "# 6 x 96 kHz is ~30 Mb/s of UDP: use a wired link.\n"
-  "\n[radio]\nhost=192.168.1.21\nrate=96000\n"
+  "\n[radio]\n# one radio, or a list tried in order: the first idle one is used\n"
+  "host=192.168.1.21\nrate=96000\n"
   "# sampling-clock error: (true - shown) / true * 1e6, measured with 0 here\n"
   "clock_ppm=0\n"
   "\n[bands]\n"
@@ -161,11 +176,19 @@ static gboolean config_load(Hd *h, GError **error) {
     g_key_file_free(kf);
     return FALSE;
   }
-  h->host = g_key_file_get_string(kf, "radio", "host", NULL);
-  if (!h->host || !h->host[0]) {
-    g_free(h->host);
-    h->host = g_strdup("192.168.1.21");
+  char *hv = g_key_file_get_string(kf, "radio", "host", NULL);
+  GPtrArray *hl = g_ptr_array_new();
+  char **parts = g_strsplit_set(hv ? hv : "", ",; \t", -1);
+  for (char **q = parts; *q; q++) {
+    if (**q) { g_ptr_array_add(hl, g_strdup(*q)); }
   }
+  g_strfreev(parts);
+  g_free(hv);
+  if (hl->len == 0) { g_ptr_array_add(hl, g_strdup("192.168.1.21")); }
+  g_ptr_array_add(hl, NULL);
+  h->hosts = (char **)g_ptr_array_free(hl, FALSE);
+  h->host = h->hosts[0];
+  h->hosts_text = g_strjoinv(", ", h->hosts);
   h->rate = 96000;
   if (g_key_file_has_key(kf, "radio", "rate", NULL)) {
     h->rate = (guint)g_key_file_get_integer(kf, "radio", "rate", NULL);
@@ -317,47 +340,85 @@ static void rp_state(Hd *h, const char *fmt, ...) {
   }
 }
 
-static void rp_try_start(Hd *h) {
-  SkimHpsdrInfo info;
+/* Start streaming from `host`; FALSE (state set) when the start fails. */
+static gboolean rp_start_on(Hd *h, const char *host, gboolean took) {
   GError *err = NULL;
-  if (!skim_hpsdr_discover(h->host, SKIM_HPSDR_DEFAULT_PORT, 1000, &info, &err)) {
-    rp_state(h, "searching for %s…", h->host);
-    g_clear_error(&err);
-    return;
-  }
-  if (info.busy && !h->take_over) {
-    rp_state(h, "%s is in use by another client — waiting (--take-over grabs it)",
-             h->host);
-    return;
-  }
   double centres[SKIM_HPSDR_MAX_RX];
-  h->rp = skim_hpsdr_client_new(h->host, SKIM_HPSDR_DEFAULT_PORT);
+  h->take_over = FALSE;                         /* one-shot: the first start   */
+  h->rp = skim_hpsdr_client_new(host, SKIM_HPSDR_DEFAULT_PORT);
   for (guint i = 0; i < h->nb; i++) {
     centres[i] = h->band[i].centre_hz;
     skim_hpsdr_client_set_rx_iq_cb(h->rp, i, rx_iq_cb, &h->band[i]);
   }
   skim_hpsdr_client_set_closed_cb(h->rp, rp_closed_cb, h);
   g_atomic_int_set(&h->closed, 0);
-  const gboolean took = h->take_over;
-  h->take_over = FALSE;                         /* one-shot                    */
   if (!skim_hpsdr_client_start_multi(h->rp, h->rate, centres, h->nb, h->ppm, took,
                                      &err)) {
-    rp_state(h, "start failed: %s", err->message);
+    rp_state(h, "%s: start failed: %s", host, err->message);
     g_clear_error(&err);
     g_clear_pointer(&h->rp, skim_hpsdr_client_free);
-    return;
+    return FALSE;
   }
+  h->host = host;
   h->streaming = TRUE;
   h->packets_prev = 0;
+  h->search_since_us = 0;
   rp_state(h, "streaming — %s, %u RX × %u kHz%s", skim_hpsdr_client_device(h->rp),
            h->nb, h->rate / 1000, took ? " (taken over)" : "");
+  return TRUE;
+}
+
+/* One search round over [radio] host: the first idle radio wins. None idle —
+ * every one busy, or the rest silent past RADIO_SEARCH_S — stops the scanner
+ * with EXIT_NO_RADIO. */
+static void rp_try_start(Hd *h) {
+  const gint64 now = g_get_monotonic_time();
+  if (!h->search_since_us) { h->search_since_us = now; }
+  const gboolean take = h->take_over;
+  GString *why = g_string_new(NULL);
+  const char *first_busy = NULL;
+  gboolean all_answered = TRUE;
+  for (char **hp = h->hosts; *hp; hp++) {
+    SkimHpsdrInfo info;
+    GError *err = NULL;
+    if (why->len) { g_string_append(why, ", "); }
+    if (!skim_hpsdr_discover(*hp, SKIM_HPSDR_DEFAULT_PORT, 1000, &info, &err)) {
+      g_string_append_printf(why, "%s no reply", *hp);
+      g_clear_error(&err);
+      all_answered = FALSE;
+    } else if (info.busy) {
+      g_string_append_printf(why, "%s busy", *hp);
+      if (!first_busy) { first_busy = *hp; }
+    } else if (rp_start_on(h, *hp, FALSE)) {
+      g_string_free(why, TRUE);
+      return;
+    } else {
+      g_string_append_printf(why, "%s start failed", *hp);
+      all_answered = FALSE;                     /* may work on the next round  */
+    }
+  }
+  if (take && first_busy && rp_start_on(h, first_busy, TRUE)) {
+    g_string_free(why, TRUE);
+    return;
+  }
+  if (all_answered || now - h->search_since_us >= RADIO_SEARCH_S * G_USEC_PER_SEC) {
+    rp_state(h, "no free radio (%s) — stopping", why->str);
+    g_printerr("skimmer-headless: no free radio (%s)%s\n", why->str,
+               first_busy ? " — another client streams from it; "
+                            "--take-over grabs the first busy one" : "");
+    h->exit_code = EXIT_NO_RADIO;
+    if (h->loop) { g_main_loop_quit(h->loop); }
+  } else {
+    rp_state(h, "searching for a free radio… (%s)", why->str);
+  }
+  g_string_free(why, TRUE);
 }
 
 static void rp_drop(Hd *h) {
   g_clear_pointer(&h->rp, skim_hpsdr_client_free);   /* sends no stop: not ours */
   h->streaming = FALSE;
-  rp_state(h, "stream lost (another client took the radio, or it left the "
-              "network) — waiting");
+  rp_state(h, "stream lost from %s (another client took the radio, or it left "
+              "the network) — searching %s", h->host, h->hosts_text);
 }
 
 /* ---- status ---------------------------------------------------------------------- */
@@ -628,6 +689,7 @@ static gboolean tick(gpointer data) {
   Hd *h = data;
   if (h->streaming && g_atomic_int_get(&h->closed)) { rp_drop(h); }
   if (!h->streaming && h->ticks % 3 == 0) { rp_try_start(h); }
+  if (h->exit_code) { return G_SOURCE_REMOVE; }
 
   const guint64 pk = h->rp ? skim_hpsdr_client_packets(h->rp) : 0;
   h->pps = h->streaming && h->packets_prev ? (double)(pk - h->packets_prev) : 0;
@@ -713,7 +775,8 @@ int main(int argc, char **argv) {
     { "config", 'c', 0, G_OPTION_ARG_FILENAME, &cfg,
       "Config file (default ~/.config/skimmer-for-linux/headless.ini)", "FILE" },
     { "take-over", 0, 0, G_OPTION_ARG_NONE, &h->take_over,
-      "Start even if another client streams from the radio (first start only)", NULL },
+      "Start even if another client streams from the radio — the first busy one "
+      "of [radio] host, when none is idle (first start only)", NULL },
     { "status-every", 's', 0, G_OPTION_ARG_INT, &h->console_s,
       "Console status every N s (0 = off; overrides the config)", "N" },
     { "http-port", 'p', 0, G_OPTION_ARG_INT, &h->http_port,
@@ -737,7 +800,7 @@ int main(int argc, char **argv) {
   g_mutex_init(&h->snap_lock);
   h->t_start = g_get_monotonic_time();
   g_message("skimmer-headless %s — %s, %u band%s × %u kHz, config %s", SKIMMER_VERSION,
-            h->host, h->nb, h->nb == 1 ? "" : "s", h->rate / 1000, h->cfg_path);
+            h->hosts_text, h->nb, h->nb == 1 ? "" : "s", h->rate / 1000, h->cfg_path);
 
   /* Callsign dictionary: loaded once for every pipeline, kept current. */
   char *scp = g_build_filename(g_get_user_config_dir(), "skimmer-for-linux", "master.scp", NULL);
@@ -783,7 +846,7 @@ int main(int argc, char **argv) {
     g_mutex_init(&b->lock);
     b->active = g_hash_table_new_full(NULL, NULL, NULL, g_free);
     b->stations = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
-    g_snprintf(b->label, sizeof(b->label), "%s RX%u %s", h->host, i + 1, b->name);
+    g_snprintf(b->label, sizeof(b->label), "RX%u %s", i + 1, b->name);
     char *dlog = h->decode_log ? g_strdup_printf("%s/decodes-%s-%s.log", logdir, b->name, day)
                                : NULL;
     char *tap = h->feed_learn ? g_strdup_printf("%s/tap-%s-%s.log", learndir, b->name, start)
@@ -859,8 +922,10 @@ int main(int argc, char **argv) {
   g_unix_signal_add(SIGINT, on_signal, h);
   g_unix_signal_add(SIGTERM, on_signal, h);
   tick(h);                                     /* first start attempt now     */
-  g_timeout_add_seconds(1, tick, h);
-  g_main_loop_run(h->loop);
+  if (!h->exit_code) {                         /* a quit before run is lost   */
+    g_timeout_add_seconds(1, tick, h);
+    g_main_loop_run(h->loop);
+  }
 
   /* Teardown: the radio first (stop — only if the stream is still ours),
    * then the engines, then the feed they spot into. */
@@ -875,5 +940,5 @@ int main(int argc, char **argv) {
   g_clear_pointer(&h->feed, skim_rbn_feed_free);
   g_clear_pointer(&h->scp, skim_scp_updater_free);
   g_message("stopped");
-  return 0;
+  return h->exit_code;
 }
