@@ -509,7 +509,7 @@ function renderTimeline(S) {
   const svg = svgRoot(H);
   const x = (t) => m.l + ((t - ta) / Math.max(1, tb - ta)) * (W - m.l - m.r);
   const y = (p) => m.t + (1 - p) * (H - m.t - m.b);
-  for (const [a, b] of T.outages) {
+  for (const [a, b] of [...T.outages, ...(T.dead || []).map((d) => [d.t0, d.t1])]) {
     svg.append(sv('rect', { x: x(a), y: m.t, width: Math.max(1, x(b) - x(a)), height: H - m.t - m.b, fill: 'var(--out)' }));
   }
   for (const [a, b] of T.other || []) {
@@ -585,6 +585,7 @@ function renderTimeline(S) {
   const rows = [
     ...T.outages.map(([a, b]) => ['not compared', '', a, b, '']),
     ...(T.other || []).map(([a, b]) => ['another decoder', '', a, b, '']),
+    ...(T.dead || []).map((d) => [`${d.side} feed dead`, 'all', d.t0, d.t1, 'not compared: no spot at all while the other side spotted']),
     ...T.silences.map((s) => [`${s.side} silent`, s.band, s.t0, s.t1, `${s.other} spots by the other side`]),
   ].sort((p, q) => p[2] - q[2]);
   box.replaceChildren(rows.length ? el('table', null,

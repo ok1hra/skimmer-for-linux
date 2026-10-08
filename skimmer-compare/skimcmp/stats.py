@@ -8,7 +8,7 @@ chance (p < 0.05) and there is enough data; otherwise "undecided".
 import math
 from statistics import median
 
-from .intervals import clip, subtract, total
+from .intervals import Membership, clip, normalize, subtract, total
 
 ALPHA = 0.05
 MIN_DISCORDANT = 20
@@ -214,6 +214,9 @@ def timeline(A, evs, ta, tb, common):
     # everything else in the range that was not compared: outages inside a
     # session and the gaps with no recording at all
     outages = subtract(subtract([(ta, min(tb, A.computed))], common), other)
+    # not compared because one side's feed was up but spotted nothing
+    dead = [(x, y, side) for a, b, side in A.dead for x, y in clip([(a, b)], ta, tb)]
+    outages = subtract(outages, normalize([(a, b) for a, b, _ in dead]))
     rbn_down = []
     for a, b in spans:
         cur = a
@@ -224,11 +227,15 @@ def timeline(A, evs, ta, tb, common):
         if cur < b:
             rbn_down.append((cur, b))
     return {"step": step, "rows": rows, "outages": outages, "other": other,
+            "dead": [{"side": s, "t0": a, "t1": b} for a, b, s in dead],
             "rbn_down": rbn_down,
             "silences": [s for s in A.silences if s["t1"] > ta and s["t0"] < tb]}
 
 
 def histograms(A, ta, tb):
+    """Spots per kHz — of the compared time only: a side whose feed was down
+    or dead must not show the other side's spots against nothing."""
+    inside = Membership(A.common)
     out = []
     for band, clo, chi in A.win.common:
         lo, hi = A.win.region(band)
@@ -237,7 +244,7 @@ def histograms(A, ta, tb):
         L, R, Rall = [0] * n, [0] * n, [0] * n
         for src, cq_only, dst in ((A.Lall, True, L), (A.Rall, True, R), (A.Rall, False, Rall)):
             for sp in src:
-                if not (ta <= sp.t < tb) or not (lo <= sp.f < hi):
+                if not (ta <= sp.t < tb) or not (lo <= sp.f < hi) or sp.t not in inside:
                     continue
                 if cq_only and sp.cm not in ("CQ", "TEST", "QRZ"):
                     continue

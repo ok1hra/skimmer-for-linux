@@ -23,6 +23,8 @@ PARAMS = {
     "lost_pct":      (1.0, 0,   100,  "local health: a status snapshot with this much packet loss or more excludes its interval"),
     "silence_min":   (15,  1,   240,  "suspicious silence: a band silent this many minutes on one side …"),
     "silence_other": (5,   1,   1000, "… while the other side spotted at least this many there"),
+    "dead_min":      (20,  1,   1440, "dead feed: one side spotted nothing at all, on any band, for this many compared minutes …"),
+    "dead_other":    (10,  1,   10000, "… while the other side spotted at least this many — that time is not compared (radio taken by another client, stuck decoder)"),
 }
 
 

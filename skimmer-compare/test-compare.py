@@ -35,6 +35,10 @@ checks that the comparison finds exactly that:
     covered match, no only-R; mirrored for S5BBB (R long, L twice); and an
     L/R pair whose episode medians sit 4 kHz apart but whose spots meet is
     paired by the spots
+  dead feed: L's feed up and its status healthy, but no L spot for 45 min
+    while R spots 12 stations → that time is not compared, R's 12 are no
+    only-R and stay out of the histogram; session B's 30 min L silence
+    beside only 6 R spots stays compared
 
   ./test-compare.py            exit 0 = everything passed
 """
@@ -231,6 +235,10 @@ def core(root, logs, A_T, B_T):
            and s["t0"] >= epoch("15:00:00")]
     check(len(sil) == 1 and sil[0]["other"] == 6, "session B: L silent on 20 m while R spotted 6")
     check(not any(s["t0"] < epoch("14:00:00") for s in An.silences), "session A: no silence flagged")
+    check(An.dead == [], "no dead feed: session B's L silence has only 6 R spots beside it")
+    h40 = next(h for h in S["hist"] if h["band"] == "40m")
+    check(h40["Rall"][7050 - h40["lo"]] == 0 and h40["Rall"][7060 - h40["lo"]] == 0,
+          "histogram: HB9FFF (L feed down) and F5GGG (unhealthy) left out")
     check([s["T"] for s in An.sessions] == [A_T, B_T] and not any(s["live"] for s in An.sessions),
           "two sessions, both stopped")
 
@@ -387,6 +395,63 @@ def split_episodes():
           "episodes counted once each: L 4, R 4 (%d, %d)" % (S["bust"]["L"]["n"], S["bust"]["R"]["n"]))
 
 
+def dead_feed():
+    print("=== dead feed — one side silent on every band is not compared")
+    root = tempfile.mkdtemp(prefix="compare-dead-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    with open(os.path.join(root, "headless.ini"), "w") as fh:
+        fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n")
+    with open(os.path.join(root, "master.scp"), "w") as fh:
+        fh.write("# test\nDL1AAA\nOK1BBB\n" + "".join("ZZ%dZZ\n" % i for i in range(12)))
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\n"
+                 "[remote]\nwindows = 7000-7091\n[rbn]\nexclude = OK1HRA\n")
+    T = "20261001-100000"
+    loc = [mark("10:00:00", "connected to 127.0.0.1:7302"),
+           L("10:02:00", 7010.0, "DL1AAA"), L("10:05:00", 7020.0, "OK1BBB"),
+           L("10:50:00", 7010.0, "DL1AAA")]
+    rem = [mark("10:00:00", "connected to 192.168.1.201:7301"),
+           R("10:03:00", 7010.0, "DL1AAA"), R("10:04:00", 7020.0, "OK1BBB")] + [
+           R("10:%02d:00" % (10 + 3 * i), 7030.0 + 3 * i, "ZZ%dZZ" % i) for i in range(12)] + [
+           R("10:52:00", 7010.0, "DL1AAA")]
+    events = ["%s recording as OK1HRA since %s UTC\n" % (ts("10:00:00"), T),
+              "%s stopped — write check OK\n" % ts("11:00:00")]
+    for kind, lines in (("local", loc), ("remote", rem), ("rbn", []), ("events", events)):
+        with open(os.path.join(logs, "%s-%s.log" % (kind, T)), "w") as fh:
+            fh.writelines(lines)
+    with open(os.path.join(logs, "status-%s.jsonl" % T), "w") as fh:
+        for m in range(5, 60, 5):
+            fh.write("%s\t%s\n" % (ts("10:%02d:00" % m),
+                                    json.dumps({"streaming": True, "lost_pct": 0})))
+    cfg = Config(os.path.join(root, "compare.ini"))
+    store = Store(cfg.logs, lambda: RbnIndex(loose_bands(cfg.local_windows, 2.0), cfg.exclude))
+    store.poll()
+    An = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
+                 epoch("23:00:00"))
+    check(An.dead == [(epoch("10:05:00"), epoch("10:50:00"), "L")],
+          "L dead 10:05–10:50 (%s)" % An.dead)
+    S = summarize(An, epoch("10:00:00"), epoch("11:00:00") + 1)
+    check(S["time"]["common_s"] == 3600 - 45 * 60,
+          "common time 900 s: the dead 45 min removed (%d)" % S["time"]["common_s"])
+    check(not any(e["call"].startswith("ZZ") for e in An.events),
+          "R's 12 stations heard while L was dead are not only-R")
+    check(S["recall"]["n"] == 3 and S["recall"]["L"]["k"] == 3,
+          "recall: DL1AAA twice (48 min apart) and OK1BBB, all caught by L")
+    h = S["hist"][0]
+    check(sum(h["R"]) == 3 and sum(h["Rall"]) == 3,
+          "histogram: R's spots in the dead time left out (%d)" % sum(h["R"]))
+    check([(d["side"], d["t0"]) for d in S["timeline"]["dead"]] == [("L", epoch("10:05:00"))]
+          and not any(a < epoch("10:50:00") and b > epoch("10:05:00")
+                      for a, b in S["timeline"]["outages"]),
+          "timeline: the dead time listed as dead, not as an outage")
+    P = dict(cfg.params, dead_other=13)
+    An2 = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), P,
+                  epoch("23:00:00"))
+    check(An2.dead == [] and sum(e["call"].startswith("ZZ") for e in An2.events) == 12,
+          "dead_other=13: 12 R spots are not enough — compared, 12 only-R")
+
+
 def band_plan():
     print("=== band plan — a band added later is not missed before it")
     root = tempfile.mkdtemp(prefix="compare-plan-")
@@ -452,6 +517,7 @@ if __name__ == "__main__":
     current_session()
     band_plan()
     split_episodes()
+    dead_feed()
     print("  (files in %s)" % root)
     print("\n%s (%d failure%s)" % ("FAIL" if fails else "PASS", fails, "" if fails == 1 else "s"))
     sys.exit(1 if fails else 0)

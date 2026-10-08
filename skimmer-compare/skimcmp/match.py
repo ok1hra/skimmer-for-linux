@@ -134,13 +134,38 @@ def curve_at(pts, x):
     return pts[-1][1]
 
 
+def dead_feeds(c, start, end, mine, theirs, min_s, need):
+    """[(a, b)] of the common time c where one side spotted nothing at all
+    for at least min_s (of common time) while the other spotted at least
+    `need` times. Its feed was up but dead — the local radio taken by
+    another client (2026-10-07: 15 h of L = 0), a stuck decoder, or R's own
+    radio gone; R reports no health, L's status may not say it. mine and
+    theirs: sorted spot times of each side, all bands."""
+    out = []
+    pts = [start] + mine[bisect_right(mine, start):bisect_left(mine, end)] + [end]
+    for x, y in zip(pts, pts[1:]):
+        if y - x < min_s:
+            continue
+        g = intersect(c, [(x, y)])
+        if total(g) < min_s:
+            continue
+        n = sum(bisect_left(theirs, b) - bisect_right(theirs, a) for a, b in g)
+        if n >= need:
+            out += g
+    return out
+
+
 def compared_time(store, P, now, default_engine, default_windows=()):
     """Sessions, recorded spans, RBN coverage, the common time split by
-    local decoder: [(a, b, engine)] and by local band plan: [(a, b, windows)]."""
+    local decoder: [(a, b, engine)] and by local band plan: [(a, b, windows)],
+    and the dead-feed time taken out of it: [(a, b, side)]."""
     sessions = store.ordered()
     cur = store.current(now)
     latest = cur.T if cur else None
-    info, spans, rbn_up, segs, wsegs = [], [], [], [], []
+    info, spans, rbn_up, segs, wsegs, dead = [], [], [], [], [], []
+    Lt = sorted(sp.t for sp in store.L)
+    Rt = sorted(sp.t for sp in store.R)
+    dead_s, dead_n = P.get("dead_min", 20) * 60, P.get("dead_other", 10)
     for s in sessions:
         end = s.end(s.T == latest, now)
         if end <= s.start:
@@ -148,6 +173,10 @@ def compared_time(store, P, now, default_engine, default_windows=()):
         lup = s.up("local", end)
         c = intersect(lup, s.up("remote", end))
         c = subtract(c, s.unhealthy(P["lost_pct"]))
+        for side, mine, theirs in (("L", Lt, Rt), ("R", Rt, Lt)):
+            d = dead_feeds(c, s.start, end, mine, theirs, dead_s, dead_n)
+            dead += [(a, b, side) for a, b in d]
+        c = subtract(c, normalize([(a, b) for a, b, _ in dead]))
         engines = {}
         for a, b, eng in s.engines(lup, default_engine):
             for x, y in intersect(c, [(a, b)]):
@@ -170,7 +199,7 @@ def compared_time(store, P, now, default_engine, default_windows=()):
         if w is None:
             near = min(known, key=lambda k: abs(k[0] - a), default=None)
             wsegs[i] = (a, b, near[1] if near else default_windows)
-    return info, spans, normalize(rbn_up), segs, wsegs
+    return info, spans, normalize(rbn_up), segs, wsegs, sorted(dead)
 
 
 class BandPlan:
@@ -216,8 +245,8 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
     df, bust_df, bust_dt = P["df_khz"], P["bust_df_hz"] / 1000.0, P["bust_dt_s"]
 
     # ---- time: sessions, common time (of this decoder), RBN coverage ------------
-    A.sessions, A.spans, A.rbn_up, segs, wsegs = compared_time(store, P, now, default_engine,
-                                                               tuple(local_w))
+    A.sessions, A.spans, A.rbn_up, segs, wsegs, A.dead = compared_time(
+        store, P, now, default_engine, tuple(local_w))
     A.segments = segs
     A.common = normalize([(a, b) for a, b, eng in segs if engine is None or eng == engine])
     inside = Membership(A.common)
