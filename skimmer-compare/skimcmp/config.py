@@ -7,7 +7,7 @@ or malformed values fall back to the base value instead of failing.
 import configparser
 import os
 
-from .windows import load_local, parse_ranges
+from .windows import load_local, remote_plan
 
 # name: (default, min, max, meaning) — the page shows the meaning as help
 PARAMS = {
@@ -50,7 +50,8 @@ class Config:
     def __init__(self, path):
         self.path = os.path.abspath(path)
         here = os.path.dirname(self.path)
-        cp = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+        # "=" only: [remote windows] keys are times, "2026-10-08T20:41"
+        cp = configparser.ConfigParser(delimiters=("=",), inline_comment_prefixes=("#", ";"))
         if not cp.read(self.path):
             raise SystemExit("cannot read %s" % self.path)
 
@@ -62,7 +63,7 @@ class Config:
         self.headless_ini = p("headless_ini", "~/.config/skimmer-for-linux/headless.ini")
         self.scp = p("scp", "~/.config/skimmer-for-linux/master.scp")
         self.local_windows = load_local(self.headless_ini)
-        self.remote_windows = parse_ranges(cp.get("remote", "windows", fallback=""))
+        self.remote_windows = remote_plan(cp)          # [(since, [(lo, hi)])]
         if not self.local_windows or not self.remote_windows:
             raise SystemExit("no local windows (%s) or no remote windows (%s)"
                              % (self.headless_ini, self.path))

@@ -35,6 +35,10 @@ checks that the comparison finds exactly that:
     covered match, no only-R; mirrored for S5BBB (R long, L twice); and an
     L/R pair whose episode medians sit 4 kHz apart but whose spots meet is
     paired by the spots
+  remote plan: R spotted only its CW segments (40 m with a hole at
+    7035–7045) until 13:00, then the whole band inside its receiver → L's
+    calls in the hole and above 7070 count only after 13:00; one below
+    7000 never does (R's windows stop at the band edge)
   dead feed: L's feed up and its status healthy, but no L spot for 45 min
     while R spots 12 stations → that time is not compared, R's 12 are no
     only-R and stay out of the histogram; session B's 30 min L silence
@@ -59,7 +63,7 @@ from skimcmp.config import Config               # noqa: E402
 from skimcmp.logs import Store                  # noqa: E402
 from skimcmp.match import analyze, compared_time, curve_at, engine_summary, snr_curve  # noqa: E402
 from skimcmp.stats import summarize             # noqa: E402
-from skimcmp.windows import loose_bands         # noqa: E402
+from skimcmp.windows import Windows, loose_bands  # noqa: E402
 
 fails = 0
 DAY = "2026-10-01T"
@@ -395,6 +399,53 @@ def split_episodes():
           "episodes counted once each: L 4, R 4 (%d, %d)" % (S["bust"]["L"]["n"], S["bust"]["R"]["n"]))
 
 
+def remote_plan_test():
+    print("=== remote plan — what R could spot, by time")
+    w = Windows([("40m", 6992.0, 7088.0)], [(7000.0, 7035.0), (7045.0, 7070.0)], 0.5)
+    check(w.band(7040.0) is None and w.band(7020.0) == "40m" and w.band(7050.0) == "40m",
+          "a band in two remote parts: the hole is not compared")
+    check(w.bands == [("40m", 7000.5, 7069.5)] and len(w.parts("40m")) == 2,
+          "…shown once, as two parts (%s)" % w.bands)
+    root = tempfile.mkdtemp(prefix="compare-rplan-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    with open(os.path.join(root, "headless.ini"), "w") as fh:
+        fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n")
+    with open(os.path.join(root, "master.scp"), "w") as fh:
+        fh.write("# test\nOK1HOL\nOK1TOP\nOK1MID\nOK1NEW\nOK1LOW\nOK1RRR\n")
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\n"
+                 "[remote]\nwindows = 7000-7091\n"
+                 "[remote windows]\n2026-09-01 = 7000-7035 7045-7070\n"
+                 "2026-10-01T13:00 = 7000-7091\n[rbn]\nexclude = OK1HRA\n")
+    T = "20261001-120000"
+    loc = [mark("12:00:00", "connected to 127.0.0.1:7302"),
+           L("12:10:00", 7040.0, "OK1HOL"), L("12:20:00", 7080.0, "OK1TOP"),
+           L("12:30:00", 7020.0, "OK1MID"), L("13:10:00", 7040.0, "OK1NEW"),
+           L("13:20:00", 6995.0, "OK1LOW")]
+    rem = [mark("12:00:00", "connected to 192.168.1.201:7301"), R("13:30:00", 7085.0, "OK1RRR")]
+    events = ["%s recording as OK1HRA since %s UTC\n" % (ts("12:00:00"), T),
+              "%s stopped — write check OK\n" % ts("14:00:00")]
+    for kind, lines in (("local", loc), ("remote", rem), ("rbn", []), ("events", events)):
+        with open(os.path.join(logs, "%s-%s.log" % (kind, T)), "w") as fh:
+            fh.writelines(lines)
+    cfg = Config(os.path.join(root, "compare.ini"))
+    check(len(cfg.remote_windows) == 2, "two remote plans read (%d)" % len(cfg.remote_windows))
+    store = Store(cfg.logs, lambda: RbnIndex(loose_bands(cfg.local_windows, 2.0), cfg.exclude))
+    store.poll()
+    An = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
+                 epoch("23:00:00"))
+    ev = {e["call"]: e["cat"] for e in An.events}
+    check("OK1HOL" not in ev and "OK1TOP" not in ev,
+          "before 13:00: L in R's hole and above its segment is not compared")
+    check(ev.get("OK1MID") == "only-L" and ev.get("OK1NEW") == "only-L",
+          "inside R's segment, and the hole after 13:00: only-L")
+    check("OK1LOW" not in ev, "below 7000 kHz: never compared")
+    check(ev.get("OK1RRR") == "only-R", "R at 7085 after 13:00: only-R")
+    check(An.win.bands == [("40m", 7000.5, 7087.5)],
+          "the bands shown: R's newest windows (%s)" % An.win.bands)
+
+
 def dead_feed():
     print("=== dead feed — one side silent on every band is not compared")
     root = tempfile.mkdtemp(prefix="compare-dead-")
@@ -517,6 +568,7 @@ if __name__ == "__main__":
     current_session()
     band_plan()
     split_episodes()
+    remote_plan_test()
     dead_feed()
     print("  (files in %s)" % root)
     print("\n%s (%d failure%s)" % ("FAIL" if fails else "PASS", fails, "" if fails == 1 else "s"))

@@ -172,7 +172,7 @@ def snr_edges(evs):
 
 def band_rows(A, evs):
     rows = []
-    for band, lo, hi in A.win.common:
+    for band, lo, hi in A.win.bands:
         g = [e for e in evs if e["band"] == band]
         U = [e for e in g if e["inU"]]
         lat = [e["lat"] for e in g if e["cat"] == "match" and e["lat"] is not None]
@@ -237,7 +237,7 @@ def histograms(A, ta, tb):
     or dead must not show the other side's spots against nothing."""
     inside = Membership(A.common)
     out = []
-    for band, clo, chi in A.win.common:
+    for band, clo, chi in A.win.bands:
         lo, hi = A.win.region(band)
         lo, hi = math.floor(lo), math.ceil(hi)
         n = hi - lo
@@ -251,7 +251,8 @@ def histograms(A, ta, tb):
                 dst[int(sp.f - lo)] += 1
         (l0, l1), (r0, r1) = A.win.pairs[band]
         out.append({"band": band, "lo": lo, "hi": hi, "local": [l0, l1],
-                    "remote": [r0, r1], "common": [clo, chi], "L": L, "R": R, "Rall": Rall})
+                    "remote": [r0, r1], "common": [clo, chi],
+                    "parts": [list(p) for p in A.win.parts(band)], "L": L, "R": R, "Rall": Rall})
     return out
 
 

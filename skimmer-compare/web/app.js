@@ -668,7 +668,9 @@ function renderHists(S) {
     const max = niceMax(Math.max(1, ...h.L, ...h.R));
     const mid = m.t + (H - m.t - m.b) / 2, half = (H - m.t - m.b) / 2;
     const yv = (n) => (n / max) * half;
-    svg.append(sv('rect', { x: x(h.common[0]), y: m.t, width: x(h.common[1]) - x(h.common[0]), height: H - m.t - m.b, fill: 'var(--surface-2)', 'fill-opacity': 0.6 }));
+    for (const [c0, c1] of h.parts || [h.common]) {
+      svg.append(sv('rect', { x: x(c0), y: m.t, width: x(c1) - x(c0), height: H - m.t - m.b, fill: 'var(--surface-2)', 'fill-opacity': 0.6 }));
+    }
     for (const v of [max, max / 2]) {
       for (const s of [-1, 1]) {
         svg.append(sv('line', { cls: 'grid', x1: m.l, x2: W - m.r, y1: mid - s * yv(v), y2: mid - s * yv(v) }));

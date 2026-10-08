@@ -2,11 +2,17 @@
 
 Local windows come from what skimmer-headless reported it was listening to
 (centre ± rate/2 per band in its status snapshots; its own config where a
-connection has no snapshot), remote windows from compare.ini. Only the intersection is compared,
-minus a guard at each edge where one receiver's filter may already roll off.
+connection has no snapshot), remote windows from compare.ini — what R can
+spot, which changes with its configuration, so they are a plan by time. A
+band may have several remote parts (CW Skimmer Server's CW segments left a
+hole at 7035–7045 kHz). Only the intersection is compared, minus a guard at
+each edge where one receiver's filter may already roll off.
 All frequencies are kHz.
 """
+import calendar
 import configparser
+import time
+from bisect import bisect_right
 
 
 def load_local(path):
@@ -53,19 +59,57 @@ def parse_ranges(text):
     return sorted(out)
 
 
+def parse_since(s):
+    """'2026-10-08T20:41' or '2026-10-08' (UTC) → epoch, or None."""
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
+        try:
+            return calendar.timegm(time.strptime(s.strip().rstrip("Z"), fmt))
+        except ValueError:
+            pass
+    return None
+
+
+def remote_plan(cp):
+    """[(since epoch, [(lo, hi)])] from compare.ini: [remote windows] lines
+    "<UTC time> = ranges", each in force until the next; without them the
+    one [remote] windows for all time."""
+    plan = []
+    if cp.has_section("remote windows"):
+        for k, v in cp.items("remote windows"):
+            t, r = parse_since(k), parse_ranges(v)
+            if t is not None and r:
+                plan.append((t, r))
+    if not plan:
+        r = parse_ranges(cp.get("remote", "windows", fallback=""))
+        plan = [(0, r)] if r else []
+    return sorted(plan)
+
+
+def remote_at(plan, t):
+    """The remote windows in force at t (the first entry before it begins)."""
+    i = bisect_right([s for s, _ in plan], t) - 1
+    return plan[max(i, 0)][1]
+
+
 class Windows:
     def __init__(self, local, remote, guard_khz):
         self.local = local                    # [(band, lo, hi)]
         self.remote = remote                  # [(lo, hi)]
-        self.common = []                      # [(band, lo, hi)] — guard applied
+        self.common = []                      # [(band, lo, hi)] — guard applied; a band
+                                              #   may have several parts
+        self.bands = []                       # [(band, lo, hi)] — one per band, covering
         self.pairs = {}                       # band → (local (lo,hi), remote (lo,hi))
         for name, lo, hi in local:
+            parts, rs = [], []
             for rlo, rhi in remote:
                 a, b = max(lo, rlo), min(hi, rhi)
                 if b - a > 2 * guard_khz:
-                    self.common.append((name, a + guard_khz, b - guard_khz))
-                    self.pairs[name] = ((lo, hi), (rlo, rhi))
-                    break
+                    parts.append((name, a + guard_khz, b - guard_khz))
+                    rs.append((rlo, rhi))
+            if parts:
+                self.common += parts
+                self.bands.append((name, parts[0][1], parts[-1][2]))
+                self.pairs[name] = ((lo, hi), (rs[0][0], rs[-1][1]))
         self.remote_only = [(lo, hi) for lo, hi in remote
                             if not any(min(hi, h) > max(lo, l) for _, l, h in local)]
         self.local_only = [n for n, _, _ in local if n not in self.pairs]
@@ -81,6 +125,9 @@ class Windows:
         """The span that covers both raw windows of a band (histograms)."""
         (l0, l1), (r0, r1) = self.pairs[band]
         return min(l0, r0), max(l1, r1)
+
+    def parts(self, band):
+        return [(lo, hi) for n, lo, hi in self.common if n == band]
 
     def to_json(self):
         return {

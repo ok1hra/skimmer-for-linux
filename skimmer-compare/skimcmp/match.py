@@ -29,7 +29,7 @@ from statistics import median
 
 from .arbiter import RANK, Arbiter
 from .intervals import Membership, intersect, normalize, subtract, total
-from .windows import Windows
+from .windows import Windows, remote_at
 
 CQ_WORDS = {"CQ", "TEST", "QRZ"}
 
@@ -203,17 +203,23 @@ def compared_time(store, P, now, default_engine, default_windows=()):
 
 
 class BandPlan:
-    """The local band plan in force at time t: the common-window band of a
-    spot heard then, or None. Adding a band must not count it as missed by
-    the local skimmer in the time before it listened there."""
+    """The band plan in force at time t — the local one, and what R could
+    spot then: the common-window band of a spot heard then, or None. Adding
+    a band must not count it as missed by the local skimmer in the time
+    before it listened there, nor a frequency R did not spot as R's miss."""
 
-    def __init__(self, wsegs, remote_w, guard_khz):
-        self.segs = wsegs
-        self.starts = [a for a, _, _ in wsegs]
+    def __init__(self, wsegs, remote_plan, guard_khz):
+        cuts = [s for s, _ in remote_plan[1:]]
+        self.segs = []                       # [(a, b, (local w, remote w))]
+        for a, b, w in wsegs:
+            pts = [a] + [c for c in cuts if a < c < b] + [b]
+            for x, y in zip(pts, pts[1:]):
+                self.segs.append((x, y, (w, tuple(remote_at(remote_plan, x)))))
+        self.starts = [a for a, _, _ in self.segs]
         self.win = {}
-        for _, _, w in wsegs:
-            if w not in self.win:
-                self.win[w] = Windows(list(w), remote_w, guard_khz)
+        for _, _, k in self.segs:
+            if k not in self.win:
+                self.win[k] = Windows(list(k[0]), list(k[1]), guard_khz)
 
     def band(self, t, f):
         i = bisect_right(self.starts, t) - 1
@@ -252,13 +258,15 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
     inside = Membership(A.common)
     plan = BandPlan(wsegs, remote_w, P["guard_khz"])
     # the bands shown: every band listened to in the compared time, at its
-    # newest centre; the configured ones when nothing was compared
-    newest = {}
-    for a, b, w in wsegs:
+    # newest centre, against what R could spot last; the configured ones
+    # when nothing was compared
+    newest, remote_now = {}, remote_at(remote_w, now)
+    for a, b, (w, rw) in plan.segs:
         if total(intersect(A.common, [(a, b)])) > 0:
             newest.update((n, (n, lo, hi)) for n, lo, hi in w)
+            remote_now = list(rw)
     win = A.win = Windows(sorted(newest.values(), key=lambda w: w[1]) or local_w,
-                          remote_w, P["guard_khz"])
+                          remote_now, P["guard_khz"])
 
     # ---- spots inside the compared range ---------------------------------------
     A.Lall, A.Rall = list(store.L), list(store.R)
@@ -500,7 +508,7 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
         times[("R", b)].append(sp.t)
     silence, need = P["silence_min"] * 60, P["silence_other"]
     for a, z in A.common:
-        for band, _, _ in win.common:
+        for band, _, _ in win.bands:
             for side, other in (("L", "R"), ("R", "L")):
                 ts = times[(side, band)]
                 os_ = times[(other, band)]
