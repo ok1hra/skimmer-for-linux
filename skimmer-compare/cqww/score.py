@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """score.py — replay spots (L) against CW Skimmer's own spots (R), CQ WW 2012.
 
-  score.py --band 20m --hours 2012-11-25T11 [2012-11-25T12 ...]
+  score.py --band 20m --hours 2012-11-25T11[,2012-11-25T12 ...]
            NAME=SPOTS_GLOB [NAME=SPOTS_GLOB ...] [--json OUT]
 
 The unit is call × band × hour. A unit is
 
-  TRUE    the call sent a log, or >= 2 distinct logs worked it
+  TRUE    the call sent a log, >= 2 distinct logs worked it, or >= 2 RBN
+          skimmers other than OL5Q spotted it (logs.py)
   BUST    not TRUE, and a TRUE call within edit distance 2 was spotted by
           either skimmer in the same band/hour within 300 Hz — a misread
   UNCONF  neither: not provably right, not provably a misread
@@ -117,48 +118,36 @@ def mcnemar(b, c):
     return min(1.0, 2 * p)
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--band", required=True)
-    ap.add_argument("--hours", nargs="+", required=True,
-                    help="UTC hours, YYYY-MM-DDTHH")
-    ap.add_argument("--r", default=os.path.join(CACHE, "spots.txt"))
-    ap.add_argument("--truth", default=os.path.join(CACHE, "truth.json"))
-    ap.add_argument("--from", dest="t_from", help="UTC YYYY-MM-DDTHH:MM, spots before are ignored")
-    ap.add_argument("--to", dest="t_to", help="UTC YYYY-MM-DDTHH:MM, spots from here on are ignored")
-    ap.add_argument("--json")
-    ap.add_argument("--list", action="store_true",
-                    help="print every unit's verdict")
-    ap.add_argument("variants", nargs="+", metavar="NAME=GLOB")
-    a = ap.parse_args()
+def evaluate(band, hours_iso, variants, r_path=None, truth_path=None,
+             t_from=None, t_to=None):
+    """Score variants {name: [spot files]} against R. Returns a dict with
+    R, V (units), lab (verdicts), U, rows, bins, order, off, is_true."""
+    r_path = r_path or os.path.join(CACHE, "spots.txt")
+    truth_path = truth_path or os.path.join(CACHE, "truth.json")
 
     hours = {int(datetime.datetime.strptime(h, "%Y-%m-%dT%H").replace(
-        tzinfo=datetime.timezone.utc).timestamp() // 3600) for h in a.hours}
-    with open(a.truth) as fh:
+        tzinfo=datetime.timezone.utc).timestamp() // 3600) for h in hours_iso}
+    with open(truth_path) as fh:
         tr = json.load(fh)
     senders = set(tr["senders"])
     worked = tr["worked"]
 
+    rbn = tr.get("rbn", {})
+
     def is_true(call):
-        return call in senders or worked.get(call, 0) >= 2
+        return call in senders or worked.get(call, 0) >= 2 or rbn.get(call, 0) >= 2
 
     def utc(x):
         return datetime.datetime.strptime(x, "%Y-%m-%dT%H:%M").replace(
             tzinfo=datetime.timezone.utc).timestamp()
-    lo = utc(a.t_from) if a.t_from else -1e18
-    hi = utc(a.t_to) if a.t_to else 1e18
+    lo = utc(t_from) if t_from else -1e18
+    hi = utc(t_to) if t_to else 1e18
 
     def win(spots):
         return [s for s in spots if lo <= s.t < hi]
 
-    R = units(win(read_r(a.r, a.band, hours)))
-    V = {}
-    for spec in a.variants:
-        name, _, pat = spec.partition("=")
-        paths = sorted(glob.glob(pat))
-        if not paths:
-            sys.exit(f"{name}: no file matches {pat}")
-        V[name] = units(win(read_l(paths, a.band, hours)))
+    R = units(win(read_r(r_path, band, hours)))
+    V = {name: units(win(read_l(paths, band, hours))) for name, paths in variants.items()}
 
     # frequency offset of each variant vs R, from common TRUE units
     off = {}
@@ -227,6 +216,35 @@ def main():
         lat = sorted(min(s.t for s in V[n][k]) - min(s.t for s in R[k])
                      for k in U if k in V[n] and k in R)
         rows[n]["latency_med_s"] = lat[len(lat) // 2] if lat else None
+
+    return {"R": R, "V": V, "lab": lab, "U": U, "rows": rows, "bins": bins,
+            "order": order, "off": off, "is_true": is_true}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--band", required=True)
+    ap.add_argument("--hours", required=True,
+                    help="UTC hours, YYYY-MM-DDTHH[,YYYY-MM-DDTHH...]")
+    ap.add_argument("--r", default=os.path.join(CACHE, "spots.txt"))
+    ap.add_argument("--truth", default=os.path.join(CACHE, "truth.json"))
+    ap.add_argument("--from", dest="t_from", help="UTC YYYY-MM-DDTHH:MM, spots before are ignored")
+    ap.add_argument("--to", dest="t_to", help="UTC YYYY-MM-DDTHH:MM, spots from here on are ignored")
+    ap.add_argument("--json")
+    ap.add_argument("--list", action="store_true",
+                    help="print every unit's verdict")
+    ap.add_argument("variants", nargs="+", metavar="NAME=GLOB")
+    a = ap.parse_args()
+    variants = {}
+    for spec in a.variants:
+        name, _, pat = spec.partition("=")
+        paths = sorted(glob.glob(pat))
+        if not paths:
+            sys.exit(f"{name}: no file matches {pat}")
+        variants[name] = paths
+    a.hours = a.hours.split(",")
+    ev = evaluate(a.band, a.hours, variants, a.r, a.truth, a.t_from, a.t_to)
+    R, V, lab, U, rows, bins, order = (ev[k] for k in ("R", "V", "lab", "U", "rows", "bins", "order"))
 
     print(f"band {a.band}, hours {' '.join(a.hours)}: U = {len(U)} TRUE units")
     print(f"{'':10} {'units':>6} {'recall':>7} {'bust':>6} {'unconf':>7} "

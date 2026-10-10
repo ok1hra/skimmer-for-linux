@@ -11,9 +11,13 @@ truth.json holds:
   worked    call -> number of DISTINCT logs that worked it
   runs      sender -> [[unix_minute, band, kHz, worked_call], ...] — where
             and when the sender itself was heard (its own QSO lines)
+  rbn       call -> number of distinct RBN skimmers that spotted it on the
+            contest days (rbn/2012112{4,5}.zip from data.reversebeacon.net;
+            OL5Q — the reference skimmer itself — does not count)
 
-A call counts as real (score.py) when it sent a log or at least two
-independent logs worked it: one log alone may hold its own bust.
+A call counts as real (score.py) when it sent a log, at least two
+independent logs worked it (one log alone may hold its own bust), or at
+least two independent RBN skimmers spotted it.
 """
 import argparse
 import concurrent.futures as cf
@@ -23,6 +27,7 @@ import os
 import re
 import sys
 import urllib.request
+import zipfile
 
 BASE = "https://cqww.com/publiclogs/2012cw/"
 CACHE = os.path.expanduser("~/.cache/skimmer-cqww2012")
@@ -103,10 +108,25 @@ def build():
         runs[me] = rows
         for c in seen:
             worked[c] = worked.get(c, 0) + 1
+    spotters = {}
+    for d in ("20121124", "20121125"):
+        zp = os.path.join(CACHE, "rbn", d + ".zip")
+        if not os.path.exists(zp):
+            print(f"no {zp} — RBN evidence left out", file=sys.stderr)
+            continue
+        with zipfile.ZipFile(zp) as z, z.open(d + ".csv") as fh:
+            for raw in fh:
+                f = raw.decode("utf-8", "replace").split(",")
+                if len(f) < 13 or f[12].strip() != "CW" or f[0].startswith("OL5Q"):
+                    continue
+                spotters.setdefault(f[5].upper(), set()).add(f[0].upper().split("-")[0])
+    rbn = {c: len(v) for c, v in spotters.items()}
     with open(TRUTH, "w") as fh:
-        json.dump({"senders": sorted(senders), "worked": worked, "runs": runs}, fh)
+        json.dump({"senders": sorted(senders), "worked": worked, "runs": runs,
+                   "rbn": rbn}, fh)
     print(f"{len(senders)} senders, {len(worked)} worked calls, "
-          f"{sum(1 for v in worked.values() if v >= 2)} worked by >= 2 logs -> {TRUTH}",
+          f"{sum(1 for v in worked.values() if v >= 2)} worked by >= 2 logs, "
+          f"{sum(1 for v in rbn.values() if v >= 2)} RBN calls with >= 2 skimmers -> {TRUTH}",
           file=sys.stderr)
 
 
