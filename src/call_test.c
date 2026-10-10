@@ -232,6 +232,33 @@ int main(void) {
     check("an S&P answer is NOT flagged as calling",
           strcmp(got, "EA2BTN") == 0 && !cq);
     skim_callsign_extractor_free(x);
+
+    /* A caller after the runner's TEST/TU, past the over break, inherits
+     * that window — the report the runner sends it takes it back (tap,
+     * 2026-10-10: "TEST DL4KWA E TEST · P PE2K · PE2K GT 5NN"). */
+    static const struct { const char *text, *call; gboolean calling; const char *what; }
+    addr[] = {
+      { "TEST DL4KWA TEST · PE2K PE2K 5NN ", "PE2K", FALSE,
+        "caller past the over break, then 5NN → not calling (PE2K)" },
+      { "5NN TU · RM5Z RM5Z 599 ", "RM5Z", FALSE,
+        "caller after TU · then 599 → not calling (RM5Z)" },
+      { "TEST DL4KWA TEST · PE2K PE2K ", "PE2K", TRUE,
+        "no report: the window still counts (PE2K, today's rule)" },
+      { "TEST DL4KWA TEST · PE2K PE2K · 5NN ", "PE2K", TRUE,
+        "an over break between the call and the report → still calling" },
+      { "CQ TEST UR3VZ UR3VZ 5NN15 ", "UR3VZ", TRUE,
+        "a clean CQ window wins over a report (UR3VZ calling)" },
+    };
+    for (guint i = 0; i < G_N_ELEMENTS(addr); i++) {
+      x = skim_callsign_extractor_new();
+      skim_callsign_extractor_feed(x, addr[i].text);
+      cq = !addr[i].calling;
+      s = skim_callsign_extractor_best_ex(x, got, sizeof(got), &cq);
+      check(addr[i].what, strcmp(got, addr[i].call) == 0 && cq == addr[i].calling &&
+                          skim_callsign_extractor_addressed(x, addr[i].call) ==
+                              !addr[i].calling);
+      skim_callsign_extractor_free(x);
+    }
   }
 
   /* -- degenerate fist: gaps around the markers collapse (2026-07-16) ---------- */

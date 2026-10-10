@@ -1009,6 +1009,7 @@ static void take_text(SkimPipeline *p, guint ix, double sig_hz,
   st.hearings   = skim_callsign_extractor_hearings(p->ext[ix], call);
   st.heard_us   = skim_callsign_extractor_last_heard(p->ext[ix], call);
   st.cq         = cq;
+  st.addressed  = skim_callsign_extractor_addressed(p->ext[ix], call);
   st.last_heard = pipe_now_us(p);
   st.first_heard = st.last_heard;
   if (g_getenv("SKIM_ST_DEBUG")) {

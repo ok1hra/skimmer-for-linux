@@ -307,12 +307,15 @@ typedef struct {
   guint    parts;                              /* fewest tokens it came in   */
   gboolean de_marked;
   gboolean cq_context;
+  gboolean cq_clean;                           /* … with no over break between */
+  gboolean addressed;                          /* a report followed the call */
 } Cand;
 
 struct _SkimCallsignExtractor {
   GString *tok;                                /* partial token across feeds */
   gint     de_pending;                         /* DE marker lives ≤ 2 tokens */
   gint     cq_recent;                          /* tokens since CQ (≤ window) */
+  gboolean cq_broken;                          /* an over break since the CQ */
   guint    cq_pairs;                           /* adjacent "C","Q" pairs seen */
   gboolean cq_half;                            /* last token was a lone "C"  */
   guint    tok_n;                              /* tokens processed (age clock)*/
@@ -361,6 +364,7 @@ void skim_callsign_extractor_reset(SkimCallsignExtractor *x) {
   g_string_set_size(x->tok, 0);
   x->de_pending = 0;
   x->cq_recent  = CQ_WINDOW + 1;
+  x->cq_broken  = FALSE;
   x->cq_pairs   = 0;
   x->cq_half    = FALSE;
   x->tok_n      = 0;
@@ -413,6 +417,33 @@ static void cand_add(SkimCallsignExtractor *x, const char *call, guint parts,
   c->last_us  = x->now_us;
   if (de_marked)  { c->de_marked  = TRUE; }
   if (cq_context) { c->cq_context = TRUE; }
+  if (cq_context && !x->cq_broken) { c->cq_clean = TRUE; }
+}
+
+/* Calling, all told: a CQ window reached the call, and either nobody sent it
+ * a report, or that window had no over break in it. A report right after a
+ * call is the runner ADDRESSING a caller ("UR3VZ 5NN") — and a caller who
+ * comes in after the runner's "TEST DL4KWA" or "TU", past the over break,
+ * inherited that window (skimmer-compare 2026-10-10: the feed's "taken"
+ * busts — a caller spotted as calling where VE3NEA and RBN heard another
+ * station call — were mostly such callers). A runner's own clean "TU M0NGN
+ * 5NN" stays calling. */
+static gboolean cand_calling(const Cand *c) {
+  return c->cq_context && (!c->addressed || c->cq_clean);
+}
+
+/* "5NN", "599", "ENN" and their kin, a serial number glued on or not. */
+static gboolean report_token(const char *s) {
+  static const char *RST[] = { "5NN", "599", "5NNN", "ENN", "55N" };
+  for (guint i = 0; i < G_N_ELEMENTS(RST); i++) {
+    const gsize n = strlen(RST[i]);
+    if (strncmp(s, RST[i], n) == 0) {
+      const char *t = s + n;
+      while (g_ascii_isdigit(*t)) { t++; }
+      if (*t == '\0' && (t == s + n || i < 2)) { return TRUE; }
+    }
+  }
+  return FALSE;
 }
 
 /* Tokens that never take part in a join: prosigns and stock CW abbreviations
@@ -603,7 +634,19 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     run_close(x, 0);
     run_clear(x);
     x->prev_gap = x->prev_tok[0] != '\0';
+    /* a CQ window that runs past an over break may be someone else's */
+    if (x->cq_recent <= CQ_WINDOW) { x->cq_broken = TRUE; }
     return;
+  }
+  /* A report right after a call, no over break between: that call is being
+   * ADDRESSED — the runner answering a caller (cand_calling). */
+  if (report_token(tok) && x->prev_tok[0] && !x->prev_gap) {
+    for (guint i = 0; i < x->ncand; i++) {
+      if (strcmp(x->cand[i].call, x->prev_tok) == 0) {
+        x->cand[i].addressed = TRUE;
+        break;
+      }
+    }
   }
   if (!skim_callsign_is_valid(tok)) {
     const gsize head = cq_glued_head(tok);
@@ -649,10 +692,12 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     run_close(x, 0);
     run_clear(x);
     x->cq_recent = 0;
+    x->cq_broken = FALSE;
     if (strcmp(tok, "TU") != 0 && x->prev_tok[0]) {
       for (guint i = 0; i < x->ncand; i++) {
         if (strcmp(x->cand[i].call, x->prev_tok) == 0) {
           x->cand[i].cq_context = TRUE;
+          if (!x->prev_gap) { x->cand[i].cq_clean = TRUE; }
           break;
         }
       }
@@ -804,7 +849,7 @@ gboolean skim_callsign_extractor_top(const SkimCallsignExtractor *x,
   out->parts       = c->parts;
   out->idle_tokens = x->tok_n - c->last_tok;
   out->de_marked   = c->de_marked;
-  out->cq_context  = c->cq_context;
+  out->cq_context  = cand_calling(c);
   out->dict        = dict_has(c->call);
   out->last_us     = c->last_us;
   return TRUE;
@@ -829,13 +874,26 @@ double skim_callsign_extractor_best_ex(SkimCallsignExtractor *x,
                                        gboolean *cq_context) {
   double best = 0.0;
   const Cand *bc = best_pick(x, &best);
-  if (cq_context) { *cq_context = bc ? bc->cq_context : FALSE; }
+  if (cq_context) { *cq_context = bc ? cand_calling(bc) : FALSE; }
   if (!bc || best < SKIM_CALLSIGN_SPOT_THRESHOLD) {
     if (out && out_size) { out[0] = '\0'; }
     return 0.0;
   }
   if (out && out_size) { g_strlcpy(out, bc->call, out_size); }
   return best;
+}
+
+gboolean skim_callsign_extractor_addressed(const SkimCallsignExtractor *x,
+                                           const char *call) {
+  if (!x || !call)
+    return FALSE;
+  for (guint i = 0; i < x->ncand; i++) {
+    const Cand *c = &x->cand[i];
+    if (strcmp(c->call, call) == 0) {
+      return c->cq_context && !cand_calling(c);
+    }
+  }
+  return FALSE;
 }
 
 guint skim_callsign_extractor_hearings(const SkimCallsignExtractor *x,

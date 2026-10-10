@@ -85,6 +85,14 @@ double skim_callsign_extractor_best_ex(SkimCallsignExtractor *x,
 guint  skim_callsign_extractor_hearings(const SkimCallsignExtractor *x,
                                         const char *call);
 
+/* TRUE when the call's calling context was withdrawn: it was flagged in a
+ * CQ window, but a report followed it ("UR3VZ 5NN" — the runner addressing
+ * a caller) and that window crossed an over break. best_ex()/top() then
+ * report it not calling; this tells the station table to drop a flag an
+ * earlier report of the same call set. */
+gboolean skim_callsign_extractor_addressed(const SkimCallsignExtractor *x,
+                                           const char *call);
+
 /* The candidate best() would pick were there no spot threshold, with the
  * parts of its score — what the feed-gate learning log records (gatelog,
  * pipeline.h), so a learned gate can see the calls the hand gate drops
