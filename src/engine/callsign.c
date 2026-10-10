@@ -317,6 +317,7 @@ typedef struct {
   guint    parts;                              /* fewest tokens it came in   */
   gboolean de_marked;
   gboolean cq_context;
+  gboolean exch;                               /* "<call> 5NN" (runner's QSO) */
 } Cand;
 
 struct _SkimCallsignExtractor {
@@ -398,6 +399,7 @@ static double cand_score(const SkimCallsignExtractor *x, const Cand *c) {
   if (c->count >= 2) { s += 0.20; }
   if (c->count >= 3) { s += 0.05; }
   if (dict_has(c->call)) { s += 0.15; }
+  if (c->exch)       { s += 0.25; }
   return MIN(s, 1.0);
 }
 
@@ -680,6 +682,25 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     return;
   }
   if (x->cq_recent <= CQ_WINDOW) { x->cq_recent++; }
+
+  /* SKIM_CALL_EXCH=1: "<call> 5NN …" is a runner sending the report to
+   * the station it works — as strong a marker for that call as DE is for
+   * the sender's own (CQ WW 2012: a caller heard once in a runner's
+   * exchange never reached 0.85, CW Skimmer spots such callers). */
+  static gint exch_on = -1;
+  if (G_UNLIKELY(exch_on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_EXCH");
+    exch_on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  if (exch_on && x->prev_valid && x->prev_tok[0] &&
+      (g_str_has_prefix(tok, "5NN") || g_str_has_prefix(tok, "599"))) {
+    for (guint i = 0; i < x->ncand; i++) {
+      if (strcmp(x->cand[i].call, x->prev_tok) == 0) {
+        x->cand[i].exch = TRUE;
+        break;
+      }
+    }
+  }
 
   const gboolean valid = call_ok(tok) && strlen(tok) < CALL_MAX;
   const gboolean de_now = x->de_pending > 0;

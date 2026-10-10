@@ -749,10 +749,50 @@ static void emit(Cw2State *st, SkimDecode *out, guint *pos, char c,
   }
 }
 
+/* SKIM_V2_NEAREST=1: an element sequence no character has is read as the
+ * one character a single element away — first by dropping one element
+ * (a sloppy or glitching key adds one: Z35F keyed its 5 with six dits on
+ * CQ WW 2012, v2 dropped the char and read "Z3F"), else by swapping one
+ * dit/dah. Only a UNIQUE neighbour counts; anything else stays dropped. */
+static char morse_nearest(guint code, guint nelem) {
+  if (nelem < 2 || nelem > 7)
+    return 0;
+  for (int tier = 0; tier < 2; tier++) {
+    char found = 0;
+    gboolean many = FALSE;
+    for (guint i = 0; i < nelem && !many; i++) {
+      guint c2;
+      if (tier == 0) {                         /* drop element i (from MSB)  */
+        const guint lo = code & ((1u << (nelem - 1 - i)) - 1);
+        const guint hi = code >> (nelem - i);
+        c2 = (hi << (nelem - 1 - i)) | lo;
+      } else {                                 /* flip element i             */
+        c2 = code ^ (1u << (nelem - 1 - i));
+      }
+      const char ch = c2 < G_N_ELEMENTS(morse_lut) ? morse_lut[c2] : 0;
+      if (ch) {
+        if (found && found != ch) { many = TRUE; }
+        found = ch;
+      }
+    }
+    if (found && !many)
+      return found;
+    if (many)
+      return 0;
+  }
+  return 0;
+}
+
 static void emit_code(Cw2State *st, SkimDecode *out, guint *pos,
                       guint64 t_end) {
   if (st->nelem && st->code < G_N_ELEMENTS(morse_lut)) {
     char c = morse_lut[st->code];
+    static gint nearest = -1;
+    if (G_UNLIKELY(nearest < 0)) {
+      const char *e = g_getenv("SKIM_V2_NEAREST");
+      nearest = e && e[0] && strcmp(e, "0") != 0;
+    }
+    if (!c && nearest) { c = morse_nearest(st->code, st->nelem); }
     gboolean lone_et = st->nelem == 1 &&
                        (st->marks_ok < 4 || st->elem_err > 0.45);
     if (c && !lone_et) { emit(st, out, pos, c, t_end); }
