@@ -531,6 +531,10 @@ int main(int argc, char **argv) {
     }
   }
   g_utc0 = src.start_unix;
+  if (src.start_unix) {                /* tap/rows wall clock = real UTC     */
+    skim_pipeline_set_wall_origin(
+        p, (gint64)((src.start_unix + (double)frames / rate) * G_USEC_PER_SEC));
+  }
   if (src.start_unix) {
     GDateTime *dt = g_date_time_new_from_unix_utc((gint64)src.start_unix);
     char *ts = g_date_time_format(dt, "%Y-%m-%d %H:%M:%S");

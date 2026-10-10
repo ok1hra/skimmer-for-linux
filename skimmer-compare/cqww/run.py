@@ -95,7 +95,7 @@ def replay(job):
         fh.write(hdr)
         hpath = fh.name
     envs = [f"--env=SKIM_REPLAY_IQ_SKEW={SKEW}", f"--env=SKIM_REPLAY_SPOTS={out}.raw",
-            "--env=SKIM_DLOG_LANE=1"]
+            "--env=SKIM_DLOG_LANE=1", f"--env=SKIM_REPLAY_TAP={out}.tap"]
     envs += [f"--env={kv}" for kv in env]
     fp = " ".join(shlex.quote(x) for x in FLATPAK + envs +
                   [f"--command={bin_path}", "org.gnome.Sdk//50", "-"])

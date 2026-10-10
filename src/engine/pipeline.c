@@ -178,6 +178,10 @@ struct _SkimPipeline {
   guint             rbn_hearings;              /* feed gate: copies read     */
   gint64            rbn_settle_us;             /* feed hold-back; 0 = none   */
   gint64            rbn_fresh_us;              /* last read ≤ this; 0 = any  */
+  GHashTable       *near;                      /* call → NearRec (gate memo) */
+  double            near_hz;                   /* SKIM_GATE_NEAR; 0 = off    */
+  double            near_dict;                 /* SKIM_GATE_NEAR_DICT        */
+  gint64            near_ttl_us;
   GHashTable       *rbn_pending;               /* call → gint64* due time;
                                                 * 0 = settled, send freely  */
 
@@ -427,6 +431,14 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     p->rbn_fresh_us = fresh > 0 ? (gint64)(fresh * G_USEC_PER_SEC) : 0;
     p->rbn_pending = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
+    const char *nenv = g_getenv("SKIM_GATE_NEAR");
+    p->near_hz = nenv && nenv[0] ? g_ascii_strtod(nenv, NULL) : 0.0;
+    const char *denv = g_getenv("SKIM_GATE_NEAR_DICT");
+    p->near_dict = denv && denv[0] ? g_ascii_strtod(denv, NULL) : 0.0;
+    const char *tenv = g_getenv("SKIM_GATE_NEAR_TTL");
+    p->near_ttl_us = (gint64)((tenv && tenv[0] ? g_ascii_strtod(tenv, NULL)
+                                               : 600.0) * G_USEC_PER_SEC);
+    p->near = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
   }
   if (p->cfg.tap_path || p->cfg.gatelog_path) {
     p->glog = skim_gatelog_open(p->cfg.tap_path, p->cfg.gatelog_path,
@@ -493,6 +505,7 @@ void skim_pipeline_free(SkimPipeline *p) {
   g_clear_pointer(&p->spots, skim_spot_out_free);
   g_clear_pointer(&p->rbn_spots, skim_spot_out_free);
   g_clear_pointer(&p->rbn_pending, g_hash_table_destroy);
+  g_clear_pointer(&p->near, g_hash_table_destroy);
   g_clear_pointer(&p->dupq, skim_dup_query_free);
   g_clear_pointer(&p->glog, skim_gatelog_close);
   g_clear_pointer(&p->fgate, skim_feed_gate_free);
@@ -513,6 +526,9 @@ void skim_pipeline_free(SkimPipeline *p) {
 void skim_pipeline_set_station_cb(SkimPipeline *p, SkimPipelineStationCb cb, gpointer user) {
   p->station_cb = cb;
   p->station_user = user;
+}
+void skim_pipeline_set_wall_origin(SkimPipeline *p, gint64 utc_us) {
+  p->wall_off_us = utc_us;
 }
 void skim_pipeline_set_feed_cb(SkimPipeline *p, SkimPipelineFeedCb cb,
                                gpointer user) {
@@ -577,6 +593,87 @@ static gboolean in_ham_band(double hz) {
   return FALSE;
 }
 
+/* --- near-call conflict (SKIM_GATE_NEAR=<Hz>) ---------------------------------
+ * A misread keyed twice the same way passes the hearings rule, and on CQ WW
+ * 2012 nine of ten such busts had the RIGHT call read on the same frequency
+ * by this very pipeline, mostly minutes earlier (TR2C beside IR2C, N56X
+ * beside S56X). A call the dictionary does not know waits while a similar
+ * call (≤ 2 edits) within the radius, heard within the TTL, is either known
+ * to the dictionary or read more often. The memo outlives the station
+ * table's 2-minute prune: the runner a caller's misread copies may have
+ * gone quiet for a while. */
+typedef struct { double hz; gint64 at; guint hearings; gboolean dict; } NearRec;
+
+static guint near_edit(const char *a, const char *b) {
+  const gsize la = strlen(a), lb = strlen(b);
+  if (la > 15 || lb > 15)
+    return 99;
+  guint prev[16], cur[16];
+  for (gsize j = 0; j <= lb; j++) { prev[j] = (guint)j; }
+  for (gsize i = 1; i <= la; i++) {
+    cur[0] = (guint)i;
+    for (gsize j = 1; j <= lb; j++) {
+      const guint sub = prev[j - 1] + (a[i - 1] != b[j - 1]);
+      cur[j] = MIN(MIN(prev[j] + 1, cur[j - 1] + 1), sub);
+    }
+    memcpy(prev, cur, (lb + 1) * sizeof(guint));
+  }
+  return prev[lb];
+}
+
+static void near_note(SkimPipeline *p, const SkimStation *st) {
+  if (p->near_hz <= 0)
+    return;
+  NearRec *r = g_hash_table_lookup(p->near, st->call);
+  if (!r) {
+    r = g_new0(NearRec, 1);
+    g_hash_table_insert(p->near, g_strdup(st->call), r);
+    r->dict = skim_callsign_dict_has(st->call);
+  }
+  r->hz = st->freq_hz;
+  r->at = pipe_now_us(p);
+  r->hearings = MAX(r->hearings, st->hearings);
+}
+
+static gboolean near_conflict(const SkimPipeline *p, const SkimStation *st) {
+  if (p->near_hz <= 0)
+    return FALSE;
+  /* A dictionary call yields only to a much better-read look-alike
+   * (SKIM_GATE_NEAR_DICT = how many times better; 0 = never): the short
+   * contest calls the dictionary is full of (E2M, M5E, T6A) are exactly
+   * what a misread of a neighbour lands on. */
+  const gboolean dict = skim_callsign_dict_has(st->call);
+  if (dict && p->near_dict <= 0)
+    return FALSE;
+  const gint64 now = pipe_now_us(p);
+  GHashTableIter it;
+  gpointer k, v;
+  g_hash_table_iter_init(&it, p->near);
+  while (g_hash_table_iter_next(&it, &k, &v)) {
+    const NearRec *r = v;
+    if (now - r->at > p->near_ttl_us) {
+      g_hash_table_iter_remove(&it);
+      continue;
+    }
+    if (fabs(r->hz - st->freq_hz) > p->near_hz || strcmp(k, st->call) == 0)
+      continue;
+    const gboolean rival =
+        dict ? r->hearings >= 3 &&
+                   r->hearings >= p->near_dict * MAX(st->hearings, 1u)
+             : r->dict || r->hearings > st->hearings;
+    if (rival && near_edit(k, st->call) <= 2) {
+      if (G_UNLIKELY(g_getenv("SKIM_GATE_NEAR_DEBUG"))) {
+        g_printerr("near: %s (%u) blocked by %s (%u%s) df %.0f ed %u\n",
+                   st->call, st->hearings, (char *)k, r->hearings,
+                   r->dict ? " scp" : "", r->hz - st->freq_hz,
+                   near_edit(k, st->call));
+      }
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
 /* May this record go to the network? Inside an amateur band, calling,
  * confident, and either read twice or known to the dictionary — and, with
  * the freshness gate on, read lately, not a stale candidate that noise on a
@@ -587,7 +684,8 @@ static gboolean rbn_gate(const SkimPipeline *p, const SkimStation *st) {
   if (p->rbn_fresh_us > 0 && pipe_now_us(p) - st->heard_us > p->rbn_fresh_us)
     return FALSE;
   return (st->cq || p->cfg.rbn_any_caller) && st->score >= p->rbn_min &&
-         (st->hearings >= p->rbn_hearings || skim_callsign_dict_has(st->call));
+         (st->hearings >= p->rbn_hearings || skim_callsign_dict_has(st->call)) &&
+         !near_conflict(p, st);
 }
 
 static void rbn_send(SkimPipeline *p, const SkimStation *st) {
@@ -982,6 +1080,7 @@ static void take_text(SkimPipeline *p, guint ix, double sig_hz,
                st.last_heard / 1e6);
   }
   const SkimStation *merged = skim_station_table_report(p->stations, &st);
+  near_note(p, merged);
   if (p->station_cb) { p->station_cb(merged, p->station_user); }
   /* The merged record's frequency is the ghost-deduped one. CQ-only
    * policy: only a station heard CALLING may reach the spot sinks —

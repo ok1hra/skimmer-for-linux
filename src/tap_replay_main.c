@@ -15,6 +15,11 @@
  *     --gate-ini FILE   the learned feed gate in shadow (feed_gate.h): every
  *                       "spot" row gets its p ("lr") and features ("x")
  *     --band NAME       the tap's band for the model's band feature ("40m")
+ *     --spots FILE      measurement against a skimmer that spots S&P answers
+ *                       too: the gate drops its CQ requirement and every
+ *                       line the feed puts out is written as skimmer-replay's
+ *                       SKIM_REPLAY_SPOTS writes it ("<UTC> <kHz> <call> <dB>
+ *                       <wpm> CQ|-", UTC from the tap's wall clock)
  *
  * A decode tap (gatelog.h) is what skimmer-headless's extractors ate live,
  * one line per decode, after ghost arbitration and the frequency lock. This
@@ -33,6 +38,19 @@
 
 #include "engine/pipeline.h"
 #include "engine/rbn_feed.h"
+
+static FILE  *g_spots;                  /* --spots                            */
+static gint64 g_wall_us;                /* wall clock of the line being fed   */
+
+static void spot_cb(const SkimStation *st, gpointer user) {
+  (void)user;
+  GDateTime *dt = g_date_time_new_from_unix_utc(g_wall_us / G_USEC_PER_SEC);
+  char *ts = g_date_time_format(dt, "%Y-%m-%dT%H:%M:%SZ");
+  fprintf(g_spots, "%s %.1f %s %.0f %.0f %s\n", ts, st->freq_hz / 1000.0,
+          st->call, st->snr_db, st->speed, st->cq ? "CQ" : "-");
+  g_free(ts);
+  g_date_time_unref(dt);
+}
 
 typedef struct {
   const char *rows, *tap_out, *scp, *gate_ini, *band;
@@ -69,8 +87,10 @@ static gboolean run_begin(Run *r, const Opts *o, guint nslot) {
     .gatelog_path     = o->rows,
     .feed_gate_path   = o->gate_ini,
     .band             = o->band,
+    .rbn_any_caller   = g_spots != NULL,
   };
   r->p = skim_pipeline_new(&cfg);
+  if (g_spots) { skim_pipeline_set_feed_cb(r->p, spot_cb, NULL); }
   GError *err = NULL;
   if (!skim_pipeline_start_offline(r->p, &err) ||
       !skim_pipeline_tap_begin(r->p, o->nchan, nslot)) {
@@ -148,6 +168,7 @@ static void replay_file(Run *r, const Opts *o, const char *path) {
         r->bad++;
         continue;
       }
+      g_wall_us = w;
       skim_pipeline_tap_text(r->p, t, w, ix, hz, &d, ct);
       r->texts++;
     } else if (line[0] == 'R' && line[1] == ' ') {
@@ -158,6 +179,7 @@ static void replay_file(Run *r, const Opts *o, const char *path) {
         r->bad++;
         continue;
       }
+      g_wall_us = w;
       skim_pipeline_tap_reset(r->p, t, w, ix);
       r->resets++;
     } else if (line[0] == 'C' && line[1] == ' ') {
@@ -166,6 +188,7 @@ static void replay_file(Run *r, const Opts *o, const char *path) {
         r->bad++;
         continue;
       }
+      g_wall_us = w;
       skim_pipeline_tap_tick(r->p, t, w);
     } else if (line[0] && line[0] != '#') {
       r->bad++;
@@ -180,6 +203,7 @@ int main(int argc, char **argv) {
                                        "skimmer-for-linux", "master.scp", NULL);
   Opts o = { .scp = scp_default, .nchan = 4096 };
   gchar *rows = NULL, *tap_out = NULL, *scp = NULL, *gate_ini = NULL, *band = NULL;
+  gchar *spots = NULL;
   gint hearings = 0, nchan = 0;
   gchar **files = NULL;
   GOptionEntry ent[] = {
@@ -195,6 +219,8 @@ int main(int argc, char **argv) {
     { "gate-ini", 0, 0, G_OPTION_ARG_FILENAME, &gate_ini,
       "learned feed gate in shadow: p and features on every spot row", "FILE" },
     { "band", 0, 0, G_OPTION_ARG_STRING, &band, "the tap's band (\"40m\")", "NAME" },
+    { "spots", 0, 0, G_OPTION_ARG_FILENAME, &spots,
+      "every feed line, S&P included, as skimmer-replay's SKIM_REPLAY_SPOTS", "FILE" },
     { G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_FILENAME_ARRAY, &files, NULL, "TAP…" },
     { NULL },
   };
@@ -214,6 +240,10 @@ int main(int argc, char **argv) {
   o.min_hearings = hearings > 0 ? (guint)hearings : 0;
   if (nchan > 0) { o.nchan = (guint)nchan; }
 
+  if (spots && !(g_spots = fopen(spots, "w"))) {
+    fprintf(stderr, "tap-replay: %s: cannot write\n", spots);
+    return 2;
+  }
   Run r = { 0 };
   r.feed = skim_rbn_feed_new("REPLAY", 0, &err);   /* ephemeral, no clients */
   if (!r.feed) {
@@ -227,6 +257,8 @@ int main(int argc, char **argv) {
           G_GUINT64_FORMAT " bad lines\n", g_strv_length(files), r.sessions,
           r.texts, r.resets, r.bad);
   skim_rbn_feed_free(r.feed);
+  if (g_spots) { fclose(g_spots); }
+  g_free(spots);
   g_strfreev(files);
   g_free(rows);
   g_free(tap_out);

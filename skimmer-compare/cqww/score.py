@@ -4,12 +4,20 @@
   score.py --band 20m --hours 2012-11-25T11[,2012-11-25T12 ...]
            NAME=SPOTS_GLOB [NAME=SPOTS_GLOB ...] [--json OUT]
 
-The unit is call × band × hour. A unit is
+The unit is call × band × hour. A call is REAL when it sent a log, >= 2
+distinct logs worked it, or >= 2 RBN skimmers other than OL5Q spotted it
+(logs.py). A unit is SEEN when the station is placed on that band at that
+time and frequency by someone else: an RBN spot (not OL5Q) within 10 min
+and 1 kHz, or a log line — its own or a worked one — within 10 min and
+1.5 kHz. A unit is
 
-  TRUE    the call sent a log, >= 2 distinct logs worked it, or >= 2 RBN
-          skimmers other than OL5Q spotted it (logs.py)
-  BUST    not TRUE, and a TRUE call within edit distance 2 was spotted by
-          either skimmer in the same band/hour within 300 Hz — a misread
+  TRUE    real and SEEN; or real, not SEEN, and no RIVAL
+  BUST    a RIVAL exists: another real call within edit distance 2,
+          spotted in the same band/hour within 300 Hz, that is SEEN there
+          or has more spot lines — a misread (also one that happens to be
+          some other real station: "K3C" beside K3CR). For a real call the
+          rival must sit beside at least half of its spot lines: a station
+          that moves meets a look-alike somewhere.
   UNCONF  neither: not provably right, not provably a misread
 
 Recall is counted against U = TRUE units heard by R or by ANY variant, so
@@ -118,6 +126,47 @@ def mcnemar(b, c):
     return min(1.0, 2 * p)
 
 
+_SEEN = {}
+
+
+def seen_index(band, hours, tr):
+    """call -> [(unix_t, khz, tolerance)] placing it on `band` near `hours`:
+    RBN spots by skimmers other than OL5Q, and the public logs' QSO lines
+    (the sender at its own frequency, the worked call at the sender's)."""
+    key = (band, tuple(sorted(hours)))
+    if key in _SEEN:
+        return _SEEN[key]
+    lo, hi = min(hours) * 3600 - 900, (max(hours) + 1) * 3600 + 900
+    idx = collections.defaultdict(list)
+    import zipfile
+    for d in ("20121124", "20121125"):
+        zp = os.path.join(CACHE, "rbn", d + ".zip")
+        if not os.path.exists(zp):
+            continue
+        with zipfile.ZipFile(zp) as z, z.open(d + ".csv") as fh:
+            for raw in fh:
+                f = raw.decode("utf-8", "replace").split(",")
+                if len(f) < 13 or f[4] != band or f[0].startswith("OL5Q"):
+                    continue
+                try:
+                    t = datetime.datetime.strptime(f[10], "%Y-%m-%d %H:%M:%S").replace(
+                        tzinfo=datetime.timezone.utc).timestamp()
+                    khz = float(f[3])
+                except ValueError:
+                    continue
+                if lo <= t < hi:
+                    idx[f[5].upper()].append((t, khz, 1.0))
+    for sender, rows in tr.get("runs", {}).items():
+        for minute, b, khz, call in rows:
+            t = minute * 60 + 30
+            if b != band or not lo <= t < hi:
+                continue
+            idx[sender].append((t, khz + 0.5, 1.5))
+            idx[call].append((t, khz + 0.5, 1.5))
+    _SEEN[key] = idx
+    return idx
+
+
 def evaluate(band, hours_iso, variants, r_path=None, truth_path=None,
              t_from=None, t_to=None):
     """Score variants {name: [spot files]} against R. Returns a dict with
@@ -160,22 +209,47 @@ def evaluate(band, hours_iso, variants, r_path=None, truth_path=None,
         d.sort()
         off[name] = d[len(d) // 2] if d else 0.0
 
-    # TRUE spots per hour, all skimmers, offset-corrected (for the bust test)
-    true_near = collections.defaultdict(list)       # hour -> [(khz, call)]
-    for src, U, o in [("R", R, 0.0)] + [(n, L, off[n]) for n, L in V.items()]:
-        for (call, h), ss in U.items():
+    ev_seen = seen_index(band, hours, tr)
+
+    def seen(call, spots, o):
+        rows = ev_seen.get(call)
+        if not rows:
+            return False
+        for s in spots:
+            for t, khz, tol in rows:
+                if abs(t - s.t) <= 600 and abs(khz - (s.khz - o)) <= tol:
+                    return True
+        return False
+
+    # real calls per hour, all skimmers, offset-corrected: the rival test
+    lines = collections.Counter()
+    for U_, o in [(R, 0.0)] + [(L, off[n]) for n, L in V.items()]:
+        for k, ss in U_.items():
+            lines[k] += len(ss)
+    real_near = collections.defaultdict(list)       # hour -> [(khz, call, seen)]
+    for U_, o in [(R, 0.0)] + [(L, off[n]) for n, L in V.items()]:
+        for (call, h), ss in U_.items():
             if is_true(call):
+                sn = seen(call, ss, o)
                 for s in ss:
-                    true_near[h].append((s.khz - o, call))
+                    real_near[h].append((s.khz - o, call, sn))
 
     def verdict(call, h, ss, o):
-        if is_true(call):
+        real = is_true(call)
+        if real and seen(call, ss, o):
             return "TRUE"
+        rivalled = 0
         for s in ss:
-            for khz, tc in true_near[h]:
-                if abs(khz - (s.khz - o)) <= 0.3 and tc != call and edit(call, tc) <= 2:
-                    return "BUST"
-        return "UNCONF"
+            for khz, rc, rseen in real_near[h]:
+                if (rc != call and abs(khz - (s.khz - o)) <= 0.3 and edit(call, rc) <= 2
+                        and (rseen or lines[(rc, h)] > lines[(call, h)])):
+                    rivalled += 1
+                    break
+        # a station that moves (S&P, or named in other runners' exchanges)
+        # meets a look-alike somewhere; a misread sits on its original
+        if rivalled and (not real or 2 * rivalled >= len(ss)):
+            return "BUST"
+        return "TRUE" if real else "UNCONF"
 
     lab = {"R": {k: verdict(k[0], k[1], ss, 0.0) for k, ss in R.items()}}
     for n, L in V.items():

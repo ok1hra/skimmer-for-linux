@@ -158,6 +158,9 @@ void skim_pipeline_set_spectrum_cb(SkimPipeline *p, SkimPipelineSpectrumCb cb, g
  * feed's dedup), with the station record it came from — st->cq tells a
  * CQ spot from an S&P one under rbn_any_caller. Engine/feeding thread. */
 typedef void (*SkimPipelineFeedCb)(const SkimStation *st, gpointer user);
+/* Offline replays of a recording: UTC (µs) of stream time 0, so the
+ * gatelog/tap wall clock reads real time instead of stream time. */
+void skim_pipeline_set_wall_origin(SkimPipeline *p, gint64 utc_us);
 void skim_pipeline_set_feed_cb(SkimPipeline *p, SkimPipelineFeedCb cb, gpointer user);
 /* Thread-safe switch for the spectrum tap (default off). */
 void     skim_pipeline_set_spectrum_enabled(SkimPipeline *p, gboolean on);
