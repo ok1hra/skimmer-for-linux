@@ -209,7 +209,7 @@ typedef struct {
     double   pen[5][W / 2 + 1];
     guint32  pen_at[5][W / 2 + 1];
     guint32  pen_gen;
-    double   pen_dit, pen_csp, pen_wsp;
+    double   pen_dit, pen_csp, pen_wsp, pen_esp;
   } *lat;
 
   /* --- character assembly ----------------------------------------------------- */
@@ -780,12 +780,36 @@ static void lattice_start(Cw2State *st) {
   st->live_had_char = FALSE;
 }
 
+/* SKIM_V2_EDGE=1: soft edges (keying shape, filter smear, multipath) make
+ * every mark LONGER and every space SHORTER by the same δ — v2 already
+ * tracks both (dit from marks, esp from element spaces) and reports the
+ * unbiased (dit+esp)/2 as the speed, but its priors put marks AND spaces
+ * on the biased dit: element spaces of a strong, smeared signal sit near
+ * 0.6 dit, under the ESP floor, and two dits fuse into a dah. */
+static gint edge_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_V2_EDGE");
+    on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  return on;
+}
+
+/* Ideal duration of a segment type in samples. */
+static inline double seg_ideal(const Cw2State *st, int type) {
+  const double k = type == SEG_CSP   ? st->fist_csp
+                   : type == SEG_WSP ? st->fist_wsp
+                                     : SEG_IDEAL[type];
+  if (!edge_on() || st->esp <= 0)
+    return k * st->dit;
+  const double tu = 0.5 * (st->dit + st->esp);
+  const double dl = CLAMP(0.5 * (st->dit - st->esp), -0.4 * tu, 0.4 * tu);
+  return k * tu + (type == SEG_DIT || type == SEG_DAH ? dl : -dl);
+}
+
 /* Duration prior in the log domain. CSP/WSP ideals ride the fist model. */
 static inline double dur_pen(const Cw2State *st, int type, double d) {
-  const double ideal = type == SEG_CSP   ? st->fist_csp
-                       : type == SEG_WSP ? st->fist_wsp
-                                         : SEG_IDEAL[type];
-  double r = log(d / (ideal * st->dit));
+  double r = log(d / seg_ideal(st, type));
   return -SEG_ALPHA[type] * r * r - SEG_COST;
 }
 
@@ -861,12 +885,14 @@ static void lattice_step(Cw2State *st) {
   const double  ct  = L->cum[t & WMASK];
   const guint64 cmt = st->commit_t;
   if (L->pen_gen == 0 || L->pen_dit != st->dit ||
-      L->pen_csp != st->fist_csp || L->pen_wsp != st->fist_wsp) {
+      L->pen_csp != st->fist_csp || L->pen_wsp != st->fist_wsp ||
+      L->pen_esp != st->esp) {
     L->pen_gen++;                       /* 0 never matches a stamp: g_new0    */
     if (L->pen_gen == 0) { L->pen_gen = 1; }
     L->pen_dit = st->dit;
     L->pen_csp = st->fist_csp;
     L->pen_wsp = st->fist_wsp;
+    L->pen_esp = st->esp;
   }
 
   /* Mark ends at t: preceded by a space (or seed) boundary at t−d. */
@@ -925,7 +951,10 @@ static void lattice_step(Cw2State *st) {
   const double SLO[3] = { 0.70, 1.6, 0.571 * st->fist_wsp };
   const double SHI[3] = { 2.6, 1.833 * st->fist_csp, 17.0 };
   for (int k = 0; k < 3; k++) {
-    int dlo = MAX(2, (int)((k == 0 ? esp_lo : SLO[k]) * T + 0.5));
+    /* With the edge model the ESP floor sits under the SPACE ideal, not
+     * the mark-biased dit. */
+    const double Tk = (k == 0 && edge_on()) ? seg_ideal(st, SEG_ESP) : T;
+    int dlo = MAX(2, (int)((k == 0 ? esp_lo * Tk : SLO[k] * T) + 0.5));
     int dhi = MIN((int)(SHI[k] * T + 0.5), W / 2);
     for (int d = dlo; d <= dhi; d++) {
       if (t < (guint64)d || t - d < cmt)
@@ -1296,7 +1325,25 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
       z <= 1.0 ? -LLR_MAX
                : CLAMP(3.3 * (0.5 * z * z - log(z) - 2.89),
                        -LLR_MAX, LLR_MAX);
-  const double llr = 0.5 * (span_llr + ray_llr);
+  /* SKIM_V2_RAYFADE="r0,r1": the Rayleigh view's weight fades from ½ to 0
+   * as µ_mark/µ_space climbs from r0 to r1. Anchored to the noise floor, it
+   * calls everything that is "not noise" a mark — on a strong signal that
+   * includes the decaying tail of every element and the QRM filling the
+   * gaps, so marks grow, element spaces shrink under the 0.7-dit ESP floor
+   * and two dits fuse into a dah (CQ WW 2012, HG5C at 30 dB read "HGBC"). */
+  static gint   rf_on = -1;
+  static double rf_r0, rf_r1;
+  if (G_UNLIKELY(rf_on < 0)) {
+    const char *e = g_getenv("SKIM_V2_RAYFADE");
+    rf_on = e && e[0] && sscanf(e, "%lf,%lf", &rf_r0, &rf_r1) == 2 &&
+            rf_r1 > rf_r0;
+  }
+  double w_ray = 0.5;
+  if (rf_on) {
+    const double ratio = st->mu_m / MAX(st->mu_s, 1e-12);
+    w_ray = 0.5 * CLAMP((rf_r1 - ratio) / (rf_r1 - rf_r0), 0.0, 1.0);
+  }
+  const double llr = (1.0 - w_ray) * span_llr + w_ray * ray_llr;
   static gint trace = -1;              /* getenv per sample cost 3 % CPU     */
   if (G_UNLIKELY(trace < 0)) { trace = g_getenv("SKIM_CW2_TRACE") != NULL; }
   if (trace) {

@@ -169,6 +169,7 @@ struct _SkimPipeline {
   gboolean          use_split;
   double            focus_fc;                  /* single-carrier cutoff; 0=off */
   guint             nchan;
+  FILE            **chdump;                    /* SKIM_DUMP_CHAN, per channel */
 
   SkimStationTable *stations;
   SkimSpotOut      *spots;
@@ -506,6 +507,12 @@ void skim_pipeline_free(SkimPipeline *p) {
   g_clear_pointer(&p->rbn_spots, skim_spot_out_free);
   g_clear_pointer(&p->rbn_pending, g_hash_table_destroy);
   g_clear_pointer(&p->near, g_hash_table_destroy);
+  if (p->chdump) {
+    for (guint c = 0; c < p->nchan; c++) {
+      if (p->chdump[c]) { fclose(p->chdump[c]); }
+    }
+    g_clear_pointer(&p->chdump, g_free);
+  }
   g_clear_pointer(&p->dupq, skim_dup_query_free);
   g_clear_pointer(&p->glog, skim_gatelog_close);
   g_clear_pointer(&p->fgate, skim_feed_gate_free);
@@ -845,6 +852,25 @@ static void bank_build(SkimPipeline *p, double rate) {
   p->sgen = g_new0(guint, p->nchan * NSLOT);
   p->lvl = g_new0(double, p->nchan * NSLOT);
   p->flock = g_new0(FreqLock, p->nchan * NSLOT);
+  /* SKIM_DUMP_CHAN="c,c,…" + SKIM_DUMP_DIR: the channelizer's raw output
+   * of those channels as cf32 (DIR/ch<c>.cf32, from stream time 0) — a
+   * decoder benchmark can then run the CW backend alone on real channels. */
+  {
+    const char *dc = g_getenv("SKIM_DUMP_CHAN"), *dd = g_getenv("SKIM_DUMP_DIR");
+    if (dc && dc[0] && dd && dd[0] && !p->chdump) {
+      p->chdump = g_new0(FILE *, p->nchan);
+      gchar **v = g_strsplit(dc, ",", -1);
+      for (gchar **q = v; *q; q++) {
+        const guint c = (guint)g_ascii_strtoull(*q, NULL, 10);
+        if (c < p->nchan && !p->chdump[c]) {
+          char *fn = g_strdup_printf("%s/ch%u.cf32", dd, c);
+          p->chdump[c] = fopen(fn, "wb");
+          g_free(fn);
+        }
+      }
+      g_strfreev(v);
+    }
+  }
   if (p->use_split) { p->split = g_new0(SkimToneSplit *, p->nchan); }
   p->center_hz = 0;                            /* fresh states — no flush    */
   const SkimDecodeBackend *cw = pipe_backend(p);
@@ -1405,6 +1431,9 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
     }
     guint n;
     while ((n = skim_channelizer_read(p->bank, c, buf, DRAIN_FRAMES)) > 0) {
+      if (G_UNLIKELY(p->chdump) && p->chdump[c]) {
+        fwrite(buf, 2 * sizeof(float), n, p->chdump[c]);
+      }
       if (!sp) {
         const gboolean got = cw->process(p->dec[SL(c, WIDE_LANE)], buf, n, &d);
         char *aux = cw->take_aux_text

@@ -96,7 +96,10 @@ def build():
                 band = band_of(khz)
                 if not band:
                     continue
-                t = datetime.datetime.strptime(m.group(2) + m.group(3), "%Y-%m-%d%H%M")
+                try:
+                    t = datetime.datetime.strptime(m.group(2) + m.group(3), "%Y-%m-%d%H%M")
+                except ValueError:           # a hand-edited log's broken time
+                    continue
                 minute = int(t.replace(tzinfo=datetime.timezone.utc).timestamp() // 60)
                 mycall, call = m.group(4).upper(), m.group(5).upper()
                 me = me or mycall
