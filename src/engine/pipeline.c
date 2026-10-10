@@ -1072,7 +1072,17 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
         pipe_log_stamp(p, b, tbuf, sizeof(tbuf));
         char khz[G_ASCII_DTOSTR_BUF_SIZE];   /* C locale — parseable dot     */
         g_ascii_formatd(khz, sizeof(khz), "%.2f", sig_hz / 1000.0);
-        if (d.text[0]) {
+        /* SKIM_DLOG_LANE=1 names the decoder (channel.slot) — one signal
+         * is often read by two lanes pinned to the same frequency, and
+         * text rebuilt per frequency then interleaves them. */
+        static gint lane = -1;
+        if (G_UNLIKELY(lane < 0)) { lane = g_getenv("SKIM_DLOG_LANE") != NULL; }
+        if (d.text[0] && lane) {
+          fprintf(p->dlog, "%s %9s %2.0f%s %3.0fdB L%u.%u |%s|\n",
+                  tbuf, khz, d.speed,
+                  p->cfg.mode == SKIM_PIPELINE_MODE_RTTY ? "bd " : "wpm",
+                  d.snr_db, c, h->slot, d.text);
+        } else if (d.text[0]) {
           fprintf(p->dlog, "%s %9s %2.0f%s %3.0fdB |%s|\n",
                   tbuf, khz, d.speed,
                   p->cfg.mode == SKIM_PIPELINE_MODE_RTTY ? "bd " : "wpm",
