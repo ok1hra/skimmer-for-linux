@@ -202,6 +202,14 @@ typedef struct {
     float    bm[W], bs[W];              /* best score, segment ends at t      */
     guint16  bd_m[W], bd_s[W];          /* traceback: duration                */
     guint8   bt_m[W], bt_s[W];          /* traceback: segment type            */
+    /* dur_pen() memo: the prior depends on (type, d) and the clock/fist
+     * triple only, and lattice_step asks for the same few hundred values
+     * on every sample — one log() each was a third of the replay CPU.
+     * An entry is valid while its stamp equals pen_gen. */
+    double   pen[5][W / 2 + 1];
+    guint32  pen_at[5][W / 2 + 1];
+    guint32  pen_gen;
+    double   pen_dit, pen_csp, pen_wsp;
   } *lat;
 
   /* --- character assembly ----------------------------------------------------- */
@@ -834,6 +842,17 @@ static void fist_learn(Cw2State *st, double d_dits) {
           st->fist_csp, st->fist_wsp, exp(c1), exp(c2), n1, n2);
 }
 
+/* dur_pen() through the lattice's memo — the same arithmetic, computed once
+ * per (type, d) while the clock and fist stay put. */
+static inline double dur_pen_memo(const Cw2State *st, struct Lattice *L,
+                                  int type, int d) {
+  if (L->pen_at[type][d] != L->pen_gen) {
+    L->pen[type][d]    = dur_pen(st, type, d);
+    L->pen_at[type][d] = L->pen_gen;
+  }
+  return L->pen[type][d];
+}
+
 /* One Viterbi step for the sample at st->t (llr already in the ring). */
 static void lattice_step(Cw2State *st) {
   struct Lattice *L = st->lat;
@@ -841,6 +860,14 @@ static void lattice_step(Cw2State *st) {
   const double  T   = st->dit;
   const double  ct  = L->cum[t & WMASK];
   const guint64 cmt = st->commit_t;
+  if (L->pen_gen == 0 || L->pen_dit != st->dit ||
+      L->pen_csp != st->fist_csp || L->pen_wsp != st->fist_wsp) {
+    L->pen_gen++;                       /* 0 never matches a stamp: g_new0    */
+    if (L->pen_gen == 0) { L->pen_gen = 1; }
+    L->pen_dit = st->dit;
+    L->pen_csp = st->fist_csp;
+    L->pen_wsp = st->fist_wsp;
+  }
 
   /* Mark ends at t: preceded by a space (or seed) boundary at t−d. */
   float  best_m = NEG_INF;
@@ -864,7 +891,7 @@ static void lattice_step(Cw2State *st) {
       if (prev <= NEG_INF)
         continue;
       double ev = ct - L->cum[(t - d) & WMASK];
-      float  sc = prev + (float)(ev + dur_pen(st, MTYPES[k], d));
+      float  sc = prev + (float)(ev + dur_pen_memo(st, L, MTYPES[k], d));
       if (sc > best_m) {
         best_m = sc;
         bd = (guint16)d;
@@ -909,7 +936,7 @@ static void lattice_step(Cw2State *st) {
       if (prev <= NEG_INF)
         continue;
       double ev = -(ct - L->cum[(t - d) & WMASK]);
-      float  sc = prev + (float)(ev + dur_pen(st, STYPES[k], d));
+      float  sc = prev + (float)(ev + dur_pen_memo(st, L, STYPES[k], d));
       if (sc > best_s) {
         best_s = sc;
         bd = (guint16)d;
@@ -1270,7 +1297,9 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
                : CLAMP(3.3 * (0.5 * z * z - log(z) - 2.89),
                        -LLR_MAX, LLR_MAX);
   const double llr = 0.5 * (span_llr + ray_llr);
-  if (g_getenv("SKIM_CW2_TRACE")) {
+  static gint trace = -1;              /* getenv per sample cost 3 % CPU     */
+  if (G_UNLIKELY(trace < 0)) { trace = g_getenv("SKIM_CW2_TRACE") != NULL; }
+  if (trace) {
     fprintf(stderr, "T %lu %.4f %.4f %.4f %.2f\n",
             (unsigned long)st->t, m, st->mu_m, st->mu_s, llr);
   }
