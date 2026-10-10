@@ -439,7 +439,7 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     p->near_dict = denv && denv[0] ? g_ascii_strtod(denv, NULL) : 2.0;
     const char *tenv = g_getenv("SKIM_GATE_NEAR_TTL");
     p->near_ttl_us = (gint64)((tenv && tenv[0] ? g_ascii_strtod(tenv, NULL)
-                                               : 600.0) * G_USEC_PER_SEC);
+                                               : 3600.0) * G_USEC_PER_SEC);
     p->near = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
   }
   if (p->cfg.tap_path || p->cfg.gatelog_path) {
@@ -606,8 +606,10 @@ static gboolean in_ham_band(double hz) {
  * 2012 nine of ten such busts had the RIGHT call read on the same frequency
  * by this very pipeline, mostly minutes earlier (TR2C beside IR2C, N56X
  * beside S56X). A call the dictionary does not know waits while a similar
- * call (≤ 2 edits) within the radius, heard within the TTL, is either known
- * to the dictionary or read more often. The memo outlives the station
+ * call (≤ 2 edits) within the radius, heard within the TTL
+ * (SKIM_GATE_NEAR_TTL, default 3600 s: a misread often comes back half an
+ * hour after the right call was read), is either known to the dictionary
+ * or read more often. The memo outlives the station
  * table's 2-minute prune: the runner a caller's misread copies may have
  * gone quiet for a while. */
 typedef struct { double hz; gint64 at; guint hearings; gboolean dict; } NearRec;
