@@ -132,6 +132,15 @@ executable('skimmer-tap-replay',
   link_with : engine_lib,
 )
 
+# Decoder benchmark: the CW backend alone on dumped channelizer channels
+# (skimmer-replay SKIM_DUMP_CHAN) — skimmer-compare/cqww/corpus.py.
+executable('skimmer-cw-bench',
+  ['src/cw_bench_main.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+
 # M2: WDSP subset smoke — headers compile against our c11, fir_bandpass +
 # create_resample link and behave (the sdrfl-wdsp-smoke counterpart).
 skimmer_wdsp_smoke = executable('skimmer-wdsp-smoke',

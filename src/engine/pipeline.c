@@ -715,7 +715,17 @@ static void rbn_offer(SkimPipeline *p, const SkimStation *st) {
   gint64 *due = g_hash_table_lookup(p->rbn_pending, st->call);
   if (!due) {
     due = g_new(gint64, 1);
-    *due = pipe_now_us(p) + p->rbn_settle_us;
+    /* SKIM_GATE_SETTLE_NODICT=<s>: a call the dictionary does not know
+     * waits longer — the release re-runs the gate, and the near-call
+     * conflict needs the right call to have been read by then. */
+    static gint64 nd_us = -1;
+    if (G_UNLIKELY(nd_us < 0)) {
+      const char *e = g_getenv("SKIM_GATE_SETTLE_NODICT");
+      nd_us = e && e[0] ? (gint64)(g_ascii_strtod(e, NULL) * G_USEC_PER_SEC) : 0;
+    }
+    *due = pipe_now_us(p) +
+           (nd_us > 0 && !skim_callsign_dict_has(st->call) ? nd_us
+                                                           : p->rbn_settle_us);
     g_hash_table_insert(p->rbn_pending, g_strdup(st->call), due);
     skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "hold",
                        st->call, st->freq_hz, st->snr_db, st->speed);

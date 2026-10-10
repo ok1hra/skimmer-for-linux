@@ -152,9 +152,7 @@ def main():
     ap.add_argument("--offset-khz", type=float, default=0.2)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--bin", default=os.path.join(run.TREE, "builddir-cqww", "skimmer-replay"))
-    ap.add_argument("--bbdec", default=os.path.join(
-        "/tmp/claude-1000/-home-dan-inst-skimmer-for-linux/a57b0287-27ba-4915-8027-29c0f876242d/scratchpad",
-        "bbdec"))
+    ap.add_argument("--bbdec", default=os.path.join(run.TREE, "builddir-cqww", "skimmer-cw-bench"))
     ap.add_argument("--env", action="append", default=[], metavar="K=V")
     a = ap.parse_args()
     dump(a) if a.cmd == "dump" else bench(a)

@@ -230,6 +230,11 @@ typedef struct {
   float  gaps[FIST_RING];               /* recent gaps ≥ FIST_MIN_D, ln(dits)  */
   guint  ngaps, gap_head, gap_fresh;
 
+  /* --- SKIM_V2_NARROW: carrier-centred low-pass ahead of |IQ| ---------------- */
+  double nb_ph;                         /* derotation phase                   */
+  float  nb_ma[3];                      /* its 3-tap MA                       */
+  double nb_x[2][2], nb_y[2][2];        /* biquad history, [I/Q][n-1, n-2]    */
+
   /* --- estimates -------------------------------------------------------------- */
   double prev_i, prev_q;
   double foff_hz;
@@ -1547,14 +1552,63 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
     st->pre_from = st->pre_head;
   }
 
+  /* SKIM_V2_NARROW=<fc Hz>: the channel is 125 Hz wide whatever the speed;
+   * a 25-35 WPM signal needs about a third of that. Derotate by the tracked
+   * tone offset and low-pass (2nd-order Butterworth, fc) before the
+   * envelope — less noise, less of the neighbours' splatter. The offset
+   * estimate below keeps reading the raw samples. */
+  static gint   nb_on = -1;
+  static double nb_b0, nb_b1, nb_b2, nb_a1, nb_a2;
+  if (G_UNLIKELY(nb_on < 0)) {
+    const char *e = g_getenv("SKIM_V2_NARROW");
+    const double fc = e && e[0] ? g_ascii_strtod(e, NULL) : 0.0;
+    nb_on = fc > 0 && fc < 0.45 * st->rate;
+    if (nb_on) {
+      const double k = tan(G_PI * fc / st->rate), q2 = sqrt(2.0);
+      const double nrm = 1.0 / (1.0 + q2 * k + k * k);
+      nb_b0 = k * k * nrm;
+      nb_b1 = 2.0 * nb_b0;
+      nb_b2 = nb_b0;
+      nb_a1 = 2.0 * (k * k - 1.0) * nrm;
+      nb_a2 = (1.0 - q2 * k + k * k) * nrm;
+    }
+  }
+
   for (guint n = 0; n < nframes; n++) {
     const float i = iq[2 * n], q = iq[2 * n + 1];
     const float mag = sqrtf(i * i + q * q);
+    float nbmag = mag;
+    if (nb_on) {
+      st->nb_ph -= 2.0 * G_PI * st->foff_hz / st->rate;
+      if (st->nb_ph > G_PI || st->nb_ph < -G_PI) {
+        st->nb_ph = remainder(st->nb_ph, 2.0 * G_PI);
+      }
+      const double c = cos(st->nb_ph), sn = sin(st->nb_ph);
+      const double xin[2] = { i * c - q * sn, i * sn + q * c };
+      double yo[2];
+      for (int r = 0; r < 2; r++) {
+        yo[r] = nb_b0 * xin[r] + nb_b1 * st->nb_x[r][0] + nb_b2 * st->nb_x[r][1] -
+                nb_a1 * st->nb_y[r][0] - nb_a2 * st->nb_y[r][1];
+        st->nb_x[r][1] = st->nb_x[r][0];
+        st->nb_x[r][0] = xin[r];
+        st->nb_y[r][1] = st->nb_y[r][0];
+        st->nb_y[r][0] = yo[r];
+      }
+      nbmag = (float)sqrt(yo[0] * yo[0] + yo[1] * yo[1]);
+    }
 
     st->ma[st->ma_n % 3] = mag;
+    st->nb_ma[st->ma_n % 3] = nbmag;
     st->ma_n++;
     float m = (st->ma[0] + st->ma[1] + st->ma[2]) / (float)MIN(st->ma_n, 3);
-    st->pre[st->pre_head++ & (st->pre_size - 1)] = m;
+    /* The soft path's envelope: the narrow one when SKIM_V2_NARROW is on.
+     * Squelch, keying duty, bootstrap and the offset estimate keep reading
+     * the raw channel — they must find a carrier the filter is not yet
+     * centred on. */
+    const float ms = nb_on ? (st->nb_ma[0] + st->nb_ma[1] + st->nb_ma[2]) /
+                                 (float)MIN(st->ma_n, 3)
+                           : m;
+    st->pre[st->pre_head++ & (st->pre_size - 1)] = ms;
 
     /* Level trackers + squelch + keying-duty — v1 verbatim. */
     if (st->env_hi < 0) { st->env_hi = st->env_lo = m; }
@@ -1774,7 +1828,7 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
       continue;
     }
 
-    soft_step(st, m, out, &pos);
+    soft_step(st, ms, out, &pos);
   }
 
   hy_call_end(st, out);
