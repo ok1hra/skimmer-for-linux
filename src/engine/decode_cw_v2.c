@@ -825,7 +825,8 @@ static void lattice_start(Cw2State *st) {
   st->live_had_char = FALSE;
 }
 
-/* SKIM_V2_EDGE=1: soft edges (keying shape, filter smear, multipath) make
+/* SKIM_V2_EDGE (default on, "0" = off): soft edges (keying shape, filter
+ * smear, multipath) make
  * every mark LONGER and every space SHORTER by the same δ — v2 already
  * tracks both (dit from marks, esp from element spaces) and reports the
  * unbiased (dit+esp)/2 as the speed, but its priors put marks AND spaces
@@ -834,8 +835,8 @@ static void lattice_start(Cw2State *st) {
 static gint edge_on(void) {
   static gint on = -1;
   if (G_UNLIKELY(on < 0)) {
-    const char *e = g_getenv("SKIM_V2_EDGE");
-    on = e && e[0] && strcmp(e, "0") != 0;
+    const char *e = g_getenv("SKIM_V2_EDGE");    /* default on; "0" = off */
+    on = !(e && e[0]) || strcmp(e, "0") != 0;
   }
   return on;
 }
@@ -988,7 +989,13 @@ static void lattice_step(Cw2State *st) {
    * speed change in progress): a stale slow dit makes 0.7·T LONGER than
    * the new true spaces and the lattice cannot separate elements at all.
    * The loose floor lets it re-lock; steady copy restores the strict one. */
-  const double esp_lo = st->elem_err > 0.20 ? 0.50 : 0.70;
+  /* SKIM_V2_ESPLO overrides the strict floor (default 0.70). */
+  static double esp_strict = -1;
+  if (G_UNLIKELY(esp_strict < 0)) {
+    const char *e = g_getenv("SKIM_V2_ESPLO");
+    esp_strict = e && e[0] ? g_ascii_strtod(e, NULL) : 0.70;
+  }
+  const double esp_lo = st->elem_err > 0.20 ? 0.50 : esp_strict;
   static const int STYPES[3] = { SEG_ESP, SEG_CSP, SEG_WSP };
   /* CSP/WSP windows ride the fist centres (seeds reproduce the old fixed
    * 1.6–5.5 / 4.0–17: 1.833·3 = 5.5, 0.571·7 = 4.0). The overlap between
@@ -1317,7 +1324,17 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
      * throws mark samples just under the midpoint — letting them in
      * drags µ_s (and the midpoint) up under the whole trough until every
      * faded mark reads as space (the mid-word break cascade). */
-    if (m < st->mu_s + 0.25 * (st->mu_m - st->mu_s)) {
+    /* SKIM_V2_MUS_FRAC (default 0.25): how far up the span a sample may
+     * still teach µ_space. Contest air fills the gaps of a strong signal
+     * (QRM, echo, the tail of the previous element) 10-15 dB above the
+     * noise; a µ_space stuck on the noise floor makes the Rayleigh view
+     * call all of that "mark". */
+    static double mus_frac = -1;
+    if (G_UNLIKELY(mus_frac < 0)) {
+      const char *e = g_getenv("SKIM_V2_MUS_FRAC");
+      mus_frac = e && e[0] ? g_ascii_strtod(e, NULL) : 0.25;
+    }
+    if (m < st->mu_s + mus_frac * (st->mu_m - st->mu_s)) {
       st->mu_s += st->k_s * (m - st->mu_s);
     }
     st->cont_mark = 0;
@@ -1370,25 +1387,43 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
       z <= 1.0 ? -LLR_MAX
                : CLAMP(3.3 * (0.5 * z * z - log(z) - 2.89),
                        -LLR_MAX, LLR_MAX);
-  /* SKIM_V2_RAYFADE="r0,r1": the Rayleigh view's weight fades from ½ to 0
+  /* SKIM_V2_RAYFADE="r0,r1[,wmin]" (off by default; 4,10 measured): the
+   * Rayleigh view's weight fades from ½ to wmin (0)
    * as µ_mark/µ_space climbs from r0 to r1. Anchored to the noise floor, it
    * calls everything that is "not noise" a mark — on a strong signal that
    * includes the decaying tail of every element and the QRM filling the
    * gaps, so marks grow, element spaces shrink under the 0.7-dit ESP floor
-   * and two dits fuse into a dah (CQ WW 2012, HG5C at 30 dB read "HGBC"). */
+   * and two dits fuse into a dah (CQ WW 2012, HG5C at 30 dB read "HGBC";
+   * 40 m recall +9 points). The price: the same view is what lets a
+   * sub-dit flutter notch inside a dash pass — cw-test's notch case
+   * splits dashes with the fade on — hence off by default. */
   static gint   rf_on = -1;
-  static double rf_r0, rf_r1;
-  if (G_UNLIKELY(rf_on < 0)) {
+  static double rf_r0, rf_r1, rf_wmin;
+  if (G_UNLIKELY(rf_on < 0)) {     /* "r0,r1[,wmin]" (e.g. 4,10); off by default */
     const char *e = g_getenv("SKIM_V2_RAYFADE");
-    rf_on = e && e[0] && sscanf(e, "%lf,%lf", &rf_r0, &rf_r1) == 2 &&
+    rf_wmin = 0.0;
+    rf_on = e && e[0] &&
+            sscanf(e, "%lf,%lf,%lf", &rf_r0, &rf_r1, &rf_wmin) >= 2 &&
             rf_r1 > rf_r0;
   }
   double w_ray = 0.5;
   if (rf_on) {
     const double ratio = st->mu_m / MAX(st->mu_s, 1e-12);
-    w_ray = 0.5 * CLAMP((rf_r1 - ratio) / (rf_r1 - rf_r0), 0.0, 1.0);
+    w_ray = rf_wmin + (0.5 - rf_wmin) *
+                          CLAMP((rf_r1 - ratio) / (rf_r1 - rf_r0), 0.0, 1.0);
   }
-  const double llr = (1.0 - w_ray) * span_llr + w_ray * ray_llr;
+  /* SKIM_V2_RAYCAP=1: below the span midpoint the Rayleigh view may
+   * CANCEL the span's negative evidence (a notch inside a dash scores ~0,
+   * the duration priors carry the dash) but never turn it into mark
+   * evidence — an element's decaying tail and the QRM in a gap sit just as
+   * far above the noise as a notch does, and must not lengthen the mark. */
+  static gint rc_on = -1;
+  if (G_UNLIKELY(rc_on < 0)) {
+    const char *e = g_getenv("SKIM_V2_RAYCAP");
+    rc_on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  const double ray_v = rc_on && span_llr < 0 ? MIN(ray_llr, -span_llr) : ray_llr;
+  const double llr = (1.0 - w_ray) * span_llr + w_ray * ray_v;
   static gint trace = -1;              /* getenv per sample cost 3 % CPU     */
   if (G_UNLIKELY(trace < 0)) { trace = g_getenv("SKIM_CW2_TRACE") != NULL; }
   if (trace) {

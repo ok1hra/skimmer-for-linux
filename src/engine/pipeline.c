@@ -432,10 +432,11 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     p->rbn_fresh_us = fresh > 0 ? (gint64)(fresh * G_USEC_PER_SEC) : 0;
     p->rbn_pending = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
+    /* defaults measured on CQ WW 2012 (docs/CQWW2012.md); "0" = off */
     const char *nenv = g_getenv("SKIM_GATE_NEAR");
-    p->near_hz = nenv && nenv[0] ? g_ascii_strtod(nenv, NULL) : 0.0;
+    p->near_hz = nenv && nenv[0] ? g_ascii_strtod(nenv, NULL) : 300.0;
     const char *denv = g_getenv("SKIM_GATE_NEAR_DICT");
-    p->near_dict = denv && denv[0] ? g_ascii_strtod(denv, NULL) : 0.0;
+    p->near_dict = denv && denv[0] ? g_ascii_strtod(denv, NULL) : 2.0;
     const char *tenv = g_getenv("SKIM_GATE_NEAR_TTL");
     p->near_ttl_us = (gint64)((tenv && tenv[0] ? g_ascii_strtod(tenv, NULL)
                                                : 600.0) * G_USEC_PER_SEC);
