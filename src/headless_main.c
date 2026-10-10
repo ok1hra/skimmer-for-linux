@@ -100,6 +100,7 @@ typedef struct {
   guint    feed_min_hearings;  /* 0 = default; 1 = no hearings gate          */
   double   feed_settle_s;      /* 0 = default; < 0 = send at once            */
   double   feed_fresh_s;       /* 0 = default (off); < 0 = off               */
+  double   feed_fold_s;        /* 0 = default (off); < 0 = off               */
   gboolean feed_learn;         /* decode tap (gatelog.h)                      */
   char    *feed_gate;          /* learned gate ini, shadow (feed_gate.h)      */
   int      console_s;
@@ -159,6 +160,10 @@ static const char *DEFAULT_CONFIG =
   "# fresh_s=N also wants the call READ within the last N s: a stale candidate\n"
   "# on a quiet channel is not a station (off unless set; 120 = the station TTL)\n"
   "#fresh_s=120\n"
+  "# fold_s=N holds back a call alike to one spotted within N s and 300 Hz that\n"
+  "# MASTER.SCP knows better or that was read more (a glued or cut twin: F6FXXK,\n"
+  "# RK3D next to F6FXX, RK3DJW); off unless set\n"
+  "#fold_s=600\n"
   "# learn=true records what the feed gate saw, for learning a better one: per\n"
   "# band a decode tap in ~/.local/share/skimmer-for-linux/headless/learn —\n"
   "# skimmer-tap-replay turns it into the gate's rows (~80 MB/day/band raw)\n"
@@ -249,6 +254,11 @@ static gboolean config_load(Hd *h, GError **error) {
   if (g_key_file_has_key(kf, "feed", "fresh_s", NULL)) {
     const double v = g_key_file_get_double(kf, "feed", "fresh_s", NULL);
     h->feed_fresh_s = v > 0 ? v : -1;           /* 0 in the file = off        */
+  }
+  h->feed_fold_s = 0;
+  if (g_key_file_has_key(kf, "feed", "fold_s", NULL)) {
+    const double v = g_key_file_get_double(kf, "feed", "fold_s", NULL);
+    h->feed_fold_s = v > 0 ? v : -1;            /* 0 in the file = off        */
   }
   h->feed_learn = g_key_file_has_key(kf, "feed", "learn", NULL) &&
                   g_key_file_get_boolean(kf, "feed", "learn", NULL);
@@ -603,11 +613,18 @@ static void status_build(Hd *h, gboolean print) {
   const char *engine = h->nb && h->band[0].p ? skim_pipeline_cw_engine_name(h->band[0].p) : "";
   /* the feed policy that let the spots out — a comparison before and after
    * a policy change must be able to tell the two apart */
-  double pol_score = 0, pol_settle = 0, pol_fresh = 0;
+  double pol_score = 0, pol_settle = 0, pol_fresh = 0, pol_fold = 0;
   guint pol_hear = 0;
+  guint64 folded = 0;
   if (h->feed && h->nb && h->band[0].p) {
     skim_pipeline_rbn_policy(h->band[0].p, &pol_score, &pol_hear, &pol_settle,
                              &pol_fresh);
+    skim_pipeline_rbn_fold(h->band[0].p, &pol_fold, NULL);
+    for (guint i = 0; i < h->nb; i++) {
+      guint64 n = 0;
+      if (h->band[i].p) { skim_pipeline_rbn_fold(h->band[i].p, NULL, &n); }
+      folded += n;
+    }
   }
   /* the learned gate in shadow: what it would have held back, all bands */
   const char *fg_id = NULL;
@@ -633,11 +650,13 @@ static void status_build(Hd *h, gboolean print) {
       "\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
-      "\"fresh_s\":%.1f},\"feed_gate\":%s,"
+      "\"fresh_s\":%.1f,\"fold_s\":%.1f,\"folded\":%" G_GUINT64_FORMAT "},"
+      "\"feed_gate\":%s,"
       "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       clock, jstate, h->streaming ? "true" : "false", jhost, h->ppm_now, h->rate, lost_pct,
-      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_fresh, jgate,
+      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_fresh, pol_fold,
+      folded, jgate,
       h->feed ? h->feed_port : 0, fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
@@ -906,6 +925,7 @@ int main(int argc, char **argv) {
       .rbn_min_hearings = h->feed_min_hearings,
       .rbn_settle_s = h->feed_settle_s,
       .rbn_fresh_s = h->feed_fresh_s,
+      .rbn_fold_s = h->feed_fold_s,
       .tap_path = tap,
       .feed_gate_path = h->feed_gate,
       .band = b->name,
@@ -935,12 +955,14 @@ int main(int argc, char **argv) {
   g_message("decode: %u pipelines, engine %s", h->nb,
             skim_pipeline_cw_engine_name(h->band[0].p));
   if (h->feed) {
-    double fs, fset, ffr;
+    double fs, fset, ffr, ffo;
     guint fh;
     skim_pipeline_rbn_policy(h->band[0].p, &fs, &fh, &fset, &ffr);
+    skim_pipeline_rbn_fold(h->band[0].p, &ffo, NULL);
     g_message("feed: spots a call at score >= %.2f, read %u times (or in "
               "MASTER.SCP), after %.0f s settled, last read <= %.0f s ago "
-              "(0 = any)", fs, fh, fset, ffr);
+              "(0 = any), twins of a call sent <= %.0f s ago held back "
+              "(0 = off)", fs, fh, fset, ffr, ffo);
   }
 
   GSocketService *web = NULL;

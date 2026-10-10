@@ -65,6 +65,7 @@ engine_sources = [
   'src/engine/pipeline.c',     # M5: the engine assembled end to end
   'src/engine/gatelog.c',      # feed-gate learning logs (decode tap + rows)
   'src/engine/feed_gate.c',    # the learned feed gate (shadow mode)
+  'src/engine/feed_fold.c',    # RBN feed: busted twins of a sent call
 ]
 engine_deps = [glib_dep, gio_dep, lws_dep, wdsp_dep, fftw3f_dep, m_dep, dl_dep]
 
@@ -231,6 +232,16 @@ skimmer_feed_gate_test = executable('skimmer-feed-gate-test',
   link_with : engine_lib,
 )
 test('feed-gate', skimmer_feed_gate_test, timeout : 60)
+
+# RBN feed twin fold: a glued/cut twin of a call sent lately on the
+# frequency is held back unless it is the better-attested call.
+skimmer_feed_fold_test = executable('skimmer-feed-fold-test',
+  ['src/feed_fold_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('feed-fold', skimmer_feed_fold_test, timeout : 60)
 
 # Logbook dup lookup gate: mock log-for-linux UDP responder — verdict
 # round-trips (newline answers), silence→UNKNOWN, TTL cache, re-ask

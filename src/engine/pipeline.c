@@ -27,6 +27,7 @@
 #include "decode_cw.h"
 #include "decode_deepcw.h"
 #include "decode_rtty.h"
+#include "feed_fold.h"
 #include "feed_gate.h"
 #include "gatelog.h"
 #include "hpsdr_p1.h"
@@ -57,6 +58,12 @@
  * goes to the network, so it stays opt-in until skimmer-compare measured it
  * (the decode tap replays it offline: skimmer-tap-replay --fresh-s). */
 #define RBN_FRESH_S_DEFAULT      0.0
+/* The twin fold (cfg.rbn_fold_s, feed_fold.h): off by default for the same
+ * reason. A call's own run of lines goes on while it was sent within the
+ * window plus one re-spot period — the feed repeats a station only every
+ * RBN_RESPOT_S, so a gap that long is still the same run. */
+#define RBN_FOLD_S_DEFAULT       0.0
+#define RBN_FOLD_HZ              300.0
 /* A station silent this long leaves the table (and its panadapter label is
  * SPOT_DELETEd). 120 s rides out one side of a QSO; the old 600 s kept a
  * contest band map full of stations long gone (Richard, 2026-07-15). */
@@ -178,6 +185,9 @@ struct _SkimPipeline {
   guint             rbn_hearings;              /* feed gate: copies read     */
   gint64            rbn_settle_us;             /* feed hold-back; 0 = none   */
   gint64            rbn_fresh_us;              /* last read ≤ this; 0 = any  */
+  SkimFeedFold     *rbn_fold;                  /* twin fold; NULL = off      */
+  gint64            rbn_fold_us;
+  gint              rbn_folded;                /* atomic: calls held back    */
   GHashTable       *rbn_pending;               /* call → gint64* due time;
                                                 * 0 = settled, send freely  */
 
@@ -354,6 +364,11 @@ static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
     g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm\n", call,
                freq_hz / 1000.0, snr_db, speed);
   }
+  if (p->rbn_fold) {
+    const SkimStation *st = skim_station_table_lookup(p->stations, call);
+    skim_feed_fold_sent(p->rbn_fold, call, freq_hz, pipe_now_us(p),
+                        st ? st->hearings : 0, skim_callsign_dict_has(call));
+  }
   if (p->fgate) {
     /* shadow: score the line, report it — the hand gate already decided */
     double x[SKIM_FEED_GATE_NFEAT];
@@ -423,6 +438,14 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     const double fresh = p->cfg.rbn_fresh_s == 0 ? RBN_FRESH_S_DEFAULT
                                                  : p->cfg.rbn_fresh_s;
     p->rbn_fresh_us = fresh > 0 ? (gint64)(fresh * G_USEC_PER_SEC) : 0;
+    const double fold = p->cfg.rbn_fold_s == 0 ? RBN_FOLD_S_DEFAULT
+                                               : p->cfg.rbn_fold_s;
+    if (fold > 0) {
+      p->rbn_fold_us = (gint64)(fold * G_USEC_PER_SEC);
+      p->rbn_fold = skim_feed_fold_new(p->rbn_fold_us,
+                                       p->rbn_fold_us + RBN_RESPOT_S * G_USEC_PER_SEC,
+                                       RBN_FOLD_HZ);
+    }
     p->rbn_pending = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                            g_free);
   }
@@ -491,6 +514,7 @@ void skim_pipeline_free(SkimPipeline *p) {
   g_clear_pointer(&p->spots, skim_spot_out_free);
   g_clear_pointer(&p->rbn_spots, skim_spot_out_free);
   g_clear_pointer(&p->rbn_pending, g_hash_table_destroy);
+  g_clear_pointer(&p->rbn_fold, skim_feed_fold_free);
   g_clear_pointer(&p->dupq, skim_dup_query_free);
   g_clear_pointer(&p->glog, skim_gatelog_close);
   g_clear_pointer(&p->fgate, skim_feed_gate_free);
@@ -583,11 +607,30 @@ static gboolean rbn_gate(const SkimPipeline *p, const SkimStation *st) {
          (st->hearings >= p->rbn_hearings || skim_callsign_dict_has(st->call));
 }
 
-static void rbn_send(SkimPipeline *p, const SkimStation *st) {
+/* FALSE = the twin fold held it off the wire (a busted twin of a call sent
+ * lately on this frequency); the caller forgets the hold, so it is judged
+ * again when it qualifies next. */
+static gboolean rbn_send(SkimPipeline *p, const SkimStation *st) {
+  if (p->rbn_fold) {
+    const char *by = skim_feed_fold_check(p->rbn_fold, st->call, st->freq_hz,
+                                          pipe_now_us(p), st->hearings,
+                                          skim_callsign_dict_has(st->call));
+    if (by) {
+      g_atomic_int_inc(&p->rbn_folded);
+      skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "fold",
+                         st->call, st->freq_hz, st->snr_db, st->speed);
+      if (g_getenv("SKIM_ST_DEBUG")) {
+        g_printerr("rbn: FOLD %s @ %.0f Hz (heard %u) — twin of %s\n", st->call,
+                   st->freq_hz, st->hearings, by);
+      }
+      return FALSE;
+    }
+  }
   skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "send",
                      st->call, st->freq_hz, st->snr_db, st->speed);
   skim_spot_out_emit(p->rbn_spots, st->call, st->mode, st->freq_hz, st->snr_db,
                      st->speed);
+  return TRUE;
 }
 
 /* A record that passed the gate: the first time it is HELD for the settle
@@ -610,8 +653,8 @@ static void rbn_offer(SkimPipeline *p, const SkimStation *st) {
                  st->call, st->freq_hz, st->hearings, st->score,
                  pipe_now_us(p) / 1e6);
     }
-  } else if (*due == 0) {
-    rbn_send(p, st);
+  } else if (*due == 0 && !rbn_send(p, st)) {
+    g_hash_table_remove(p->rbn_pending, st->call);
   }
 }
 
@@ -635,9 +678,10 @@ static void rbn_settle_tick(SkimPipeline *p, gint64 now_us) {
       g_printerr("rbn: %s %s t=%.0f s\n", ok ? "SEND" : "DROP", (char *)key,
                  now_us / 1e6);
     }
-    if (ok) {
+    if (ok && rbn_send(p, st)) {
       *due = 0;
-      rbn_send(p, st);
+    } else if (ok) {
+      g_hash_table_iter_remove(&it);           /* folded: judged again later */
     } else {
       skim_gatelog_event(p->glog, now_us, pipe_wall_us(p), "drop", key,
                          st ? st->freq_hz : 0, st ? st->snr_db : 0,
@@ -1634,6 +1678,11 @@ void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
   if (min_score)    { *min_score    = on ? p->rbn_min : 0; }
   if (min_hearings) { *min_hearings = on ? p->rbn_hearings : 0; }
   if (settle_s)     { *settle_s     = on ? p->rbn_settle_us / 1e6 : 0; }
+}
+void skim_pipeline_rbn_fold(const SkimPipeline *p, double *fold_s,
+                            guint64 *folded) {
+  if (fold_s) { *fold_s = p->rbn_fold ? p->rbn_fold_us / 1e6 : 0; }
+  if (folded) { *folded = (guint)g_atomic_int_get(&p->rbn_folded); }
 }
 const char *skim_pipeline_feed_gate_stats(const SkimPipeline *p,
                                           double *threshold, guint64 *spots,

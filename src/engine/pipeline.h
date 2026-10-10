@@ -97,6 +97,14 @@ typedef struct {
   guint        rbn_min_hearings;
   double       rbn_settle_s;
   double       rbn_fresh_s;
+  /* rbn_fold_s > 0: a call starting a new run of lines is held off the wire
+   * when a call ALIKE to it (an edit or two, or its head or tail) went out
+   * within that many seconds and 300 Hz, and is better attested — the
+   * dictionary knows it and not this one, or it was heard more (feed_fold.h;
+   * skimmer-compare 2026-10-10: half the misread busts were a glued or cut
+   * twin of a call the feed had already spotted there). 0 = default: off
+   * until measured live; < 0 = off. */
+  double       rbn_fold_s;
 
   /* Feed-gate learning logs (gatelog.h), appended for the pipeline's whole
    * life; NULL = off. tap: every decode the extractors eat, replayable by
@@ -238,6 +246,12 @@ void   skim_pipeline_set_spot_round_hz(SkimPipeline *p, guint hz);
 void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
                               guint *min_hearings, double *settle_s,
                               double *fresh_s);
+
+/* The twin fold (cfg.rbn_fold_s): its window in s (0 = off) and how many
+ * times it held a call off the wire so far (a held call is judged again
+ * each time it settles, so one twin may count more than once). */
+void skim_pipeline_rbn_fold(const SkimPipeline *p, double *fold_s,
+                            guint64 *folded);
 
 /* The learned feed gate in shadow (cfg.feed_gate_path): its ini name
  * (NULL = none loaded), threshold, the RBN lines it scored and how many of
