@@ -989,13 +989,7 @@ static void lattice_step(Cw2State *st) {
    * speed change in progress): a stale slow dit makes 0.7·T LONGER than
    * the new true spaces and the lattice cannot separate elements at all.
    * The loose floor lets it re-lock; steady copy restores the strict one. */
-  /* SKIM_V2_ESPLO overrides the strict floor (default 0.70). */
-  static double esp_strict = -1;
-  if (G_UNLIKELY(esp_strict < 0)) {
-    const char *e = g_getenv("SKIM_V2_ESPLO");
-    esp_strict = e && e[0] ? g_ascii_strtod(e, NULL) : 0.70;
-  }
-  const double esp_lo = st->elem_err > 0.20 ? 0.50 : esp_strict;
+  const double esp_lo = st->elem_err > 0.20 ? 0.50 : 0.70;
   static const int STYPES[3] = { SEG_ESP, SEG_CSP, SEG_WSP };
   /* CSP/WSP windows ride the fist centres (seeds reproduce the old fixed
    * 1.6–5.5 / 4.0–17: 1.833·3 = 5.5, 0.571·7 = 4.0). The overlap between
@@ -1324,17 +1318,7 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
      * throws mark samples just under the midpoint — letting them in
      * drags µ_s (and the midpoint) up under the whole trough until every
      * faded mark reads as space (the mid-word break cascade). */
-    /* SKIM_V2_MUS_FRAC (default 0.25): how far up the span a sample may
-     * still teach µ_space. Contest air fills the gaps of a strong signal
-     * (QRM, echo, the tail of the previous element) 10-15 dB above the
-     * noise; a µ_space stuck on the noise floor makes the Rayleigh view
-     * call all of that "mark". */
-    static double mus_frac = -1;
-    if (G_UNLIKELY(mus_frac < 0)) {
-      const char *e = g_getenv("SKIM_V2_MUS_FRAC");
-      mus_frac = e && e[0] ? g_ascii_strtod(e, NULL) : 0.25;
-    }
-    if (m < st->mu_s + mus_frac * (st->mu_m - st->mu_s)) {
+    if (m < st->mu_s + 0.25 * (st->mu_m - st->mu_s)) {
       st->mu_s += st->k_s * (m - st->mu_s);
     }
     st->cont_mark = 0;
