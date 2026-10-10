@@ -26,6 +26,7 @@ class RbnIndex:
         self.by_call = {}                        # (band, cid) → array of positions
         self.n = 0
         self.own = 0                             # dropped: our own spotter
+        self.late = 0                            # dropped: older than last_t
         self.last_t = None
 
     def _id(self, table, index, key):
@@ -39,6 +40,13 @@ class RbnIndex:
         base = sp.spotter.split("-")[0]
         if base in self.exclude:
             self.own += 1
+            return
+        # Sessions are read one after another, and two that overlap (a short
+        # run started beside the running recorder) recorded the same RBN
+        # stream: an older spot is a duplicate. Dropping it keeps the arrays
+        # sorted for bisect and last_t the true end of the RBN record.
+        if self.last_t is not None and sp.t < self.last_t:
+            self.late += 1
             return
         band = None
         for b, lo, hi in self.bands:

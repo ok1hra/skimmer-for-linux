@@ -346,6 +346,29 @@ def current_session():
     check(live == [run], "only the running session is live (%s)" % live)
 
 
+def rbn_overlap():
+    print("=== RBN overlap — a short run beside the recorder logged the same RBN")
+    root = tempfile.mkdtemp(prefix="compare-rbn-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    with open(os.path.join(logs, "rbn-20261001-100000.log"), "w") as fh:
+        fh.write(B("10:00:30", "DL1AAA-#", 7010.0, "UA9AAA"))
+        fh.write(B("11:00:00", "DL1AAA-#", 7020.0, "UA9BBB"))
+        fh.write(B("12:00:00", "DL1AAA-#", 7030.0, "UA9CCC"))
+    with open(os.path.join(logs, "rbn-20261001-100020.log"), "w") as fh:
+        fh.write(B("10:00:30", "DL1AAA-#", 7010.0, "UA9AAA"))
+    store = Store(logs, lambda: RbnIndex(loose_bands([("40m", 7000, 7091)], 2.0), set()))
+    store.poll()
+    rbn = store.rbn
+    check(rbn.last_t == epoch("12:00:00"),
+          "last_t is the newest RBN spot, not the last one read (%s)" % rbn.last_t)
+    check(rbn.n == 3 and rbn.late == 1, "the overlap's copy is dropped (n %d, late %d)"
+          % (rbn.n, rbn.late))
+    near = [c for _, _, _, c, _ in rbn.near("40m", epoch("10:59:00"), epoch("12:30:00"),
+                                             7025.0, 10.0)]
+    check(near == ["UA9BBB", "UA9CCC"], "near() bisects a sorted band (%s)" % near)
+
+
 def split_episodes():
     print("=== split episodes — one long episode spans two of the other side")
     root = tempfile.mkdtemp(prefix="compare-split-")
@@ -567,6 +590,7 @@ if __name__ == "__main__":
     web(root)
     current_session()
     band_plan()
+    rbn_overlap()
     split_episodes()
     remote_plan_test()
     dead_feed()
