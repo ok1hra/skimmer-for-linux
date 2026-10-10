@@ -215,6 +215,8 @@ struct _SkimPipeline {
 
   SkimPipelineStationCb station_cb;
   gpointer              station_user;
+  SkimPipelineFeedCb    feed_cb;
+  gpointer              feed_user;
   SkimPipelineStationGoneCb gone_cb;
   gpointer                  gone_user;
   SkimPipelineTextCb    text_cb;
@@ -512,6 +514,11 @@ void skim_pipeline_set_station_cb(SkimPipeline *p, SkimPipelineStationCb cb, gpo
   p->station_cb = cb;
   p->station_user = user;
 }
+void skim_pipeline_set_feed_cb(SkimPipeline *p, SkimPipelineFeedCb cb,
+                               gpointer user) {
+  p->feed_cb = cb;
+  p->feed_user = user;
+}
 void skim_pipeline_set_station_gone_cb(SkimPipeline *p,
                                        SkimPipelineStationGoneCb cb,
                                        gpointer user) {
@@ -579,15 +586,17 @@ static gboolean rbn_gate(const SkimPipeline *p, const SkimStation *st) {
     return FALSE;
   if (p->rbn_fresh_us > 0 && pipe_now_us(p) - st->heard_us > p->rbn_fresh_us)
     return FALSE;
-  return st->cq && st->score >= p->rbn_min &&
+  return (st->cq || p->cfg.rbn_any_caller) && st->score >= p->rbn_min &&
          (st->hearings >= p->rbn_hearings || skim_callsign_dict_has(st->call));
 }
 
 static void rbn_send(SkimPipeline *p, const SkimStation *st) {
   skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "send",
                      st->call, st->freq_hz, st->snr_db, st->speed);
-  skim_spot_out_emit(p->rbn_spots, st->call, st->mode, st->freq_hz, st->snr_db,
-                     st->speed);
+  if (skim_spot_out_emit(p->rbn_spots, st->call, st->mode, st->freq_hz,
+                         st->snr_db, st->speed) && p->feed_cb) {
+    p->feed_cb(st, p->feed_user);
+  }
 }
 
 /* A record that passed the gate: the first time it is HELD for the settle

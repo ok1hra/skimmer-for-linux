@@ -97,6 +97,10 @@ typedef struct {
   guint        rbn_min_hearings;
   double       rbn_settle_s;
   double       rbn_fresh_s;
+  /* Measurement only (skimmer-replay against a reference skimmer that spots
+   * S&P answers too): the feed gate drops its CQ requirement, everything
+   * else stays. Never set it for a feed that reaches the network. */
+  gboolean     rbn_any_caller;
 
   /* Feed-gate learning logs (gatelog.h), appended for the pipeline's whole
    * life; NULL = off. tap: every decode the extractors eat, replayable by
@@ -150,6 +154,11 @@ void skim_pipeline_set_over_cb(SkimPipeline *p, SkimPipelineOverCb cb, gpointer 
 void skim_pipeline_set_state_cb(SkimPipeline *p, SkimPipelineStateCb cb, gpointer user);
 void skim_pipeline_set_vfo_cb(SkimPipeline *p, SkimPipelineVfoCb cb, gpointer user);
 void skim_pipeline_set_spectrum_cb(SkimPipeline *p, SkimPipelineSpectrumCb cb, gpointer user);
+/* Every line the RBN feed actually puts out (after gate, settle and the
+ * feed's dedup), with the station record it came from — st->cq tells a
+ * CQ spot from an S&P one under rbn_any_caller. Engine/feeding thread. */
+typedef void (*SkimPipelineFeedCb)(const SkimStation *st, gpointer user);
+void skim_pipeline_set_feed_cb(SkimPipeline *p, SkimPipelineFeedCb cb, gpointer user);
 /* Thread-safe switch for the spectrum tap (default off). */
 void     skim_pipeline_set_spectrum_enabled(SkimPipeline *p, gboolean on);
 gboolean skim_pipeline_spectrum_enabled(const SkimPipeline *p);
