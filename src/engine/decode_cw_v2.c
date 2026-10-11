@@ -737,6 +737,8 @@ static void emit(Cw2State *st, SkimDecode *out, guint *pos, char c,
     return;
   out->text[(*pos)++] = c;
   out->text[*pos] = '\0';
+  CW2_DBG("[emit '%c' at %.2f (t %.2f)]\n", c, (double)t_end / st->rate,
+          (double)st->t / st->rate);
   if (st->rd_on) { rd_emit_char(st, c, t_end); }
   if (!st->rr_arm)
     return;
@@ -1227,9 +1229,9 @@ static void lattice_commit(Cw2State *st, double lag_dits, SkimDecode *out,
     const double ideal = SEG_IDEAL[ty] * st->dit;
     /* Did the live rule already emit for the space starting here? */
     const gboolean lived = st->char_live && (end - segs_d[i - 1]) == st->live_t;
-    CW2_DBG("[commit %s d=%.0f dit=%.1f err=%.2f]\n",
+    CW2_DBG("[commit %s d=%.0f dit=%.1f err=%.2f t=%.2f csp=%.2f wsp=%.2f]\n",
             (const char *[]){"DIT","DAH","esp","CSP","WSP"}[ty], d, st->dit,
-            st->elem_err);
+            st->elem_err, (double)end / st->rate, st->fist_csp, st->fist_wsp);
     switch (ty) {
     case SEG_DIT:
     case SEG_DAH: {

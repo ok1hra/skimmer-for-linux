@@ -15,11 +15,12 @@
  */
 #include <glib.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "engine/decode_cw.h"
 
 #define RATE 250.0
-#define BLK  64                           /* frames per process() call      */
+#define BLK  64                           /* max frames per process() call  */
 
 int main(int argc, char **argv) {
   if (argc < 2) {
@@ -29,6 +30,10 @@ int main(int argc, char **argv) {
   const SkimDecodeBackend *b =
       g_getenv("SKIM_CW_V1") ? skim_decode_cw() : skim_decode_cw_v2();
   static float buf[2 * BLK];
+  /* SKIM_BENCH_BLK: frames per process() call — a replay at 192 kHz hands
+   * each channel 2-3 frames per call, not 64. */
+  const char *be = g_getenv("SKIM_BENCH_BLK");
+  const guint blk = be && be[0] ? CLAMP((guint)atoi(be), 1u, (guint)BLK) : BLK;
   for (int i = 1; i < argc; i++) {
     FILE *f = fopen(argv[i], "rb");
     if (!f) {
@@ -39,7 +44,7 @@ int main(int argc, char **argv) {
     guint64 n = 0;
     size_t k;
     printf("== %s\n", argv[i]);
-    while ((k = fread(buf, 2 * sizeof(float), BLK, f)) > 0) {
+    while ((k = fread(buf, 2 * sizeof(float), blk, f)) > 0) {
       SkimDecode d;
       if (b->process(st, buf, (guint)k, &d)) {
         printf("%.2f |%s|\n", (double)n / RATE, d.text);
