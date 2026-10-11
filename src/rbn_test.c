@@ -364,7 +364,7 @@ static PolicyOut policy_run(guint hearings, double settle_s, double fresh_s) {
     skim_pipeline_feed(p, g_pol + 2 * (gsize)off, BLK, RATE, CENTER);
   }
   GRand *rng = g_rand_new_with_seed(7);
-  feed_quiet(p, rng, 12);                              /* > settle time     */
+  feed_quiet(p, rng, 35);               /* > settle, > the no-dictionary hold */
   wait_lines(a, "OK1BR", 1);
   o.sm7xyz = cap_count(a, "SM7XYZ");
   o.iz3n   = cap_count(a, "IZ3N");
@@ -373,7 +373,7 @@ static PolicyOut policy_run(guint hearings, double settle_s, double fresh_s) {
   /* the ghost: past the station TTL (120 s), then keying without a call */
   feed_quiet(p, rng, 130);
   feed_ghost(p, rng);
-  feed_quiet(p, rng, 12);
+  feed_quiet(p, rng, 35);                 /* > the no-dictionary hold too */
   g_rand_free(rng);
   wait_lines(a, "OK1BR", o.ok1br + 1);
   o.ok1br_ghost = cap_count(a, "OK1BR") - o.ok1br;
@@ -627,11 +627,18 @@ int main(void) {
     skim_pipeline_set_station_cb(p, on_station, NULL);
     check("offline pipeline starts", skim_pipeline_start_offline(p, &err));
 
-    /* Two passes over the band: the second must be swallowed by the dedup. */
+    /* Two passes over the band: the second must be swallowed by the dedup.
+     * Then quiet past the hold of a call the dictionary does not know (no
+     * dictionary is loaded here, so that is every call). */
     for (int pass = 0; pass < 2; pass++) {
       for (guint off = 0; off + BLK <= g_band_frames; off += BLK) {
         skim_pipeline_feed(p, g_band + 2 * (gsize)off, BLK, RATE, CENTER);
       }
+    }
+    {
+      GRand *qr = g_rand_new_with_seed(3);
+      feed_quiet(p, qr, 35);
+      g_rand_free(qr);
     }
     gboolean both = FALSE;
     for (int t = 0; t < 10000 && !both; t += 50) {   /* broadcast is async   */
@@ -680,9 +687,10 @@ int main(void) {
     guint pol_h = 0;
     double pol_fr = -1;
     skim_pipeline_rbn_policy(p, &pol_s, &pol_h, &pol_set, &pol_fr);
-    check("default feed policy: 0.85, read twice, 8 s settle, no freshness gate",
+    check("default feed policy: 0.85, read twice, 8 s settle (30 s without a "
+          "dictionary hit), no freshness gate",
           fabs(pol_s - 0.85) < 1e-9 && pol_h == 2 && fabs(pol_set - 8.0) < 1e-9 &&
-          pol_fr == 0);
+          fabs(skim_pipeline_rbn_settle_nodict(p) - 30.0) < 1e-9 && pol_fr == 0);
 
     skim_pipeline_stop(p);
     skim_pipeline_free(p);
@@ -705,6 +713,15 @@ int main(void) {
       for (guint off = 0; off + BLK <= g_band_frames; off += BLK) {
         skim_pipeline_feed(p, g_band + 2 * (gsize)off, BLK, RATE, CENTER - 30000.0);
       }
+    }
+    {
+      static float quiet[BLK * 2];             /* past the no-dictionary hold */
+      GRand *qr = g_rand_new_with_seed(4);
+      for (guint off = 0; off < 35 * RATE; off += BLK) {
+        for (guint i = 0; i < BLK * 2; i++) { quiet[i] = (float)(0.005 * gauss(qr)); }
+        skim_pipeline_feed(p, quiet, BLK, RATE, CENTER - 30000.0);
+      }
+      g_rand_free(qr);
     }
     for (int t = 0; t < 10000 && cap_count(a, "OK1BR") == 0; t += 50) {
       g_usleep(50 * 1000);
@@ -767,7 +784,7 @@ int main(void) {
     }
     GRand *rng = g_rand_new_with_seed(7);
     static float quiet[BLK * 2];
-    for (guint off = 0; off < 12 * RATE; off += BLK) {   /* > settle time     */
+    for (guint off = 0; off < 35 * RATE; off += BLK) {   /* > both holds      */
       for (guint i = 0; i < BLK * 2; i++) { quiet[i] = (float)(0.005 * gauss(rng)); }
       skim_pipeline_feed(p, quiet, BLK, RATE, CENTER);
     }

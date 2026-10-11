@@ -105,6 +105,15 @@ typedef struct {
    * twin of a call the feed had already spotted there). 0 = default: off
    * until measured live; < 0 = off. */
   double       rbn_fold_s;
+  /* A call the dictionary does NOT know is held this long instead of
+   * rbn_settle_s (0 = default 30 s; < 0 = rbn_settle_s). The release re-runs
+   * the gate, so the near-call conflict sees the right call if it is read
+   * meanwhile (CQ WW 2012: busts -1 point, recall -0.2). */
+  double       rbn_settle_nodict_s;
+  /* Measurement only (skimmer-replay against a reference skimmer that spots
+   * S&P answers too): the feed gate drops its CQ requirement, everything
+   * else stays. Never set it for a feed that reaches the network. */
+  gboolean     rbn_any_caller;
 
   /* Feed-gate learning logs (gatelog.h), appended for the pipeline's whole
    * life; NULL = off. tap: every decode the extractors eat, replayable by
@@ -158,6 +167,17 @@ void skim_pipeline_set_over_cb(SkimPipeline *p, SkimPipelineOverCb cb, gpointer 
 void skim_pipeline_set_state_cb(SkimPipeline *p, SkimPipelineStateCb cb, gpointer user);
 void skim_pipeline_set_vfo_cb(SkimPipeline *p, SkimPipelineVfoCb cb, gpointer user);
 void skim_pipeline_set_spectrum_cb(SkimPipeline *p, SkimPipelineSpectrumCb cb, gpointer user);
+/* Every line the RBN feed actually puts out (after gate, settle and the
+ * feed's dedup), with the station record it came from — st->cq tells a
+ * CQ spot from an S&P one under rbn_any_caller. Engine/feeding thread. */
+typedef void (*SkimPipelineFeedCb)(const SkimStation *st, gpointer user);
+/* Offline replays of a recording: UTC (µs) of stream time 0, so the
+ * gatelog/tap wall clock reads real time instead of stream time. */
+void skim_pipeline_set_wall_origin(SkimPipeline *p, gint64 utc_us);
+/* The hold of a call the dictionary does not know (s; see
+ * rbn_settle_nodict_s), 0 when the feed is off. */
+double skim_pipeline_rbn_settle_nodict(const SkimPipeline *p);
+void skim_pipeline_set_feed_cb(SkimPipeline *p, SkimPipelineFeedCb cb, gpointer user);
 /* Thread-safe switch for the spectrum tap (default off). */
 void     skim_pipeline_set_spectrum_enabled(SkimPipeline *p, gboolean on);
 gboolean skim_pipeline_spectrum_enabled(const SkimPipeline *p);

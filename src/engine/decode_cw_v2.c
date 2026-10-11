@@ -174,6 +174,8 @@ typedef struct {
 
   /* --- soft discriminator ---------------------------------------------------- */
   double mu_m, mu_s;                    /* mark / space level trackers        */
+  double smear;                         /* EMA of (mark - space)/(mark+space)
+                                         * over committed DIT/ESP pairs       */
   double k_m_dn, k_s;
   guint  cont_mark;                     /* samples continuously above mid     */
   guint  cont_space;                    /* samples continuously below mid     */
@@ -202,6 +204,14 @@ typedef struct {
     float    bm[W], bs[W];              /* best score, segment ends at t      */
     guint16  bd_m[W], bd_s[W];          /* traceback: duration                */
     guint8   bt_m[W], bt_s[W];          /* traceback: segment type            */
+    /* dur_pen() memo: the prior depends on (type, d) and the clock/fist
+     * triple only, and lattice_step asks for the same few hundred values
+     * on every sample — one log() each was a third of the replay CPU.
+     * An entry is valid while its stamp equals pen_gen. */
+    double   pen[5][W / 2 + 1];
+    guint32  pen_at[5][W / 2 + 1];
+    guint32  pen_gen;
+    double   pen_dit, pen_csp, pen_wsp, pen_esp;
   } *lat;
 
   /* --- character assembly ----------------------------------------------------- */
@@ -221,6 +231,11 @@ typedef struct {
   double fist_csp, fist_wsp;            /* learned char/word gap centres, dits */
   float  gaps[FIST_RING];               /* recent gaps ≥ FIST_MIN_D, ln(dits)  */
   guint  ngaps, gap_head, gap_fresh;
+
+  /* --- SKIM_V2_NARROW: carrier-centred low-pass ahead of |IQ| ---------------- */
+  double nb_ph;                         /* derotation phase                   */
+  float  nb_ma[3];                      /* its 3-tap MA                       */
+  double nb_x[2][2], nb_y[2][2];        /* biquad history, [I/Q][n-1, n-2]    */
 
   /* --- estimates -------------------------------------------------------------- */
   double prev_i, prev_q;
@@ -294,6 +309,7 @@ static gpointer cw2_channel_new(double sample_rate) {
   st->elem_err = 0.2;
   st->fist_csp = FIST_CSP0;
   st->fist_wsp = FIST_WSP0;
+    st->smear = 0.0;
   st->rd_on    = g_getenv("SKIM_CW_DUMP_RUNS") != NULL;
   /* Arming follows the env var at CHANNEL BIRTH (a pipeline restart), not
    * just the first process-wide load — the app's Preferences switch sets
@@ -721,6 +737,8 @@ static void emit(Cw2State *st, SkimDecode *out, guint *pos, char c,
     return;
   out->text[(*pos)++] = c;
   out->text[*pos] = '\0';
+  CW2_DBG("[emit '%c' at %.2f (t %.2f)]\n", c, (double)t_end / st->rate,
+          (double)st->t / st->rate);
   if (st->rd_on) { rd_emit_char(st, c, t_end); }
   if (!st->rr_arm)
     return;
@@ -736,10 +754,50 @@ static void emit(Cw2State *st, SkimDecode *out, guint *pos, char c,
   }
 }
 
+/* SKIM_V2_NEAREST=1: an element sequence no character has is read as the
+ * one character a single element away — first by dropping one element
+ * (a sloppy or glitching key adds one: Z35F keyed its 5 with six dits on
+ * CQ WW 2012, v2 dropped the char and read "Z3F"), else by swapping one
+ * dit/dah. Only a UNIQUE neighbour counts; anything else stays dropped. */
+static char morse_nearest(guint code, guint nelem) {
+  if (nelem < 2 || nelem > 7)
+    return 0;
+  for (int tier = 0; tier < 2; tier++) {
+    char found = 0;
+    gboolean many = FALSE;
+    for (guint i = 0; i < nelem && !many; i++) {
+      guint c2;
+      if (tier == 0) {                         /* drop element i (from MSB)  */
+        const guint lo = code & ((1u << (nelem - 1 - i)) - 1);
+        const guint hi = code >> (nelem - i);
+        c2 = (hi << (nelem - 1 - i)) | lo;
+      } else {                                 /* flip element i             */
+        c2 = code ^ (1u << (nelem - 1 - i));
+      }
+      const char ch = c2 < G_N_ELEMENTS(morse_lut) ? morse_lut[c2] : 0;
+      if (ch) {
+        if (found && found != ch) { many = TRUE; }
+        found = ch;
+      }
+    }
+    if (found && !many)
+      return found;
+    if (many)
+      return 0;
+  }
+  return 0;
+}
+
 static void emit_code(Cw2State *st, SkimDecode *out, guint *pos,
                       guint64 t_end) {
   if (st->nelem && st->code < G_N_ELEMENTS(morse_lut)) {
     char c = morse_lut[st->code];
+    static gint nearest = -1;
+    if (G_UNLIKELY(nearest < 0)) {
+      const char *e = g_getenv("SKIM_V2_NEAREST");
+      nearest = e && e[0] && strcmp(e, "0") != 0;
+    }
+    if (!c && nearest) { c = morse_nearest(st->code, st->nelem); }
     gboolean lone_et = st->nelem == 1 &&
                        (st->marks_ok < 4 || st->elem_err > 0.45);
     if (c && !lone_et) { emit(st, out, pos, c, t_end); }
@@ -772,12 +830,37 @@ static void lattice_start(Cw2State *st) {
   st->live_had_char = FALSE;
 }
 
+/* SKIM_V2_EDGE (default on, "0" = off): soft edges (keying shape, filter
+ * smear, multipath) make
+ * every mark LONGER and every space SHORTER by the same δ — v2 already
+ * tracks both (dit from marks, esp from element spaces) and reports the
+ * unbiased (dit+esp)/2 as the speed, but its priors put marks AND spaces
+ * on the biased dit: element spaces of a strong, smeared signal sit near
+ * 0.6 dit, under the ESP floor, and two dits fuse into a dah. */
+static gint edge_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_V2_EDGE");    /* default on; "0" = off */
+    on = !(e && e[0]) || strcmp(e, "0") != 0;
+  }
+  return on;
+}
+
+/* Ideal duration of a segment type in samples. */
+static inline double seg_ideal(const Cw2State *st, int type) {
+  const double k = type == SEG_CSP   ? st->fist_csp
+                   : type == SEG_WSP ? st->fist_wsp
+                                     : SEG_IDEAL[type];
+  if (!edge_on() || st->esp <= 0)
+    return k * st->dit;
+  const double tu = 0.5 * (st->dit + st->esp);
+  const double dl = CLAMP(0.5 * (st->dit - st->esp), -0.4 * tu, 0.4 * tu);
+  return k * tu + (type == SEG_DIT || type == SEG_DAH ? dl : -dl);
+}
+
 /* Duration prior in the log domain. CSP/WSP ideals ride the fist model. */
 static inline double dur_pen(const Cw2State *st, int type, double d) {
-  const double ideal = type == SEG_CSP   ? st->fist_csp
-                       : type == SEG_WSP ? st->fist_wsp
-                                         : SEG_IDEAL[type];
-  double r = log(d / (ideal * st->dit));
+  double r = log(d / seg_ideal(st, type));
   return -SEG_ALPHA[type] * r * r - SEG_COST;
 }
 
@@ -834,6 +917,17 @@ static void fist_learn(Cw2State *st, double d_dits) {
           st->fist_csp, st->fist_wsp, exp(c1), exp(c2), n1, n2);
 }
 
+/* dur_pen() through the lattice's memo — the same arithmetic, computed once
+ * per (type, d) while the clock and fist stay put. */
+static inline double dur_pen_memo(const Cw2State *st, struct Lattice *L,
+                                  int type, int d) {
+  if (L->pen_at[type][d] != L->pen_gen) {
+    L->pen[type][d]    = dur_pen(st, type, d);
+    L->pen_at[type][d] = L->pen_gen;
+  }
+  return L->pen[type][d];
+}
+
 /* One Viterbi step for the sample at st->t (llr already in the ring). */
 static void lattice_step(Cw2State *st) {
   struct Lattice *L = st->lat;
@@ -841,6 +935,16 @@ static void lattice_step(Cw2State *st) {
   const double  T   = st->dit;
   const double  ct  = L->cum[t & WMASK];
   const guint64 cmt = st->commit_t;
+  if (L->pen_gen == 0 || L->pen_dit != st->dit ||
+      L->pen_csp != st->fist_csp || L->pen_wsp != st->fist_wsp ||
+      L->pen_esp != st->esp) {
+    L->pen_gen++;                       /* 0 never matches a stamp: g_new0    */
+    if (L->pen_gen == 0) { L->pen_gen = 1; }
+    L->pen_dit = st->dit;
+    L->pen_csp = st->fist_csp;
+    L->pen_wsp = st->fist_wsp;
+    L->pen_esp = st->esp;
+  }
 
   /* Mark ends at t: preceded by a space (or seed) boundary at t−d. */
   float  best_m = NEG_INF;
@@ -851,7 +955,16 @@ static void lattice_step(Cw2State *st) {
    * 18 WPM dit — the classifier lock-up the first build hit). Inside the
    * overlap the duration priors decide, and they move with the clock. */
   static const int MTYPES[2] = { SEG_DIT, SEG_DAH };
-  static const double MLO[2] = { 0.60, 1.6 }, MHI[2] = { 2.6, 5.0 };
+  /* SKIM_V2_DAHMAX: the dah window's ceiling in dits (default 6.0, was
+   * 5.0) — after
+   * a turnaround to half the speed the new op's dahs run 5.6 old dits and
+   * fit no segment until the clock re-locks. */
+  static double dah_hi = -1;
+  if (G_UNLIKELY(dah_hi < 0)) {
+    const char *e = g_getenv("SKIM_V2_DAHMAX");
+    dah_hi = e && e[0] ? g_ascii_strtod(e, NULL) : 6.0;
+  }
+  const double MLO[2] = { 0.60, 1.6 }, MHI[2] = { 2.6, dah_hi };
   for (int k = 0; k < 2; k++) {
     int dlo = MAX(2, (int)(MLO[k] * T + 0.5));
     int dhi = MIN((int)(MHI[k] * T + 0.5), W / 2);
@@ -864,7 +977,7 @@ static void lattice_step(Cw2State *st) {
       if (prev <= NEG_INF)
         continue;
       double ev = ct - L->cum[(t - d) & WMASK];
-      float  sc = prev + (float)(ev + dur_pen(st, MTYPES[k], d));
+      float  sc = prev + (float)(ev + dur_pen_memo(st, L, MTYPES[k], d));
       if (sc > best_m) {
         best_m = sc;
         bd = (guint16)d;
@@ -898,7 +1011,10 @@ static void lattice_step(Cw2State *st) {
   const double SLO[3] = { 0.70, 1.6, 0.571 * st->fist_wsp };
   const double SHI[3] = { 2.6, 1.833 * st->fist_csp, 17.0 };
   for (int k = 0; k < 3; k++) {
-    int dlo = MAX(2, (int)((k == 0 ? esp_lo : SLO[k]) * T + 0.5));
+    /* With the edge model the ESP floor sits under the SPACE ideal, not
+     * the mark-biased dit. */
+    const double Tk = (k == 0 && edge_on()) ? seg_ideal(st, SEG_ESP) : T;
+    int dlo = MAX(2, (int)((k == 0 ? esp_lo * Tk : SLO[k] * T) + 0.5));
     int dhi = MIN((int)(SHI[k] * T + 0.5), W / 2);
     for (int d = dlo; d <= dhi; d++) {
       if (t < (guint64)d || t - d < cmt)
@@ -909,7 +1025,7 @@ static void lattice_step(Cw2State *st) {
       if (prev <= NEG_INF)
         continue;
       double ev = -(ct - L->cum[(t - d) & WMASK]);
-      float  sc = prev + (float)(ev + dur_pen(st, STYPES[k], d));
+      float  sc = prev + (float)(ev + dur_pen_memo(st, L, STYPES[k], d));
       if (sc > best_s) {
         best_s = sc;
         bd = (guint16)d;
@@ -1113,9 +1229,9 @@ static void lattice_commit(Cw2State *st, double lag_dits, SkimDecode *out,
     const double ideal = SEG_IDEAL[ty] * st->dit;
     /* Did the live rule already emit for the space starting here? */
     const gboolean lived = st->char_live && (end - segs_d[i - 1]) == st->live_t;
-    CW2_DBG("[commit %s d=%.0f dit=%.1f err=%.2f]\n",
+    CW2_DBG("[commit %s d=%.0f dit=%.1f err=%.2f t=%.2f csp=%.2f wsp=%.2f]\n",
             (const char *[]){"DIT","DAH","esp","CSP","WSP"}[ty], d, st->dit,
-            st->elem_err);
+            st->elem_err, (double)end / st->rate, st->fist_csp, st->fist_wsp);
     switch (ty) {
     case SEG_DIT:
     case SEG_DAH: {
@@ -1145,6 +1261,10 @@ static void lattice_commit(Cw2State *st, double lag_dits, SkimDecode *out,
       break;
     case SEG_ESP:
       st->esp = st->esp > 0 ? st->esp + 0.2 * (d - st->esp) : d;
+      if (st->dit > 0) {
+        const double sm = (st->dit - d) / (st->dit + d);
+        st->smear += 0.1 * (sm - st->smear);
+      }
       clock_space(st, d);
       break;
     case SEG_CSP:
@@ -1269,8 +1389,68 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
       z <= 1.0 ? -LLR_MAX
                : CLAMP(3.3 * (0.5 * z * z - log(z) - 2.89),
                        -LLR_MAX, LLR_MAX);
-  const double llr = 0.5 * (span_llr + ray_llr);
-  if (g_getenv("SKIM_CW2_TRACE")) {
+  /* SKIM_V2_RAYFADE="r0,r1[,wmin]" (default 4,10): the
+   * Rayleigh view's weight fades from ½ to wmin (0)
+   * as µ_mark/µ_space climbs from r0 to r1. Anchored to the noise floor, it
+   * calls everything that is "not noise" a mark — on a strong signal that
+   * includes the decaying tail of every element and the QRM filling the
+   * gaps, so marks grow, element spaces shrink under the 0.7-dit ESP floor
+   * and two dits fuse into a dah (CQ WW 2012, HG5C at 30 dB read "HGBC";
+   * 40 m recall +9 points). The same view is what carries a sub-dit
+   * flutter notch through a dash, so the fade only acts as far as the
+   * signal's edges are measurably smeared (SKIM_V2_RAYSMEAR) — a crisp
+   * signal keeps the notch protection. */
+  static gint   rf_on = -1;
+  static double rf_r0, rf_r1, rf_wmin;
+  if (G_UNLIKELY(rf_on < 0)) {     /* "r0,r1[,wmin]", default 4,10; "0" = off */
+    const char *e = g_getenv("SKIM_V2_RAYFADE");
+    rf_r0 = 4.0;
+    rf_r1 = 10.0;
+    rf_wmin = 0.0;
+    rf_on = !(e && e[0]) ||
+            (sscanf(e, "%lf,%lf,%lf", &rf_r0, &rf_r1, &rf_wmin) >= 2 &&
+             rf_r1 > rf_r0);
+  }
+  double w_ray = 0.5;
+  if (rf_on) {
+    const double ratio = st->mu_m / MAX(st->mu_s, 1e-12);
+    double wf = rf_wmin + (0.5 - rf_wmin) *
+                              CLAMP((rf_r1 - ratio) / (rf_r1 - rf_r0), 0.0, 1.0);
+    /* SKIM_V2_RAYSMEAR="s0,s1": the fade applies only as far as this
+     * signal's edges are measurably smeared — the edge model's
+     * (dit - esp)/(dit + esp), averaged over committed elements. Slow edges
+     * are what turn "not noise" into longer marks; a crisp signal keeps
+     * the full view and with it the notch protection. */
+    static gint   rs_on = -1;
+    static double rs_s0, rs_s1;
+    if (G_UNLIKELY(rs_on < 0)) {   /* default 0.08,0.16; "0" = fade everywhere */
+      const char *e = g_getenv("SKIM_V2_RAYSMEAR");
+      rs_s0 = 0.08;
+      rs_s1 = 0.16;
+      rs_on = !(e && e[0]) ||
+              (sscanf(e, "%lf,%lf", &rs_s0, &rs_s1) == 2 && rs_s1 > rs_s0);
+    }
+    if (rs_on) {
+      const double k = CLAMP((st->smear - rs_s0) / (rs_s1 - rs_s0), 0.0, 1.0);
+      wf = 0.5 - (0.5 - wf) * k;
+    }
+    w_ray = wf;
+  }
+  /* SKIM_V2_RAYCAP=1: below the span midpoint the Rayleigh view may
+   * CANCEL the span's negative evidence (a notch inside a dash scores ~0,
+   * the duration priors carry the dash) but never turn it into mark
+   * evidence — an element's decaying tail and the QRM in a gap sit just as
+   * far above the noise as a notch does, and must not lengthen the mark. */
+  static gint rc_on = -1;
+  if (G_UNLIKELY(rc_on < 0)) {
+    const char *e = g_getenv("SKIM_V2_RAYCAP");
+    rc_on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  const double ray_v = rc_on && span_llr < 0 ? MIN(ray_llr, -span_llr) : ray_llr;
+  const double llr = (1.0 - w_ray) * span_llr + w_ray * ray_v;
+  static gint trace = -1;              /* getenv per sample cost 3 % CPU     */
+  if (G_UNLIKELY(trace < 0)) { trace = g_getenv("SKIM_CW2_TRACE") != NULL; }
+  if (trace) {
     fprintf(stderr, "T %lu %.4f %.4f %.4f %.2f\n",
             (unsigned long)st->t, m, st->mu_m, st->mu_s, llr);
   }
@@ -1463,6 +1643,7 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
         st->clk_hold = 0;
     st->fist_csp = FIST_CSP0;
     st->fist_wsp = FIST_WSP0;
+    st->smear = 0.0;
     st->ngaps = st->gap_head = st->gap_fresh = 0;
     st->carrier = FALSE;
     st->paused = FALSE;
@@ -1471,14 +1652,63 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
     st->pre_from = st->pre_head;
   }
 
+  /* SKIM_V2_NARROW=<fc Hz>: the channel is 125 Hz wide whatever the speed;
+   * a 25-35 WPM signal needs about a third of that. Derotate by the tracked
+   * tone offset and low-pass (2nd-order Butterworth, fc) before the
+   * envelope — less noise, less of the neighbours' splatter. The offset
+   * estimate below keeps reading the raw samples. */
+  static gint   nb_on = -1;
+  static double nb_b0, nb_b1, nb_b2, nb_a1, nb_a2;
+  if (G_UNLIKELY(nb_on < 0)) {
+    const char *e = g_getenv("SKIM_V2_NARROW");
+    const double fc = e && e[0] ? g_ascii_strtod(e, NULL) : 0.0;
+    nb_on = fc > 0 && fc < 0.45 * st->rate;
+    if (nb_on) {
+      const double k = tan(G_PI * fc / st->rate), q2 = sqrt(2.0);
+      const double nrm = 1.0 / (1.0 + q2 * k + k * k);
+      nb_b0 = k * k * nrm;
+      nb_b1 = 2.0 * nb_b0;
+      nb_b2 = nb_b0;
+      nb_a1 = 2.0 * (k * k - 1.0) * nrm;
+      nb_a2 = (1.0 - q2 * k + k * k) * nrm;
+    }
+  }
+
   for (guint n = 0; n < nframes; n++) {
     const float i = iq[2 * n], q = iq[2 * n + 1];
     const float mag = sqrtf(i * i + q * q);
+    float nbmag = mag;
+    if (nb_on) {
+      st->nb_ph -= 2.0 * G_PI * st->foff_hz / st->rate;
+      if (st->nb_ph > G_PI || st->nb_ph < -G_PI) {
+        st->nb_ph = remainder(st->nb_ph, 2.0 * G_PI);
+      }
+      const double c = cos(st->nb_ph), sn = sin(st->nb_ph);
+      const double xin[2] = { i * c - q * sn, i * sn + q * c };
+      double yo[2];
+      for (int r = 0; r < 2; r++) {
+        yo[r] = nb_b0 * xin[r] + nb_b1 * st->nb_x[r][0] + nb_b2 * st->nb_x[r][1] -
+                nb_a1 * st->nb_y[r][0] - nb_a2 * st->nb_y[r][1];
+        st->nb_x[r][1] = st->nb_x[r][0];
+        st->nb_x[r][0] = xin[r];
+        st->nb_y[r][1] = st->nb_y[r][0];
+        st->nb_y[r][0] = yo[r];
+      }
+      nbmag = (float)sqrt(yo[0] * yo[0] + yo[1] * yo[1]);
+    }
 
     st->ma[st->ma_n % 3] = mag;
+    st->nb_ma[st->ma_n % 3] = nbmag;
     st->ma_n++;
     float m = (st->ma[0] + st->ma[1] + st->ma[2]) / (float)MIN(st->ma_n, 3);
-    st->pre[st->pre_head++ & (st->pre_size - 1)] = m;
+    /* The soft path's envelope: the narrow one when SKIM_V2_NARROW is on.
+     * Squelch, keying duty, bootstrap and the offset estimate keep reading
+     * the raw channel — they must find a carrier the filter is not yet
+     * centred on. */
+    const float ms = nb_on ? (st->nb_ma[0] + st->nb_ma[1] + st->nb_ma[2]) /
+                                 (float)MIN(st->ma_n, 3)
+                           : m;
+    st->pre[st->pre_head++ & (st->pre_size - 1)] = ms;
 
     /* Level trackers + squelch + keying-duty — v1 verbatim. */
     if (st->env_hi < 0) { st->env_hi = st->env_lo = m; }
@@ -1603,6 +1833,7 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
           st->paused = FALSE;
           st->fist_csp = FIST_CSP0;            /* spacing style goes with it */
           st->fist_wsp = FIST_WSP0;
+    st->smear = 0.0;
           st->ngaps = st->gap_head = st->gap_fresh = 0;
         }
       }
@@ -1698,7 +1929,7 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
       continue;
     }
 
-    soft_step(st, m, out, &pos);
+    soft_step(st, ms, out, &pos);
   }
 
   hy_call_end(st, out);

@@ -51,6 +51,15 @@ void skim_gatelog_close(SkimGateLog *g) {
 /* "%.<prec>f" in the C locale, into one of a few rotating buffers so a
  * single fprintf can take several. Per thread: every band's pipeline logs
  * from its own engine thread. */
+/* The shortest text that reads back as exactly v (the tap is replayed, and
+ * a rounded SNR or frequency can tip the station table's "stronger report
+ * wins" merge the other way). */
+static const char *exact(double v) {
+  static _Thread_local char buf[8][G_ASCII_DTOSTR_BUF_SIZE];
+  static _Thread_local guint k;
+  return g_ascii_dtostr(buf[k++ % G_N_ELEMENTS(buf)], G_ASCII_DTOSTR_BUF_SIZE, v);
+}
+
 static const char *num(double v, int prec) {
   static _Thread_local char buf[16][G_ASCII_DTOSTR_BUF_SIZE];
   static _Thread_local guint k;
@@ -67,8 +76,8 @@ void skim_gatelog_tap_text(SkimGateLog *g, gint64 t_us, gint64 wall_us,
   if (!g || !g->tap)
     return;
   fprintf(g->tap, "T %" G_GINT64_FORMAT " %" G_GINT64_FORMAT " %u %s %s %s %s %d |",
-          t_us, wall_us, ix, num(hz, 1), num(wpm, 1), num(snr_db, 1),
-          num(confidence, 3), contested ? 1 : 0);
+          t_us, wall_us, ix, exact(hz), exact(wpm), exact(snr_db),
+          exact(confidence), contested ? 1 : 0);
   for (const char *s = text; *s; s++) {         /* one line per decode       */
     fputc(*s == '\n' || *s == '\r' ? ' ' : *s, g->tap);
   }
