@@ -677,10 +677,14 @@ static gboolean near_conflict(const SkimPipeline *p, const SkimStation *st) {
     }
     if (fabs(r->hz - st->freq_hz) > p->near_hz || strcmp(k, st->call) == 0)
       continue;
+    /* a dictionary call read ONCE (it passed on the dictionary's word
+     * alone) yields like an unknown one: to any look-alike that the
+     * dictionary knows or that was read at least twice */
     const gboolean rival =
-        dict ? r->hearings >= 3 &&
-                   r->hearings >= p->near_dict * MAX(st->hearings, 1u)
-             : r->dict || r->hearings > st->hearings;
+        dict && st->hearings >= 2
+            ? r->hearings >= 3 &&
+                  r->hearings >= p->near_dict * st->hearings
+            : r->dict || r->hearings > MAX(st->hearings, 1u);
     if (rival && near_edit(k, st->call) <= 2) {
       if (G_UNLIKELY(g_getenv("SKIM_GATE_NEAR_DEBUG"))) {
         g_printerr("near: %s (%u) blocked by %s (%u%s) df %.0f ed %u\n",
@@ -703,7 +707,20 @@ static gboolean rbn_gate(const SkimPipeline *p, const SkimStation *st) {
     return FALSE;
   if (p->rbn_fresh_us > 0 && pipe_now_us(p) - st->heard_us > p->rbn_fresh_us)
     return FALSE;
-  return (st->cq || p->cfg.rbn_any_caller) && st->score >= p->rbn_min &&
+  /* SKIM_GATE_DICT_MIN=<score> (default 0.80): a call MASTER.SCP knows
+   * needs only this score — one copy in a calling context ("CQ TEST K3XX",
+   * dictionary 0.15 + CQ 0.10) is enough, a bare copy (0.70) is not; the
+   * near-call conflict below keeps a look-alike of a nearby call off the
+   * wire. CQ WW 2012 test hours: units only R heard 116 -> 102 (40 m),
+   * 114 -> 99 (80 m), busts within R's. */
+  static double dict_min = -1;
+  if (G_UNLIKELY(dict_min < 0)) {
+    const char *e = g_getenv("SKIM_GATE_DICT_MIN");
+    dict_min = e && e[0] ? g_ascii_strtod(e, NULL) : 0.80;  /* "0" = off */
+  }
+  const double need = dict_min > 0 && skim_callsign_dict_has(st->call)
+                          ? MIN(dict_min, p->rbn_min) : p->rbn_min;
+  return (st->cq || p->cfg.rbn_any_caller) && st->score >= need &&
          (st->hearings >= p->rbn_hearings || skim_callsign_dict_has(st->call)) &&
          !near_conflict(p, st);
 }

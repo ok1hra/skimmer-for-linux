@@ -32,6 +32,7 @@
  */
 #include "callsign.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 /* --- ITU allocation ---------------------------------------------------------

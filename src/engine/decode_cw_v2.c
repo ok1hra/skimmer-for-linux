@@ -174,13 +174,8 @@ typedef struct {
 
   /* --- soft discriminator ---------------------------------------------------- */
   double mu_m, mu_s;                    /* mark / space level trackers        */
-  /* GAPFADE: is this signal's element gap at the noise floor? The noise
-   * comes from the sample-to-sample jitter INSIDE marks (at high SNR the
-   * mark is A + noise, so its jitter is the channel noise itself, blind to
-   * whatever fills the gaps); the gap level from committed element spaces. */
-  double nz_ad;                         /* EMA of |Δm| in mark interiors      */
-  float  m_prev;
-  double gap_lvl;                       /* EMA of inner element-space level   */
+  double smear;                         /* EMA of (mark - space)/(mark+space)
+                                         * over committed DIT/ESP pairs       */
   double k_m_dn, k_s;
   guint  cont_mark;                     /* samples continuously above mid     */
   guint  cont_space;                    /* samples continuously below mid     */
@@ -206,7 +201,6 @@ typedef struct {
   guint8   commit_kind;                 /* boundary kind at commit_t          */
   struct Lattice {
     double   cum[W];                    /* cumulative llr, cum[t & WMASK]     */
-    float    mv[W];                     /* the soft path's envelope at t      */
     float    bm[W], bs[W];              /* best score, segment ends at t      */
     guint16  bd_m[W], bd_s[W];          /* traceback: duration                */
     guint8   bt_m[W], bt_s[W];          /* traceback: segment type            */
@@ -315,7 +309,7 @@ static gpointer cw2_channel_new(double sample_rate) {
   st->elem_err = 0.2;
   st->fist_csp = FIST_CSP0;
   st->fist_wsp = FIST_WSP0;
-    st->gap_lvl = 0.0;
+    st->smear = 0.0;
   st->rd_on    = g_getenv("SKIM_CW_DUMP_RUNS") != NULL;
   /* Arming follows the env var at CHANNEL BIRTH (a pipeline restart), not
    * just the first process-wide load — the app's Preferences switch sets
@@ -959,7 +953,16 @@ static void lattice_step(Cw2State *st) {
    * 18 WPM dit — the classifier lock-up the first build hit). Inside the
    * overlap the duration priors decide, and they move with the clock. */
   static const int MTYPES[2] = { SEG_DIT, SEG_DAH };
-  static const double MLO[2] = { 0.60, 1.6 }, MHI[2] = { 2.6, 5.0 };
+  /* SKIM_V2_DAHMAX: the dah window's ceiling in dits (default 6.0, was
+   * 5.0) — after
+   * a turnaround to half the speed the new op's dahs run 5.6 old dits and
+   * fit no segment until the clock re-locks. */
+  static double dah_hi = -1;
+  if (G_UNLIKELY(dah_hi < 0)) {
+    const char *e = g_getenv("SKIM_V2_DAHMAX");
+    dah_hi = e && e[0] ? g_ascii_strtod(e, NULL) : 6.0;
+  }
+  const double MLO[2] = { 0.60, 1.6 }, MHI[2] = { 2.6, dah_hi };
   for (int k = 0; k < 2; k++) {
     int dlo = MAX(2, (int)(MLO[k] * T + 0.5));
     int dhi = MIN((int)(MHI[k] * T + 0.5), W / 2);
@@ -1256,21 +1259,9 @@ static void lattice_commit(Cw2State *st, double lag_dits, SkimDecode *out,
       break;
     case SEG_ESP:
       st->esp = st->esp > 0 ? st->esp + 0.2 * (d - st->esp) : d;
-      if (d >= 4) {                            /* GAPFADE: the inner half of */
-        double sum = 0.0;                      /* the gap, the edges are the */
-        guint  cnt = 0;                        /* marks' slopes              */
-        for (guint64 u = end - (guint64)d + (guint64)d / 4 + 1;
-             u <= end - (guint64)d / 4; u++) {
-          sum += st->lat->mv[u & WMASK];
-          cnt++;
-        }
-        if (cnt) {
-          const double g = sum / cnt;
-          st->gap_lvl = st->gap_lvl > 0 ? st->gap_lvl + 0.2 * (g - st->gap_lvl) : g;
-          CW2_DBG("[gap %.2f lvl %.2f noise-floor %.2f ratio %.2f mu_m %.1f]\n", g,
-                  st->gap_lvl, 3.33 * st->nz_ad,
-                  st->gap_lvl / MAX(3.33 * st->nz_ad, 1e-9), st->mu_m);
-        }
+      if (st->dit > 0) {
+        const double sm = (st->dit - d) / (st->dit + d);
+        st->smear += 0.1 * (sm - st->smear);
       }
       clock_space(st, d);
       break;
@@ -1338,11 +1329,6 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
   const double mid = 0.5 * (st->mu_m + st->mu_s);
   if (m > mid) {
     st->cont_mark++;
-    if (st->cont_mark >= 4 && m > 0.6 * st->mu_m) {
-      double dm = fabs((double)m - st->m_prev);
-      if (st->nz_ad > 0) { dm = MIN(dm, 4.0 * st->nz_ad); }
-      st->nz_ad = st->nz_ad > 0 ? st->nz_ad + 0.02 * (dm - st->nz_ad) : dm;
-    }
   } else {
     /* Only CLEARLY space-like samples may teach µ_space. A fade's edge
      * throws mark samples just under the midpoint — letting them in
@@ -1396,71 +1382,57 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
    * samples (no sustained runs — no phantom dits minted from the tail
    * after an over), while a −18 dB notch (z ≈ 5) and QSB-trough marks
    * (z ≈ 7) sit far in the positive. */
-  /* SKIM_V2_RAYNOISE=<f>: anchor the Rayleigh view on the EFFECTIVE noise
-   * — max(µ_space, f·|Δm| inside marks) — not on the noise floor alone. On
-   * contest air the jitter inside a strong mark carries the same QRM that
-   * fills its gaps and lingers in its tails; measured against the bare
-   * floor those read "not noise" and lengthen the mark (HG5C → "HGBC").
-   * With white noise (every synthetic case) the two anchors agree and the
-   * notch protection stays as it was. */
-  static double rn_f = -1, rn_rmin;
-  if (G_UNLIKELY(rn_f < 0)) {           /* "f[,rmin]": only where µm/µs ≥ rmin */
-    const char *e = g_getenv("SKIM_V2_RAYNOISE");
-    rn_f = 0.0;
-    rn_rmin = 0.0;
-    if (e && e[0] && sscanf(e, "%lf,%lf", &rn_f, &rn_rmin) < 1) { rn_f = 0.0; }
-  }
-  const gboolean rn_use =
-      rn_f > 0 && st->mu_m >= rn_rmin * MAX(st->mu_s, 1e-12);
-  const double nref = rn_use ? MAX(st->mu_s, rn_f * st->nz_ad) : st->mu_s;
-  const double z = m / MAX(nref / 1.2533, 1e-12);
+  const double z = m / MAX(st->mu_s / 1.2533, 1e-12);
   const double ray_llr =
       z <= 1.0 ? -LLR_MAX
                : CLAMP(3.3 * (0.5 * z * z - log(z) - 2.89),
                        -LLR_MAX, LLR_MAX);
-  /* SKIM_V2_RAYFADE="r0,r1[,wmin]" (off by default; 4,10 measured): the
+  /* SKIM_V2_RAYFADE="r0,r1[,wmin]" (default 4,10): the
    * Rayleigh view's weight fades from ½ to wmin (0)
    * as µ_mark/µ_space climbs from r0 to r1. Anchored to the noise floor, it
    * calls everything that is "not noise" a mark — on a strong signal that
    * includes the decaying tail of every element and the QRM filling the
    * gaps, so marks grow, element spaces shrink under the 0.7-dit ESP floor
    * and two dits fuse into a dah (CQ WW 2012, HG5C at 30 dB read "HGBC";
-   * 40 m recall +9 points). The price: the same view is what lets a
-   * sub-dit flutter notch inside a dash pass — cw-test's notch case
-   * splits dashes with the fade on — hence off by default. */
+   * 40 m recall +9 points). The same view is what carries a sub-dit
+   * flutter notch through a dash, so the fade only acts as far as the
+   * signal's edges are measurably smeared (SKIM_V2_RAYSMEAR) — a crisp
+   * signal keeps the notch protection. */
   static gint   rf_on = -1;
   static double rf_r0, rf_r1, rf_wmin;
-  if (G_UNLIKELY(rf_on < 0)) {     /* "r0,r1[,wmin]" (e.g. 4,10); off by default */
+  if (G_UNLIKELY(rf_on < 0)) {     /* "r0,r1[,wmin]", default 4,10; "0" = off */
     const char *e = g_getenv("SKIM_V2_RAYFADE");
+    rf_r0 = 4.0;
+    rf_r1 = 10.0;
     rf_wmin = 0.0;
-    rf_on = e && e[0] &&
-            sscanf(e, "%lf,%lf,%lf", &rf_r0, &rf_r1, &rf_wmin) >= 2 &&
-            rf_r1 > rf_r0;
+    rf_on = !(e && e[0]) ||
+            (sscanf(e, "%lf,%lf,%lf", &rf_r0, &rf_r1, &rf_wmin) >= 2 &&
+             rf_r1 > rf_r0);
   }
   double w_ray = 0.5;
-  /* SKIM_V2_GAPFADE="g0,g1": the Rayleigh view is what carries a notch
-   * through a dash (a real gap would sit on the noise floor, a notch does
-   * not). On contest air QRM, echo and the slow tails of strong signals
-   * fill EVERY element gap 10-15 dB above the noise: there the premise is
-   * gone, the view only lengthens marks and fuses dits (HG5C read "HGBC"),
-   * so its weight fades as the gap level climbs from g0 to g1 times the
-   * noise floor. A clean signal — every synthetic case, a real flutter
-   * victim — keeps it. */
-  static gint   gf_on = -1;
-  static double gf_g0, gf_g1;
-  if (G_UNLIKELY(gf_on < 0)) {
-    const char *e = g_getenv("SKIM_V2_GAPFADE");
-    gf_on = e && e[0] && sscanf(e, "%lf,%lf", &gf_g0, &gf_g1) == 2 &&
-            gf_g1 > gf_g0;
-  }
-  if (gf_on && st->gap_lvl > 0 && st->nz_ad > 0) {
-    const double r = st->gap_lvl / (3.33 * st->nz_ad);
-    w_ray = 0.5 * CLAMP((gf_g1 - r) / (gf_g1 - gf_g0), 0.0, 1.0);
-  }
   if (rf_on) {
     const double ratio = st->mu_m / MAX(st->mu_s, 1e-12);
-    w_ray = rf_wmin + (0.5 - rf_wmin) *
-                          CLAMP((rf_r1 - ratio) / (rf_r1 - rf_r0), 0.0, 1.0);
+    double wf = rf_wmin + (0.5 - rf_wmin) *
+                              CLAMP((rf_r1 - ratio) / (rf_r1 - rf_r0), 0.0, 1.0);
+    /* SKIM_V2_RAYSMEAR="s0,s1": the fade applies only as far as this
+     * signal's edges are measurably smeared — the edge model's
+     * (dit - esp)/(dit + esp), averaged over committed elements. Slow edges
+     * are what turn "not noise" into longer marks; a crisp signal keeps
+     * the full view and with it the notch protection. */
+    static gint   rs_on = -1;
+    static double rs_s0, rs_s1;
+    if (G_UNLIKELY(rs_on < 0)) {   /* default 0.08,0.16; "0" = fade everywhere */
+      const char *e = g_getenv("SKIM_V2_RAYSMEAR");
+      rs_s0 = 0.08;
+      rs_s1 = 0.16;
+      rs_on = !(e && e[0]) ||
+              (sscanf(e, "%lf,%lf", &rs_s0, &rs_s1) == 2 && rs_s1 > rs_s0);
+    }
+    if (rs_on) {
+      const double k = CLAMP((st->smear - rs_s0) / (rs_s1 - rs_s0), 0.0, 1.0);
+      wf = 0.5 - (0.5 - wf) * k;
+    }
+    w_ray = wf;
   }
   /* SKIM_V2_RAYCAP=1: below the span midpoint the Rayleigh view may
    * CANCEL the span's negative evidence (a notch inside a dash scores ~0,
@@ -1482,8 +1454,6 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
   }
   st->t++;
   st->lat->cum[st->t & WMASK] = st->lat->cum[(st->t - 1) & WMASK] + llr;
-  st->lat->mv[st->t & WMASK] = m;
-  st->m_prev = m;
   lattice_step(st);
 
   if ((st->t & 7) == 0) {                      /* lagged commit, every 8     */
@@ -1671,7 +1641,7 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
         st->clk_hold = 0;
     st->fist_csp = FIST_CSP0;
     st->fist_wsp = FIST_WSP0;
-    st->gap_lvl = 0.0;
+    st->smear = 0.0;
     st->ngaps = st->gap_head = st->gap_fresh = 0;
     st->carrier = FALSE;
     st->paused = FALSE;
@@ -1861,7 +1831,7 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
           st->paused = FALSE;
           st->fist_csp = FIST_CSP0;            /* spacing style goes with it */
           st->fist_wsp = FIST_WSP0;
-    st->gap_lvl = 0.0;
+    st->smear = 0.0;
           st->ngaps = st->gap_head = st->gap_fresh = 0;
         }
       }
