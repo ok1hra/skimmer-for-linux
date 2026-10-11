@@ -52,6 +52,7 @@
  * ("CQ DE X X K"); 8 s covers the rest of the over that tears a call. */
 #define RBN_MIN_HEARINGS_DEFAULT 2
 #define RBN_SETTLE_S_DEFAULT     8.0
+#define RBN_SETTLE_NODICT_S_DEFAULT 30.0  /* see rbn_settle_nodict_s     */
 /* A call older than this since its last READ copy is a stale candidate, not
  * a station (cfg.rbn_fresh_s). 0 = no such gate by default: it changes what
  * goes to the network, so it stays opt-in until skimmer-compare measured it
@@ -179,6 +180,7 @@ struct _SkimPipeline {
   guint             rbn_hearings;              /* feed gate: copies read     */
   gint64            rbn_settle_us;             /* feed hold-back; 0 = none   */
   gint64            rbn_fresh_us;              /* last read ≤ this; 0 = any  */
+  gint64            rbn_settle_nd_us;          /* the same, no dictionary hit */
   GHashTable       *near;                      /* call → NearRec (gate memo) */
   double            near_hz;                   /* SKIM_GATE_NEAR; 0 = off    */
   double            near_dict;                 /* SKIM_GATE_NEAR_DICT        */
@@ -427,6 +429,14 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     const double settle = p->cfg.rbn_settle_s == 0 ? RBN_SETTLE_S_DEFAULT
                                                    : p->cfg.rbn_settle_s;
     p->rbn_settle_us = settle > 0 ? (gint64)(settle * G_USEC_PER_SEC) : 0;
+    /* SKIM_GATE_SETTLE_NODICT overrides the config (experiments) */
+    const char *ndenv = g_getenv("SKIM_GATE_SETTLE_NODICT");
+    const double nd = ndenv && ndenv[0] ? g_ascii_strtod(ndenv, NULL)
+                    : p->cfg.rbn_settle_nodict_s == 0 ? RBN_SETTLE_NODICT_S_DEFAULT
+                                                      : p->cfg.rbn_settle_nodict_s;
+    p->rbn_settle_nd_us = nd > 0 && p->rbn_settle_us > 0
+                              ? MAX((gint64)(nd * G_USEC_PER_SEC), p->rbn_settle_us)
+                              : p->rbn_settle_us;
     const double fresh = p->cfg.rbn_fresh_s == 0 ? RBN_FRESH_S_DEFAULT
                                                  : p->cfg.rbn_fresh_s;
     p->rbn_fresh_us = fresh > 0 ? (gint64)(fresh * G_USEC_PER_SEC) : 0;
@@ -718,17 +728,12 @@ static void rbn_offer(SkimPipeline *p, const SkimStation *st) {
   gint64 *due = g_hash_table_lookup(p->rbn_pending, st->call);
   if (!due) {
     due = g_new(gint64, 1);
-    /* SKIM_GATE_SETTLE_NODICT=<s>: a call the dictionary does not know
-     * waits longer — the release re-runs the gate, and the near-call
-     * conflict needs the right call to have been read by then. */
-    static gint64 nd_us = -1;
-    if (G_UNLIKELY(nd_us < 0)) {
-      const char *e = g_getenv("SKIM_GATE_SETTLE_NODICT");
-      nd_us = e && e[0] ? (gint64)(g_ascii_strtod(e, NULL) * G_USEC_PER_SEC) : 0;
-    }
-    *due = pipe_now_us(p) +
-           (nd_us > 0 && !skim_callsign_dict_has(st->call) ? nd_us
-                                                           : p->rbn_settle_us);
+    /* A call the dictionary does not know waits longer (rbn_settle_nodict_s)
+     * — the release re-runs the gate, and the near-call conflict needs the
+     * right call to have been read by then. */
+    *due = pipe_now_us(p) + (skim_callsign_dict_has(st->call)
+                                 ? p->rbn_settle_us
+                                 : p->rbn_settle_nd_us);
     g_hash_table_insert(p->rbn_pending, g_strdup(st->call), due);
     skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "hold",
                        st->call, st->freq_hz, st->snr_db, st->speed);
@@ -1785,6 +1790,9 @@ void skim_pipeline_set_spot_round_hz(SkimPipeline *p, guint hz) {
 guint64 skim_pipeline_frames(const SkimPipeline *p) { return p->frames; }
 guint64 skim_pipeline_spots(const SkimPipeline *p) {
   return p->spots ? skim_spot_out_count(p->spots) : p->spots_total;
+}
+double skim_pipeline_rbn_settle_nodict(const SkimPipeline *p) {
+  return p->rbn_spots ? p->rbn_settle_nd_us / 1e6 : 0;
 }
 void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
                               guint *min_hearings, double *settle_s,

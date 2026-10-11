@@ -99,6 +99,7 @@ typedef struct {
   double   feed_min_score;     /* 0 = the pipeline's default                  */
   guint    feed_min_hearings;  /* 0 = default; 1 = no hearings gate          */
   double   feed_settle_s;      /* 0 = default; < 0 = send at once            */
+  double   feed_settle_nodict_s; /* 0 = default (30); < 0 = = settle_s       */
   double   feed_fresh_s;       /* 0 = default (off); < 0 = off               */
   gboolean feed_learn;         /* decode tap (gatelog.h)                      */
   char    *feed_gate;          /* learned gate ini, shadow (feed_gate.h)      */
@@ -156,6 +157,9 @@ static const char *DEFAULT_CONFIG =
   "# (or MASTER.SCP knows it) and stayed settle_s seconds in the station table;\n"
   "# min_hearings=1 and settle_s=0 switch those two off\n"
   "#min_score=0.85\n#min_hearings=2\n#settle_s=8\n"
+  "# a call MASTER.SCP does not know waits settle_nodict_s instead (a misread\n"
+  "# of a nearby call is held back once the right one is read); 0 = settle_s\n"
+  "#settle_nodict_s=30\n"
   "# fresh_s=N also wants the call READ within the last N s: a stale candidate\n"
   "# on a quiet channel is not a station (off unless set; 120 = the station TTL)\n"
   "#fresh_s=120\n"
@@ -244,6 +248,11 @@ static gboolean config_load(Hd *h, GError **error) {
   if (g_key_file_has_key(kf, "feed", "settle_s", NULL)) {
     const double v = g_key_file_get_double(kf, "feed", "settle_s", NULL);
     h->feed_settle_s = v > 0 ? v : -1;          /* 0 in the file = off        */
+  }
+  h->feed_settle_nodict_s = 0;
+  if (g_key_file_has_key(kf, "feed", "settle_nodict_s", NULL)) {
+    const double v = g_key_file_get_double(kf, "feed", "settle_nodict_s", NULL);
+    h->feed_settle_nodict_s = v > 0 ? v : -1;   /* 0 in the file = settle_s   */
   }
   h->feed_fresh_s = 0;
   if (g_key_file_has_key(kf, "feed", "fresh_s", NULL)) {
@@ -603,11 +612,12 @@ static void status_build(Hd *h, gboolean print) {
   const char *engine = h->nb && h->band[0].p ? skim_pipeline_cw_engine_name(h->band[0].p) : "";
   /* the feed policy that let the spots out — a comparison before and after
    * a policy change must be able to tell the two apart */
-  double pol_score = 0, pol_settle = 0, pol_fresh = 0;
+  double pol_score = 0, pol_settle = 0, pol_fresh = 0, pol_nd = 0;
   guint pol_hear = 0;
   if (h->feed && h->nb && h->band[0].p) {
     skim_pipeline_rbn_policy(h->band[0].p, &pol_score, &pol_hear, &pol_settle,
                              &pol_fresh);
+    pol_nd = skim_pipeline_rbn_settle_nodict(h->band[0].p);
   }
   /* the learned gate in shadow: what it would have held back, all bands */
   const char *fg_id = NULL;
@@ -633,11 +643,12 @@ static void status_build(Hd *h, gboolean print) {
       "\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
+      "\"settle_nodict_s\":%.1f,"
       "\"fresh_s\":%.1f},\"feed_gate\":%s,"
       "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       clock, jstate, h->streaming ? "true" : "false", jhost, h->ppm_now, h->rate, lost_pct,
-      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_fresh, jgate,
+      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_nd, pol_fresh, jgate,
       h->feed ? h->feed_port : 0, fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
@@ -905,6 +916,7 @@ int main(int argc, char **argv) {
       .rbn_min_score = h->feed_min_score,
       .rbn_min_hearings = h->feed_min_hearings,
       .rbn_settle_s = h->feed_settle_s,
+      .rbn_settle_nodict_s = h->feed_settle_nodict_s,
       .rbn_fresh_s = h->feed_fresh_s,
       .tap_path = tap,
       .feed_gate_path = h->feed_gate,
