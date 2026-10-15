@@ -368,10 +368,12 @@ static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
                          double snr_db, double speed, gpointer user) {
   SkimPipeline *p = user;
   /* SKIM_FEED_TRACE=1: every line that goes on the wire, after the policy
-   * AND spot_out's dedup — what an A/B of two feed policies compares. */
+   * AND spot_out's dedup — what an A/B of two feed policies compares. The
+   * time is the pipeline clock: stream seconds offline (a replay lines its
+   * feed up with a live log of the same recording), monotonic live. */
   if (g_getenv("SKIM_FEED_TRACE")) {
-    g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm\n", call,
-               freq_hz / 1000.0, snr_db, speed);
+    g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm t=%.1f\n", call,
+               freq_hz / 1000.0, snr_db, speed, pipe_now_us(p) / 1e6);
   }
   if (p->rbn_fold) {
     const SkimStation *st = skim_station_table_lookup(p->stations, call);
