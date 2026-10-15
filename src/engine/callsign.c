@@ -125,6 +125,21 @@ static gboolean core_valid(const char *s) {
   return FALSE;
 }
 
+/* The short side of a '/' call — a designator (P, M, QRP, 4, MM) or a bare
+ * prefix (F, DL, EA8). Letters and digits only, and three letters are only
+ * ever QRP: in two weeks of RBN (240 k slashed spots) no other three-letter
+ * designator came by, while L read /P+, /P+K, /PIN, /PHB off glued text
+ * (live, 2026-10-12). */
+static gboolean designator_ok(const char *s, gsize n) {
+  gboolean letters = TRUE;
+  for (gsize i = 0; i < n; i++) {
+    if (!is_letter(s[i]) && !is_digit(s[i]))
+      return FALSE;
+    if (!is_letter(s[i])) { letters = FALSE; }
+  }
+  return n < 3 || !letters || strncmp(s, "QRP", 3) == 0;
+}
+
 gboolean skim_callsign_is_valid(const char *s) {
   if (!s || !s[0])
     return FALSE;
@@ -146,13 +161,15 @@ gboolean skim_callsign_is_valid(const char *s) {
     if (core_valid(core) && core_valid(slash + 1))
       return TRUE;
   }
-  if (left < sizeof(core) && right >= 1 && right <= 3) {
+  if (left < sizeof(core) && right >= 1 && right <= 3 &&
+      designator_ok(slash + 1, right)) {
     memcpy(core, s, left);
     core[left] = '\0';
     if (core_valid(core))
       return TRUE;
   }
-  if (right < sizeof(core) && left >= 1 && left <= 3) {
+  if (right < sizeof(core) && left >= 1 && left <= 3 &&
+      designator_ok(s, left)) {
     if (core_valid(slash + 1))
       return TRUE;
   }

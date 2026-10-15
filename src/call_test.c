@@ -54,7 +54,8 @@ int main(void) {
     "OK1BR", "W1AW", "K1A", "DL1ABC", "LZ2PP", "UA9CDC", "F5IN", "G3XYZ",
     "B1HQ", "9A1AA", "2E0ABC", "3DA0RS", "E73ABC", "T77XX", "C6AGU",
     "VK6ABC", "ZL4AA", "5B4AH", "9V1AB", "OK1BR/P", "OK1BR/4", "F/OK1BR",
-    "HB9CV", "OL2025X", "SP9XYZ", "PY2ABC",
+    "HB9CV", "OL2025X", "SP9XYZ", "PY2ABC", "OK1BR/QRP", "W1AW/CA",
+    "DL/OK1BR", "OK1BR/MM",
   };
   int good_ok = 0;
   for (guint i = 0; i < G_N_ELEMENTS(GOOD); i++) {
@@ -64,7 +65,7 @@ int main(void) {
       printf("       rejected valid: %s\n", GOOD[i]);
     }
   }
-  check("accepts real callsigns incl. rare prefixes (26/26)",
+  check("accepts real callsigns incl. rare prefixes (30/30)",
         good_ok == (int)G_N_ELEMENTS(GOOD));
 
   /* -- validity: must reject ------------------------------------------------- */
@@ -78,6 +79,8 @@ int main(void) {
     "0K1BR", "OK1BR2",           /* zero-first, suffix ends in a digit       */
     "OK1BRXYZQ",                 /* too long                                 */
     "OK1BR/P/M",                 /* two designators                          */
+    "F5TLF/P+", "HB9TVK/P+K",    /* designators read off glued text          */
+    "SM7FBJ/PIN", "PHB/SM7FBJ",  /* three letters are only ever QRP          */
   };
   int bad_ok = 0;
   for (guint i = 0; i < G_N_ELEMENTS(BAD); i++) {
@@ -87,7 +90,7 @@ int main(void) {
       printf("       accepted garbage: %s\n", BAD[i]);
     }
   }
-  check("rejects garbage and decode-error shapes (18/18)",
+  check("rejects garbage and decode-error shapes (25/25)",
         bad_ok == (int)G_N_ELEMENTS(BAD));
 
   /* -- labelled corpus: realistic decoder lines ------------------------------ */

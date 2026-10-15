@@ -80,10 +80,48 @@ static gboolean call_is_clip(const char *shorter, const char *longer) {
  * fixture: OL1B 71 reports, OL1BI 57, OL1BIC 50 — the table showed OL1BIC
  * with 128). The signal cannot tell a torn call from a call plus a stray
  * letter; the dictionary can: it knows the short call and not the long one.
- * Then the short one is the station and the long one the garble. */
-static gboolean call_is_glue(const char *shorter, const char *longer) {
-  return call_is_clip(shorter, longer) &&
-         skim_callsign_dict_has(shorter) && !skim_callsign_dict_has(longer);
+ * Then the short one is the station and the long one the garble.
+ *
+ * Without the dictionary the reads decide: a call read clearly more often
+ * than itself with text glued on is the station, and the longer one a
+ * one-off glue. Live 2026-10-12: "CQ CQ DESM7FBJE SM7FBJ" — SM7FBJ (not in
+ * MASTER.SCP) read 7× folded into SM7FBJE read once, which the feed gate
+ * rightly held, so the station never went out; 93 such pairs in 57 h, 17
+ * of them spotted as the glued bust (RV6BTCQ, LA8IGLA, G0GYYK…). Measured
+ * on those 57 h of taps, the reads alone also threw real calls out for
+ * their torn readings, so they decide only where that is rare:
+ *  - text glued AFTER the call; a reading missing the head is the decoder
+ *    losing a leading O (K1FBH read 13× over OK1FBH 5×), not glue
+ *  - the shorter call has a suffix of 2+ letters; F6H, I4D, LA9Q are torn
+ *    real calls far more often than real calls themselves
+ *  - the glued text is not a lone T: the easiest letter to lose at the end
+ *    (DF1MA 7× over DF1MAT 3×)
+ * A glued "CQ" is never a call. */
+static gboolean suffix_2(const char *call) {
+  const char *slash = strchr(call, '/');
+  const char *a = call, *z = slash ? slash : call + strlen(call);
+  if (slash && strlen(slash + 1) > (gsize)(slash - call)) {
+    a = slash + 1;                             /* F/OK1BR: the call is right */
+    z = a + strlen(a);
+  }
+  guint n = 0;
+  while (z > a && z[-1] >= 'A' && z[-1] <= 'Z') { z--; n++; }
+  return n >= 2 && z > a && z[-1] >= '0' && z[-1] <= '9';
+}
+
+static gboolean call_is_glue(const char *shorter, guint h_short,
+                             const char *longer, guint h_long) {
+  if (!call_is_clip(shorter, longer) || skim_callsign_dict_has(longer))
+    return FALSE;
+  if (skim_callsign_dict_has(shorter))
+    return TRUE;
+  const gsize ls = strlen(shorter);
+  if (strncmp(longer, shorter, ls) != 0)
+    return FALSE;                              /* glue goes after the call   */
+  if (strcmp(longer + ls, "CQ") == 0)
+    return TRUE;
+  return strcmp(longer + ls, "T") != 0 && suffix_2(shorter) &&
+         h_short >= 2 && h_short >= 2 * MAX(h_long, 1u);
 }
 
 /* A confident report of a DIFFERENT call on the same frequency evicts records
@@ -105,16 +143,19 @@ static void takeover_sweep(SkimStationTable *t, const SkimStation *st) {
     while (l) {
       SkimStation *e = l->data;
       GSList *next = l->next;
-      const gboolean clip = call_is_clip(e->call, st->call) &&
-                            !call_is_glue(e->call, st->call);
-      const gboolean glue = call_is_glue(st->call, e->call);
+      const gboolean clip =
+          call_is_clip(e->call, st->call) &&
+          !call_is_glue(e->call, e->hearings, st->call, st->hearings);
+      const gboolean glue =
+          call_is_glue(st->call, st->hearings, e->call, e->hearings);
       if (fabs(e->freq_hz - st->freq_hz) <= SKIM_STATION_MERGE_HZ &&
           (st->last_heard - e->last_heard > SKIM_STATION_TAKEOVER_US ||
            clip || glue)) {
         if (st_debug()) {
-          g_printerr("station: EVICT %s @ %.0f Hz by %s @ %.0f Hz (%s)\n",
-                     e->call, e->freq_hz, st->call, st->freq_hz,
-                     clip ? "clip" : glue ? "glue" : "silent");
+          g_printerr("station: EVICT %s @ %.0f Hz by %s @ %.0f Hz (%s, "
+                     "read %u vs %u)\n", e->call, e->freq_hz, st->call,
+                     st->freq_hz, clip ? "clip" : glue ? "glue" : "silent",
+                     e->hearings, st->hearings);
         }
         if (t->gone_cb) { t->gone_cb(e, t->gone_user); }
         list = g_slist_remove(list, e);
@@ -146,12 +187,15 @@ static SkimStation *clip_fold(SkimStationTable *t, const SkimStation *st) {
   while (g_hash_table_iter_next(&it, &key, &val)) {
     /* either the report is a clip of the record, or the report is the
      * record's call with text glued on — the record is the station */
-    const gboolean clip = call_is_clip(st->call, key) &&
-                          !call_is_glue(st->call, key);
-    if (!clip && !call_is_glue(key, st->call))
+    if (!call_is_clip(st->call, key) && !call_is_clip(key, st->call))
       continue;
     for (GSList *l = val; l; l = l->next) {
       SkimStation *e = l->data;
+      const gboolean clip =
+          call_is_clip(st->call, key) &&
+          !call_is_glue(st->call, st->hearings, key, e->hearings);
+      if (!clip && !call_is_glue(key, e->hearings, st->call, st->hearings))
+        continue;
       if (fabs(e->freq_hz - st->freq_hz) <= SKIM_STATION_MERGE_HZ &&
           st->last_heard - e->last_heard <= SKIM_STATION_TAKEOVER_US) {
         if (st_debug()) {

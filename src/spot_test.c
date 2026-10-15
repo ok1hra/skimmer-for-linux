@@ -456,6 +456,49 @@ int main(void) {
           skim_station_table_size(t) == 2);
     r.freq_hz = 3535410;
     skim_station_table_free(t);
+
+    /* no dictionary, the reads decide: "CQ CQ DESM7FBJE SM7FBJ" — the glued
+     * reading once, the call itself again and again (live, 2026-10-12) */
+    t = skim_station_table_new();
+    r.hearings = 1;
+    REPORT(t, "SM7FBJE", 10);
+    m = REPORT(t, "SM7FBJ", 11);
+    check("reads: a call read once still feeds its longer twin",
+          skim_station_table_size(t) == 1 && strcmp(m->call, "SM7FBJE") == 0);
+    r.hearings = 2;
+    m = REPORT(t, "SM7FBJ", 12);
+    check("reads: read twice as often, the shorter call evicts its glued twin",
+          skim_station_table_size(t) == 1 && strcmp(m->call, "SM7FBJ") == 0 &&
+          m->hearings == 2 && skim_station_table_lookup(t, "SM7FBJE") == NULL);
+    r.hearings = 1;
+    m = REPORT(t, "SM7FBJE", 13);
+    check("reads: a later glued reading feeds the call's record",
+          skim_station_table_size(t) == 1 && strcmp(m->call, "SM7FBJ") == 0);
+    skim_station_table_free(t);
+
+    /* … but not where torn readings outnumber the call (P2 taps): a lost
+     * leading O, a lost final T */
+    t = skim_station_table_new();
+    r.hearings = 1;
+    REPORT(t, "OK1FBH", 10);
+    REPORT(t, "DF1MAT", 10);
+    r.hearings = 3;
+    REPORT(t, "K1FBH", 11);
+    REPORT(t, "DF1MA", 11);
+    check("reads: a lost head or a lost final T still feeds the call",
+          skim_station_table_size(t) == 2 &&
+          skim_station_table_lookup(t, "OK1FBH") != NULL &&
+          skim_station_table_lookup(t, "DF1MAT") != NULL);
+    skim_station_table_free(t);
+    r.hearings = 1;
+
+    t = skim_station_table_new();                /* a glued CQ is no call    */
+    REPORT(t, "RV6BTCQ", 10);
+    m = REPORT(t, "RV6BT", 11);
+    check("glue: a call with CQ glued on yields to the call",
+          skim_station_table_size(t) == 1 && strcmp(m->call, "RV6BT") == 0);
+    skim_station_table_free(t);
+    r.hearings = 0;
 #undef REPORT
     /* back to no dictionary for the rest of the gate */
     g_file_set_contents(dict, "# empty\n", -1, NULL);
