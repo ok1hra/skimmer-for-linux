@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """tap-score.py — score a decode-tap replay the way compare-web scores live.
 
-  tap-score.py SESSION ROWSDIR [ROWSDIR …] [--to UTC] [--json OUT]
+  tap-score.py SESSION ROWSDIR [ROWSDIR …] [--from UTC] [--to UTC]
+               [--bands 20m,40m] [--json OUT]
 
 skimmer-tap-replay --rows writes every line the feed put on the wire as an
 "ev":"spot" row. This builds a copy of compare's session SESSION in which
@@ -10,7 +11,9 @@ connection events kept), and runs the same analysis as compare-web over
 it: recall and bust against CW Skimmer Server, per band and per bin of R's
 SNR. A change to the extractor, the station table or the feed gate is then
 measured on days of real air in minutes. Each ROWSDIR holds rows-<band>.jsonl
-of one variant ("live": the live feed itself); --to cuts the range where the taps end.
+of one variant ("live": the live feed itself). --from/--to cut the range
+to what was replayed, --bands to the bands replayed (an IQ recording of
+some bands, through skimmer-replay's SKIM_REPLAY_TAP and the tap replay).
 """
 import argparse
 import calendar
@@ -52,7 +55,7 @@ def spot_lines(rowsdir, call="OK1HRA-#"):
     return out
 
 
-def score(cfg, T, rowsdir, to):
+def score(cfg, T, rowsdir, to, frm=None, bands=None):
     tmp = tempfile.mkdtemp(prefix="tapscore-")
     try:
         for kind in ("remote", "rbn", "events"):
@@ -73,14 +76,16 @@ def score(cfg, T, rowsdir, to):
         lines.sort(key=lambda x: x[0])
         with open(os.path.join(tmp, f"local-{T}.log"), "w") as fh:
             fh.write("\n".join(x[1] for x in lines) + "\n")
-        bands = loose_bands(cfg.local_windows, 2.0)
-        store = Store(tmp, lambda: RbnIndex(bands, cfg.exclude))
+        loose = loose_bands(cfg.local_windows, 2.0)
+        store = Store(tmp, lambda: RbnIndex(loose, cfg.exclude))
         store.poll()
         now = time.time()
         A = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp),
                     cfg.params, now, None, cfg.default_engine)
+        if bands:                                 # only the bands replayed
+            A.events = [e for e in A.events if e["band"] in bands]
         s = store.sessions[T]
-        ta = s.start
+        ta = max(frm or s.start, s.start)
         tb = min(to or now, s.end(True, now))
         return summarize(A, ta, tb)
     finally:
@@ -89,6 +94,9 @@ def score(cfg, T, rowsdir, to):
 
 def show(name, S):
     r, b = S["recall"], S["bust"]
+    if r["L"]["p"] is None or b["L"]["p"] is None:
+        print(f"== {name}: nothing to score ({S['counts']['events']} events)")
+        return
     print(f"== {name}: recall L {r['L']['p'] * 100:5.1f} R {r['R']['p'] * 100:5.1f}   "
           f"bust L {b['L']['p'] * 100:4.1f} ({b['L']['k']}/{b['L']['n']}) R {b['R']['p'] * 100:4.1f}"
           f"   n {r['n']}  L spots {S['counts']['spots_L']}")
@@ -96,7 +104,8 @@ def show(name, S):
         f"{x['lo'] if x['lo'] is not None else '':>2}-{x['hi'] if x['hi'] is not None else '':<2} "
         f"{x['LofR']['p'] * 100:4.1f}" for x in S["snr"]["bins"]))
     print("   recall by band: " + "  ".join(
-        f"{x['band']} {x['L']['p'] * 100:4.1f}/{x['R']['p'] * 100:4.1f}" for x in S["bands"]))
+        f"{x['band']} {x['L']['p'] * 100:4.1f}/{x['R']['p'] * 100:4.1f}" for x in S["bands"]
+        if x["L"]["p"] is not None))
 
 
 def main():
@@ -104,19 +113,23 @@ def main():
     ap.add_argument("session")
     ap.add_argument("rowsdirs", nargs="+")
     ap.add_argument("-c", "--config", default=os.path.join(HERE, "compare.ini"))
+    ap.add_argument("--from", dest="frm", help="start of the scored range (UTC or Unix s)")
     ap.add_argument("--to", help="end of the scored range (UTC or Unix s)")
+    ap.add_argument("--bands", help="comma list: score only these bands (a replay of some)")
     ap.add_argument("--json")
     a = ap.parse_args()
     cfg = Config(a.config)
-    to = None
-    if a.to:
+    def when(v):
+        if not v:
+            return None
         try:
-            to = float(a.to)
+            return float(v)
         except ValueError:
-            to = calendar.timegm(time.strptime(a.to.rstrip("Z"), "%Y-%m-%dT%H:%M:%S"))
+            return calendar.timegm(time.strptime(v.rstrip("Z"), "%Y-%m-%dT%H:%M:%S"))
+    bands = set(a.bands.split(",")) if a.bands else None
     out = {}
     for d in a.rowsdirs:
-        S = score(cfg, a.session, d, to)
+        S = score(cfg, a.session, d, when(a.to), when(a.frm), bands)
         show(d, S)
         out[d] = S
     if a.json:

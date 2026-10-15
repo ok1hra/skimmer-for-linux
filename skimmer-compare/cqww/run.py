@@ -102,7 +102,13 @@ def replay(job):
     ssh = " ".join(shlex.quote(x) for x in HOST + [remote])
     sh = f"( cat {shlex.quote(hpath)}; {ssh} ) | {fp} > {shlex.quote(log)} 2>/dev/null"
     t = time.time()
-    subprocess.run(["bash", "-c", sh], check=False)
+    for attempt in range(3):
+        # a flatpak launch now and then fails among parallel starts (an
+        # empty log, no spots file): start the part again
+        subprocess.run(["bash", "-c", sh], check=False)
+        if os.path.exists(out + ".raw"):
+            break
+        print(f"  {os.path.basename(out)}: no output, retrying", file=sys.stderr)
     os.unlink(hpath)
     keep = []
     with open(out + ".raw") as fh:
