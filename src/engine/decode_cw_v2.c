@@ -28,6 +28,7 @@
  */
 #include "decode_cw.h"
 
+#include "callsign.h"
 #include "cw_reader.h"
 
 #include <math.h>
@@ -53,12 +54,14 @@ static const struct { char c; const char *m; } MORSE[] = {
 };
 
 static char morse_lut[256];
+static const char *morse_str[128];      /* char → ".-" (the word re-read)     */
 
 static void morse_init(void) {
   static gsize once = 0;
   if (g_once_init_enter(&once)) {
     memset(morse_lut, 0, sizeof(morse_lut));
     for (guint i = 0; i < G_N_ELEMENTS(MORSE); i++) {
+      morse_str[(guchar)MORSE[i].c] = MORSE[i].m;
       guint code = 1;
       for (const char *p = MORSE[i].m; *p; p++) {
         code = (code << 1) | (*p == '-' ? 1u : 0u);
@@ -236,6 +239,15 @@ typedef struct {
   double nb_ph;                         /* derotation phase                   */
   float  nb_ma[3];                      /* its 3-tap MA                       */
   double nb_x[2][2], nb_y[2][2];        /* biquad history, [I/Q][n-1, n-2]    */
+
+  /* --- the word in flight (SKIM_V2_RESCORE) ------------------------------------ */
+  char     wd[16];                      /* chars emitted since the last gap   */
+  guint    wd_n;
+  gboolean wd_over;                     /* longer than wd holds: no re-read   */
+  guint64  wd_t0;                       /* start of its first mark (samples)  */
+  guint64  wd_t1;                       /* end of its last mark               */
+  guint64  wd_prev;                     /* end of the previous word's marks   */
+  guint64  lat_t0;                      /* the lattice's seed: cum valid from */
 
   /* --- estimates -------------------------------------------------------------- */
   double prev_i, prev_q;
@@ -739,6 +751,15 @@ static void emit(Cw2State *st, SkimDecode *out, guint *pos, char c,
   out->text[*pos] = '\0';
   CW2_DBG("[emit '%c' at %.2f (t %.2f)]\n", c, (double)t_end / st->rate,
           (double)st->t / st->rate);
+  if (c != ' ') {
+    if (st->wd_n + 1 < sizeof(st->wd)) {
+      st->wd[st->wd_n++] = c;
+      st->wd[st->wd_n] = '\0';
+    } else {
+      st->wd_over = TRUE;
+    }
+    st->wd_t1 = t_end;
+  }
   if (st->rd_on) { rd_emit_char(st, c, t_end); }
   if (!st->rr_arm)
     return;
@@ -822,6 +843,9 @@ static void lattice_start(Cw2State *st) {
   L->bd_m[st->t & WMASK] = 0;           /* seed boundaries stop the traceback */
   L->bd_s[st->t & WMASK] = 0;
   L->cum[st->t & WMASK]  = 0.0;
+  st->lat_t0 = st->wd_prev = st->t;
+  st->wd_n = 0;
+  st->wd_over = FALSE;
   st->mu_m = st->env_hi;
   st->mu_s = st->env_lo;
   st->active = TRUE;
@@ -928,13 +952,10 @@ static inline double dur_pen_memo(const Cw2State *st, struct Lattice *L,
   return L->pen[type][d];
 }
 
-/* One Viterbi step for the sample at st->t (llr already in the ring). */
-static void lattice_step(Cw2State *st) {
+/* The duration memo follows the clock and the fist: a new generation
+ * whenever one of them moved. */
+static void pen_sync(Cw2State *st) {
   struct Lattice *L = st->lat;
-  const guint64 t   = st->t;
-  const double  T   = st->dit;
-  const double  ct  = L->cum[t & WMASK];
-  const guint64 cmt = st->commit_t;
   if (L->pen_gen == 0 || L->pen_dit != st->dit ||
       L->pen_csp != st->fist_csp || L->pen_wsp != st->fist_wsp ||
       L->pen_esp != st->esp) {
@@ -945,29 +966,75 @@ static void lattice_step(Cw2State *st) {
     L->pen_wsp = st->fist_wsp;
     L->pen_esp = st->esp;
   }
+}
 
-  /* Mark ends at t: preceded by a space (or seed) boundary at t−d. */
-  float  best_m = NEG_INF;
-  guint16 bd = 0;
-  guint8  bt = 0;
-  /* Ranges OVERLAP on purpose: a hard dit/dah cutoff at a stale dit clock
-   * misfiles every element after a speed change (28 WPM dahs = 1.9× an
-   * 18 WPM dit — the classifier lock-up the first build hit). Inside the
-   * overlap the duration priors decide, and they move with the clock. */
-  static const int MTYPES[2] = { SEG_DIT, SEG_DAH };
+/* The durations (samples) a segment of this type may take — the lattice's
+ * search window, shared with the word re-read (SKIM_V2_RESCORE) so both
+ * score the same hypotheses.
+ *
+ * Mark ranges OVERLAP on purpose: a hard dit/dah cutoff at a stale dit
+ * clock misfiles every element after a speed change (28 WPM dahs = 1.9× an
+ * 18 WPM dit — the classifier lock-up the first build hit). Inside the
+ * overlap the duration priors decide, and they move with the clock.
+ *
+ * ESP's floor sits at 0.7 dits: a real inter-element space is never
+ * shorter (0.85 at −15 % jitter), but a sub-dit flutter dropout inside a
+ * dash is — without the floor the lattice happily reads the dropout as
+ * an inter-element space and splits the dash (dot-dot for a dash).
+ * EXCEPT while the element clock is visibly wrong (elem_err high — a
+ * speed change in progress): a stale slow dit makes 0.7·T LONGER than
+ * the new true spaces and the lattice cannot separate elements at all.
+ * The loose floor lets it re-lock; steady copy restores the strict one.
+ * CSP/WSP windows ride the fist centres (seeds reproduce the old fixed
+ * 1.6–5.5 / 4.0–17: 1.833·3 = 5.5, 0.571·7 = 4.0). The overlap between
+ * CSP hi and WSP lo survives any centre pair — the priors decide there.
+ * WSP's ceiling reaches past the break length so a lattice seeded
+ * mid-pause can always bridge the remaining quiet to the first real mark. */
+static void seg_window(const Cw2State *st, int type, int *dlo, int *dhi) {
+  const double T = st->dit;
   /* SKIM_V2_DAHMAX: the dah window's ceiling in dits (default 6.0, was
-   * 5.0) — after
-   * a turnaround to half the speed the new op's dahs run 5.6 old dits and
-   * fit no segment until the clock re-locks. */
+   * 5.0) — after a turnaround to half the speed the new op's dahs run 5.6
+   * old dits and fit no segment until the clock re-locks. */
   static double dah_hi = -1;
   if (G_UNLIKELY(dah_hi < 0)) {
     const char *e = g_getenv("SKIM_V2_DAHMAX");
     dah_hi = e && e[0] ? g_ascii_strtod(e, NULL) : 6.0;
   }
-  const double MLO[2] = { 0.60, 1.6 }, MHI[2] = { 2.6, dah_hi };
+  double lo, hi;
+  switch (type) {
+  case SEG_DIT: lo = 0.60 * T; hi = 2.6 * T;    break;
+  case SEG_DAH: lo = 1.6 * T;  hi = dah_hi * T; break;
+  case SEG_ESP: {
+    /* With the edge model the ESP floor sits under the SPACE ideal, not
+     * the mark-biased dit. */
+    const double Tk = edge_on() ? seg_ideal(st, SEG_ESP) : T;
+    lo = (st->elem_err > 0.20 ? 0.50 : 0.70) * Tk;
+    hi = 2.6 * T;
+    break;
+  }
+  case SEG_CSP: lo = 1.6 * T; hi = 1.833 * st->fist_csp * T; break;
+  default:      lo = 0.571 * st->fist_wsp * T; hi = 17.0 * T; break;
+  }
+  *dlo = MAX(2, (int)(lo + 0.5));
+  *dhi = MIN((int)(hi + 0.5), W / 2);
+}
+
+/* One Viterbi step for the sample at st->t (llr already in the ring). */
+static void lattice_step(Cw2State *st) {
+  struct Lattice *L = st->lat;
+  const guint64 t   = st->t;
+  const double  ct  = L->cum[t & WMASK];
+  const guint64 cmt = st->commit_t;
+  pen_sync(st);
+
+  /* Mark ends at t: preceded by a space (or seed) boundary at t−d. */
+  float  best_m = NEG_INF;
+  guint16 bd = 0;
+  guint8  bt = 0;
+  static const int MTYPES[2] = { SEG_DIT, SEG_DAH };
   for (int k = 0; k < 2; k++) {
-    int dlo = MAX(2, (int)(MLO[k] * T + 0.5));
-    int dhi = MIN((int)(MHI[k] * T + 0.5), W / 2);
+    int dlo, dhi;
+    seg_window(st, MTYPES[k], &dlo, &dhi);
     for (int d = dlo; d <= dhi; d++) {
       if (t < (guint64)d || t - d < cmt)
         break;                          /* d grows — only older from here     */
@@ -989,33 +1056,14 @@ static void lattice_step(Cw2State *st) {
   L->bd_m[t & WMASK] = bd;
   L->bt_m[t & WMASK] = bt;
 
-  /* Space ends at t: preceded by a mark (or seed) boundary at t−d. WSP's
-   * ceiling reaches past the break length so a lattice seeded mid-pause can
-   * always bridge the remaining quiet to the first real mark. */
+  /* Space ends at t: preceded by a mark (or seed) boundary at t−d. */
   float best_s = NEG_INF;
   bd = 0;
   bt = 0;
-  /* ESP's floor sits at 0.7 dits: a real inter-element space is never
-   * shorter (0.85 at −15 % jitter), but a sub-dit flutter dropout inside a
-   * dash is — without the floor the lattice happily reads the dropout as
-   * an inter-element space and splits the dash (dot-dot for a dash).
-   * EXCEPT while the element clock is visibly wrong (elem_err high — a
-   * speed change in progress): a stale slow dit makes 0.7·T LONGER than
-   * the new true spaces and the lattice cannot separate elements at all.
-   * The loose floor lets it re-lock; steady copy restores the strict one. */
-  const double esp_lo = st->elem_err > 0.20 ? 0.50 : 0.70;
   static const int STYPES[3] = { SEG_ESP, SEG_CSP, SEG_WSP };
-  /* CSP/WSP windows ride the fist centres (seeds reproduce the old fixed
-   * 1.6–5.5 / 4.0–17: 1.833·3 = 5.5, 0.571·7 = 4.0). The overlap between
-   * CSP hi and WSP lo survives any centre pair — the priors decide there. */
-  const double SLO[3] = { 0.70, 1.6, 0.571 * st->fist_wsp };
-  const double SHI[3] = { 2.6, 1.833 * st->fist_csp, 17.0 };
   for (int k = 0; k < 3; k++) {
-    /* With the edge model the ESP floor sits under the SPACE ideal, not
-     * the mark-biased dit. */
-    const double Tk = (k == 0 && edge_on()) ? seg_ideal(st, SEG_ESP) : T;
-    int dlo = MAX(2, (int)((k == 0 ? esp_lo * Tk : SLO[k] * T) + 0.5));
-    int dhi = MIN((int)(SHI[k] * T + 0.5), W / 2);
+    int dlo, dhi;
+    seg_window(st, STYPES[k], &dlo, &dhi);
     for (int d = dlo; d <= dhi; d++) {
       if (t < (guint64)d || t - d < cmt)
         break;
@@ -1063,6 +1111,270 @@ static void lattice_head(const Cw2State *st, guint64 *out_tau,
   }
   *out_tau = tau;
   *out_mark_ended = mark_ended;
+}
+
+/* --- SKIM_V2_RESCORE: the finished word re-read against the dictionary ---------
+ * Live air against CW Skimmer Server (skimmer-compare, 2026-10-15): of the
+ * stations R spotted and L missed, a quarter were MISREAD — a token one or
+ * two edits from the call sat in L's text — and two thirds of L's busts
+ * were calls cut short. The lattice decides every element on its own and
+ * the extractor only ever sees the letters; the evidence that one more dah
+ * was there, or that "EAAOY" fits a 6 better than an A, dies in between.
+ *
+ * So when a word closes, the calls MASTER.SCP holds within two edits of it
+ * are laid onto the very samples the word came from: each call's exact
+ * element sequence, aligned by the lattice's own semi-Markov search (the
+ * same llr ring, duration priors and windows, a free space before and
+ * after), against the best FREE reading of the same span. A call that fits
+ * nearly as well as the free reading (≤ fit) and clearly better than every
+ * other reading, the word as read included (≥ sep), replaces the word —
+ * for the extractor alone (callsign.h FIX): the pane and the log keep what
+ * was heard, the feed gate judges the corrected read like any other. Only
+ * dictionary calls are ever written in: an unknown call is never invented.
+ *
+ * SKIM_V2_RESCORE="fit,sep,ev" (log-likelihood units, as the lattice
+ * scores; ev per sample; "1" = the defaults below; unset/"0" = off). SKIM_V2_RESCORE_DEBUG=1 prints
+ * every re-read. */
+#define RS_MAX_SEG   128                /* elements + spaces of one call     */
+#define RS_MAX_CAND  24
+#define RS_LEAD_DITS 2.0                /* free space searched before a word */
+
+typedef struct { gint on; double fit, sep, ev; gboolean dbg; } RsCfg;
+
+static const RsCfg *rs_cfg(void) {
+  static RsCfg c;
+  static gsize once = 0;
+  if (g_once_init_enter(&once)) {
+    const char *e = g_getenv("SKIM_V2_RESCORE");
+    /* CQ WW 2012 (dev 40 m 02Z, test 40/80/160 m): fit 5 raised recall on
+     * every band-hour and never raised the bust rate; 8 and 12 bought a
+     * little more recall with more busts. Live air: the right corrections
+     * sat at 0 … −4 (EC6AAE, MM0GOR, E70T), the wrong ones — real calls
+     * the dictionary lacks — at −10 … −15; noise words under ev 2.0. */
+    c.fit = 5.0;
+    c.sep = 3.0;
+    c.ev  = 2.0;
+    c.on = e && e[0] && strcmp(e, "0") != 0;
+    if (c.on && strchr(e, ',')) { sscanf(e, "%lf,%lf,%lf", &c.fit, &c.sep, &c.ev); }
+    c.dbg = g_getenv("SKIM_V2_RESCORE_DEBUG") != NULL;
+    g_once_init_leave(&once, 1);
+  }
+  return &c;
+}
+
+/* A call's segment sequence: DIT/DAH with ESP inside a character, CSP
+ * between characters. 0 when a character has no Morse or it is too long. */
+static guint rs_segments(const char *call, guint8 *seg) {
+  guint k = 0;
+  for (const char *c = call; *c; c++) {
+    const char *m = (guchar)*c < 128 ? morse_str[(guchar)*c] : NULL;
+    if (!m)
+      return 0;
+    if (c != call) {
+      if (k >= RS_MAX_SEG) { return 0; }
+      seg[k++] = SEG_CSP;
+    }
+    for (const char *e = m; *e; e++) {
+      if (k + 2 > RS_MAX_SEG)
+        return 0;
+      if (e != m) { seg[k++] = SEG_ESP; }
+      seg[k++] = *e == '-' ? SEG_DAH : SEG_DIT;
+    }
+  }
+  return k;
+}
+
+#define RS_CUM(i) (L->cum[(A + (i)) & WMASK])
+
+/* Best score of seg[0..K) laid on (A, A+N]: a free leading space, the
+ * sequence, a free trailing space. f/g: scratch, N + 1 floats each. */
+static double rs_forced(Cw2State *st, guint64 A, guint N, const guint8 *seg,
+                        guint K, float *f, float *g) {
+  struct Lattice *L = st->lat;
+  for (guint t = 0; t <= N; t++) { f[t] = (float)-(RS_CUM(t) - RS_CUM(0)); }
+  for (guint k = 0; k < K; k++) {
+    const int ty = seg[k];
+    const double sign = (ty == SEG_DIT || ty == SEG_DAH) ? 1.0 : -1.0;
+    int dlo, dhi;
+    seg_window(st, ty, &dlo, &dhi);
+    for (guint t = 0; t <= N; t++) {
+      float best = NEG_INF;
+      for (int d = dlo; d <= dhi && (guint)d <= t; d++) {
+        const float p = f[t - d];
+        if (p <= NEG_INF)
+          continue;
+        const float sc = p + (float)(sign * (RS_CUM(t) - RS_CUM(t - d)) +
+                                     dur_pen_memo(st, L, ty, d));
+        if (sc > best) { best = sc; }
+      }
+      g[t] = best;
+    }
+    float *x = f;
+    f = g;
+    g = x;
+  }
+  double best = NEG_INF;
+  for (guint t = 0; t <= N; t++) {
+    if (f[t] > NEG_INF) { best = MAX(best, f[t] - (RS_CUM(N) - RS_CUM(t))); }
+  }
+  return best;
+}
+
+/* The best reading of (A, A+N] as ONE word — any marks, element and
+ * character spaces between them, a free space around — the bound every
+ * forced reading of the span stays under. */
+static double rs_free(Cw2State *st, guint64 A, guint N, float *lead,
+                      float *gm, float *gs) {
+  struct Lattice *L = st->lat;
+  static const int MT[2] = { SEG_DIT, SEG_DAH }, ST[2] = { SEG_ESP, SEG_CSP };
+  for (guint t = 0; t <= N; t++) {
+    lead[t] = (float)-(RS_CUM(t) - RS_CUM(0));
+    gm[t] = gs[t] = NEG_INF;
+  }
+  double best = NEG_INF;
+  for (guint t = 1; t <= N; t++) {
+    float bm = NEG_INF, bs = NEG_INF;
+    for (int k = 0; k < 2; k++) {
+      int dlo, dhi;
+      seg_window(st, MT[k], &dlo, &dhi);
+      for (int d = dlo; d <= dhi && (guint)d <= t; d++) {
+        const float p = MAX(lead[t - d], gs[t - d]);
+        if (p <= NEG_INF)
+          continue;
+        const float sc = p + (float)((RS_CUM(t) - RS_CUM(t - d)) +
+                                     dur_pen_memo(st, L, MT[k], d));
+        if (sc > bm) { bm = sc; }
+      }
+      seg_window(st, ST[k], &dlo, &dhi);
+      for (int d = dlo; d <= dhi && (guint)d <= t; d++) {
+        const float p = gm[t - d];
+        if (p <= NEG_INF)
+          continue;
+        const float sc = p + (float)(-(RS_CUM(t) - RS_CUM(t - d)) +
+                                     dur_pen_memo(st, L, ST[k], d));
+        if (sc > bs) { bs = sc; }
+      }
+    }
+    gm[t] = bm;
+    gs[t] = bs;
+    if (bm > NEG_INF) { best = MAX(best, bm - (RS_CUM(N) - RS_CUM(t))); }
+  }
+  return best;
+}
+
+#undef RS_CUM
+
+/* Re-read the word that just closed; TRUE with the call in `alt` when a
+ * dictionary call replaces it. */
+static gboolean rs_reread(Cw2State *st, guint64 B, char *alt, gsize alt_size) {
+  const RsCfg *cfg = rs_cfg();
+  if (!cfg->on || !st->lat || st->dit <= 0 || st->wd_over || st->wd_n < 3 ||
+      st->wd_n >= SKIM_CALLSIGN_NEAR_LEN)
+    return FALSE;
+  gboolean digit = FALSE, alpha = FALSE;
+  for (guint i = 0; i < st->wd_n; i++) {
+    digit |= g_ascii_isdigit(st->wd[i]);
+    alpha |= g_ascii_isalpha(st->wd[i]);
+  }
+  if (!digit || !alpha)
+    return FALSE;                       /* calls carry both                   */
+  /* The span: from a little before the word's first mark (never into the
+   * previous word, never before the ring's oldest valid sample) to B, the
+   * end of the word gap or now while it runs — no next word is in it. */
+  guint64 A = st->wd_t0 > (guint64)(RS_LEAD_DITS * st->dit)
+                  ? st->wd_t0 - (guint64)(RS_LEAD_DITS * st->dit) : 0;
+  A = MAX(A, MAX(st->wd_prev, st->lat_t0));
+  if (B > W - 8 && A < B - (W - 8)) { A = B - (W - 8); }
+  if (B <= A || B - A > W / 2 || st->wd_t0 < A || B > st->t)
+    return FALSE;
+  const guint N = (guint)(B - A);
+
+  char cand[RS_MAX_CAND][SKIM_CALLSIGN_NEAR_LEN];
+  guint nc = skim_callsign_dict_near(st->wd, cand, RS_MAX_CAND);
+  if (!nc)
+    return FALSE;
+  gboolean raw_known = FALSE;
+  for (guint i = 0; i < nc; i++) { raw_known |= strcmp(cand[i], st->wd) == 0; }
+  if (raw_known && !cfg->dbg)
+    return FALSE;                       /* a known call stays as read         */
+
+  pen_sync(st);
+  float *buf = g_new(float, 3 * (N + 1));
+  const double sf = rs_free(st, A, N, buf, buf + N + 1, buf + 2 * (N + 1));
+  /* Evidence per sample of the free reading: a keyed word scores high, a
+   * word read out of noise (dit chains, "EI5E") barely above zero — and
+   * noise must never be talked into a call the dictionary happens to hold. */
+  const double ev = sf / N;
+  if (ev < cfg->ev && !cfg->dbg) {
+    g_free(buf);
+    return FALSE;
+  }
+  guint8 seg[RS_MAX_SEG];
+  double s_raw = NEG_INF;
+  guint K = rs_segments(st->wd, seg);
+  if (K) { s_raw = rs_forced(st, A, N, seg, K, buf, buf + N + 1); }
+  /* The decision is a prior against a likelihood. The word as read is
+   * (nearly always) the free reading itself — the lattice found it — so
+   * no call ever fits BETTER than it; but a string the dictionary does not
+   * know is unlikely a priori, a call it knows is not. A dictionary call
+   * wins when the audio disputes it by at most `fit` and it is the one
+   * such call — `sep` clear of the runner-up among the dictionary's.
+   * A word the dictionary knows stays as read. */
+  double s1 = NEG_INF, s2 = NEG_INF;
+  gint b1 = -1;
+  double sc[RS_MAX_CAND];
+  for (guint i = 0; i < nc; i++) {
+    sc[i] = NEG_INF;
+    if (strcmp(cand[i], st->wd) == 0) {
+      sc[i] = s_raw;
+    } else if ((K = rs_segments(cand[i], seg))) {
+      sc[i] = rs_forced(st, A, N, seg, K, buf, buf + N + 1);
+    }
+    if (sc[i] > s1) {
+      s2 = s1;
+      s1 = sc[i];
+      b1 = (gint)i;
+    } else if (sc[i] > s2) {
+      s2 = sc[i];
+    }
+  }
+  g_free(buf);
+  const gboolean take = b1 >= 0 && !raw_known && s1 > NEG_INF && ev >= cfg->ev &&
+                        MAX(sf, s_raw) - s1 <= cfg->fit && s1 - s2 >= cfg->sep;
+  if (cfg->dbg) {
+    GString *g = g_string_new(NULL);
+    for (guint i = 0; i < nc; i++) {
+      g_string_append_printf(g, " %s:%.1f", cand[i], sc[i] - sf);
+    }
+    g_printerr("rescore: %.2f %s%s free %.1f ev %.2f raw %+.1f best %s %+.1f next %+.1f%s |%s\n",
+               (double)st->wd_t0 / st->rate, st->wd, raw_known ? "(scp)" : "",
+               sf, ev, s_raw - sf, b1 >= 0 ? cand[b1] : "-", s1 - sf, s2 - sf,
+               take ? " TAKE" : "", g->str);
+    g_string_free(g, TRUE);
+  }
+  if (take) { g_strlcpy(alt, cand[b1], alt_size); }
+  return take;
+}
+
+/* The word in flight is done (a word gap or the over break follows; its
+ * evidence ends at B): re-read it, write the correction for the extractor,
+ * start the next word. */
+static void word_close(Cw2State *st, SkimDecode *out, guint *pos, guint64 B) {
+  if (st->wd_n) {
+    char alt[SKIM_CALLSIGN_NEAR_LEN];
+    if (rs_reread(st, B, alt, sizeof(alt)) &&
+        *pos + strlen(alt) + 3 < SKIM_DECODE_TEXT_MAX) {
+      const char open[2] = { SKIM_CALLSIGN_FIX_OPEN, '\0' };
+      const char close[2] = { SKIM_CALLSIGN_FIX_CLOSE, '\0' };
+      emit_str(out, pos, open);
+      emit_str(out, pos, alt);
+      emit_str(out, pos, close);
+    }
+    st->wd_prev = st->wd_t1;
+  }
+  st->wd_n = 0;
+  st->wd[0] = '\0';
+  st->wd_over = FALSE;
 }
 
 /* --- clock re-lock ---------------------------------------------------------------
@@ -1247,6 +1559,7 @@ static void lattice_commit(Cw2State *st, double lag_dits, SkimDecode *out,
       st->dit_streak = ty == SEG_DIT ? st->dit_streak + 1 : 0;
     }
       st->marks_ok++;
+      if (st->wd_n == 0 && st->nelem == 0) { st->wd_t0 = end - segs_d[i - 1]; }
       if (st->nelem < 7) {
         st->code = (st->nelem ? st->code : 1u) << 1 |
                    (ty == SEG_DAH ? 1u : 0u);
@@ -1277,8 +1590,10 @@ static void lattice_commit(Cw2State *st, double lag_dits, SkimDecode *out,
       fist_learn(st, d / st->dit);
       if (!lived) {
         emit_code(st, out, pos, end - segs_d[i - 1]);
+        word_close(st, out, pos, end);
         emit(st, out, pos, ' ', end);
       } else if (!st->word_live && st->live_had_char) {
+        word_close(st, out, pos, end);
         emit(st, out, pos, ' ', end);          /* live char, space grew      */
       }
       st->char_live = st->word_live = FALSE;
@@ -1490,11 +1805,13 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
       if (st->char_live && st->live_had_char && !st->word_live &&
           sp > 1.2 * sqrt(st->fist_csp * st->fist_wsp) * st->dit) {
         st->word_live = TRUE;
+        word_close(st, out, pos, st->t);
         emit(st, out, pos, ' ', tau);
       }
       if (sp > BREAK_DITS * st->dit) {         /* the over is done           */
         CW2_DBG("[break at t=%lu, sp=%.0f]\n", (unsigned long)st->t, sp);
         lattice_flush(st, out, pos);
+        word_close(st, out, pos, st->t);
         if (!st->brk_out) {
           st->brk_out = TRUE;
           emit_str(out, pos, BREAK_MARK);

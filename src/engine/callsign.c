@@ -178,9 +178,16 @@ gboolean skim_callsign_is_valid(const char *s) {
 
 /* --- known-call dictionary ---------------------------------------------------- */
 
-static GRWLock     s_dict_lock;                /* guards the two below       */
+static GRWLock     s_dict_lock;                /* guards the five below      */
 static GHashTable *s_dict;                     /* call → itself (owned)      */
 static char        s_dict_release[32];         /* "2026.09.18"; "" = none    */
+/* dict_near()'s index, built with the table: every call with one character
+ * deleted → the calls it came from; the calls sorted, and sorted reversed
+ * (a misread that lost its first characters). */
+#define CALL_NEAR_MAX 24                       /* index/query buffers        */
+static GHashTable *s_del;                      /* char* (owned) → GPtrArray  */
+static GPtrArray  *s_fwd;                      /* call (borrowed), sorted    */
+static GPtrArray  *s_rev;                      /* reversed call (owned)      */
 
 /* One stripped dictionary line → TRUE when it carries a call. Blank lines,
  * '#' comments and "!!" directives (Super Check Partial opens its files with
@@ -253,6 +260,53 @@ void skim_callsign_dict_inspect(const char *data, gsize len,
  * the new table is built with no lock held, the swap is two pointer moves
  * under the writer lock, and the old table dies outside it. Readers pay one
  * uncontended reader lock per lookup. */
+static int cmp_str(gconstpointer a, gconstpointer b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static char *str_rev(const char *s) {
+  const gsize n = strlen(s);
+  char *r = g_malloc(n + 1);
+  for (gsize i = 0; i < n; i++) { r[i] = s[n - 1 - i]; }
+  r[n] = '\0';
+  return r;
+}
+
+/* The near-call index over a freshly parsed table (see s_del). */
+static void dict_index(GHashTable *dict, GHashTable **del, GPtrArray **fwd,
+                       GPtrArray **rev) {
+  *del = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                               (GDestroyNotify)g_ptr_array_unref);
+  *fwd = g_ptr_array_sized_new(g_hash_table_size(dict));
+  *rev = g_ptr_array_new_full(g_hash_table_size(dict), g_free);
+  GHashTableIter it;
+  gpointer key;
+  g_hash_table_iter_init(&it, dict);
+  while (g_hash_table_iter_next(&it, &key, NULL)) {
+    const char *call = key;
+    const gsize n = strlen(call);
+    g_ptr_array_add(*fwd, (gpointer)call);
+    g_ptr_array_add(*rev, str_rev(call));
+    char d[CALL_NEAR_MAX];
+    if (n >= sizeof(d))
+      continue;
+    for (gsize i = 0; i < n; i++) {
+      if (i && call[i] == call[i - 1])
+        continue;                              /* "OO" deletes to one key   */
+      memcpy(d, call, i);
+      memcpy(d + i, call + i + 1, n - i);
+      GPtrArray *a = g_hash_table_lookup(*del, d);
+      if (!a) {
+        a = g_ptr_array_new();
+        g_hash_table_insert(*del, g_strdup(d), a);
+      }
+      g_ptr_array_add(a, (gpointer)call);
+    }
+  }
+  g_ptr_array_sort(*fwd, cmp_str);
+  g_ptr_array_sort(*rev, cmp_str);
+}
+
 gboolean skim_callsign_dict_load(const char *path, GError **error) {
   char *data = NULL;
   gsize len = 0;
@@ -263,13 +317,140 @@ gboolean skim_callsign_dict_load(const char *path, GError **error) {
   SkimCallsignDictInfo info;
   dict_parse(data, len, fresh, &info);
   g_free(data);
+  GHashTable *del;
+  GPtrArray *fwd, *rev;
+  dict_index(fresh, &del, &fwd, &rev);
   g_rw_lock_writer_lock(&s_dict_lock);
-  GHashTable *old = s_dict;
+  GHashTable *old = s_dict, *old_del = s_del;
+  GPtrArray *old_fwd = s_fwd, *old_rev = s_rev;
   s_dict = fresh;
+  s_del = del;
+  s_fwd = fwd;
+  s_rev = rev;
   g_strlcpy(s_dict_release, info.release, sizeof(s_dict_release));
   g_rw_lock_writer_unlock(&s_dict_lock);
+  if (old_del) { g_hash_table_destroy(old_del); }
+  if (old_fwd) { g_ptr_array_unref(old_fwd); }
+  if (old_rev) { g_ptr_array_unref(old_rev); }
   if (old) { g_hash_table_destroy(old); }
   return TRUE;
+}
+
+/* Edit distance, given up past `cap` (returns cap + 1 then). */
+static guint lev_capped(const char *a, const char *b, guint cap) {
+  const gsize na = strlen(a), nb = strlen(b);
+  if ((na > nb ? na - nb : nb - na) > cap)
+    return cap + 1;
+  guint row[CALL_NEAR_MAX + 1];
+  if (nb >= G_N_ELEMENTS(row))
+    return cap + 1;
+  for (gsize j = 0; j <= nb; j++) { row[j] = (guint)j; }
+  for (gsize i = 1; i <= na; i++) {
+    guint diag = row[0], lo;
+    row[0] = lo = (guint)i;
+    for (gsize j = 1; j <= nb; j++) {
+      const guint up = row[j];
+      row[j] = MIN(MIN(row[j] + 1, row[j - 1] + 1), diag + (a[i - 1] != b[j - 1]));
+      diag = up;
+      lo = MIN(lo, row[j]);
+    }
+    if (lo > cap)
+      return cap + 1;
+  }
+  return row[nb];
+}
+
+typedef struct {
+  const char *word;
+  char (*out)[SKIM_CALLSIGN_NEAR_LEN];
+  guint n, max;
+} Near;
+
+static void near_add(Near *q, const char *call) {
+  if (q->n >= q->max || strlen(call) >= SKIM_CALLSIGN_NEAR_LEN)
+    return;
+  for (guint i = 0; i < q->n; i++) {
+    if (strcmp(q->out[i], call) == 0)
+      return;
+  }
+  if (lev_capped(q->word, call, 2) <= 2) { g_strlcpy(q->out[q->n++], call, SKIM_CALLSIGN_NEAR_LEN); }
+}
+
+static void near_del(Near *q, const char *key) {
+  GPtrArray *a = g_hash_table_lookup(s_del, key);
+  for (guint i = 0; a && i < a->len; i++) { near_add(q, g_ptr_array_index(a, i)); }
+}
+
+/* Calls of length n + 2 that start with s, in a sorted array (reversed:
+ * that end with it). */
+static void near_ext(Near *q, GPtrArray *arr, const char *s, gboolean reversed) {
+  const gsize n = strlen(s);
+  guint lo = 0, hi = arr->len;
+  while (lo < hi) {
+    const guint mid = (lo + hi) / 2;
+    if (strcmp(g_ptr_array_index(arr, mid), s) < 0) { lo = mid + 1; } else { hi = mid; }
+  }
+  for (guint i = lo, seen = 0; i < arr->len && seen < 400; i++, seen++) {
+    const char *c = g_ptr_array_index(arr, i);
+    if (strncmp(c, s, n) != 0)
+      break;
+    if (strlen(c) != n + 2)
+      continue;
+    if (reversed) {
+      char *f = str_rev(c);
+      near_add(q, f);
+      g_free(f);
+    } else {
+      near_add(q, c);
+    }
+  }
+}
+
+guint skim_callsign_dict_near(const char *word,
+                              char (*out)[SKIM_CALLSIGN_NEAR_LEN], guint max) {
+  const gsize n = word ? strlen(word) : 0;
+  if (n < 2 || n + 1 >= CALL_NEAR_MAX)
+    return 0;
+  Near q = { word, out, 0, max };
+  g_rw_lock_reader_lock(&s_dict_lock);
+  if (s_dict && s_del) {
+    if (g_hash_table_contains(s_dict, word)) { near_add(&q, word); }
+    near_del(&q, word);                        /* one character longer      */
+    char d[CALL_NEAR_MAX], d2[CALL_NEAR_MAX];
+    for (gsize i = 0; i < n; i++) {
+      memcpy(d, word, i);
+      memcpy(d + i, word + i + 1, n - i);
+      if (g_hash_table_contains(s_dict, d)) { near_add(&q, d); }   /* shorter */
+      near_del(&q, d);                         /* one character replaced    */
+      for (gsize j = i; j + 1 < n; j++) {      /* two characters shorter    */
+        memcpy(d2, d, j);
+        memcpy(d2 + j, d + j + 1, n - 1 - j);
+        if (g_hash_table_contains(s_dict, d2)) { near_add(&q, d2); }
+      }
+    }
+    near_ext(&q, s_fwd, word, FALSE);          /* the end lost              */
+    char *r = str_rev(word);
+    near_ext(&q, s_rev, r, TRUE);              /* the head lost             */
+    g_free(r);
+  }
+  g_rw_lock_reader_unlock(&s_dict_lock);
+  return q.n;
+}
+
+gboolean skim_callsign_strip_fix(char *text) {
+  char *w = text;
+  gboolean any = FALSE, in = FALSE;
+  for (const char *r = text; *r; r++) {
+    if (*r == SKIM_CALLSIGN_FIX_OPEN) {
+      in = any = TRUE;
+    } else if (*r == SKIM_CALLSIGN_FIX_CLOSE) {
+      in = FALSE;
+    } else if (!in) {
+      *w++ = *r;
+    }
+  }
+  *w = '\0';
+  return any;
 }
 
 guint skim_callsign_dict_size(void) {
@@ -855,6 +1036,12 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
 void skim_callsign_extractor_feed(SkimCallsignExtractor *x, const char *text) {
   for (const char *p = text; *p; p++) {
     const char c = *p;
+    if (c == SKIM_CALLSIGN_FIX_OPEN) {         /* the decoder's correction:  */
+      g_string_set_size(x->tok, 0);            /* the raw word is replaced   */
+      continue;
+    }
+    if (c == SKIM_CALLSIGN_FIX_CLOSE)
+      continue;
     if (c == ' ' || c == '\n' || c == '\t') {
       if (x->tok->len) {
         /* a glued CQ chain may run past a call's length ("CQCQCQDEON4LDL") */

@@ -1266,6 +1266,12 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
         L->at = tnow;
       }
       const double sig_hz = L->hz > 0 ? L->hz : raw_hz;
+      /* What is SHOWN is the text as heard: a decoder's correction for the
+       * extractor (callsign.h, SKIM_CALLSIGN_FIX_OPEN) stays out of the
+       * pane and the decode log. */
+      char shown[SKIM_DECODE_TEXT_MAX];
+      g_strlcpy(shown, d.text, sizeof(shown));
+      skim_callsign_strip_fix(shown);
       if (G_UNLIKELY(g_getenv("SKIM_FLOCK_DEBUG")) && d.text[0]) {
         /* per-hit frequency bookkeeping: channel, slot, the backend's
          * in-channel offset, the raw absolute Hz, the lock it landed on,
@@ -1288,12 +1294,12 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
           fprintf(p->dlog, "%s %9s %2.0f%s %3.0fdB L%u.%u |%s|\n",
                   tbuf, khz, d.speed,
                   p->cfg.mode == SKIM_PIPELINE_MODE_RTTY ? "bd " : "wpm",
-                  d.snr_db, c, h->slot, d.text);
+                  d.snr_db, c, h->slot, shown);
         } else if (d.text[0]) {
           fprintf(p->dlog, "%s %9s %2.0f%s %3.0fdB |%s|\n",
                   tbuf, khz, d.speed,
                   p->cfg.mode == SKIM_PIPELINE_MODE_RTTY ? "bd " : "wpm",
-                  d.snr_db, d.text);
+                  d.snr_db, shown);
         }
         if (h->aux) {
           fprintf(p->dlog, "%s %9s   aux        |%s|\n", tbuf, khz, h->aux);
@@ -1306,8 +1312,8 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
        * as ever. Only meaningful for backends with the ops hook — v1 never
        * writes the field (stack garbage otherwise, gate-caught). */
       const gboolean pane_own = cw->take_pane_op && d.pane_own;
-      if (p->text_cb && d.text[0] && !pane_own) {
-        p->text_cb(sig_hz, d.text, p->text_user);
+      if (p->text_cb && shown[0] && !pane_own) {
+        p->text_cb(sig_hz, shown, p->text_user);
       }
       if (h->aux) {
         /* Display-only: pane + log, NEVER the extractor (a lexically primed

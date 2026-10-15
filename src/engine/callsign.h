@@ -55,6 +55,28 @@ void skim_callsign_dict_inspect(const char *data, gsize len,
  * hits in the monitor pane. */
 gboolean skim_callsign_dict_has(const char *call);
 
+/* The dictionary's calls within two edits (Levenshtein) of `word` — the
+ * candidates a decoder re-reads a misread call against (decode_cw_v2.c,
+ * SKIM_V2_RESCORE). Found through a one-deletion index plus the shapes a
+ * misread takes most (a call one or two characters shorter or longer, the
+ * lost characters at either end), each one checked: not every call within
+ * two edits is found, every call returned is within two. `word` itself is
+ * among them when the dictionary knows it. Upper case in, at most `max`
+ * out; returns how many. */
+#define SKIM_CALLSIGN_NEAR_LEN 16
+guint skim_callsign_dict_near(const char *word,
+                              char (*out)[SKIM_CALLSIGN_NEAR_LEN], guint max);
+
+/* A decoder may correct the word it just finished for the extractor alone:
+ * "<raw chars> FIX_OPEN <call> FIX_CLOSE <space>" in the decode text. The
+ * extractor drops the raw token and takes the call; everything that SHOWS
+ * text (pane, decode log) drops the bracketed part and shows what was
+ * heard — skim_callsign_strip_fix(). */
+#define SKIM_CALLSIGN_FIX_OPEN  '\x01'
+#define SKIM_CALLSIGN_FIX_CLOSE '\x02'
+/* In place: the text without its corrections. TRUE when there were some. */
+gboolean skim_callsign_strip_fix(char *text);
+
 /* Stateful per-channel extractor: feed decoded text incrementally (token
  * fragments survive across calls), poll best() for the leading candidate. */
 typedef struct _SkimCallsignExtractor SkimCallsignExtractor;
