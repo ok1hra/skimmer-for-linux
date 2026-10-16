@@ -842,6 +842,112 @@ static gboolean run_close(SkimCallsignExtractor *x, char trail) {
   return hit;
 }
 
+/* SKIM_CALL_FUSED=1 — the fused run. A strong signal whose word gaps the
+ * decoder does not hear comes out as ONE token: "CQCQCQDEIT9VJOIT9VJOIT9VJO
+ * CQCQCQDEIT9VJOIT9VJOPSEK", "DXDERN3QBGRN3QBGRN3QK", "DEDL5ANTDL5ANT"
+ * (live 2026-10-15/16: of the stations CW Skimmer spotted at ≥ 25 dB and L
+ * did not, more than half sat in L's text read exactly — fused like this).
+ * The run is taken apart where the evidence is strong: the calling and
+ * sender markers it opens with peeled off, then a call that REPEATS back to
+ * back ("IT9VJO" three times; twice for a call MASTER.SCP knows), never one
+ * that a copy of it runs on into a longer known call ("OK1OOK1OA" is OK1OA
+ * twice, cut, not OK1O). What is left goes round again; a run that does
+ * not open on a repeat keeps its old fate. A dictionary call read once
+ * between a marker and a "K" was tried as well: it minted the heads of
+ * longer calls (OK1O, ON5C, PA3D — "DEOK1OK…"), busts on 50 h of taps. */
+static gboolean fused_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_FUSED");
+    on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  return on;
+}
+
+#define FUSED_MAX 96                           /* longest run taken apart    */
+
+static gsize fused_markers(const char *s, gboolean *cq, gboolean *de) {
+  gsize i = 0;
+  for (;;) {
+    if (strncmp(s + i, "CQ", 2) == 0) {
+      i += 2;
+      *cq = TRUE;
+    } else if (strncmp(s + i, "TEST", 4) == 0) {
+      i += 4;
+      *cq = TRUE;
+    } else if (strncmp(s + i, "QRZ", 3) == 0) {
+      i += 3;
+      *cq = TRUE;
+    } else if (i && strncmp(s + i, "DX", 2) == 0) {
+      i += 2;                                  /* "CQDX", "DXDE"             */
+    } else if (strncmp(s + i, "DE", 2) == 0) {
+      i += 2;
+      *de = TRUE;
+    } else {
+      return i;
+    }
+  }
+}
+
+static void take_token(SkimCallsignExtractor *x, const char *tok);
+
+/* A copy of `call` at s that runs on into a LONGER call the dictionary
+ * knows ("OK1O" in "OK1OA", "ON5C" in "ON5CENT") is a cut-down copy of
+ * that one, not a repeat of its own. */
+static gboolean fused_extends(const char *s, gsize l) {
+  char ext[CALL_MAX];
+  for (gsize e = l + 1; e <= l + 4 && e < CALL_MAX && s[e - 1]; e++) {
+    memcpy(ext, s, e);
+    ext[e] = '\0';
+    if (dict_has(ext))
+      return TRUE;
+  }
+  return FALSE;
+}
+
+static gboolean fused_split(SkimCallsignExtractor *x, const char *tok) {
+  const gsize n = strlen(tok);
+  if (n < 8 || n > FUSED_MAX)
+    return FALSE;
+  gboolean cq = FALSE, de = FALSE;
+  const gsize h = fused_markers(tok, &cq, &de);
+  const char *r = tok + h;
+  const gsize rn = n - h;
+  char call[CALL_MAX];
+  guint reps = 0;
+  gsize len = 0;
+  for (gsize l = MIN(rn, (gsize)CALL_MAX - 1); l >= 3 && !reps; l--) {
+    memcpy(call, r, l);
+    call[l] = '\0';
+    if (!call_ok(call))
+      continue;
+    guint k = 1;
+    while ((k + 1) * l <= rn && memcmp(r + k * l, call, l) == 0) { k++; }
+    gboolean cut = FALSE;
+    for (guint j = 0; j <= k && !cut; j++) {
+      if (j * l < rn && memcmp(r + j * l, call, MIN(l, rn - j * l)) == 0) {
+        cut = fused_extends(r + j * l, l);
+      }
+    }
+    /* a call the dictionary knows needs two copies, any other three */
+    if (!cut && (k >= 3 || (k >= 2 && dict_has(call)))) {
+      reps = k;
+      len = l;
+    }
+  }
+  if (!reps)
+    return FALSE;
+  if (cq) { take_token(x, "CQ"); }
+  if (de) { take_token(x, "DE"); }
+  call[len] = '\0';
+  for (guint i = 0; i < reps; i++) { take_token(x, call); }
+  /* The rest goes round again — unless it is the head of one more copy,
+   * cut where the run ended ("OK1DOLOK1DOLOK1O": OK1O is no station). */
+  const char *rest = r + reps * len;
+  if (rest[0] && strncmp(call, rest, strlen(rest)) != 0) { take_token(x, rest); }
+  return TRUE;
+}
+
 static void take_token(SkimCallsignExtractor *x, const char *tok) {
   if (strcmp(tok, "\xC2\xB7") == 0) {
     /* The decoder's over-break mark ("·") is metadata, not received text —
@@ -875,7 +981,11 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
       if (tok[head]) { take_token(x, tok + head); }
       return;
     }
+    if (fused_on() && fused_split(x, tok))
+      return;
   }
+  if (strlen(tok) >= CALL_MAX)
+    return;                                    /* a run nothing could read   */
   x->tok_n++;
   /* Letter-spaced CQ chain — the TORN twin of the fused "CQCQ" run: the
    * same degenerate fist that glues gaps shut also stretches them, and the
@@ -1045,7 +1155,8 @@ void skim_callsign_extractor_feed(SkimCallsignExtractor *x, const char *text) {
     if (c == ' ' || c == '\n' || c == '\t') {
       if (x->tok->len) {
         /* a glued CQ chain may run past a call's length ("CQCQCQDEON4LDL") */
-        if (x->tok->len < CALL_MAX || cq_glued_head(x->tok->str)) {
+        if (x->tok->len < CALL_MAX || cq_glued_head(x->tok->str) ||
+            (fused_on() && x->tok->len >= 8)) {
           take_token(x, x->tok->str);
         }
         g_string_set_size(x->tok, 0);
@@ -1053,7 +1164,7 @@ void skim_callsign_extractor_feed(SkimCallsignExtractor *x, const char *text) {
       continue;
     }
     g_string_append_c(x->tok, g_ascii_toupper(c));
-    if (x->tok->len > TOK_MAX) { g_string_set_size(x->tok, 0); }
+    if (x->tok->len > (fused_on() ? FUSED_MAX : TOK_MAX)) { g_string_set_size(x->tok, 0); }
   }
 }
 
