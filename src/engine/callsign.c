@@ -528,6 +528,8 @@ struct _SkimCallsignExtractor {
   gboolean cq_broken;                          /* an over break since the CQ */
   guint    cq_pairs;                           /* adjacent "C","Q" pairs seen */
   gboolean cq_half;                            /* last token was a lone "C"  */
+  gboolean tu_win;                             /* the open window is a TU's  */
+  char     tu_call[CALL_MAX];                  /* the call that TU blessed   */
   guint    tok_n;                              /* tokens processed (age clock)*/
   gint64   now_us;                             /* caller's clock (set_now)   */
   char     prev_tok[CALL_MAX];                 /* previous token (join hyp.) */
@@ -577,6 +579,8 @@ void skim_callsign_extractor_reset(SkimCallsignExtractor *x) {
   x->cq_broken  = FALSE;
   x->cq_pairs   = 0;
   x->cq_half    = FALSE;
+  x->tu_win     = FALSE;
+  x->tu_call[0] = '\0';
   x->tok_n      = 0;
   x->ncand      = 0;
   x->prev_tok[0] = '\0';
@@ -637,7 +641,7 @@ static void cand_add(SkimCallsignExtractor *x, const char *call, guint parts,
   c->last_us  = x->now_us;
   if (de_marked)  { c->de_marked  = TRUE; }
   if (cq_context) { c->cq_context = TRUE; }
-  if (cq_context && !x->cq_broken) { c->cq_clean = TRUE; }
+  if (cq_context && !x->cq_broken && !x->tu_win) { c->cq_clean = TRUE; }
 }
 
 /* Calling, all told: a CQ window reached the call, and either nobody sent it
@@ -1004,6 +1008,14 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     x->cq_pairs = 0;
   }
   if (strcmp(tok, "DE") == 0) {
+    /* SKIM_CALL_TU=2: "TU 73 UA3WBC DE DK2DR" — the call TU blessed is
+     * the one being worked when DE follows it: not calling. */
+    if (x->tu_call[0] && strcmp(x->prev_tok, x->tu_call) == 0) {
+      for (guint i = 0; i < x->ncand; i++) {
+        if (strcmp(x->cand[i].call, x->tu_call) == 0) { x->cand[i].addressed = TRUE; }
+      }
+    }
+    x->tu_call[0] = '\0';
     run_close(x, 0);
     run_clear(x);
     x->de_pending = 2;
@@ -1021,7 +1033,27 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
      * "<call> TU" the thanks may go to the OTHER station. */
     run_close(x, 0);
     run_clear(x);
-    x->cq_recent = 0;
+    /* SKIM_CALL_TU=0: TU still ends a run but opens no calling window —
+     * live 2026-10-16/17, a third of the calls the feed sent and nobody
+     * confirmed were QSO partners after the thanks ("TU 73 UA3WBC DE
+     * DK2DR", "5NN TU OE7PHI"), not a runner re-announcing. */
+    /* SKIM_CALL_TU=2: TU blesses only the very next token, and a DE right
+     * after that call takes the blessing back (see the DE case). */
+    static gint tu_mode = -1;
+    if (G_UNLIKELY(tu_mode < 0)) {
+      const char *e = g_getenv("SKIM_CALL_TU");
+      tu_mode = e && e[0] ? atoi(e) : 1;
+    }
+    const gboolean is_tu = strcmp(tok, "TU") == 0;
+    x->tu_call[0] = '\0';
+    if (is_tu && tu_mode == 0) {
+      x->prev_tok[0] = '\0';
+      return;
+    }
+    /* the window ages before the next token reads it: CQ_WINDOW - 1
+     * leaves exactly that one token inside */
+    x->cq_recent = is_tu && tu_mode == 2 ? CQ_WINDOW - 1 : 0;
+    x->tu_win = is_tu && tu_mode == 2;
     x->cq_broken = FALSE;
     if (strcmp(tok, "TU") != 0 && x->prev_tok[0]) {
       for (guint i = 0; i < x->ncand; i++) {
@@ -1059,6 +1091,10 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
   const gboolean valid = call_ok(tok) && strlen(tok) < CALL_MAX;
   const gboolean de_now = x->de_pending > 0;
   const gboolean cq_now = x->cq_recent <= CQ_WINDOW;
+  if (x->tu_win) {
+    if (cq_now && valid) { g_strlcpy(x->tu_call, tok, sizeof(x->tu_call)); }
+    if (!cq_now) { x->tu_win = FALSE; }
+  }
 
   /* Join hypothesis — the sloppy-fist fix: an operator who stretches an
    * inter-letter gap splits their call across two tokens ("EA3I XQ" for
