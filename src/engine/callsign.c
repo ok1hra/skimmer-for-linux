@@ -952,6 +952,50 @@ static gboolean fused_split(SkimCallsignExtractor *x, const char *tok) {
   return TRUE;
 }
 
+/* SKIM_CALL_GLUE=1 — a call with a word of the QSO glued on: the gap
+ * before PSE, K, UP or 73 not heard ("RO3ZPSE", "UT2QLPSE", "G4ENBK",
+ * "7T5EUP"; live 2026-10-16/17, sent by the feed, confirmed by nobody).
+ * The token splits into the call and the word when the call stands on
+ * its own — the dictionary knows it or this extractor already holds it
+ * as a candidate — and the whole token is no call the dictionary knows. */
+static gboolean glue_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_GLUE");
+    on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  return on;
+}
+
+static gboolean cand_has(const SkimCallsignExtractor *x, const char *call) {
+  for (guint i = 0; i < x->ncand; i++) {
+    if (strcmp(x->cand[i].call, call) == 0)
+      return TRUE;
+  }
+  return FALSE;
+}
+
+static gboolean glue_split(SkimCallsignExtractor *x, const char *tok) {
+  static const char *W[] = { "PSEK", "PSE", "KN", "BK", "UP", "73", "TU", "K" };
+  const gsize n = strlen(tok);
+  if (n < 5 || n >= CALL_MAX || dict_has(tok))
+    return FALSE;
+  for (guint i = 0; i < G_N_ELEMENTS(W); i++) {
+    const gsize lw = strlen(W[i]);
+    if (n < lw + 3 || strcmp(tok + n - lw, W[i]) != 0)
+      continue;
+    char call[CALL_MAX];
+    memcpy(call, tok, n - lw);
+    call[n - lw] = '\0';
+    if (call_ok(call) && (dict_has(call) || cand_has(x, call))) {
+      take_token(x, call);
+      take_token(x, W[i]);
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
 static void take_token(SkimCallsignExtractor *x, const char *tok) {
   if (strcmp(tok, "\xC2\xB7") == 0) {
     /* The decoder's over-break mark ("·") is metadata, not received text —
@@ -988,6 +1032,8 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     if (fused_on() && fused_split(x, tok))
       return;
   }
+  if (glue_on() && glue_split(x, tok))
+    return;
   if (strlen(tok) >= CALL_MAX)
     return;                                    /* a run nothing could read   */
   x->tok_n++;
