@@ -787,9 +787,34 @@ static void rbn_offer(SkimPipeline *p, const SkimStation *st) {
     rbn_send(p, st);
     return;
   }
+  /* SKIM_FEED_CONFIRM=N: a held call goes out as soon as it was read N
+   * more times — a station still calling confirms itself within seconds,
+   * a one-off misread never does — and at the latest when its hold ends.
+   * Live 2026-10-16/17: most busts were episodes of a single spot; a
+   * longer hold alone (120 s) brought the busts to CW Skimmer's level but
+   * lost the stations that call briefly. due[1] = hearings when held. */
+  static gint confirm = -1;
+  if (G_UNLIKELY(confirm < 0)) {
+    const char *e = g_getenv("SKIM_FEED_CONFIRM");
+    confirm = e && e[0] ? MAX(atoi(e), 0) : 0;
+  }
   gint64 *due = g_hash_table_lookup(p->rbn_pending, st->call);
+  if (due && due[0] != 0 && confirm > 0 &&
+      st->hearings >= (guint)due[1] + (guint)confirm && rbn_gate(p, st)) {
+    if (g_getenv("SKIM_ST_DEBUG")) {
+      g_printerr("rbn: CONFIRMED %s (%u reads) t=%.0f s\n", st->call,
+                 st->hearings, pipe_now_us(p) / 1e6);
+    }
+    if (rbn_send(p, st)) {
+      due[0] = 0;
+    } else {
+      g_hash_table_remove(p->rbn_pending, st->call);
+    }
+    return;
+  }
   if (!due) {
-    due = g_new(gint64, 1);
+    due = g_new(gint64, 2);
+    due[1] = st->hearings;
     /* A call the dictionary does not know waits longer (rbn_settle_nodict_s)
      * — the release re-runs the gate, and the near-call conflict needs the
      * right call to have been read by then. */

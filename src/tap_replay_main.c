@@ -10,6 +10,7 @@
  *     --scp FILE        MASTER.SCP (default ~/.config/skimmer-for-linux/master.scp,
  *                       the file skimmer-headless loads)
  *     --min-score X --min-hearings N --settle-s S --fresh-s S --fold-s S
+ *     --settle-nodict-s S  the hold of a call MASTER.SCP does not know
  *                       the hand gate's policy, as headless.ini [feed] takes it
  *     --nchan N         extractor slots to size for (default 4096 channels)
  *     --gate-ini FILE   the learned feed gate in shadow (feed_gate.h): every
@@ -54,7 +55,7 @@ static void spot_cb(const SkimStation *st, gpointer user) {
 
 typedef struct {
   const char *rows, *tap_out, *scp, *gate_ini, *band;
-  double      min_score, settle_s, fresh_s, fold_s;
+  double      min_score, settle_s, settle_nodict_s, fresh_s, fold_s;
   guint       min_hearings, nchan;
 } Opts;
 
@@ -82,6 +83,7 @@ static gboolean run_begin(Run *r, const Opts *o, guint nslot) {
     .rbn_min_score    = o->min_score,
     .rbn_min_hearings = o->min_hearings,
     .rbn_settle_s     = o->settle_s,
+    .rbn_settle_nodict_s = o->settle_nodict_s,
     .rbn_fresh_s      = o->fresh_s,
     .rbn_fold_s       = o->fold_s,
     .tap_path         = o->tap_out,
@@ -214,6 +216,8 @@ int main(int argc, char **argv) {
     { "min-score", 0, 0, G_OPTION_ARG_DOUBLE, &o.min_score, "hand gate score", "X" },
     { "min-hearings", 0, 0, G_OPTION_ARG_INT, &hearings, "hand gate hearings", "N" },
     { "settle-s", 0, 0, G_OPTION_ARG_DOUBLE, &o.settle_s, "hand gate settle", "S" },
+    { "settle-nodict-s", 0, 0, G_OPTION_ARG_DOUBLE, &o.settle_nodict_s,
+      "hold of a call MASTER.SCP does not know (0 = default)", "S" },
     { "fresh-s", 0, 0, G_OPTION_ARG_DOUBLE, &o.fresh_s,
       "the call must have been READ within S s (0 = default: off; < 0 = off)", "S" },
     { "fold-s", 0, 0, G_OPTION_ARG_DOUBLE, &o.fold_s,
