@@ -87,7 +87,9 @@ def score(cfg, T, rowsdir, to, frm=None, bands=None):
         s = store.sessions[T]
         ta = max(frm or s.start, s.start)
         tb = min(to or now, s.end(True, now))
-        return summarize(A, ta, tb)
+        S = summarize(A, ta, tb)
+        S["_events"] = [e for e in A.events if ta <= e["t0"] < tb]
+        return S
     finally:
         shutil.rmtree(tmp)
 
@@ -117,6 +119,8 @@ def main():
     ap.add_argument("--to", help="end of the scored range (UTC or Unix s)")
     ap.add_argument("--bands", help="comma list: score only these bands (a replay of some)")
     ap.add_argument("--json")
+    ap.add_argument("--events", help="write each variant's compared events to "
+                    "EVENTS-<n>.json (the /api/events shape live-breakdown.py reads)")
     a = ap.parse_args()
     cfg = Config(a.config)
     def when(v):
@@ -131,6 +135,10 @@ def main():
     for d in a.rowsdirs:
         S = score(cfg, a.session, d, when(a.to), when(a.frm), bands)
         show(d, S)
+        evs = S.pop("_events")
+        if a.events:
+            with open("%s-%d.json" % (a.events, len(out)), "w") as fh:
+                json.dump({"events": evs}, fh)
         out[d] = S
     if a.json:
         with open(a.json, "w") as fh:

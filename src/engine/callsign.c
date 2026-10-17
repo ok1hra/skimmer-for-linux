@@ -537,6 +537,9 @@ struct _SkimCallsignExtractor {
   gboolean prev_de;                            /* DE applied to it           */
   gboolean prev_cq;                            /* CQ window applied to it    */
   gboolean prev_gap;                           /* an over break came after it */
+  GString *over;                               /* SKIM_CALL_DESPACE: the over */
+  GString *over_toks;                          /* so far, spaces dropped, and
+                                                * its tokens " A B " as read */
   GString *run;                                /* fragments since the last   */
   guint    run_n;                              /* edge, glued (torn call)    */
   gboolean run_de, run_cq;
@@ -551,6 +554,8 @@ SkimCallsignExtractor *skim_callsign_extractor_new(void) {
   SkimCallsignExtractor *x = g_new0(SkimCallsignExtractor, 1);
   x->tok = g_string_new(NULL);
   x->run = g_string_new(NULL);
+  x->over = g_string_new(NULL);
+  x->over_toks = g_string_new(" ");
   x->cq_recent = CQ_WINDOW + 1;
   return x;
 }
@@ -560,6 +565,8 @@ void skim_callsign_extractor_free(SkimCallsignExtractor *x) {
     return;
   g_string_free(x->tok, TRUE);
   g_string_free(x->run, TRUE);
+  g_string_free(x->over, TRUE);
+  g_string_free(x->over_toks, TRUE);
   g_free(x);
 }
 
@@ -581,6 +588,8 @@ void skim_callsign_extractor_reset(SkimCallsignExtractor *x) {
   x->cq_half    = FALSE;
   x->tu_win     = FALSE;
   x->tu_call[0] = '\0';
+  g_string_set_size(x->over, 0);
+  g_string_assign(x->over_toks, " ");
   x->tok_n      = 0;
   x->ncand      = 0;
   x->prev_tok[0] = '\0';
@@ -909,15 +918,9 @@ static gboolean fused_extends(const char *s, gsize l) {
   return FALSE;
 }
 
-static gboolean fused_split(SkimCallsignExtractor *x, const char *tok) {
-  const gsize n = strlen(tok);
-  if (n < 8 || n > FUSED_MAX)
-    return FALSE;
-  gboolean cq = FALSE, de = FALSE;
-  const gsize h = fused_markers(tok, &cq, &de);
-  const char *r = tok + h;
-  const gsize rn = n - h;
-  char call[CALL_MAX];
+/* The call that repeats back to back at the head of r (rn bytes): its
+ * length, the call in `call` and the copies in *reps; 0 when none does. */
+static gsize fused_repeat(const char *r, gsize rn, char *call, guint *reps_out) {
   guint reps = 0;
   gsize len = 0;
   for (gsize l = MIN(rn, (gsize)CALL_MAX - 1); l >= 3 && !reps; l--) {
@@ -939,7 +942,25 @@ static gboolean fused_split(SkimCallsignExtractor *x, const char *tok) {
       len = l;
     }
   }
-  if (!reps)
+  if (reps) {
+    memcpy(call, r, len);
+    call[len] = '\0';
+  }
+  *reps_out = reps;
+  return len;
+}
+
+static gboolean fused_split(SkimCallsignExtractor *x, const char *tok) {
+  const gsize n = strlen(tok);
+  if (n < 8 || n > FUSED_MAX)
+    return FALSE;
+  gboolean cq = FALSE, de = FALSE;
+  const gsize h = fused_markers(tok, &cq, &de);
+  const char *r = tok + h;
+  char call[CALL_MAX];
+  guint reps = 0;
+  const gsize len = fused_repeat(r, n - h, call, &reps);
+  if (!len)
     return FALSE;
   if (cq) { take_token(x, "CQ"); }
   if (de) { take_token(x, "DE"); }
@@ -1225,6 +1246,71 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
   x->de_pending = 0;
 }
 
+/* SKIM_CALL_DESPACE=1 — the torn run, the fused run's mirror. A fist whose
+ * character gaps stretch to a word gap's length comes out with spaces
+ * INSIDE the call: "CQ CQ CQ D E G 0WD T G 0WD T G 0WD T P SE K", "Y O4 BE
+ * X Y O4 BE X" (live recordings 2026-10-15/16: 15 % of the stations CW
+ * Skimmer spotted and L missed). At the over break the over is read once
+ * more with its spaces dropped, the fused-run rule applied after every
+ * calling or sender marker in it: a call repeating back to back becomes a
+ * candidate — unless the over already held it as a token of its own,
+ * which the plain path has counted. */
+static gboolean despace_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_DESPACE");
+    on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  return on;
+}
+
+#define OVER_MAX 240                           /* bytes of an over kept      */
+
+static void despace_scan(SkimCallsignExtractor *x) {
+  const char *s = x->over->str;
+  const gsize n = x->over->len;
+  for (gsize i = 0; i + 5 < n;) {
+    if (strncmp(s + i, "CQ", 2) != 0 && strncmp(s + i, "DE", 2) != 0 &&
+        strncmp(s + i, "TEST", 4) != 0) {
+      i++;
+      continue;
+    }
+    gboolean cq = FALSE, de = FALSE;
+    const gsize h = fused_markers(s + i, &cq, &de);
+    char call[CALL_MAX];
+    guint reps = 0;
+    const gsize l = fused_repeat(s + i + h, n - i - h, call, &reps);
+    if (!l) {
+      i += MAX(h, (gsize)1);
+      continue;
+    }
+    char key[CALL_MAX + 2];
+    g_snprintf(key, sizeof(key), " %s ", call);
+    if (!strstr(x->over_toks->str, key)) {
+      if (G_UNLIKELY(g_getenv("SKIM_DESPACE_DEBUG"))) {
+        g_printerr("despace: %s x%u%s%s\n", call, reps, cq ? " cq" : "", de ? " de" : "");
+      }
+      for (guint k = 0; k < MIN(reps, 3u); k++) { cand_add(x, call, 2, de, cq); }
+      g_string_append(x->over_toks, key + 1);   /* once per over            */
+    }
+    i += h + l * reps;
+  }
+  g_string_set_size(x->over, 0);
+  g_string_assign(x->over_toks, " ");
+}
+
+/* Keep the over's text (spaces dropped) and its tokens; scan at the break. */
+static void despace_note(SkimCallsignExtractor *x, const char *tok) {
+  const char *mark = strstr(tok, "\xC2\xB7");
+  const gsize n = mark ? (gsize)(mark - tok) : strlen(tok);
+  if (n) {
+    g_string_append_len(x->over, tok, n);
+    g_string_append_len(x->over_toks, tok, n);
+    g_string_append_c(x->over_toks, ' ');
+  }
+  if (mark || x->over->len > OVER_MAX) { despace_scan(x); }
+}
+
 void skim_callsign_extractor_feed(SkimCallsignExtractor *x, const char *text) {
   for (const char *p = text; *p; p++) {
     const char c = *p;
@@ -1241,6 +1327,7 @@ void skim_callsign_extractor_feed(SkimCallsignExtractor *x, const char *text) {
             (fused_on() && x->tok->len >= 8)) {
           take_token(x, x->tok->str);
         }
+        if (despace_on()) { despace_note(x, x->tok->str); }
         g_string_set_size(x->tok, 0);
       }
       continue;
