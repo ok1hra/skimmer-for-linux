@@ -35,8 +35,26 @@
 #include <stdio.h>
 #include <string.h>
 
+/* SKIM_CW2_DEBUG=1 traces every channel; =<Hz> (an absolute frequency, as
+ * the pipeline labels channels with set_freq) only the channel within 70 Hz
+ * of it — one station out of a whole band replay. */
+static __thread const double *cw2_dbg_hz;     /* the channel in process()  */
+
+static gboolean cw2_dbg(void) {
+  static gint on = -1;
+  static double hz;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CW2_DEBUG");
+    hz = e ? g_ascii_strtod(e, NULL) : 0.0;
+    on = e != NULL;
+  }
+  if (!on)
+    return FALSE;
+  return hz < 1000.0 || (cw2_dbg_hz && fabs(*cw2_dbg_hz - hz) <= 70.0);
+}
+
 #define CW2_DBG(...) \
-  do { if (g_getenv("SKIM_CW2_DEBUG")) { fprintf(stderr, __VA_ARGS__); } } while (0)
+  do { if (G_UNLIKELY(cw2_dbg())) { fprintf(stderr, __VA_ARGS__); } } while (0)
 
 /* --- Morse table (v1's, duplicated so v1 stays untouched) ------------------- */
 
@@ -1931,6 +1949,7 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
                             SkimDecode *out) {
   Cw2State *st = state;
   guint pos = 0;
+  cw2_dbg_hz = &st->freq_hz;
   out->text[0]      = '\0';
   out->pane_own     = FALSE;
   st->pane_own_call = FALSE;
