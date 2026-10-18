@@ -106,11 +106,16 @@ here; what was done and why is in git.
   receiver; `skimmer-headless` runs up to 8 (one pipeline per band, one
   telnet feed, console + web status). The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 15 gates.** It does NOT relink the app — build
+- **`meson test` = 17 gates** (DeepCW skips without the model). It does NOT relink the app — build
   `ninja skimmer-for-linux` explicitly or an old binary keeps running.
 - Richard's live instance runs from `builddir`; recorded IQ fixtures live in
   `/var/tmp/skimmer-iq/` (a fresh one takes minutes:
   `skimmer-tci-probe <host> <port> <rate> <secs> <dump.cf32>`).
+- **Decoder and feed defaults (v0.6.0) come from live air** against CW
+  Skimmer Server: 45 Hz carrier envelope, word re-read against MASTER.SCP,
+  fused/torn run reading, TU blesses the next call only, min_score 0.90,
+  unknown calls held 60 s, fresh 120 s, fold 600 s; edge model / Rayleigh
+  fade off. Numbers, bench and rejected tries: `docs/LIVE-AIR.md`.
 - Opt-in and without a live verdict: the tone splitter (`SKIM_TONE_SPLIT=1`)
   and the narrow focus slot (`SKIM_TONE_FOCUS=1`, implies the splitter).
 
