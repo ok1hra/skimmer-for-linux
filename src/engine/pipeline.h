@@ -75,7 +75,7 @@ typedef struct {
 
   /* M6 — RBN telnet feed (borrowed; the app owns it so aggregator sessions
    * survive TCI reconnects). NULL = no RBN. The feed is ALWAYS CQ-only and
-   * gated at rbn_min_score (0 = default 0.85): stricter than the 0.70 that
+   * gated at rbn_min_score (0 = default 0.90): stricter than the 0.70 that
    * puts a label on the local panadapter — the network wants certainty.
    * The score alone is not enough: ONE copy keyed after "CQ DE" scores 0.90,
    * and so does a garble of it. A call reaches the feed only once it was

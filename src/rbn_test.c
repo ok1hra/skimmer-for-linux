@@ -19,7 +19,7 @@
  *
  * Feed policy (hearings + settle): a second band, one pass, with what
  * skimmer-compare caught going out unconfirmed (2026-10-01) — SM7XYZ keyed
- * ONCE after "CQ DE" (a lone copy scores 0.90, past the 0.85 threshold),
+ * ONCE after "CQ DE" (a lone copy scores 0.90, at the 0.90 threshold),
  * and IZ3NYG whose fist tears every copy into "IZ3N YG" (IZ3N validates one
  * token before the join does). Under the default policy neither SM7XYZ nor
  * IZ3N may reach the wire, IZ3NYG must; with hearings=1 and no settle (the
@@ -343,7 +343,8 @@ static void wait_lines(Cap *a, const char *call, int n) {
 
 /* One pass of the policy band through a fresh pipeline + feed, then quiet
  * band noise long enough for every held call to settle. */
-static PolicyOut policy_run(guint hearings, double settle_s, double fresh_s) {
+static PolicyOut policy_run(guint hearings, double settle_s, double fresh_s,
+                            double fold_s) {
   PolicyOut o = { 0 };
   GError *err = NULL;
   SkimRbnFeed *f = skim_rbn_feed_new("OK1BR", 0, &err);
@@ -357,6 +358,7 @@ static PolicyOut policy_run(guint hearings, double settle_s, double fresh_s) {
     .rbn_min_hearings = hearings,
     .rbn_settle_s     = settle_s,
     .rbn_fresh_s      = fresh_s,
+    .rbn_fold_s       = fold_s,
   };
   SkimPipeline *p = skim_pipeline_new(&cfg);
   skim_pipeline_start_offline(p, &err);
@@ -364,7 +366,7 @@ static PolicyOut policy_run(guint hearings, double settle_s, double fresh_s) {
     skim_pipeline_feed(p, g_pol + 2 * (gsize)off, BLK, RATE, CENTER);
   }
   GRand *rng = g_rand_new_with_seed(7);
-  feed_quiet(p, rng, 35);               /* > settle, > the no-dictionary hold */
+  feed_quiet(p, rng, 65);               /* > settle, > the no-dictionary hold */
   wait_lines(a, "OK1BR", 1);
   o.sm7xyz = cap_count(a, "SM7XYZ");
   o.iz3n   = cap_count(a, "IZ3N");
@@ -373,7 +375,7 @@ static PolicyOut policy_run(guint hearings, double settle_s, double fresh_s) {
   /* the ghost: past the station TTL (120 s), then keying without a call */
   feed_quiet(p, rng, 130);
   feed_ghost(p, rng);
-  feed_quiet(p, rng, 35);                 /* > the no-dictionary hold too */
+  feed_quiet(p, rng, 65);                 /* > the no-dictionary hold too */
   g_rand_free(rng);
   wait_lines(a, "OK1BR", o.ok1br + 1);
   o.ok1br_ghost = cap_count(a, "OK1BR") - o.ok1br;
@@ -637,7 +639,7 @@ int main(void) {
     }
     {
       GRand *qr = g_rand_new_with_seed(3);
-      feed_quiet(p, qr, 35);
+      feed_quiet(p, qr, 65);
       g_rand_free(qr);
     }
     gboolean both = FALSE;
@@ -687,10 +689,11 @@ int main(void) {
     guint pol_h = 0;
     double pol_fr = -1;
     skim_pipeline_rbn_policy(p, &pol_s, &pol_h, &pol_set, &pol_fr);
-    check("default feed policy: 0.85, read twice, 8 s settle (30 s without a "
-          "dictionary hit), no freshness gate",
-          fabs(pol_s - 0.85) < 1e-9 && pol_h == 2 && fabs(pol_set - 8.0) < 1e-9 &&
-          fabs(skim_pipeline_rbn_settle_nodict(p) - 30.0) < 1e-9 && pol_fr == 0);
+    check("default feed policy: 0.90, read twice, 8 s settle (60 s without a "
+          "dictionary hit), read within 120 s",
+          fabs(pol_s - 0.90) < 1e-9 && pol_h == 2 && fabs(pol_set - 8.0) < 1e-9 &&
+          fabs(skim_pipeline_rbn_settle_nodict(p) - 60.0) < 1e-9 &&
+          fabs(pol_fr - 120.0) < 1e-9);
 
     skim_pipeline_stop(p);
     skim_pipeline_free(p);
@@ -717,7 +720,7 @@ int main(void) {
     {
       static float quiet[BLK * 2];             /* past the no-dictionary hold */
       GRand *qr = g_rand_new_with_seed(4);
-      for (guint off = 0; off < 35 * RATE; off += BLK) {
+      for (guint off = 0; off < 65 * RATE; off += BLK) {
         for (guint i = 0; i < BLK * 2; i++) { quiet[i] = (float)(0.005 * gauss(qr)); }
         skim_pipeline_feed(p, quiet, BLK, RATE, CENTER - 30000.0);
       }
@@ -744,20 +747,23 @@ int main(void) {
   {
     printf("  feed policy (one pass: SM7XYZ once, IZ3N YG torn, OK1BR control)\n");
     build_policy_band();
-    PolicyOut old = policy_run(1, -1, -1);             /* the old policy     */
+    PolicyOut old = policy_run(1, -1, -1, -1);         /* the old policy     */
     check("old policy: the band does carry both garbles (SM7XYZ, IZ3N out)",
           old.sm7xyz >= 1 && old.iz3n >= 1);
     check("old policy: the stale OK1BR comes back as a ghost spot",
           old.ok1br_ghost >= 1);
-    PolicyOut now = policy_run(0, 0, 0);               /* defaults           */
-    check("defaults (no freshness gate yet): hearings + settle do not stop "
-          "the ghost", now.ok1br_ghost >= 1);
+    PolicyOut bare = policy_run(0, 0, -1, -1);         /* no fresh, no fold  */
+    check("hearings + settle alone do not stop the ghost",
+          bare.ok1br_ghost >= 1);
+    PolicyOut now = policy_run(0, 0, 0, 0);            /* defaults (v0.6.0)  */
+    check("defaults: the ghost of OK1BR (last read 140 s ago) stays off the "
+          "wire", now.ok1br_ghost == 0);
     check("control OK1BR (read twice) reaches the wire", now.ok1br == 1);
     check("SM7XYZ read ONCE never reaches the wire", now.sm7xyz == 0);
     check("torn IZ3N is folded away while held — never on the wire",
           now.iz3n == 0);
     check("…and the whole call IZ3NYG goes out once", now.iz3nyg == 1);
-    PolicyOut fr = policy_run(0, 0, 120);              /* + freshness gate   */
+    PolicyOut fr = policy_run(0, 0, 120, -1);          /* fresh, no fold     */
     check("fresh_s 120: OK1BR still goes out once, IZ3NYG once, no garble",
           fr.ok1br == 1 && fr.iz3nyg == 1 && fr.sm7xyz == 0 && fr.iz3n == 0);
     check("fresh_s 120: the ghost of OK1BR (last read 140 s ago) stays off "
@@ -784,7 +790,7 @@ int main(void) {
     }
     GRand *rng = g_rand_new_with_seed(7);
     static float quiet[BLK * 2];
-    for (guint off = 0; off < 35 * RATE; off += BLK) {   /* > both holds      */
+    for (guint off = 0; off < 65 * RATE; off += BLK) {   /* > both holds      */
       for (guint i = 0; i < BLK * 2; i++) { quiet[i] = (float)(0.005 * gauss(rng)); }
       skim_pipeline_feed(p, quiet, BLK, RATE, CENTER);
     }

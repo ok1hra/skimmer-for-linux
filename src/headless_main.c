@@ -105,9 +105,9 @@ typedef struct {
   double   feed_min_score;     /* 0 = the pipeline's default                  */
   guint    feed_min_hearings;  /* 0 = default; 1 = no hearings gate          */
   double   feed_settle_s;      /* 0 = default; < 0 = send at once            */
-  double   feed_settle_nodict_s; /* 0 = default (30); < 0 = = settle_s       */
-  double   feed_fresh_s;       /* 0 = default (off); < 0 = off               */
-  double   feed_fold_s;        /* 0 = default (off); < 0 = off               */
+  double   feed_settle_nodict_s; /* 0 = default (60); < 0 = = settle_s       */
+  double   feed_fresh_s;       /* 0 = default (120); < 0 = off               */
+  double   feed_fold_s;        /* 0 = default (600); < 0 = off               */
   gboolean feed_learn;         /* decode tap (gatelog.h)                      */
   char    *feed_gate;          /* learned gate ini, shadow (feed_gate.h)      */
   int      console_s;
@@ -167,10 +167,10 @@ static const char *DEFAULT_CONFIG =
   "# a call is spotted once it scored min_score, was read min_hearings times\n"
   "# (or MASTER.SCP knows it) and stayed settle_s seconds in the station table;\n"
   "# min_hearings=1 and settle_s=0 switch those two off\n"
-  "#min_score=0.85\n#min_hearings=2\n#settle_s=8\n"
+  "#min_score=0.90\n#min_hearings=2\n#settle_s=8\n"
   "# a call MASTER.SCP does not know waits settle_nodict_s instead (a misread\n"
   "# of a nearby call is held back once the right one is read); 0 = settle_s\n"
-  "#settle_nodict_s=30\n"
+  "#settle_nodict_s=60\n"
   "# fresh_s=N also wants the call READ within the last N s: a stale candidate\n"
   "# on a quiet channel is not a station (off unless set; 120 = the station TTL)\n"
   "#fresh_s=120\n"

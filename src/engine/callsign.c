@@ -619,6 +619,19 @@ static double cand_score(const SkimCallsignExtractor *x, const Cand *c) {
   return MIN(s, 1.0);
 }
 
+/* SKIM_CALL_TU_STRICT=1: a call a TU window blessed is never clean-calling,
+ * so a report after it withdraws the blessing — tried for v0.6.0 and left
+ * off: "5NN TU M0NGN 5NN" (a contest runner, the 5NN to the next caller)
+ * then read as addressed. */
+static gboolean xk_tu_strict(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_TU_STRICT");
+    on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  return on;
+}
+
 static void cand_add(SkimCallsignExtractor *x, const char *call, guint parts,
                      gboolean de_marked, gboolean cq_context) {
   Cand *c = NULL;
@@ -650,7 +663,7 @@ static void cand_add(SkimCallsignExtractor *x, const char *call, guint parts,
   c->last_us  = x->now_us;
   if (de_marked)  { c->de_marked  = TRUE; }
   if (cq_context) { c->cq_context = TRUE; }
-  if (cq_context && !x->cq_broken && !x->tu_win) { c->cq_clean = TRUE; }
+  if (cq_context && !x->cq_broken && !(x->tu_win && xk_tu_strict())) { c->cq_clean = TRUE; }
 }
 
 /* Calling, all told: a CQ window reached the call, and either nobody sent it
@@ -871,8 +884,8 @@ static gboolean run_close(SkimCallsignExtractor *x, char trail) {
 static gboolean fused_on(void) {
   static gint on = -1;
   if (G_UNLIKELY(on < 0)) {
-    const char *e = g_getenv("SKIM_CALL_FUSED");
-    on = e && e[0] && strcmp(e, "0") != 0;
+    const char *e = g_getenv("SKIM_CALL_FUSED");  /* on since v0.6.0     */
+    on = !(e && e[0]) || strcmp(e, "0") != 0;
   }
   return on;
 }
@@ -1109,7 +1122,7 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     static gint tu_mode = -1;
     if (G_UNLIKELY(tu_mode < 0)) {
       const char *e = g_getenv("SKIM_CALL_TU");
-      tu_mode = e && e[0] ? atoi(e) : 1;
+      tu_mode = e && e[0] ? atoi(e) : 2;          /* 2 since v0.6.0     */
     }
     const gboolean is_tu = strcmp(tok, "TU") == 0;
     x->tu_call[0] = '\0';
@@ -1258,8 +1271,8 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
 static gboolean despace_on(void) {
   static gint on = -1;
   if (G_UNLIKELY(on < 0)) {
-    const char *e = g_getenv("SKIM_CALL_DESPACE");
-    on = e && e[0] && strcmp(e, "0") != 0;
+    const char *e = g_getenv("SKIM_CALL_DESPACE");  /* on since v0.6.0   */
+    on = !(e && e[0]) || strcmp(e, "0") != 0;
   }
   return on;
 }

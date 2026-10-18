@@ -44,7 +44,9 @@
 /* RBN policy: the network keeps its own history, so re-announce sparsely
  * (the panadapter's 180 s is about keeping labels alive — not needed here)
  * and only re-spot a move that is a real QSY, not estimate convergence. */
-#define RBN_MIN_SCORE_DEFAULT 0.85
+/* 0.90 since v0.6.0: busts 7.2 -> 5.5 % on 50 h of live taps for -0.5
+ * points of recall (0.85 before; 0.95: 3.8 % but -2.8 points). */
+#define RBN_MIN_SCORE_DEFAULT 0.90
 #define RBN_RESPOT_S          600
 #define RBN_QSY_HZ            100.0
 #define RBN_MAX_PER_S         5
@@ -53,17 +55,20 @@
  * ("CQ DE X X K"); 8 s covers the rest of the over that tears a call. */
 #define RBN_MIN_HEARINGS_DEFAULT 2
 #define RBN_SETTLE_S_DEFAULT     8.0
-#define RBN_SETTLE_NODICT_S_DEFAULT 30.0  /* see rbn_settle_nodict_s     */
+/* 60 s since v0.6.0 (30 before): 50 h of live taps, recall / bust 67.7 / 4.9
+ * at 30 s, 67.3 / 4.3 at 60, 67.0 / 3.8 at 90, 63.4 / 2.3 at 120 — past ~90 s
+ * the release finds the station no longer fresh. */
+#define RBN_SETTLE_NODICT_S_DEFAULT 60.0  /* see rbn_settle_nodict_s     */
 /* A call older than this since its last READ copy is a stale candidate, not
- * a station (cfg.rbn_fresh_s). 0 = no such gate by default: it changes what
- * goes to the network, so it stays opt-in until skimmer-compare measured it
- * (the decode tap replays it offline: skimmer-tap-replay --fresh-s). */
-#define RBN_FRESH_S_DEFAULT      0.0
-/* The twin fold (cfg.rbn_fold_s, feed_fold.h): off by default for the same
- * reason. A call's own run of lines goes on while it was sent within the
+ * a station (cfg.rbn_fresh_s; < 0 = no such gate). 120 s since v0.6.0: the
+ * live skimmer ran it from 2026-10-02 on and every measurement of v0.6.0's
+ * changes was taken with it (skimmer-tap-replay --fresh-s). */
+#define RBN_FRESH_S_DEFAULT      120.0
+/* The twin fold (cfg.rbn_fold_s, feed_fold.h; < 0 = off): 600 s since
+ * v0.6.0, for the same reason. A call's own run of lines goes on while it was sent within the
  * window plus one re-spot period — the feed repeats a station only every
  * RBN_RESPOT_S, so a gap that long is still the same run. */
-#define RBN_FOLD_S_DEFAULT       0.0
+#define RBN_FOLD_S_DEFAULT       600.0
 #define RBN_FOLD_HZ              300.0
 /* A station silent this long leaves the table (and its panadapter label is
  * SPOT_DELETEd). 120 s rides out one side of a QSO; the old 600 s kept a

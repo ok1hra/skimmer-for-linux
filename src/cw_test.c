@@ -683,7 +683,7 @@ int main(void) {
     /* EC6AAE with the 6's dah keyed `x` dits long — on the border, the
      * lattice reads a dit and the word comes out EC5AAE. */
     const char *x_env = g_getenv("RS_TEST_DAH");
-    const double x = x_env ? g_ascii_strtod(x_env, NULL) : 1.5;
+    const double x = x_env ? g_ascii_strtod(x_env, NULL) : 1.7;
     const double wpm = 24, dit = 1.2 / wpm * RATE;
     env = gen_env("CQ DE", wpm, RATE, 0.0, rng);
     g_array_set_size(env, env->len - (guint)(1.5 * RATE));   /* drop the flush */

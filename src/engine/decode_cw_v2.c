@@ -872,18 +872,20 @@ static void lattice_start(Cw2State *st) {
   st->live_had_char = FALSE;
 }
 
-/* SKIM_V2_EDGE (default on, "0" = off): soft edges (keying shape, filter
+/* SKIM_V2_EDGE=1 (off by default since v0.6.0): soft edges (keying shape, filter
  * smear, multipath) make
  * every mark LONGER and every space SHORTER by the same δ — v2 already
  * tracks both (dit from marks, esp from element spaces) and reports the
  * unbiased (dit+esp)/2 as the speed, but its priors put marks AND spaces
  * on the biased dit: element spaces of a strong, smeared signal sit near
- * 0.6 dit, under the ESP floor, and two dits fuse into a dah. */
+ * 0.6 dit, under the ESP floor, and two dits fuse into a dah. It won on
+ * CQ WW 2012 and lost live: strong signals ~10 points (2026-10-13), so
+ * live air ran without it from then on and v0.6.0 made that the default. */
 static gint edge_on(void) {
   static gint on = -1;
   if (G_UNLIKELY(on < 0)) {
-    const char *e = g_getenv("SKIM_V2_EDGE");    /* default on; "0" = off */
-    on = !(e && e[0]) || strcmp(e, "0") != 0;
+    const char *e = g_getenv("SKIM_V2_EDGE");    /* default off; "1" = on */
+    on = e && e[0] && strcmp(e, "0") != 0;
   }
   return on;
 }
@@ -1010,13 +1012,13 @@ static void pen_sync(Cw2State *st) {
  * mid-pause can always bridge the remaining quiet to the first real mark. */
 static void seg_window(const Cw2State *st, int type, int *dlo, int *dhi) {
   const double T = st->dit;
-  /* SKIM_V2_DAHMAX: the dah window's ceiling in dits (default 6.0, was
-   * 5.0) — after a turnaround to half the speed the new op's dahs run 5.6
-   * old dits and fit no segment until the clock re-locks. */
+  /* SKIM_V2_DAHMAX: the dah window's ceiling in dits (default 5.0; 6.0
+   * was tried with the CQ WW 2012 set — after a turnaround to half the
+   * speed the new op's dahs run 5.6 old dits — and left with it, v0.6.0). */
   static double dah_hi = -1;
   if (G_UNLIKELY(dah_hi < 0)) {
     const char *e = g_getenv("SKIM_V2_DAHMAX");
-    dah_hi = e && e[0] ? g_ascii_strtod(e, NULL) : 6.0;
+    dah_hi = e && e[0] ? g_ascii_strtod(e, NULL) : 5.0;
   }
   double lo, hi;
   switch (type) {
@@ -1151,8 +1153,8 @@ static void lattice_head(const Cw2State *st, guint64 *out_tau,
  * dictionary calls are ever written in: an unknown call is never invented.
  *
  * SKIM_V2_RESCORE="fit,sep,ev" (log-likelihood units, as the lattice
- * scores; ev per sample; "1" = the defaults below; unset/"0" = off). SKIM_V2_RESCORE_DEBUG=1 prints
- * every re-read. */
+ * scores; ev per sample; unset or "1" = the defaults below, on since
+ * v0.6.0; "0" = off). SKIM_V2_RESCORE_DEBUG=1 prints every re-read. */
 #define RS_MAX_SEG   128                /* elements + spaces of one call     */
 #define RS_MAX_CAND  24
 #define RS_LEAD_DITS 2.0                /* free space searched before a word */
@@ -1172,8 +1174,8 @@ static const RsCfg *rs_cfg(void) {
     c.fit = 5.0;
     c.sep = 3.0;
     c.ev  = 2.0;
-    c.on = e && e[0] && strcmp(e, "0") != 0;
-    if (c.on && strchr(e, ',')) { sscanf(e, "%lf,%lf,%lf", &c.fit, &c.sep, &c.ev); }
+    c.on = !(e && e[0]) || strcmp(e, "0") != 0;
+    if (c.on && e && strchr(e, ',')) { sscanf(e, "%lf,%lf,%lf", &c.fit, &c.sep, &c.ev); }
     c.dbg = g_getenv("SKIM_V2_RESCORE_DEBUG") != NULL;
     g_once_init_leave(&once, 1);
   }
@@ -1722,7 +1724,8 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
       z <= 1.0 ? -LLR_MAX
                : CLAMP(3.3 * (0.5 * z * z - log(z) - 2.89),
                        -LLR_MAX, LLR_MAX);
-  /* SKIM_V2_RAYFADE="r0,r1[,wmin]" (default 4,10): the
+  /* SKIM_V2_RAYFADE="r0,r1[,wmin]" (4,10 was the CQ WW 2012 choice; off
+   * by default since v0.6.0, with the edge model and for the same reason): the
    * Rayleigh view's weight fades from ½ to wmin (0)
    * as µ_mark/µ_space climbs from r0 to r1. Anchored to the noise floor, it
    * calls everything that is "not noise" a mark — on a strong signal that
@@ -1735,14 +1738,14 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
    * signal keeps the notch protection. */
   static gint   rf_on = -1;
   static double rf_r0, rf_r1, rf_wmin;
-  if (G_UNLIKELY(rf_on < 0)) {     /* "r0,r1[,wmin]", default 4,10; "0" = off */
+  if (G_UNLIKELY(rf_on < 0)) {     /* "r0,r1[,wmin]" turns it on; default off */
     const char *e = g_getenv("SKIM_V2_RAYFADE");
     rf_r0 = 4.0;
     rf_r1 = 10.0;
     rf_wmin = 0.0;
-    rf_on = !(e && e[0]) ||
-            (sscanf(e, "%lf,%lf,%lf", &rf_r0, &rf_r1, &rf_wmin) >= 2 &&
-             rf_r1 > rf_r0);
+    rf_on = e && e[0] &&
+            sscanf(e, "%lf,%lf,%lf", &rf_r0, &rf_r1, &rf_wmin) >= 2 &&
+            rf_r1 > rf_r0;
   }
   double w_ray = 0.5;
   if (rf_on) {
@@ -1988,7 +1991,9 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
     st->pre_from = st->pre_head;
   }
 
-  /* SKIM_V2_NARROW=<fc Hz>: the channel is 125 Hz wide whatever the speed;
+  /* SKIM_V2_NARROW=<fc Hz> (default 45 since v0.6.0, "0" = off: two
+   * recordings of live air, recall +1.3 and +2.1, busts never up; below
+   * 10 dB +5 points): the channel is 125 Hz wide whatever the speed;
    * a 25-35 WPM signal needs about a third of that. Derotate by the tracked
    * tone offset and low-pass (2nd-order Butterworth, fc) before the
    * envelope — less noise, less of the neighbours' splatter. The offset
@@ -1997,7 +2002,7 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
   static double nb_b0, nb_b1, nb_b2, nb_a1, nb_a2;
   if (G_UNLIKELY(nb_on < 0)) {
     const char *e = g_getenv("SKIM_V2_NARROW");
-    const double fc = e && e[0] ? g_ascii_strtod(e, NULL) : 0.0;
+    const double fc = e && e[0] ? g_ascii_strtod(e, NULL) : 45.0;
     nb_on = fc > 0 && fc < 0.45 * st->rate;
     if (nb_on) {
       const double k = tan(G_PI * fc / st->rate), q2 = sqrt(2.0);
