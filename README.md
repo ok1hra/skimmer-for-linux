@@ -3,15 +3,15 @@
 > **This is a fork.** It is maintained by Dan, OK1HRA, from
 > [OK1BR/skimmer-for-linux](https://github.com/OK1BR/skimmer-for-linux).
 > Skimmer for Linux is the work of Richard Fakenberg, OK1BR. Everything after
-> the fork section below is his README, unchanged. `main` here follows
-> upstream. The fork's own work is in the branch
-> [`hpsdr-p1-source`](https://github.com/ok1hra/skimmer-for-linux/tree/hpsdr-p1-source).
-> Please report problems with that branch here, not upstream.
+> the fork section below is his README, unchanged. Since v0.6.0 the fork's
+> own work (developed on the `hpsdr-p1-source` branch) is in `main`.
+> Please report problems with it here, not upstream.
 
-## The `hpsdr-p1-source` branch
+## What the fork adds
 
-This branch skims a **Red Pitaya** directly, with no TCI server in between. It
-can also skim **several bands at once without a GUI**.
+The fork skims a **Red Pitaya** directly, with no TCI server in between. It
+can also skim **several bands at once without a GUI**, and its decoder and RBN
+feed are tuned on live air against CW Skimmer Server.
 
 ### What it adds
 
@@ -21,7 +21,7 @@ can also skim **several bands at once without a GUI**.
   192 kHz, with a sampling-clock correction in ppm. The wire is RF-inverted
   and ingest conjugates it. The skimmer never takes a receiver another client
   is streaming from unless you explicitly say "take over". Protocol facts and
-  measurements: [`docs/HPSDR-P1.md`](https://github.com/ok1hra/skimmer-for-linux/blob/hpsdr-p1-source/docs/HPSDR-P1.md).
+  measurements: [`docs/HPSDR-P1.md`](docs/HPSDR-P1.md).
 - **The app** has a new section, Preferences → Radio → IQ source → Red Pitaya:
   host, band, centre, sample rate and clock correction. While the receiver is
   busy, a banner offers **Take over**. Nothing is sent to the radio until you
@@ -39,6 +39,18 @@ can also skim **several bands at once without a GUI**.
   It needs bash, curl and Python 3, standard library only.
 - One lock around FFTW plan creation and destruction, because the planner is
   not thread-safe and several pipelines now run side by side.
+- **Decoder and feed tuned on live air (v0.6.0).** IQ recordings made beside
+  the live decoding were replayed and scored against CW Skimmer Server on the
+  same antenna, and the winners became the defaults: a carrier-centred 45 Hz
+  envelope, a word re-read against MASTER.SCP, reading calls keyed with no
+  word gaps or with stretched character gaps, a stricter calling context
+  after "TU", and a stricter RBN feed (score 0.90, unknown calls held 60 s).
+  On two 14-hour recordings recall rose by 1.3 and 1.6 points while busts
+  fell from 7.0 to 3.3 % and from 8.9 to 6.3 %; on 50 hours of live decode
+  taps (the changes after the decoder alone) busts went from 7.2 to 4.0 %.
+  Each change can
+  still be switched off. Method, numbers and what was rejected:
+  [`docs/LIVE-AIR.md`](docs/LIVE-AIR.md).
 
 ### Build
 
@@ -46,7 +58,7 @@ The requirements are the same as upstream (see [Requirements](#requirements)
 below).
 
 ```sh
-git clone -b hpsdr-p1-source https://github.com/ok1hra/skimmer-for-linux.git
+git clone https://github.com/ok1hra/skimmer-for-linux.git
 cd skimmer-for-linux
 meson setup build
 meson compile -C build
