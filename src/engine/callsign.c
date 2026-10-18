@@ -21,7 +21,10 @@
  * enter them.
  * Scores: 0.55 structural+allocation, +0.25 DE, +0.10 CQ, +0.20 repeated
  * (+0.05 at ≥3), +0.15 dictionary — capped at 1.0. The spot threshold 0.70
- * means a lone structurally-valid token is never spotted (the RBN rule).
+ * keeps a BARE structurally-valid token off the panadapter — but one copy
+ * with DE and CQ around it scores 0.90, past the RBN feed's 0.85 too. That
+ * is why the feed policy (pipeline.c) also counts hearings, see
+ * skim_callsign_extractor_hearings().
  *
  * Engine-thread only (no locking), like the rest of the pipeline.
  *
@@ -29,6 +32,7 @@
  */
 #include "callsign.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 /* --- ITU allocation ---------------------------------------------------------
@@ -48,7 +52,8 @@ static const char *ld_digits(char letter) {
   case 'L': return "23456789";  /* L2-L9 Argentina                           */
   case 'P': return "2345";      /* P2 PNG, P3 Cyprus, P4 Aruba, P5 DPRK      */
   case 'S': return "2579";      /* S2 Bangladesh, S5 Slovenia, S7, S9        */
-  case 'T': return "235678";    /* T2 Tuvalu … T8 Palau — T1 does NOT exist  */
+  case 'T': return "2345678";   /* T2 Tuvalu, T4 Cuba … T8 Palau — T1 does
+                                 * NOT exist                                 */
   case 'V': return "2345678";   /* V2 Antigua … V8 Brunei                    */
   case 'Y': return "23456789";  /* Y2-Y9 Germany                             */
   case 'Z': return "2368";      /* Z2 Zimbabwe, Z3 Macedonia, Z6, Z8         */
@@ -120,6 +125,21 @@ static gboolean core_valid(const char *s) {
   return FALSE;
 }
 
+/* The short side of a '/' call — a designator (P, M, QRP, 4, MM) or a bare
+ * prefix (F, DL, EA8). Letters and digits only, and three letters are only
+ * ever QRP: in two weeks of RBN (240 k slashed spots) no other three-letter
+ * designator came by, while L read /P+, /P+K, /PIN, /PHB off glued text
+ * (live, 2026-10-12). */
+static gboolean designator_ok(const char *s, gsize n) {
+  gboolean letters = TRUE;
+  for (gsize i = 0; i < n; i++) {
+    if (!is_letter(s[i]) && !is_digit(s[i]))
+      return FALSE;
+    if (!is_letter(s[i])) { letters = FALSE; }
+  }
+  return n < 3 || !letters || strncmp(s, "QRP", 3) == 0;
+}
+
 gboolean skim_callsign_is_valid(const char *s) {
   if (!s || !s[0])
     return FALSE;
@@ -132,13 +152,24 @@ gboolean skim_callsign_is_valid(const char *s) {
    * must be short (a designator or a bare DXCC prefix). */
   gsize left = (gsize)(slash - s), right = strlen(slash + 1);
   char core[16];
-  if (left < sizeof(core) && right >= 1 && right <= 3) {
+  /* Both sides full calls: the licence of one country used in another
+   * under its full local call — VP2V/AA7V (CQ WW 2012, 56 CW Skimmer
+   * spots the 3-character designator rule threw away). */
+  if (left < sizeof(core) && left >= 4 && right >= 4) {
+    memcpy(core, s, left);
+    core[left] = '\0';
+    if (core_valid(core) && core_valid(slash + 1))
+      return TRUE;
+  }
+  if (left < sizeof(core) && right >= 1 && right <= 3 &&
+      designator_ok(slash + 1, right)) {
     memcpy(core, s, left);
     core[left] = '\0';
     if (core_valid(core))
       return TRUE;
   }
-  if (right < sizeof(core) && left >= 1 && left <= 3) {
+  if (right < sizeof(core) && left >= 1 && left <= 3 &&
+      designator_ok(s, left)) {
     if (core_valid(slash + 1))
       return TRUE;
   }
@@ -147,9 +178,16 @@ gboolean skim_callsign_is_valid(const char *s) {
 
 /* --- known-call dictionary ---------------------------------------------------- */
 
-static GRWLock     s_dict_lock;                /* guards the two below       */
+static GRWLock     s_dict_lock;                /* guards the five below      */
 static GHashTable *s_dict;                     /* call → itself (owned)      */
 static char        s_dict_release[32];         /* "2026.09.18"; "" = none    */
+/* dict_near()'s index, built with the table: every call with one character
+ * deleted → the calls it came from; the calls sorted, and sorted reversed
+ * (a misread that lost its first characters). */
+#define CALL_NEAR_MAX 24                       /* index/query buffers        */
+static GHashTable *s_del;                      /* char* (owned) → GPtrArray  */
+static GPtrArray  *s_fwd;                      /* call (borrowed), sorted    */
+static GPtrArray  *s_rev;                      /* reversed call (owned)      */
 
 /* One stripped dictionary line → TRUE when it carries a call. Blank lines,
  * '#' comments and "!!" directives (Super Check Partial opens its files with
@@ -222,6 +260,53 @@ void skim_callsign_dict_inspect(const char *data, gsize len,
  * the new table is built with no lock held, the swap is two pointer moves
  * under the writer lock, and the old table dies outside it. Readers pay one
  * uncontended reader lock per lookup. */
+static int cmp_str(gconstpointer a, gconstpointer b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static char *str_rev(const char *s) {
+  const gsize n = strlen(s);
+  char *r = g_malloc(n + 1);
+  for (gsize i = 0; i < n; i++) { r[i] = s[n - 1 - i]; }
+  r[n] = '\0';
+  return r;
+}
+
+/* The near-call index over a freshly parsed table (see s_del). */
+static void dict_index(GHashTable *dict, GHashTable **del, GPtrArray **fwd,
+                       GPtrArray **rev) {
+  *del = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                               (GDestroyNotify)g_ptr_array_unref);
+  *fwd = g_ptr_array_sized_new(g_hash_table_size(dict));
+  *rev = g_ptr_array_new_full(g_hash_table_size(dict), g_free);
+  GHashTableIter it;
+  gpointer key;
+  g_hash_table_iter_init(&it, dict);
+  while (g_hash_table_iter_next(&it, &key, NULL)) {
+    const char *call = key;
+    const gsize n = strlen(call);
+    g_ptr_array_add(*fwd, (gpointer)call);
+    g_ptr_array_add(*rev, str_rev(call));
+    char d[CALL_NEAR_MAX];
+    if (n >= sizeof(d))
+      continue;
+    for (gsize i = 0; i < n; i++) {
+      if (i && call[i] == call[i - 1])
+        continue;                              /* "OO" deletes to one key   */
+      memcpy(d, call, i);
+      memcpy(d + i, call + i + 1, n - i);
+      GPtrArray *a = g_hash_table_lookup(*del, d);
+      if (!a) {
+        a = g_ptr_array_new();
+        g_hash_table_insert(*del, g_strdup(d), a);
+      }
+      g_ptr_array_add(a, (gpointer)call);
+    }
+  }
+  g_ptr_array_sort(*fwd, cmp_str);
+  g_ptr_array_sort(*rev, cmp_str);
+}
+
 gboolean skim_callsign_dict_load(const char *path, GError **error) {
   char *data = NULL;
   gsize len = 0;
@@ -232,13 +317,140 @@ gboolean skim_callsign_dict_load(const char *path, GError **error) {
   SkimCallsignDictInfo info;
   dict_parse(data, len, fresh, &info);
   g_free(data);
+  GHashTable *del;
+  GPtrArray *fwd, *rev;
+  dict_index(fresh, &del, &fwd, &rev);
   g_rw_lock_writer_lock(&s_dict_lock);
-  GHashTable *old = s_dict;
+  GHashTable *old = s_dict, *old_del = s_del;
+  GPtrArray *old_fwd = s_fwd, *old_rev = s_rev;
   s_dict = fresh;
+  s_del = del;
+  s_fwd = fwd;
+  s_rev = rev;
   g_strlcpy(s_dict_release, info.release, sizeof(s_dict_release));
   g_rw_lock_writer_unlock(&s_dict_lock);
+  if (old_del) { g_hash_table_destroy(old_del); }
+  if (old_fwd) { g_ptr_array_unref(old_fwd); }
+  if (old_rev) { g_ptr_array_unref(old_rev); }
   if (old) { g_hash_table_destroy(old); }
   return TRUE;
+}
+
+/* Edit distance, given up past `cap` (returns cap + 1 then). */
+static guint lev_capped(const char *a, const char *b, guint cap) {
+  const gsize na = strlen(a), nb = strlen(b);
+  if ((na > nb ? na - nb : nb - na) > cap)
+    return cap + 1;
+  guint row[CALL_NEAR_MAX + 1];
+  if (nb >= G_N_ELEMENTS(row))
+    return cap + 1;
+  for (gsize j = 0; j <= nb; j++) { row[j] = (guint)j; }
+  for (gsize i = 1; i <= na; i++) {
+    guint diag = row[0], lo;
+    row[0] = lo = (guint)i;
+    for (gsize j = 1; j <= nb; j++) {
+      const guint up = row[j];
+      row[j] = MIN(MIN(row[j] + 1, row[j - 1] + 1), diag + (a[i - 1] != b[j - 1]));
+      diag = up;
+      lo = MIN(lo, row[j]);
+    }
+    if (lo > cap)
+      return cap + 1;
+  }
+  return row[nb];
+}
+
+typedef struct {
+  const char *word;
+  char (*out)[SKIM_CALLSIGN_NEAR_LEN];
+  guint n, max;
+} Near;
+
+static void near_add(Near *q, const char *call) {
+  if (q->n >= q->max || strlen(call) >= SKIM_CALLSIGN_NEAR_LEN)
+    return;
+  for (guint i = 0; i < q->n; i++) {
+    if (strcmp(q->out[i], call) == 0)
+      return;
+  }
+  if (lev_capped(q->word, call, 2) <= 2) { g_strlcpy(q->out[q->n++], call, SKIM_CALLSIGN_NEAR_LEN); }
+}
+
+static void near_del(Near *q, const char *key) {
+  GPtrArray *a = g_hash_table_lookup(s_del, key);
+  for (guint i = 0; a && i < a->len; i++) { near_add(q, g_ptr_array_index(a, i)); }
+}
+
+/* Calls of length n + 2 that start with s, in a sorted array (reversed:
+ * that end with it). */
+static void near_ext(Near *q, GPtrArray *arr, const char *s, gboolean reversed) {
+  const gsize n = strlen(s);
+  guint lo = 0, hi = arr->len;
+  while (lo < hi) {
+    const guint mid = (lo + hi) / 2;
+    if (strcmp(g_ptr_array_index(arr, mid), s) < 0) { lo = mid + 1; } else { hi = mid; }
+  }
+  for (guint i = lo, seen = 0; i < arr->len && seen < 400; i++, seen++) {
+    const char *c = g_ptr_array_index(arr, i);
+    if (strncmp(c, s, n) != 0)
+      break;
+    if (strlen(c) != n + 2)
+      continue;
+    if (reversed) {
+      char *f = str_rev(c);
+      near_add(q, f);
+      g_free(f);
+    } else {
+      near_add(q, c);
+    }
+  }
+}
+
+guint skim_callsign_dict_near(const char *word,
+                              char (*out)[SKIM_CALLSIGN_NEAR_LEN], guint max) {
+  const gsize n = word ? strlen(word) : 0;
+  if (n < 2 || n + 1 >= CALL_NEAR_MAX)
+    return 0;
+  Near q = { word, out, 0, max };
+  g_rw_lock_reader_lock(&s_dict_lock);
+  if (s_dict && s_del) {
+    if (g_hash_table_contains(s_dict, word)) { near_add(&q, word); }
+    near_del(&q, word);                        /* one character longer      */
+    char d[CALL_NEAR_MAX], d2[CALL_NEAR_MAX];
+    for (gsize i = 0; i < n; i++) {
+      memcpy(d, word, i);
+      memcpy(d + i, word + i + 1, n - i);
+      if (g_hash_table_contains(s_dict, d)) { near_add(&q, d); }   /* shorter */
+      near_del(&q, d);                         /* one character replaced    */
+      for (gsize j = i; j + 1 < n; j++) {      /* two characters shorter    */
+        memcpy(d2, d, j);
+        memcpy(d2 + j, d + j + 1, n - 1 - j);
+        if (g_hash_table_contains(s_dict, d2)) { near_add(&q, d2); }
+      }
+    }
+    near_ext(&q, s_fwd, word, FALSE);          /* the end lost              */
+    char *r = str_rev(word);
+    near_ext(&q, s_rev, r, TRUE);              /* the head lost             */
+    g_free(r);
+  }
+  g_rw_lock_reader_unlock(&s_dict_lock);
+  return q.n;
+}
+
+gboolean skim_callsign_strip_fix(char *text) {
+  char *w = text;
+  gboolean any = FALSE, in = FALSE;
+  for (const char *r = text; *r; r++) {
+    if (*r == SKIM_CALLSIGN_FIX_OPEN) {
+      in = any = TRUE;
+    } else if (*r == SKIM_CALLSIGN_FIX_CLOSE) {
+      in = FALSE;
+    } else if (!in) {
+      *w++ = *r;
+    }
+  }
+  *w = '\0';
+  return any;
 }
 
 guint skim_callsign_dict_size(void) {
@@ -279,6 +491,7 @@ gboolean skim_callsign_dict_has(const char *call) {
  * hearing could lift it over the spot threshold (live, 2026-07-15). */
 #define MAX_CAND    24
 #define CALL_MAX    16
+#define TOK_MAX     (2 * CALL_MAX)             /* a glued CQ chain + a call  */
 #define CQ_WINDOW   3                          /* tokens after CQ that count */
 #define RUN_MAX     12                         /* fragments between two edges */
 #define RUN_PARTS   6                          /* a torn call: ≤ 6 of them   */
@@ -299,23 +512,34 @@ typedef struct {
   char     call[CALL_MAX];
   guint    count;
   guint    last_tok;                           /* x->tok_n at the last hit   */
+  gint64   last_us;                            /* x->now_us at the last hit  */
   guint    parts;                              /* fewest tokens it came in   */
   gboolean de_marked;
   gboolean cq_context;
+  gboolean cq_clean;                           /* … with no over break between */
+  gboolean addressed;                          /* a report followed the call */
+  gboolean exch;                               /* "<call> 5NN" (runner's QSO) */
 } Cand;
 
 struct _SkimCallsignExtractor {
   GString *tok;                                /* partial token across feeds */
   gint     de_pending;                         /* DE marker lives ≤ 2 tokens */
   gint     cq_recent;                          /* tokens since CQ (≤ window) */
+  gboolean cq_broken;                          /* an over break since the CQ */
   guint    cq_pairs;                           /* adjacent "C","Q" pairs seen */
   gboolean cq_half;                            /* last token was a lone "C"  */
+  gboolean tu_win;                             /* the open window is a TU's  */
+  char     tu_call[CALL_MAX];                  /* the call that TU blessed   */
   guint    tok_n;                              /* tokens processed (age clock)*/
+  gint64   now_us;                             /* caller's clock (set_now)   */
   char     prev_tok[CALL_MAX];                 /* previous token (join hyp.) */
   gboolean prev_valid;                         /* it was a valid call itself */
   gboolean prev_de;                            /* DE applied to it           */
   gboolean prev_cq;                            /* CQ window applied to it    */
   gboolean prev_gap;                           /* an over break came after it */
+  GString *over;                               /* SKIM_CALL_DESPACE: the over */
+  GString *over_toks;                          /* so far, spaces dropped, and
+                                                * its tokens " A B " as read */
   GString *run;                                /* fragments since the last   */
   guint    run_n;                              /* edge, glued (torn call)    */
   gboolean run_de, run_cq;
@@ -330,6 +554,8 @@ SkimCallsignExtractor *skim_callsign_extractor_new(void) {
   SkimCallsignExtractor *x = g_new0(SkimCallsignExtractor, 1);
   x->tok = g_string_new(NULL);
   x->run = g_string_new(NULL);
+  x->over = g_string_new(NULL);
+  x->over_toks = g_string_new(" ");
   x->cq_recent = CQ_WINDOW + 1;
   return x;
 }
@@ -339,6 +565,8 @@ void skim_callsign_extractor_free(SkimCallsignExtractor *x) {
     return;
   g_string_free(x->tok, TRUE);
   g_string_free(x->run, TRUE);
+  g_string_free(x->over, TRUE);
+  g_string_free(x->over_toks, TRUE);
   g_free(x);
 }
 
@@ -355,13 +583,27 @@ void skim_callsign_extractor_reset(SkimCallsignExtractor *x) {
   g_string_set_size(x->tok, 0);
   x->de_pending = 0;
   x->cq_recent  = CQ_WINDOW + 1;
+  x->cq_broken  = FALSE;
   x->cq_pairs   = 0;
   x->cq_half    = FALSE;
+  x->tu_win     = FALSE;
+  x->tu_call[0] = '\0';
+  g_string_set_size(x->over, 0);
+  g_string_assign(x->over_toks, " ");
   x->tok_n      = 0;
   x->ncand      = 0;
   x->prev_tok[0] = '\0';
   x->prev_valid = x->prev_de = x->prev_cq = x->prev_gap = FALSE;
   run_clear(x);
+}
+
+/* A call for the extractor: the structural parse, or the dictionary's word.
+ * The parse must stay strict about the prefix-only shapes noise produces
+ * ("5NN", "T5T"), and so it refuses the short calls contest stations get —
+ * D4C, C5A, P3N (CQ WW 2012: 1 100+ CW Skimmer spots of real stations
+ * the extractor could never report). MASTER.SCP knows them. */
+static gboolean call_ok(const char *s) {
+  return skim_callsign_is_valid(s) || (s && strlen(s) >= 3 && dict_has(s));
 }
 
 static double cand_score(const SkimCallsignExtractor *x, const Cand *c) {
@@ -373,7 +615,21 @@ static double cand_score(const SkimCallsignExtractor *x, const Cand *c) {
   if (c->count >= 2) { s += 0.20; }
   if (c->count >= 3) { s += 0.05; }
   if (dict_has(c->call)) { s += 0.15; }
+  if (c->exch)       { s += 0.25; }
   return MIN(s, 1.0);
+}
+
+/* SKIM_CALL_TU_STRICT=1: a call a TU window blessed is never clean-calling,
+ * so a report after it withdraws the blessing — tried for v0.6.0 and left
+ * off: "5NN TU M0NGN 5NN" (a contest runner, the 5NN to the next caller)
+ * then read as addressed. */
+static gboolean xk_tu_strict(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_TU_STRICT");
+    on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  return on;
 }
 
 static void cand_add(SkimCallsignExtractor *x, const char *call, guint parts,
@@ -404,8 +660,36 @@ static void cand_add(SkimCallsignExtractor *x, const char *call, guint parts,
   c->parts = MIN(c->parts, parts);
   c->count++;
   c->last_tok = x->tok_n;
+  c->last_us  = x->now_us;
   if (de_marked)  { c->de_marked  = TRUE; }
   if (cq_context) { c->cq_context = TRUE; }
+  if (cq_context && !x->cq_broken && !(x->tu_win && xk_tu_strict())) { c->cq_clean = TRUE; }
+}
+
+/* Calling, all told: a CQ window reached the call, and either nobody sent it
+ * a report, or that window had no over break in it. A report right after a
+ * call is the runner ADDRESSING a caller ("UR3VZ 5NN") — and a caller who
+ * comes in after the runner's "TEST DL4KWA" or "TU", past the over break,
+ * inherited that window (skimmer-compare 2026-10-10: the feed's "taken"
+ * busts — a caller spotted as calling where VE3NEA and RBN heard another
+ * station call — were mostly such callers). A runner's own clean "TU M0NGN
+ * 5NN" stays calling. */
+static gboolean cand_calling(const Cand *c) {
+  return c->cq_context && (!c->addressed || c->cq_clean);
+}
+
+/* "5NN", "599", "ENN" and their kin, a serial number glued on or not. */
+static gboolean report_token(const char *s) {
+  static const char *RST[] = { "5NN", "599", "5NNN", "ENN", "55N" };
+  for (guint i = 0; i < G_N_ELEMENTS(RST); i++) {
+    const gsize n = strlen(RST[i]);
+    if (strncmp(s, RST[i], n) == 0) {
+      const char *t = s + n;
+      while (g_ascii_isdigit(*t)) { t++; }
+      if (*t == '\0' && (t == s + n || i < 2)) { return TRUE; }
+    }
+  }
+  return FALSE;
 }
 
 /* Tokens that never take part in a join: prosigns and stock CW abbreviations
@@ -441,6 +725,49 @@ static gboolean cq_run_token(const char *s) {
       return FALSE;
   }
   return TRUE;
+}
+
+/* CQ-strip — the CQ half of the degenerate fist: the gap AFTER the calling
+ * marker collapses as well, and CQ arrives glued to what follows ("CQDE",
+ * "CQCQDEIZ8BRE", "CQDXDEF8GFA", "CQTEST"). Two days of decode tap
+ * (2026-10-06): of the stations VE3NEA spotted calling that L read but
+ * never saw calling, 98 had no CQ but a glued one. Strictly a fallback like
+ * the DE-strip: a token that is a valid call itself stays whole (CQ7A), and
+ * the remainder must be nothing, DE, DE + a call, or a call — "CQC",
+ * "CQDEM" and the rest of the garble keep their old fate. Returns the
+ * length of the marker head to peel off, 0 when the token is no such run. */
+static gsize cq_glued_head(const char *tok) {
+  gsize i = 0, ncq = 0;
+  gboolean word = FALSE;
+  for (;;) {
+    if (tok[i] == 'C' && tok[i + 1] == 'Q') {
+      i += 2;
+      ncq++;
+    } else if (ncq && strncmp(tok + i, "DX", 2) == 0) {
+      i += 2;
+      word = TRUE;
+    } else if (ncq && strncmp(tok + i, "TEST", 4) == 0) {
+      i += 4;
+      word = TRUE;
+    } else {
+      break;
+    }
+  }
+  if (!ncq)
+    return 0;
+  char bare[CALL_MAX];
+  if (strlen(tok + i) >= sizeof(bare))
+    return 0;
+  g_strlcpy(bare, tok + i, sizeof(bare));
+  const gsize bl = strlen(bare);
+  if (bl > 2 && strcmp(bare + bl - 2, "\xC2\xB7") == 0) { bare[bl - 2] = '\0'; }
+  if (bare[0] == '\0')
+    return word ? i : 0;                       /* pure CQ runs: cq_run_token */
+  if (strcmp(bare, "DE") == 0 || call_ok(bare) ||
+      (bare[0] == 'D' && bare[1] == 'E' && strlen(bare) >= 5 &&
+       call_ok(bare + 2)))
+    return i;
+  return 0;
 }
 
 /* The torn call — gh#3. An operator who leaves a word gap after EVERY group
@@ -493,11 +820,11 @@ static gboolean run_ambiguous(const SkimCallsignExtractor *x, const char *call,
   char with[CALL_MAX + 2];
   if (x->run_lead) {
     g_snprintf(with, sizeof(with), "%c%s", x->run_lead, call);
-    if (skim_callsign_is_valid(with)) { return TRUE; }
+    if (call_ok(with)) { return TRUE; }
   }
   if (trail && x->run_spelled) {
     g_snprintf(with, sizeof(with), "%s%c", call, trail);
-    if (skim_callsign_is_valid(with)) { return TRUE; }
+    if (call_ok(with)) { return TRUE; }
   }
   return FALSE;
 }
@@ -525,7 +852,7 @@ static gboolean run_close(SkimCallsignExtractor *x, char trail) {
       for (guint i = 1; i < r && same; i++) {
         same = memcmp(x->run->str + i * l, call, l) == 0;
       }
-      if (!same || !skim_callsign_is_valid(call))
+      if (!same || !call_ok(call))
         continue;
       if (run_ambiguous(x, call, trail))
         break;
@@ -541,6 +868,168 @@ static gboolean run_close(SkimCallsignExtractor *x, char trail) {
   return hit;
 }
 
+/* SKIM_CALL_FUSED=1 — the fused run. A strong signal whose word gaps the
+ * decoder does not hear comes out as ONE token: "CQCQCQDEIT9VJOIT9VJOIT9VJO
+ * CQCQCQDEIT9VJOIT9VJOPSEK", "DXDERN3QBGRN3QBGRN3QK", "DEDL5ANTDL5ANT"
+ * (live 2026-10-15/16: of the stations CW Skimmer spotted at ≥ 25 dB and L
+ * did not, more than half sat in L's text read exactly — fused like this).
+ * The run is taken apart where the evidence is strong: the calling and
+ * sender markers it opens with peeled off, then a call that REPEATS back to
+ * back ("IT9VJO" three times; twice for a call MASTER.SCP knows), never one
+ * that a copy of it runs on into a longer known call ("OK1OOK1OA" is OK1OA
+ * twice, cut, not OK1O). What is left goes round again; a run that does
+ * not open on a repeat keeps its old fate. A dictionary call read once
+ * between a marker and a "K" was tried as well: it minted the heads of
+ * longer calls (OK1O, ON5C, PA3D — "DEOK1OK…"), busts on 50 h of taps. */
+static gboolean fused_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_FUSED");  /* on since v0.6.0     */
+    on = !(e && e[0]) || strcmp(e, "0") != 0;
+  }
+  return on;
+}
+
+#define FUSED_MAX 96                           /* longest run taken apart    */
+
+static gsize fused_markers(const char *s, gboolean *cq, gboolean *de) {
+  gsize i = 0;
+  for (;;) {
+    if (strncmp(s + i, "CQ", 2) == 0) {
+      i += 2;
+      *cq = TRUE;
+    } else if (strncmp(s + i, "TEST", 4) == 0) {
+      i += 4;
+      *cq = TRUE;
+    } else if (strncmp(s + i, "QRZ", 3) == 0) {
+      i += 3;
+      *cq = TRUE;
+    } else if (i && strncmp(s + i, "DX", 2) == 0) {
+      i += 2;                                  /* "CQDX", "DXDE"             */
+    } else if (strncmp(s + i, "DE", 2) == 0) {
+      i += 2;
+      *de = TRUE;
+    } else {
+      return i;
+    }
+  }
+}
+
+static void take_token(SkimCallsignExtractor *x, const char *tok);
+
+/* A copy of `call` at s that runs on into a LONGER call the dictionary
+ * knows ("OK1O" in "OK1OA", "ON5C" in "ON5CENT") is a cut-down copy of
+ * that one, not a repeat of its own. */
+static gboolean fused_extends(const char *s, gsize l) {
+  char ext[CALL_MAX];
+  for (gsize e = l + 1; e <= l + 4 && e < CALL_MAX && s[e - 1]; e++) {
+    memcpy(ext, s, e);
+    ext[e] = '\0';
+    if (dict_has(ext))
+      return TRUE;
+  }
+  return FALSE;
+}
+
+/* The call that repeats back to back at the head of r (rn bytes): its
+ * length, the call in `call` and the copies in *reps; 0 when none does. */
+static gsize fused_repeat(const char *r, gsize rn, char *call, guint *reps_out) {
+  guint reps = 0;
+  gsize len = 0;
+  for (gsize l = MIN(rn, (gsize)CALL_MAX - 1); l >= 3 && !reps; l--) {
+    memcpy(call, r, l);
+    call[l] = '\0';
+    if (!call_ok(call))
+      continue;
+    guint k = 1;
+    while ((k + 1) * l <= rn && memcmp(r + k * l, call, l) == 0) { k++; }
+    gboolean cut = FALSE;
+    for (guint j = 0; j <= k && !cut; j++) {
+      if (j * l < rn && memcmp(r + j * l, call, MIN(l, rn - j * l)) == 0) {
+        cut = fused_extends(r + j * l, l);
+      }
+    }
+    /* a call the dictionary knows needs two copies, any other three */
+    if (!cut && (k >= 3 || (k >= 2 && dict_has(call)))) {
+      reps = k;
+      len = l;
+    }
+  }
+  if (reps) {
+    memcpy(call, r, len);
+    call[len] = '\0';
+  }
+  *reps_out = reps;
+  return len;
+}
+
+static gboolean fused_split(SkimCallsignExtractor *x, const char *tok) {
+  const gsize n = strlen(tok);
+  if (n < 8 || n > FUSED_MAX)
+    return FALSE;
+  gboolean cq = FALSE, de = FALSE;
+  const gsize h = fused_markers(tok, &cq, &de);
+  const char *r = tok + h;
+  char call[CALL_MAX];
+  guint reps = 0;
+  const gsize len = fused_repeat(r, n - h, call, &reps);
+  if (!len)
+    return FALSE;
+  if (cq) { take_token(x, "CQ"); }
+  if (de) { take_token(x, "DE"); }
+  call[len] = '\0';
+  for (guint i = 0; i < reps; i++) { take_token(x, call); }
+  /* The rest goes round again — unless it is the head of one more copy,
+   * cut where the run ended ("OK1DOLOK1DOLOK1O": OK1O is no station). */
+  const char *rest = r + reps * len;
+  if (rest[0] && strncmp(call, rest, strlen(rest)) != 0) { take_token(x, rest); }
+  return TRUE;
+}
+
+/* SKIM_CALL_GLUE=1 — a call with a word of the QSO glued on: the gap
+ * before PSE, K, UP or 73 not heard ("RO3ZPSE", "UT2QLPSE", "G4ENBK",
+ * "7T5EUP"; live 2026-10-16/17, sent by the feed, confirmed by nobody).
+ * The token splits into the call and the word when the call stands on
+ * its own — the dictionary knows it or this extractor already holds it
+ * as a candidate — and the whole token is no call the dictionary knows. */
+static gboolean glue_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_GLUE");
+    on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  return on;
+}
+
+static gboolean cand_has(const SkimCallsignExtractor *x, const char *call) {
+  for (guint i = 0; i < x->ncand; i++) {
+    if (strcmp(x->cand[i].call, call) == 0)
+      return TRUE;
+  }
+  return FALSE;
+}
+
+static gboolean glue_split(SkimCallsignExtractor *x, const char *tok) {
+  static const char *W[] = { "PSEK", "PSE", "KN", "BK", "UP", "73", "TU", "K" };
+  const gsize n = strlen(tok);
+  if (n < 5 || n >= CALL_MAX || dict_has(tok))
+    return FALSE;
+  for (guint i = 0; i < G_N_ELEMENTS(W); i++) {
+    const gsize lw = strlen(W[i]);
+    if (n < lw + 3 || strcmp(tok + n - lw, W[i]) != 0)
+      continue;
+    char call[CALL_MAX];
+    memcpy(call, tok, n - lw);
+    call[n - lw] = '\0';
+    if (call_ok(call) && (dict_has(call) || cand_has(x, call))) {
+      take_token(x, call);
+      take_token(x, W[i]);
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
 static void take_token(SkimCallsignExtractor *x, const char *tok) {
   if (strcmp(tok, "\xC2\xB7") == 0) {
     /* The decoder's over-break mark ("·") is metadata, not received text —
@@ -553,8 +1042,34 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     run_close(x, 0);
     run_clear(x);
     x->prev_gap = x->prev_tok[0] != '\0';
+    /* a CQ window that runs past an over break may be someone else's */
+    if (x->cq_recent <= CQ_WINDOW) { x->cq_broken = TRUE; }
     return;
   }
+  /* A report right after a call, no over break between: that call is being
+   * ADDRESSED — the runner answering a caller (cand_calling). */
+  if (report_token(tok) && x->prev_tok[0] && !x->prev_gap) {
+    for (guint i = 0; i < x->ncand; i++) {
+      if (strcmp(x->cand[i].call, x->prev_tok) == 0) {
+        x->cand[i].addressed = TRUE;
+        break;
+      }
+    }
+  }
+  if (!call_ok(tok)) {
+    const gsize head = cq_glued_head(tok);
+    if (head) {
+      take_token(x, "CQ");                     /* as if the gap were keyed   */
+      if (tok[head]) { take_token(x, tok + head); }
+      return;
+    }
+    if (fused_on() && fused_split(x, tok))
+      return;
+  }
+  if (glue_on() && glue_split(x, tok))
+    return;
+  if (strlen(tok) >= CALL_MAX)
+    return;                                    /* a run nothing could read   */
   x->tok_n++;
   /* Letter-spaced CQ chain — the TORN twin of the fused "CQCQ" run: the
    * same degenerate fist that glues gaps shut also stretches them, and the
@@ -573,6 +1088,14 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     x->cq_pairs = 0;
   }
   if (strcmp(tok, "DE") == 0) {
+    /* SKIM_CALL_TU=2: "TU 73 UA3WBC DE DK2DR" — the call TU blessed is
+     * the one being worked when DE follows it: not calling. */
+    if (x->tu_call[0] && strcmp(x->prev_tok, x->tu_call) == 0) {
+      for (guint i = 0; i < x->ncand; i++) {
+        if (strcmp(x->cand[i].call, x->tu_call) == 0) { x->cand[i].addressed = TRUE; }
+      }
+    }
+    x->tu_call[0] = '\0';
     run_close(x, 0);
     run_clear(x);
     x->de_pending = 2;
@@ -590,11 +1113,33 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
      * "<call> TU" the thanks may go to the OTHER station. */
     run_close(x, 0);
     run_clear(x);
-    x->cq_recent = 0;
+    /* SKIM_CALL_TU=0: TU still ends a run but opens no calling window —
+     * live 2026-10-16/17, a third of the calls the feed sent and nobody
+     * confirmed were QSO partners after the thanks ("TU 73 UA3WBC DE
+     * DK2DR", "5NN TU OE7PHI"), not a runner re-announcing. */
+    /* SKIM_CALL_TU=2: TU blesses only the very next token, and a DE right
+     * after that call takes the blessing back (see the DE case). */
+    static gint tu_mode = -1;
+    if (G_UNLIKELY(tu_mode < 0)) {
+      const char *e = g_getenv("SKIM_CALL_TU");
+      tu_mode = e && e[0] ? atoi(e) : 2;          /* 2 since v0.6.0     */
+    }
+    const gboolean is_tu = strcmp(tok, "TU") == 0;
+    x->tu_call[0] = '\0';
+    if (is_tu && tu_mode == 0) {
+      x->prev_tok[0] = '\0';
+      return;
+    }
+    /* the window ages before the next token reads it: CQ_WINDOW - 1
+     * leaves exactly that one token inside */
+    x->cq_recent = is_tu && tu_mode == 2 ? CQ_WINDOW - 1 : 0;
+    x->tu_win = is_tu && tu_mode == 2;
+    x->cq_broken = FALSE;
     if (strcmp(tok, "TU") != 0 && x->prev_tok[0]) {
       for (guint i = 0; i < x->ncand; i++) {
         if (strcmp(x->cand[i].call, x->prev_tok) == 0) {
           x->cand[i].cq_context = TRUE;
+          if (!x->prev_gap) { x->cand[i].cq_clean = TRUE; }
           break;
         }
       }
@@ -604,9 +1149,32 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
   }
   if (x->cq_recent <= CQ_WINDOW) { x->cq_recent++; }
 
-  const gboolean valid = skim_callsign_is_valid(tok) && strlen(tok) < CALL_MAX;
+  /* SKIM_CALL_EXCH=1: "<call> 5NN …" is a runner sending the report to
+   * the station it works — as strong a marker for that call as DE is for
+   * the sender's own (CQ WW 2012: a caller heard once in a runner's
+   * exchange never reached 0.85, CW Skimmer spots such callers). */
+  static gint exch_on = -1;
+  if (G_UNLIKELY(exch_on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_EXCH");
+    exch_on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  if (exch_on && x->prev_valid && x->prev_tok[0] &&
+      (g_str_has_prefix(tok, "5NN") || g_str_has_prefix(tok, "599"))) {
+    for (guint i = 0; i < x->ncand; i++) {
+      if (strcmp(x->cand[i].call, x->prev_tok) == 0) {
+        x->cand[i].exch = TRUE;
+        break;
+      }
+    }
+  }
+
+  const gboolean valid = call_ok(tok) && strlen(tok) < CALL_MAX;
   const gboolean de_now = x->de_pending > 0;
   const gboolean cq_now = x->cq_recent <= CQ_WINDOW;
+  if (x->tu_win) {
+    if (cq_now && valid) { g_strlcpy(x->tu_call, tok, sizeof(x->tu_call)); }
+    if (!cq_now) { x->tu_win = FALSE; }
+  }
 
   /* Join hypothesis — the sloppy-fist fix: an operator who stretches an
    * inter-letter gap splits their call across two tokens ("EA3I XQ" for
@@ -624,7 +1192,7 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     if (strlen(x->prev_tok) + strlen(tok) < CALL_MAX) {
       g_snprintf(join, sizeof(join), "%s%s", x->prev_tok, tok);
       const gboolean known = dict_has(join);
-      if (skim_callsign_is_valid(join) &&
+      if (call_ok(join) &&
           (known || valid != x->prev_valid || x->prev_gap)) {
         cand_add(x, join, 2, x->prev_de || de_now, x->prev_cq || cq_now);
         if (!valid && !x->prev_valid) {
@@ -637,14 +1205,14 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
    * together with it ("NU·", "R·"): for the run that is the bare token,
    * then the mark. */
   const gboolean de_glued = !valid && strlen(tok) >= 5 && tok[0] == 'D' &&
-                            tok[1] == 'E' && skim_callsign_is_valid(tok + 2);
+                            tok[1] == 'E' && call_ok(tok + 2);
   char  bare[CALL_MAX];
   gsize bl = strlen(tok);
   const gboolean marked = bl > 2 && strcmp(tok + bl - 2, "\xC2\xB7") == 0;
   g_strlcpy(bare, tok, sizeof(bare));
   if (marked) { bare[bl - 2] = '\0'; }
   if (stop || valid || de_glued || run_edge_token(bare) ||
-      (marked && (join_stop_word(bare) || skim_callsign_is_valid(bare)))) {
+      (marked && (join_stop_word(bare) || call_ok(bare)))) {
     run_close(x, marked ? '\0' : lone_stop_letter(tok));   /* an edge    */
     run_clear(x);
     if (!marked) { x->run_lead = lone_stop_letter(tok); }
@@ -691,24 +1259,99 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
   x->de_pending = 0;
 }
 
+/* SKIM_CALL_DESPACE=1 — the torn run, the fused run's mirror. A fist whose
+ * character gaps stretch to a word gap's length comes out with spaces
+ * INSIDE the call: "CQ CQ CQ D E G 0WD T G 0WD T G 0WD T P SE K", "Y O4 BE
+ * X Y O4 BE X" (live recordings 2026-10-15/16: 15 % of the stations CW
+ * Skimmer spotted and L missed). At the over break the over is read once
+ * more with its spaces dropped, the fused-run rule applied after every
+ * calling or sender marker in it: a call repeating back to back becomes a
+ * candidate — unless the over already held it as a token of its own,
+ * which the plain path has counted. */
+static gboolean despace_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_DESPACE");  /* on since v0.6.0   */
+    on = !(e && e[0]) || strcmp(e, "0") != 0;
+  }
+  return on;
+}
+
+#define OVER_MAX 240                           /* bytes of an over kept      */
+
+static void despace_scan(SkimCallsignExtractor *x) {
+  const char *s = x->over->str;
+  const gsize n = x->over->len;
+  for (gsize i = 0; i + 5 < n;) {
+    if (strncmp(s + i, "CQ", 2) != 0 && strncmp(s + i, "DE", 2) != 0 &&
+        strncmp(s + i, "TEST", 4) != 0) {
+      i++;
+      continue;
+    }
+    gboolean cq = FALSE, de = FALSE;
+    const gsize h = fused_markers(s + i, &cq, &de);
+    char call[CALL_MAX];
+    guint reps = 0;
+    const gsize l = fused_repeat(s + i + h, n - i - h, call, &reps);
+    if (!l) {
+      i += MAX(h, (gsize)1);
+      continue;
+    }
+    char key[CALL_MAX + 2];
+    g_snprintf(key, sizeof(key), " %s ", call);
+    if (!strstr(x->over_toks->str, key)) {
+      if (G_UNLIKELY(g_getenv("SKIM_DESPACE_DEBUG"))) {
+        g_printerr("despace: %s x%u%s%s\n", call, reps, cq ? " cq" : "", de ? " de" : "");
+      }
+      for (guint k = 0; k < MIN(reps, 3u); k++) { cand_add(x, call, 2, de, cq); }
+      g_string_append(x->over_toks, key + 1);   /* once per over            */
+    }
+    i += h + l * reps;
+  }
+  g_string_set_size(x->over, 0);
+  g_string_assign(x->over_toks, " ");
+}
+
+/* Keep the over's text (spaces dropped) and its tokens; scan at the break. */
+static void despace_note(SkimCallsignExtractor *x, const char *tok) {
+  const char *mark = strstr(tok, "\xC2\xB7");
+  const gsize n = mark ? (gsize)(mark - tok) : strlen(tok);
+  if (n) {
+    g_string_append_len(x->over, tok, n);
+    g_string_append_len(x->over_toks, tok, n);
+    g_string_append_c(x->over_toks, ' ');
+  }
+  if (mark || x->over->len > OVER_MAX) { despace_scan(x); }
+}
+
 void skim_callsign_extractor_feed(SkimCallsignExtractor *x, const char *text) {
   for (const char *p = text; *p; p++) {
     const char c = *p;
+    if (c == SKIM_CALLSIGN_FIX_OPEN) {         /* the decoder's correction:  */
+      g_string_set_size(x->tok, 0);            /* the raw word is replaced   */
+      continue;
+    }
+    if (c == SKIM_CALLSIGN_FIX_CLOSE)
+      continue;
     if (c == ' ' || c == '\n' || c == '\t') {
       if (x->tok->len) {
-        if (x->tok->len < CALL_MAX) { take_token(x, x->tok->str); }
+        /* a glued CQ chain may run past a call's length ("CQCQCQDEON4LDL") */
+        if (x->tok->len < CALL_MAX || cq_glued_head(x->tok->str) ||
+            (fused_on() && x->tok->len >= 8)) {
+          take_token(x, x->tok->str);
+        }
+        if (despace_on()) { despace_note(x, x->tok->str); }
         g_string_set_size(x->tok, 0);
       }
       continue;
     }
     g_string_append_c(x->tok, g_ascii_toupper(c));
-    if (x->tok->len > CALL_MAX) { g_string_set_size(x->tok, 0); }
+    if (x->tok->len > (fused_on() ? FUSED_MAX : TOK_MAX)) { g_string_set_size(x->tok, 0); }
   }
 }
 
-double skim_callsign_extractor_best_ex(SkimCallsignExtractor *x,
-                                       char *out, gsize out_size,
-                                       gboolean *cq_context) {
+/* The leading candidate, threshold aside (best_ex and top share it). */
+static const Cand *best_pick(const SkimCallsignExtractor *x, double *score) {
   double best = 0.0;
   const Cand *bc = NULL;
   for (guint i = 0; i < x->ncand; i++) {
@@ -727,13 +1370,78 @@ double skim_callsign_extractor_best_ex(SkimCallsignExtractor *x,
       bc = &x->cand[i];
     }
   }
-  if (cq_context) { *cq_context = bc ? bc->cq_context : FALSE; }
+  *score = best;
+  return bc;
+}
+
+gboolean skim_callsign_extractor_top(const SkimCallsignExtractor *x,
+                                     SkimCallsignCand *out) {
+  double s = 0.0;
+  const Cand *c = x ? best_pick(x, &s) : NULL;
+  memset(out, 0, sizeof(*out));
+  if (!c || s <= 0.0)
+    return FALSE;
+  g_strlcpy(out->call, c->call, sizeof(out->call));
+  out->score       = s;
+  out->count       = c->count;
+  out->parts       = c->parts;
+  out->idle_tokens = x->tok_n - c->last_tok;
+  out->de_marked   = c->de_marked;
+  out->cq_context  = cand_calling(c);
+  out->dict        = dict_has(c->call);
+  out->last_us     = c->last_us;
+  return TRUE;
+}
+
+void skim_callsign_extractor_set_now(SkimCallsignExtractor *x, gint64 now_us) {
+  if (x) { x->now_us = now_us; }
+}
+
+gint64 skim_callsign_extractor_last_heard(const SkimCallsignExtractor *x,
+                                          const char *call) {
+  if (!x || !call)
+    return -1;
+  for (guint i = 0; i < x->ncand; i++) {
+    if (strcmp(x->cand[i].call, call) == 0) { return x->cand[i].last_us; }
+  }
+  return -1;
+}
+
+double skim_callsign_extractor_best_ex(SkimCallsignExtractor *x,
+                                       char *out, gsize out_size,
+                                       gboolean *cq_context) {
+  double best = 0.0;
+  const Cand *bc = best_pick(x, &best);
+  if (cq_context) { *cq_context = bc ? cand_calling(bc) : FALSE; }
   if (!bc || best < SKIM_CALLSIGN_SPOT_THRESHOLD) {
     if (out && out_size) { out[0] = '\0'; }
     return 0.0;
   }
   if (out && out_size) { g_strlcpy(out, bc->call, out_size); }
   return best;
+}
+
+gboolean skim_callsign_extractor_addressed(const SkimCallsignExtractor *x,
+                                           const char *call) {
+  if (!x || !call)
+    return FALSE;
+  for (guint i = 0; i < x->ncand; i++) {
+    const Cand *c = &x->cand[i];
+    if (strcmp(c->call, call) == 0) {
+      return c->cq_context && !cand_calling(c);
+    }
+  }
+  return FALSE;
+}
+
+guint skim_callsign_extractor_hearings(const SkimCallsignExtractor *x,
+                                       const char *call) {
+  if (!x || !call)
+    return 0;
+  for (guint i = 0; i < x->ncand; i++) {
+    if (strcmp(x->cand[i].call, call) == 0) { return x->cand[i].count; }
+  }
+  return 0;
 }
 
 double skim_callsign_extractor_best(SkimCallsignExtractor *x,

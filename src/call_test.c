@@ -54,7 +54,8 @@ int main(void) {
     "OK1BR", "W1AW", "K1A", "DL1ABC", "LZ2PP", "UA9CDC", "F5IN", "G3XYZ",
     "B1HQ", "9A1AA", "2E0ABC", "3DA0RS", "E73ABC", "T77XX", "C6AGU",
     "VK6ABC", "ZL4AA", "5B4AH", "9V1AB", "OK1BR/P", "OK1BR/4", "F/OK1BR",
-    "HB9CV", "OL2025X", "SP9XYZ", "PY2ABC",
+    "HB9CV", "OL2025X", "SP9XYZ", "PY2ABC", "OK1BR/QRP", "W1AW/CA",
+    "DL/OK1BR", "OK1BR/MM",
   };
   int good_ok = 0;
   for (guint i = 0; i < G_N_ELEMENTS(GOOD); i++) {
@@ -64,7 +65,7 @@ int main(void) {
       printf("       rejected valid: %s\n", GOOD[i]);
     }
   }
-  check("accepts real callsigns incl. rare prefixes (26/26)",
+  check("accepts real callsigns incl. rare prefixes (30/30)",
         good_ok == (int)G_N_ELEMENTS(GOOD));
 
   /* -- validity: must reject ------------------------------------------------- */
@@ -78,6 +79,8 @@ int main(void) {
     "0K1BR", "OK1BR2",           /* zero-first, suffix ends in a digit       */
     "OK1BRXYZQ",                 /* too long                                 */
     "OK1BR/P/M",                 /* two designators                          */
+    "F5TLF/P+", "HB9TVK/P+K",    /* designators read off glued text          */
+    "SM7FBJ/PIN", "PHB/SM7FBJ",  /* three letters are only ever QRP          */
   };
   int bad_ok = 0;
   for (guint i = 0; i < G_N_ELEMENTS(BAD); i++) {
@@ -87,7 +90,7 @@ int main(void) {
       printf("       accepted garbage: %s\n", BAD[i]);
     }
   }
-  check("rejects garbage and decode-error shapes (18/18)",
+  check("rejects garbage and decode-error shapes (25/25)",
         bad_ok == (int)G_N_ELEMENTS(BAD));
 
   /* -- labelled corpus: realistic decoder lines ------------------------------ */
@@ -186,6 +189,25 @@ int main(void) {
     skim_callsign_extractor_free(x);
   }
 
+  /* -- hearings: copies read, the RBN feed's second gate -------------------------- */
+  {
+    SkimCallsignExtractor *x = skim_callsign_extractor_new();
+    char got[32];
+    /* ONE copy after CQ DE already clears the feed's 0.85 score … */
+    skim_callsign_extractor_feed(x, "CQ DE SM7XYZ K ");
+    double s = skim_callsign_extractor_best(x, got, sizeof(got));
+    check("one copy after CQ DE scores past 0.85 (why hearings exist)",
+          s >= 0.85 && strcmp(got, "SM7XYZ") == 0);
+    check("…but counts as ONE hearing",
+          skim_callsign_extractor_hearings(x, "SM7XYZ") == 1);
+    skim_callsign_extractor_feed(x, "CQ DE SM7XYZ SM7XYZ K ");
+    check("two more copies: three hearings",
+          skim_callsign_extractor_hearings(x, "SM7XYZ") == 3);
+    check("a call that is no candidate: zero hearings",
+          skim_callsign_extractor_hearings(x, "OK1BR") == 0);
+    skim_callsign_extractor_free(x);
+  }
+
   /* -- calling context: leading and trailing markers ---------------------------- */
   {
     SkimCallsignExtractor *x = skim_callsign_extractor_new();
@@ -213,6 +235,33 @@ int main(void) {
     check("an S&P answer is NOT flagged as calling",
           strcmp(got, "EA2BTN") == 0 && !cq);
     skim_callsign_extractor_free(x);
+
+    /* A caller after the runner's TEST/TU, past the over break, inherits
+     * that window — the report the runner sends it takes it back (tap,
+     * 2026-10-10: "TEST DL4KWA E TEST · P PE2K · PE2K GT 5NN"). */
+    static const struct { const char *text, *call; gboolean calling; const char *what; }
+    addr[] = {
+      { "TEST DL4KWA TEST · PE2K PE2K 5NN ", "PE2K", FALSE,
+        "caller past the over break, then 5NN → not calling (PE2K)" },
+      { "5NN TU · RM5Z RM5Z 599 ", "RM5Z", FALSE,
+        "caller after TU · then 599 → not calling (RM5Z)" },
+      { "TEST DL4KWA TEST · PE2K PE2K ", "PE2K", TRUE,
+        "no report: the window still counts (PE2K, today's rule)" },
+      { "TEST DL4KWA TEST · PE2K PE2K · 5NN ", "PE2K", TRUE,
+        "an over break between the call and the report → still calling" },
+      { "CQ TEST UR3VZ UR3VZ 5NN15 ", "UR3VZ", TRUE,
+        "a clean CQ window wins over a report (UR3VZ calling)" },
+    };
+    for (guint i = 0; i < G_N_ELEMENTS(addr); i++) {
+      x = skim_callsign_extractor_new();
+      skim_callsign_extractor_feed(x, addr[i].text);
+      cq = !addr[i].calling;
+      s = skim_callsign_extractor_best_ex(x, got, sizeof(got), &cq);
+      check(addr[i].what, strcmp(got, addr[i].call) == 0 && cq == addr[i].calling &&
+                          skim_callsign_extractor_addressed(x, addr[i].call) ==
+                              !addr[i].calling);
+      skim_callsign_extractor_free(x);
+    }
   }
 
   /* -- degenerate fist: gaps around the markers collapse (2026-07-16) ---------- */
@@ -245,6 +294,50 @@ int main(void) {
     s = skim_callsign_extractor_best(x, got, sizeof(got));
     check("valid DE-prefixed call stays whole (DE1ABC never stripped)",
           s >= SKIM_CALLSIGN_SPOT_THRESHOLD && strcmp(got, "DE1ABC") == 0);
+    skim_callsign_extractor_free(x);
+
+    /* CQ-strip: the marker glued onto DE / DE+call / the call (tap of
+     * 2026-10-04..06 — CQDE, CQCQCQDEIZ8BRI, CQDXDEF8GFA; one past a call's
+     * length) — the call must come out flagged calling */
+    {
+      static const struct { const char *text, *call; } glued[] = {
+        { "CQDE IQ6MW IQ6MW K ", "IQ6MW" },
+        { "CQCQCQDEIZ8BRI IZ8BRI IZ8BRI K ", "IZ8BRI" },
+        { "CQDXDEF8GFA F8GFA K ", "F8GFA" },
+        { "CQCQCQCQDEON4LDL ON4LDL K ", "ON4LDL" },
+        { "CQTEST SF6W SF6W ", "SF6W" },
+      };
+      for (guint i = 0; i < G_N_ELEMENTS(glued); i++) {
+        x = skim_callsign_extractor_new();
+        skim_callsign_extractor_feed(x, glued[i].text);
+        cq = FALSE;
+        s = skim_callsign_extractor_best_ex(x, got, sizeof(got), &cq);
+        char what[96];
+        g_snprintf(what, sizeof(what), "CQ-strip: %s→ %s, flagged calling",
+                   glued[i].text, glued[i].call);
+        check(what, s >= SKIM_CALLSIGN_SPOT_THRESHOLD &&
+                    strcmp(got, glued[i].call) == 0 && cq);
+        skim_callsign_extractor_free(x);
+      }
+    }
+
+    /* a valid call that begins with CQ (Portugal) is never stripped */
+    x = skim_callsign_extractor_new();
+    skim_callsign_extractor_feed(x, "CQ DE CQ7MEL CQ7MEL K ");
+    s = skim_callsign_extractor_best(x, got, sizeof(got));
+    check("valid CQ-prefixed call stays whole (CQ7MEL never stripped)",
+          !skim_callsign_is_valid("CQ7MEL") ||
+          (s >= SKIM_CALLSIGN_SPOT_THRESHOLD && strcmp(got, "CQ7MEL") == 0));
+    skim_callsign_extractor_free(x);
+
+    /* a glued CQ in front of garble flags nothing: no remainder that is DE,
+     * DE + a call or a call — and an answer after it is not blessed */
+    x = skim_callsign_extractor_new();
+    skim_callsign_extractor_feed(x, "CQDEM CQXYZ CQC EA2BTN EA2BTN 5NN ");
+    cq = FALSE;
+    s = skim_callsign_extractor_best_ex(x, got, sizeof(got), &cq);
+    check("glued CQ before garble flags nothing (EA2BTN not calling)",
+          strcmp(got, "EA2BTN") == 0 && !cq);
     skim_callsign_extractor_free(x);
 
     /* strict shapes only: DE-glued garbage and almost-CQ runs all die */

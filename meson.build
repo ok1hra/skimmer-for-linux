@@ -1,5 +1,5 @@
 project('skimmer-for-linux', 'c',
-  version : '0.5.0',
+  version : '0.6.0',
   license : 'GPL-3.0-or-later',
   default_options : [
     'c_std=c11',
@@ -44,7 +44,9 @@ dl_dep = cc.find_library('dl', required : false)
 # and expose the architecture; no pipeline wired yet.
 engine_sources = [
   'src/engine/tci_client.c',   # M1: WS client, IQ ingest, conjugate, outgoing SPOT
+  'src/engine/hpsdr_p1.c',     # HPSDR Protocol 1 IQ source (Red Pitaya), no TCI
   'src/engine/channelizer.c',  # M2: polyphase filter bank → complex channels
+  'src/engine/fftw_lock.c',    # FFTW planner is not thread-safe: one lock
   'src/engine/decode_cw.c',    # M3: CW backend (implements decode.h)
   'src/engine/decode_cw_v2.c', # CW v2: semi-Markov Viterbi (QSB-proof)
   'src/engine/decode_rtty.c',  # M7: RTTY backend (Baudot FSK)
@@ -61,6 +63,9 @@ engine_sources = [
   'src/engine/rbn_feed.c',     # M6: RBN telnet server (CW Skimmer dialect)
   'src/engine/spectrum.c',     # M8: band spectrum rows for the waterfall
   'src/engine/pipeline.c',     # M5: the engine assembled end to end
+  'src/engine/gatelog.c',      # feed-gate learning logs (decode tap + rows)
+  'src/engine/feed_gate.c',    # the learned feed gate (shadow mode)
+  'src/engine/feed_fold.c',    # RBN feed: busted twins of a sent call
 ]
 engine_deps = [glib_dep, gio_dep, lws_dep, wdsp_dep, fftw3f_dep, m_dep, dl_dep]
 
@@ -90,10 +95,48 @@ executable('skimmer-tci-probe',
   link_with : engine_lib,
 )
 
+# Offline gate — mock Red Pitaya sdr-receiver-hpsdr (UDP) + skim_hpsdr_client:
+# discovery, EP2 bytes (rate, one RX, ppm-corrected word), RF-inverted wire
+# conjugated on ingest, gap zero-fill, busy/take-over etiquette, stop, watchdog.
+skimmer_hpsdr_test = executable('skimmer-hpsdr-test',
+  ['src/hpsdr_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('hpsdr-client', skimmer_hpsdr_test, timeout : 60)
+
+# Live gate — discovery + IQ ingest straight from an HPSDR Protocol 1
+# receiver (Red Pitaya sdr_receiver_hpsdr); records cf32 + .meta for replay.
+executable('skimmer-hpsdr-probe',
+  ['src/hpsdr_probe_main.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+
 # M3 A/B harness: offline decode of a probe-recorded cf32 sample through the
 # full pipeline — decoder versions diff on the same off-air corpus.
 executable('skimmer-replay',
   ['src/replay_main.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+
+# Feed-gate learning: replay a decode tap (headless [feed] tap=) through the
+# extractor → station table → RBN gate, offline, on the tap's own clock.
+executable('skimmer-tap-replay',
+  ['src/tap_replay_main.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+
+# Decoder benchmark: the CW backend alone on dumped channelizer channels
+# (skimmer-replay SKIM_DUMP_CHAN) — skimmer-compare/cqww/corpus.py.
+executable('skimmer-cw-bench',
+  ['src/cw_bench_main.c'],
   include_directories : include_directories('src'),
   dependencies : engine_deps,
   link_with : engine_lib,
@@ -189,6 +232,26 @@ skimmer_call_test = executable('skimmer-call-test',
 )
 test('callsign', skimmer_call_test, timeout : 60)
 
+# Learned feed gate: a known ini gives a known p, bad inis are refused,
+# the tracker's window/neighbour features, likeness as skimcmp's similar().
+skimmer_feed_gate_test = executable('skimmer-feed-gate-test',
+  ['src/feed_gate_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('feed-gate', skimmer_feed_gate_test, timeout : 60)
+
+# RBN feed twin fold: a glued/cut twin of a call sent lately on the
+# frequency is held back unless it is the better-attested call.
+skimmer_feed_fold_test = executable('skimmer-feed-fold-test',
+  ['src/feed_fold_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('feed-fold', skimmer_feed_fold_test, timeout : 60)
+
 # Logbook dup lookup gate: mock log-for-linux UDP responder — verdict
 # round-trips (newline answers), silence→UNKNOWN, TTL cache, re-ask
 # suppression, and the shared verdict→colour rule.
@@ -243,6 +306,15 @@ skimmer_scp_test = executable('skimmer-scp-test',
   link_with : engine_lib,
 )
 test('scp-update', skimmer_scp_test, timeout : 180)
+
+# Multi-band skimmer without a GUI: one HPSDR P1 receiver (Red Pitaya) with
+# up to 8 RX, one pipeline per band, one telnet feed, console + web status.
+executable('skimmer-headless',
+  ['src/headless_main.c', 'src/app/scp_update.c'],   # updater is GTK-free
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps + [curl_dep],
+  link_with : engine_lib,
+)
 
 # --- Application ------------------------------------------------------------
 executable('skimmer-for-linux',

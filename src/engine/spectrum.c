@@ -6,6 +6,7 @@
 #include "spectrum.h"
 
 #include <fftw3.h>
+#include "fftw_lock.h"
 #include <math.h>
 #include <string.h>
 
@@ -55,8 +56,10 @@ SkimSpectrum *skim_spectrum_new(double rate) {
   /* FORWARD: the wire is the true spectrum, +f → positive bin. The
    * channelizer's BACKWARD plan belongs to its polyphase structure, not to
    * the orientation of the stream. Same planner flag as the channelizer. */
+  skim_fftw_lock();
   s->plan = fftwf_plan_dft_1d((int)s->n, s->in, s->out, FFTW_FORWARD,
                               FFTW_ESTIMATE);
+  skim_fftw_unlock();
   double wsum = 0.0;
   s->w2cum = g_new(double, s->n + 1);
   s->w2cum[0] = 0.0;
@@ -72,7 +75,9 @@ SkimSpectrum *skim_spectrum_new(double rate) {
 void skim_spectrum_free(SkimSpectrum *s) {
   if (!s)
     return;
+  skim_fftw_lock();
   fftwf_destroy_plan(s->plan);
+  skim_fftw_unlock();
   fftwf_free(s->in);
   fftwf_free(s->out);
   g_free(s->win);

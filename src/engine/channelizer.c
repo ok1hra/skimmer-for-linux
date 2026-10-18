@@ -24,6 +24,7 @@
 #include "channelizer.h"
 
 #include <fftw3.h>
+#include "fftw_lock.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -106,8 +107,10 @@ SkimChannelizer *skim_channelizer_new_ex(double in_rate, double chan_bw_hz,
   ch->hist    = g_new0(float, 2 * ch->P);
   ch->fft_in  = fftwf_alloc_complex(M);
   ch->fft_out = fftwf_alloc_complex(M);
+  skim_fftw_lock();
   ch->plan    = fftwf_plan_dft_1d((int)M, ch->fft_in, ch->fft_out,
                                   FFTW_BACKWARD, FFTW_ESTIMATE);
+  skim_fftw_unlock();
   ch->ring = g_new0(float, (gsize)M * RING_CAP * 2);
   ch->wr   = g_new0(guint, M);
   ch->cnt  = g_new0(guint, M);
@@ -117,7 +120,9 @@ SkimChannelizer *skim_channelizer_new_ex(double in_rate, double chan_bw_hz,
 void skim_channelizer_free(SkimChannelizer *ch) {
   if (!ch)
     return;
+  skim_fftw_lock();
   fftwf_destroy_plan(ch->plan);
+  skim_fftw_unlock();
   fftwf_free(ch->fft_in);
   fftwf_free(ch->fft_out);
   g_free(ch->proto);

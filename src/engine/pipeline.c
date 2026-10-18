@@ -27,6 +27,10 @@
 #include "decode_cw.h"
 #include "decode_deepcw.h"
 #include "decode_rtty.h"
+#include "feed_fold.h"
+#include "feed_gate.h"
+#include "gatelog.h"
+#include "hpsdr_p1.h"
 #include "spot_out.h"
 #include "tci_client.h"
 #include "tone_split.h"
@@ -40,10 +44,32 @@
 /* RBN policy: the network keeps its own history, so re-announce sparsely
  * (the panadapter's 180 s is about keeping labels alive — not needed here)
  * and only re-spot a move that is a real QSY, not estimate convergence. */
-#define RBN_MIN_SCORE_DEFAULT 0.85
+/* 0.90 since v0.6.0: busts 7.2 -> 5.5 % on 50 h of live taps for -0.5
+ * points of recall (0.85 before; 0.95: 3.8 % but -2.8 points). */
+#define RBN_MIN_SCORE_DEFAULT 0.90
 #define RBN_RESPOT_S          600
 #define RBN_QSY_HZ            100.0
 #define RBN_MAX_PER_S         5
+/* RBN feed policy beyond the score — see SkimPipelineConfig.rbn_min_hearings
+ * and .rbn_settle_s. Two hearings is what a CQ cycle gives a real station
+ * ("CQ DE X X K"); 8 s covers the rest of the over that tears a call. */
+#define RBN_MIN_HEARINGS_DEFAULT 2
+#define RBN_SETTLE_S_DEFAULT     8.0
+/* 60 s since v0.6.0 (30 before): 50 h of live taps, recall / bust 67.7 / 4.9
+ * at 30 s, 67.3 / 4.3 at 60, 67.0 / 3.8 at 90, 63.4 / 2.3 at 120 — past ~90 s
+ * the release finds the station no longer fresh. */
+#define RBN_SETTLE_NODICT_S_DEFAULT 60.0  /* see rbn_settle_nodict_s     */
+/* A call older than this since its last READ copy is a stale candidate, not
+ * a station (cfg.rbn_fresh_s; < 0 = no such gate). 120 s since v0.6.0: the
+ * live skimmer ran it from 2026-10-02 on and every measurement of v0.6.0's
+ * changes was taken with it (skimmer-tap-replay --fresh-s). */
+#define RBN_FRESH_S_DEFAULT      120.0
+/* The twin fold (cfg.rbn_fold_s, feed_fold.h; < 0 = off): 600 s since
+ * v0.6.0, for the same reason. A call's own run of lines goes on while it was sent within the
+ * window plus one re-spot period — the feed repeats a station only every
+ * RBN_RESPOT_S, so a gap that long is still the same run. */
+#define RBN_FOLD_S_DEFAULT       600.0
+#define RBN_FOLD_HZ              300.0
 /* A station silent this long leaves the table (and its panadapter label is
  * SPOT_DELETEd). 120 s rides out one side of a QSO; the old 600 s kept a
  * contest band map full of stations long gone (Richard, 2026-07-15). */
@@ -145,6 +171,7 @@ struct _SkimPipeline {
   char              *host;
 
   SkimTciClient    *tci;
+  SkimHpsdrClient  *hpsdr;                     /* source HPSDR (tci is NULL) */
   SkimChannelizer  *bank;
   double            bank_rate;
   double            center_hz;                 /* last block's dds centre    */
@@ -155,12 +182,26 @@ struct _SkimPipeline {
   gboolean          use_split;
   double            focus_fc;                  /* single-carrier cutoff; 0=off */
   guint             nchan;
+  FILE            **chdump;                    /* SKIM_DUMP_CHAN, per channel */
 
   SkimStationTable *stations;
   SkimSpotOut      *spots;
   SkimSpotOut      *rbn_spots;                 /* RBN policy → cfg.rbn feed  */
   SkimDupQuery     *dupq;                      /* logbook dup verdicts       */
   double            rbn_min;
+  guint             rbn_hearings;              /* feed gate: copies read     */
+  gint64            rbn_settle_us;             /* feed hold-back; 0 = none   */
+  gint64            rbn_fresh_us;              /* last read ≤ this; 0 = any  */
+  SkimFeedFold     *rbn_fold;                  /* twin fold; NULL = off      */
+  gint64            rbn_fold_us;
+  gint              rbn_folded;                /* atomic: calls held back    */
+  gint64            rbn_settle_nd_us;          /* the same, no dictionary hit */
+  GHashTable       *near;                      /* call → NearRec (gate memo) */
+  double            near_hz;                   /* SKIM_GATE_NEAR; 0 = off    */
+  double            near_dict;                 /* SKIM_GATE_NEAR_DICT        */
+  gint64            near_ttl_us;
+  GHashTable       *rbn_pending;               /* call → gint64* due time;
+                                                * 0 = settled, send freely  */
 
   GArray           *hits;                      /* Hit — one block's decodes  */
   double           *lvl;                       /* per-channel level snapshot */
@@ -186,9 +227,18 @@ struct _SkimPipeline {
 
   char             *dlog_path;                 /* decode log (engine thread) */
   FILE             *dlog;
+  SkimGateLog      *glog;                      /* feed-gate learning logs    */
+  SkimFeedGate      *fgate;                     /* learned gate, shadow       */
+  SkimFeedGateTrack *fgtrack;                   /* its features               */
+  char              *band;
+  gint              fg_spots, fg_below;        /* atomic: status thread reads */
+  gint64            wall_off_us;               /* tap replay: UTC − stream   */
+  gint64            tap_clock_us;              /* last clock line in the tap */
 
   SkimPipelineStationCb station_cb;
   gpointer              station_user;
+  SkimPipelineFeedCb    feed_cb;
+  gpointer              feed_user;
   SkimPipelineStationGoneCb gone_cb;
   gpointer                  gone_user;
   SkimPipelineTextCb    text_cb;
@@ -232,6 +282,12 @@ static gint64 pipe_now_us(const SkimPipeline *p) {
 
 static gint64 pipe_clock_cb(gpointer user) {
   return pipe_now_us(user);
+}
+
+/* UTC for the learning logs: what compare's recordings are stamped with.
+ * A tap replay carries the recorded wall clock along with its stream time. */
+static gint64 pipe_wall_us(const SkimPipeline *p) {
+  return p->offline ? p->stream_us + p->wall_off_us : g_get_real_time();
 }
 
 /* Decode-log timestamp: STREAM time offline (deterministic replays), wall
@@ -315,14 +371,44 @@ static void station_gone_fwd(const SkimStation *st, gpointer user);
 /* RBN spot_out sink → the telnet feed (user = the borrowed SkimRbnFeed). */
 static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
                          double snr_db, double speed, gpointer user) {
-  skim_rbn_feed_spot(user, call, mode, freq_hz, snr_db, speed);
+  SkimPipeline *p = user;
+  /* SKIM_FEED_TRACE=1: every line that goes on the wire, after the policy
+   * AND spot_out's dedup — what an A/B of two feed policies compares. The
+   * time is the pipeline clock: stream seconds offline (a replay lines its
+   * feed up with a live log of the same recording), monotonic live. */
+  if (g_getenv("SKIM_FEED_TRACE")) {
+    g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm t=%.1f\n", call,
+               freq_hz / 1000.0, snr_db, speed, pipe_now_us(p) / 1e6);
+  }
+  if (p->rbn_fold) {
+    const SkimStation *st = skim_station_table_lookup(p->stations, call);
+    skim_feed_fold_sent(p->rbn_fold, call, freq_hz, pipe_now_us(p),
+                        st ? st->hearings : 0, skim_callsign_dict_has(call));
+  }
+  if (p->fgate) {
+    /* shadow: score the line, report it — the hand gate already decided */
+    double x[SKIM_FEED_GATE_NFEAT];
+    skim_feed_gate_track_features(p->fgtrack, pipe_now_us(p), pipe_wall_us(p),
+                                  call, freq_hz, p->band, x);
+    const double lr = skim_feed_gate_p(p->fgate, x);
+    g_atomic_int_inc(&p->fg_spots);
+    if (lr < skim_feed_gate_threshold(p->fgate)) { g_atomic_int_inc(&p->fg_below); }
+    skim_gatelog_spot(p->glog, pipe_now_us(p), pipe_wall_us(p), call, freq_hz,
+                      snr_db, speed, lr, x, SKIM_FEED_GATE_NFEAT);
+  } else {
+    skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "spot", call,
+                       freq_hz, snr_db, speed);
+  }
+  skim_rbn_feed_spot(p->cfg.rbn, call, mode, freq_hz, snr_db, speed);
 }
 
 SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
   SkimPipeline *p = g_new0(SkimPipeline, 1);
   p->cfg = *cfg;
   p->cw_engine = cw_engine_pick(cfg);
-  p->host = g_strdup(cfg->host ? cfg->host : "127.0.0.1");
+  p->host = g_strdup(cfg->host ? cfg->host
+                    : cfg->source == SKIM_PIPELINE_SOURCE_HPSDR ? "192.168.1.21"
+                                                                : "127.0.0.1");
   p->cfg.host = p->host;
   p->dlog_path = g_strdup(cfg->decode_log_path);
   if (p->cfg.chan_bw_hz <= 0) {
@@ -357,10 +443,64 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     skim_spot_out_set_clock(p->rbn_spots, pipe_clock_cb, p);
     skim_spot_out_set_policy(p->rbn_spots, RBN_RESPOT_S, RBN_QSY_HZ,
                              RBN_MAX_PER_S);
-    skim_spot_out_set_sink(p->rbn_spots, rbn_sink_fwd, p->cfg.rbn);
+    skim_spot_out_set_sink(p->rbn_spots, rbn_sink_fwd, p);
     p->rbn_min = p->cfg.rbn_min_score > 0 ? p->cfg.rbn_min_score
                                           : RBN_MIN_SCORE_DEFAULT;
+    p->rbn_hearings = p->cfg.rbn_min_hearings > 0 ? p->cfg.rbn_min_hearings
+                                                  : RBN_MIN_HEARINGS_DEFAULT;
+    const double settle = p->cfg.rbn_settle_s == 0 ? RBN_SETTLE_S_DEFAULT
+                                                   : p->cfg.rbn_settle_s;
+    p->rbn_settle_us = settle > 0 ? (gint64)(settle * G_USEC_PER_SEC) : 0;
+    /* SKIM_GATE_SETTLE_NODICT overrides the config (experiments) */
+    const char *ndenv = g_getenv("SKIM_GATE_SETTLE_NODICT");
+    const double nd = ndenv && ndenv[0] ? g_ascii_strtod(ndenv, NULL)
+                    : p->cfg.rbn_settle_nodict_s == 0 ? RBN_SETTLE_NODICT_S_DEFAULT
+                                                      : p->cfg.rbn_settle_nodict_s;
+    p->rbn_settle_nd_us = nd > 0 && p->rbn_settle_us > 0
+                              ? MAX((gint64)(nd * G_USEC_PER_SEC), p->rbn_settle_us)
+                              : p->rbn_settle_us;
+    const double fresh = p->cfg.rbn_fresh_s == 0 ? RBN_FRESH_S_DEFAULT
+                                                 : p->cfg.rbn_fresh_s;
+    p->rbn_fresh_us = fresh > 0 ? (gint64)(fresh * G_USEC_PER_SEC) : 0;
+    const double fold = p->cfg.rbn_fold_s == 0 ? RBN_FOLD_S_DEFAULT
+                                               : p->cfg.rbn_fold_s;
+    if (fold > 0) {
+      p->rbn_fold_us = (gint64)(fold * G_USEC_PER_SEC);
+      p->rbn_fold = skim_feed_fold_new(p->rbn_fold_us,
+                                       p->rbn_fold_us + RBN_RESPOT_S * G_USEC_PER_SEC,
+                                       RBN_FOLD_HZ);
+    }
+    p->rbn_pending = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                           g_free);
+    /* defaults measured on CQ WW 2012 (docs/CQWW2012.md); "0" = off */
+    const char *nenv = g_getenv("SKIM_GATE_NEAR");
+    p->near_hz = nenv && nenv[0] ? g_ascii_strtod(nenv, NULL) : 300.0;
+    const char *denv = g_getenv("SKIM_GATE_NEAR_DICT");
+    p->near_dict = denv && denv[0] ? g_ascii_strtod(denv, NULL) : 2.0;
+    const char *tenv = g_getenv("SKIM_GATE_NEAR_TTL");
+    p->near_ttl_us = (gint64)((tenv && tenv[0] ? g_ascii_strtod(tenv, NULL)
+                                               : 3600.0) * G_USEC_PER_SEC);
+    p->near = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
   }
+  if (p->cfg.tap_path || p->cfg.gatelog_path) {
+    p->glog = skim_gatelog_open(p->cfg.tap_path, p->cfg.gatelog_path,
+                                skim_pipeline_cw_engine_name(p), NSLOT);
+  }
+  p->band = g_strdup(cfg->band);
+  p->cfg.band = p->band;
+  if (p->cfg.feed_gate_path && p->cfg.rbn) {
+    GError *err = NULL;
+    p->fgate = skim_feed_gate_load(p->cfg.feed_gate_path, &err);
+    if (p->fgate) {
+      p->fgtrack = skim_feed_gate_track_new(skim_feed_gate_win_s(p->fgate),
+                                            skim_feed_gate_near_khz(p->fgate));
+    } else {
+      g_warning("pipeline: feed gate not loaded, running without: %s",
+                err ? err->message : "?");
+      g_clear_error(&err);
+    }
+  }
+  p->cfg.feed_gate_path = NULL;                /* borrowed: not kept         */
   if (p->cfg.dict_path) {
     GError *err = NULL;
     if (!skim_callsign_dict_load(p->cfg.dict_path, &err)) {
@@ -406,7 +546,20 @@ void skim_pipeline_free(SkimPipeline *p) {
   skim_station_table_free(p->stations);
   g_clear_pointer(&p->spots, skim_spot_out_free);
   g_clear_pointer(&p->rbn_spots, skim_spot_out_free);
+  g_clear_pointer(&p->rbn_pending, g_hash_table_destroy);
+  g_clear_pointer(&p->rbn_fold, skim_feed_fold_free);
+  g_clear_pointer(&p->near, g_hash_table_destroy);
+  if (p->chdump) {
+    for (guint c = 0; c < p->nchan; c++) {
+      if (p->chdump[c]) { fclose(p->chdump[c]); }
+    }
+    g_clear_pointer(&p->chdump, g_free);
+  }
   g_clear_pointer(&p->dupq, skim_dup_query_free);
+  g_clear_pointer(&p->glog, skim_gatelog_close);
+  g_clear_pointer(&p->fgate, skim_feed_gate_free);
+  g_clear_pointer(&p->fgtrack, skim_feed_gate_track_free);
+  g_free(p->band);
   IqBlock *b;
   while ((b = g_async_queue_try_pop(p->queue)) != NULL) {
     g_free(b->iq);
@@ -423,6 +576,14 @@ void skim_pipeline_set_station_cb(SkimPipeline *p, SkimPipelineStationCb cb, gpo
   p->station_cb = cb;
   p->station_user = user;
 }
+void skim_pipeline_set_wall_origin(SkimPipeline *p, gint64 utc_us) {
+  p->wall_off_us = utc_us;
+}
+void skim_pipeline_set_feed_cb(SkimPipeline *p, SkimPipelineFeedCb cb,
+                               gpointer user) {
+  p->feed_cb = cb;
+  p->feed_user = user;
+}
 void skim_pipeline_set_station_gone_cb(SkimPipeline *p,
                                        SkimPipelineStationGoneCb cb,
                                        gpointer user) {
@@ -438,7 +599,277 @@ static void station_gone_fwd(const SkimStation *st, gpointer user) {
   /* No delete on the cluster wire — just forget the memo, so a comeback
    * after the TTL re-spots to the RBN at once. */
   if (p->rbn_spots) { skim_spot_out_delete(p->rbn_spots, st->call); }
+  /* A call still held back dies with its record — that is the point of the
+   * hold: a torn "IZ3N" evicted by "IZ3NYG" never reaches the wire. */
+  if (p->rbn_pending && g_hash_table_remove(p->rbn_pending, st->call) &&
+      g_getenv("SKIM_ST_DEBUG")) {
+    g_printerr("rbn: FORGET %s (left the station table)\n", st->call);
+  }
+  skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "gone",
+                     st->call, st->freq_hz, st->snr_db, st->speed);
   if (p->gone_cb) { p->gone_cb(st, p->gone_user); }
+}
+
+/* The tap's clock line, once a second of engine time (gatelog.h). */
+static void tap_clock(SkimPipeline *p) {
+  if (!p->glog)
+    return;
+  const gint64 now = pipe_now_us(p);
+  if (now - p->tap_clock_us >= G_USEC_PER_SEC || now < p->tap_clock_us) {
+    p->tap_clock_us = now;
+    skim_gatelog_tap_clock(p->glog, now, pipe_wall_us(p));
+  }
+}
+
+/* ---- RBN feed policy ------------------------------------------------------------ */
+
+/* The amateur allocations, the widest any ITU region has (Hz). A receiver
+ * hears past the band edge — 6992–7000 kHz with 7040 kHz ± 48 — and a
+ * "station" there is no amateur to spot (skimmer-compare 2026-10-08: CW
+ * Skimmer Server never spots outside its segments, the feed did). */
+static const struct { double lo, hi; } HAM_BANDS[] = {
+  {   135700,   137800 }, {   472000,   479000 }, {  1800000,  2000000 },
+  {  3500000,  4000000 }, {  5351500,  5366500 }, {  7000000,  7300000 },
+  { 10100000, 10150000 }, { 14000000, 14350000 }, { 18068000, 18168000 },
+  { 21000000, 21450000 }, { 24890000, 24990000 }, { 28000000, 29700000 },
+  { 50000000, 54000000 },
+};
+
+static gboolean in_ham_band(double hz) {
+  for (guint i = 0; i < G_N_ELEMENTS(HAM_BANDS); i++) {
+    if (hz >= HAM_BANDS[i].lo && hz <= HAM_BANDS[i].hi) { return TRUE; }
+  }
+  return FALSE;
+}
+
+/* --- near-call conflict (SKIM_GATE_NEAR=<Hz>) ---------------------------------
+ * A misread keyed twice the same way passes the hearings rule, and on CQ WW
+ * 2012 nine of ten such busts had the RIGHT call read on the same frequency
+ * by this very pipeline, mostly minutes earlier (TR2C beside IR2C, N56X
+ * beside S56X). A call the dictionary does not know waits while a similar
+ * call (≤ 2 edits) within the radius, heard within the TTL
+ * (SKIM_GATE_NEAR_TTL, default 3600 s: a misread often comes back half an
+ * hour after the right call was read), is either known to the dictionary
+ * or read more often. The memo outlives the station
+ * table's 2-minute prune: the runner a caller's misread copies may have
+ * gone quiet for a while. */
+typedef struct { double hz; gint64 at; guint hearings; gboolean dict; } NearRec;
+
+static guint near_edit(const char *a, const char *b) {
+  const gsize la = strlen(a), lb = strlen(b);
+  if (la > 15 || lb > 15)
+    return 99;
+  guint prev[16], cur[16];
+  for (gsize j = 0; j <= lb; j++) { prev[j] = (guint)j; }
+  for (gsize i = 1; i <= la; i++) {
+    cur[0] = (guint)i;
+    for (gsize j = 1; j <= lb; j++) {
+      const guint sub = prev[j - 1] + (a[i - 1] != b[j - 1]);
+      cur[j] = MIN(MIN(prev[j] + 1, cur[j - 1] + 1), sub);
+    }
+    memcpy(prev, cur, (lb + 1) * sizeof(guint));
+  }
+  return prev[lb];
+}
+
+static void near_note(SkimPipeline *p, const SkimStation *st) {
+  if (p->near_hz <= 0)
+    return;
+  NearRec *r = g_hash_table_lookup(p->near, st->call);
+  if (!r) {
+    r = g_new0(NearRec, 1);
+    g_hash_table_insert(p->near, g_strdup(st->call), r);
+    r->dict = skim_callsign_dict_has(st->call);
+  }
+  r->hz = st->freq_hz;
+  r->at = pipe_now_us(p);
+  r->hearings = MAX(r->hearings, st->hearings);
+}
+
+static gboolean near_conflict(const SkimPipeline *p, const SkimStation *st) {
+  if (p->near_hz <= 0)
+    return FALSE;
+  /* A dictionary call yields only to a much better-read look-alike
+   * (SKIM_GATE_NEAR_DICT = how many times better; 0 = never): the short
+   * contest calls the dictionary is full of (E2M, M5E, T6A) are exactly
+   * what a misread of a neighbour lands on. */
+  const gboolean dict = skim_callsign_dict_has(st->call);
+  if (dict && p->near_dict <= 0)
+    return FALSE;
+  const gint64 now = pipe_now_us(p);
+  GHashTableIter it;
+  gpointer k, v;
+  g_hash_table_iter_init(&it, p->near);
+  while (g_hash_table_iter_next(&it, &k, &v)) {
+    const NearRec *r = v;
+    if (now - r->at > p->near_ttl_us) {
+      g_hash_table_iter_remove(&it);
+      continue;
+    }
+    if (fabs(r->hz - st->freq_hz) > p->near_hz || strcmp(k, st->call) == 0)
+      continue;
+    /* a dictionary call read ONCE (it passed on the dictionary's word
+     * alone) yields like an unknown one: to any look-alike that the
+     * dictionary knows or that was read at least twice */
+    const gboolean rival =
+        dict && st->hearings >= 2
+            ? r->hearings >= 3 &&
+                  r->hearings >= p->near_dict * st->hearings
+            : r->dict || r->hearings > MAX(st->hearings, 1u);
+    if (rival && near_edit(k, st->call) <= 2) {
+      if (G_UNLIKELY(g_getenv("SKIM_GATE_NEAR_DEBUG"))) {
+        g_printerr("near: %s (%u) blocked by %s (%u%s) df %.0f ed %u\n",
+                   st->call, st->hearings, (char *)k, r->hearings,
+                   r->dict ? " scp" : "", r->hz - st->freq_hz,
+                   near_edit(k, st->call));
+      }
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+/* May this record go to the network? Inside an amateur band, calling,
+ * confident, and either read twice or known to the dictionary — and, with
+ * the freshness gate on, read lately, not a stale candidate that noise on a
+ * quiet channel brought back. */
+static gboolean rbn_gate(const SkimPipeline *p, const SkimStation *st) {
+  if (!in_ham_band(st->freq_hz))
+    return FALSE;
+  if (p->rbn_fresh_us > 0 && pipe_now_us(p) - st->heard_us > p->rbn_fresh_us)
+    return FALSE;
+  /* SKIM_GATE_DICT_MIN=<score> (default 0.80): a call MASTER.SCP knows
+   * needs only this score — one copy in a calling context ("CQ TEST K3XX",
+   * dictionary 0.15 + CQ 0.10) is enough, a bare copy (0.70) is not; the
+   * near-call conflict below keeps a look-alike of a nearby call off the
+   * wire. CQ WW 2012 test hours: units only R heard 116 -> 102 (40 m),
+   * 114 -> 99 (80 m), busts within R's. */
+  static double dict_min = -1;
+  if (G_UNLIKELY(dict_min < 0)) {
+    const char *e = g_getenv("SKIM_GATE_DICT_MIN");
+    dict_min = e && e[0] ? g_ascii_strtod(e, NULL) : 0.80;  /* "0" = off */
+  }
+  const double need = dict_min > 0 && skim_callsign_dict_has(st->call)
+                          ? MIN(dict_min, p->rbn_min) : p->rbn_min;
+  return (st->cq || p->cfg.rbn_any_caller) && st->score >= need &&
+         (st->hearings >= p->rbn_hearings || skim_callsign_dict_has(st->call)) &&
+         !near_conflict(p, st);
+}
+
+/* FALSE = the twin fold held it off the wire (a busted twin of a call sent
+ * lately on this frequency); the caller forgets the hold, so it is judged
+ * again when it qualifies next. */
+static gboolean rbn_send(SkimPipeline *p, const SkimStation *st) {
+  if (p->rbn_fold) {
+    const char *by = skim_feed_fold_check(p->rbn_fold, st->call, st->freq_hz,
+                                          pipe_now_us(p), st->hearings,
+                                          skim_callsign_dict_has(st->call));
+    if (by) {
+      g_atomic_int_inc(&p->rbn_folded);
+      skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "fold",
+                         st->call, st->freq_hz, st->snr_db, st->speed);
+      if (g_getenv("SKIM_ST_DEBUG")) {
+        g_printerr("rbn: FOLD %s @ %.0f Hz (heard %u) — twin of %s\n", st->call,
+                   st->freq_hz, st->hearings, by);
+      }
+      return FALSE;
+    }
+  }
+  skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "send",
+                     st->call, st->freq_hz, st->snr_db, st->speed);
+  if (skim_spot_out_emit(p->rbn_spots, st->call, st->mode, st->freq_hz,
+                         st->snr_db, st->speed) && p->feed_cb) {
+    p->feed_cb(st, p->feed_user);
+  }
+  return TRUE;
+}
+
+/* A record that passed the gate: the first time it is HELD for the settle
+ * time; once settled it goes straight to spot_out, whose own dedup and QSY
+ * rules decide what is a new line. */
+static void rbn_offer(SkimPipeline *p, const SkimStation *st) {
+  if (p->rbn_settle_us <= 0) {
+    rbn_send(p, st);
+    return;
+  }
+  /* SKIM_FEED_CONFIRM=N: a held call goes out as soon as it was read N
+   * more times — a station still calling confirms itself within seconds,
+   * a one-off misread never does — and at the latest when its hold ends.
+   * Live 2026-10-16/17: most busts were episodes of a single spot; a
+   * longer hold alone (120 s) brought the busts to CW Skimmer's level but
+   * lost the stations that call briefly. due[1] = hearings when held. */
+  static gint confirm = -1;
+  if (G_UNLIKELY(confirm < 0)) {
+    const char *e = g_getenv("SKIM_FEED_CONFIRM");
+    confirm = e && e[0] ? MAX(atoi(e), 0) : 0;
+  }
+  gint64 *due = g_hash_table_lookup(p->rbn_pending, st->call);
+  if (due && due[0] != 0 && confirm > 0 &&
+      st->hearings >= (guint)due[1] + (guint)confirm && rbn_gate(p, st)) {
+    if (g_getenv("SKIM_ST_DEBUG")) {
+      g_printerr("rbn: CONFIRMED %s (%u reads) t=%.0f s\n", st->call,
+                 st->hearings, pipe_now_us(p) / 1e6);
+    }
+    if (rbn_send(p, st)) {
+      due[0] = 0;
+    } else {
+      g_hash_table_remove(p->rbn_pending, st->call);
+    }
+    return;
+  }
+  if (!due) {
+    due = g_new(gint64, 2);
+    due[1] = st->hearings;
+    /* A call the dictionary does not know waits longer (rbn_settle_nodict_s)
+     * — the release re-runs the gate, and the near-call conflict needs the
+     * right call to have been read by then. */
+    *due = pipe_now_us(p) + (skim_callsign_dict_has(st->call)
+                                 ? p->rbn_settle_us
+                                 : p->rbn_settle_nd_us);
+    g_hash_table_insert(p->rbn_pending, g_strdup(st->call), due);
+    skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "hold",
+                       st->call, st->freq_hz, st->snr_db, st->speed);
+    if (g_getenv("SKIM_ST_DEBUG")) {
+      g_printerr("rbn: HOLD %s @ %.0f Hz (heard %u, score %.2f) t=%.0f s\n",
+                 st->call, st->freq_hz, st->hearings, st->score,
+                 pipe_now_us(p) / 1e6);
+    }
+  } else if (*due == 0 && !rbn_send(p, st)) {
+    g_hash_table_remove(p->rbn_pending, st->call);
+  }
+}
+
+/* Release the held calls whose time is up — from the table's CURRENT record
+ * (frequency, SNR and speed have converged meanwhile), and only while it
+ * still passes the gate. Engine thread (live) or the feeding thread
+ * (offline); now_us on the pipeline clock. */
+static void rbn_settle_tick(SkimPipeline *p, gint64 now_us) {
+  if (!p->rbn_pending || p->rbn_settle_us <= 0)
+    return;
+  GHashTableIter it;
+  gpointer key, val;
+  g_hash_table_iter_init(&it, p->rbn_pending);
+  while (g_hash_table_iter_next(&it, &key, &val)) {
+    gint64 *due = val;
+    if (*due == 0 || now_us < *due)
+      continue;
+    const SkimStation *st = skim_station_table_lookup(p->stations, key);
+    const gboolean ok = st && rbn_gate(p, st);
+    if (g_getenv("SKIM_ST_DEBUG")) {
+      g_printerr("rbn: %s %s t=%.0f s\n", ok ? "SEND" : "DROP", (char *)key,
+                 now_us / 1e6);
+    }
+    if (ok && rbn_send(p, st)) {
+      *due = 0;
+    } else if (ok) {
+      g_hash_table_iter_remove(&it);           /* folded: judged again later */
+    } else {
+      skim_gatelog_event(p->glog, now_us, pipe_wall_us(p), "drop", key,
+                         st ? st->freq_hz : 0, st ? st->snr_db : 0,
+                         st ? st->speed : 0);
+      g_hash_table_iter_remove(&it);           /* may qualify again later    */
+    }
+  }
 }
 void skim_pipeline_set_text_cb(SkimPipeline *p, SkimPipelineTextCb cb, gpointer user) {
   p->text_cb = cb;
@@ -532,6 +963,25 @@ static void bank_build(SkimPipeline *p, double rate) {
   p->sgen = g_new0(guint, p->nchan * NSLOT);
   p->lvl = g_new0(double, p->nchan * NSLOT);
   p->flock = g_new0(FreqLock, p->nchan * NSLOT);
+  /* SKIM_DUMP_CHAN="c,c,…" + SKIM_DUMP_DIR: the channelizer's raw output
+   * of those channels as cf32 (DIR/ch<c>.cf32, from stream time 0) — a
+   * decoder benchmark can then run the CW backend alone on real channels. */
+  {
+    const char *dc = g_getenv("SKIM_DUMP_CHAN"), *dd = g_getenv("SKIM_DUMP_DIR");
+    if (dc && dc[0] && dd && dd[0] && !p->chdump) {
+      p->chdump = g_new0(FILE *, p->nchan);
+      gchar **v = g_strsplit(dc, ",", -1);
+      for (gchar **q = v; *q; q++) {
+        const guint c = (guint)g_ascii_strtoull(*q, NULL, 10);
+        if (c < p->nchan && !p->chdump[c]) {
+          char *fn = g_strdup_printf("%s/ch%u.cf32", dd, c);
+          p->chdump[c] = fopen(fn, "wb");
+          g_free(fn);
+        }
+      }
+      g_strfreev(v);
+    }
+  }
   if (p->use_split) { p->split = g_new0(SkimToneSplit *, p->nchan); }
   p->center_hz = 0;                            /* fresh states — no flush    */
   const SkimDecodeBackend *cw = pipe_backend(p);
@@ -634,6 +1084,7 @@ static void slot_sync(SkimPipeline *p, guint c, guint s,
   p->dec[i] = cw->channel_new(skim_channelizer_out_rate(p->bank));
   if (p->ext[i]) {
     skim_callsign_extractor_reset(p->ext[i]);
+    skim_gatelog_tap_reset(p->glog, pipe_now_us(p), pipe_wall_us(p), (gint)i);
   } else {
     p->ext[i] = skim_callsign_extractor_new();
   }
@@ -683,6 +1134,106 @@ static void spec_feed(SkimPipeline *p, const IqBlock *b) {
     skim_spectrum_set_row_cb(p->spec, spec_row_cb, p);
   }
   skim_spectrum_push(p->spec, b->iq, b->nframes, b->center_hz);
+}
+
+/* The extractor's view after one decode, for the learning log: its leading
+ * candidate (threshold aside), the station record the decode updated (NULL:
+ * none) and the hand gate's verdict on it. */
+static void gatelog_cand(SkimPipeline *p, guint ix, double sig_hz,
+                         const SkimDecode *d, gboolean contested,
+                         const SkimStation *st) {
+  if (!p->glog && !p->fgtrack)
+    return;
+  SkimCallsignCand cand;
+  if (!skim_callsign_extractor_top(p->ext[ix], &cand))
+    return;
+  skim_feed_gate_track_row(p->fgtrack, pipe_now_us(p), sig_hz, d->speed,
+                           d->snr_db, d->confidence, &cand, st);
+  if (!p->glog)
+    return;
+  skim_gatelog_cand(p->glog, pipe_now_us(p), pipe_wall_us(p), ix, sig_hz,
+                    d->speed, d->snr_db, d->confidence, contested, &cand, st,
+                    st && p->rbn_spots && rbn_gate(p, st));
+}
+
+/* Pass 2's tail for one decode that survived arbitration: extractor slot ix
+ * eats the text, its best call updates the station table, the spot sinks
+ * and the RBN gate see the merged record. The decode tap records exactly
+ * this input — skimmer-tap-replay comes in here too. */
+static void take_text(SkimPipeline *p, guint ix, double sig_hz,
+                      const SkimDecode *d, gboolean contested) {
+  skim_gatelog_tap_text(p->glog, pipe_now_us(p), pipe_wall_us(p), ix, sig_hz,
+                        d->speed, d->snr_db, d->confidence, contested,
+                        d->text);
+  /* Two carriers beating inside one slot garble the text — it still
+   * shows (log, monitor panes), but it must not breed callsign
+   * candidates: beat mutations validate often enough to reach the
+   * spot path (live-caught 2026-07-15, the 14036 slot). */
+  /* Contested (beat / unverifiable second line): the garbled text must
+   * not BREED candidates — but the candidate this channel already
+   * proved keeps reporting, so the station rides out the episode
+   * instead of takeover-eviction or TTL-prune (fixture 2026-07-19:
+   * pending episodes on runner channels blocked 100+ feeds and the
+   * frozen extractor was the only thing that still knew the call). */
+  if (contested) {
+    if (g_getenv("SKIM_TS_DEBUG")) {
+      g_printerr("pipeline: ch %u slot %u @ %.0f Hz contested-drop |%s|\n",
+                 ix / NSLOT, ix % NSLOT, sig_hz, d->text);
+    }
+  } else {
+    skim_callsign_extractor_set_now(p->ext[ix], pipe_now_us(p));
+    skim_callsign_extractor_feed(p->ext[ix], d->text);
+  }
+  char call[24];
+  gboolean cq = FALSE;
+  double score = skim_callsign_extractor_best_ex(p->ext[ix],
+                                                 call, sizeof(call), &cq);
+  if (g_getenv("SKIM_ST_DEBUG")) {
+    g_printerr("cand: ch %u slot %u @ %.0f Hz score %.2f %s |%s| t=%.0f\n",
+               ix / NSLOT, ix % NSLOT, sig_hz, score, score > 0 ? call : "-",
+               d->text, pipe_now_us(p) / 1e6);
+  }
+  if (score <= 0) {
+    gatelog_cand(p, ix, sig_hz, d, contested, NULL);
+    return;
+  }
+
+  SkimStation st;
+  memset(&st, 0, sizeof(st));
+  g_strlcpy(st.call, call, sizeof(st.call));
+  g_strlcpy(st.mode, pipe_mode_str(p), sizeof(st.mode));
+  st.freq_hz    = sig_hz;
+  st.speed      = d->speed;
+  st.snr_db     = d->snr_db;
+  st.score      = score;
+  st.hearings   = skim_callsign_extractor_hearings(p->ext[ix], call);
+  st.heard_us   = skim_callsign_extractor_last_heard(p->ext[ix], call);
+  st.cq         = cq;
+  st.addressed  = skim_callsign_extractor_addressed(p->ext[ix], call);
+  st.last_heard = pipe_now_us(p);
+  st.first_heard = st.last_heard;
+  if (g_getenv("SKIM_ST_DEBUG")) {
+    g_printerr("report: ch %u slot %u %s @ %.0f Hz score %.2f t=%.0f s\n",
+               ix / NSLOT, ix % NSLOT, st.call, st.freq_hz, score,
+               st.last_heard / 1e6);
+  }
+  const SkimStation *merged = skim_station_table_report(p->stations, &st);
+  near_note(p, merged);
+  if (p->station_cb) { p->station_cb(merged, p->station_user); }
+  /* The merged record's frequency is the ghost-deduped one. CQ-only
+   * policy: only a station heard CALLING may reach the spot sinks —
+   * an S&P answer does not own the frequency (RBN etiquette). */
+  if (p->spots &&
+      (!g_atomic_int_get(&p->cq_only) || merged->cq)) {
+    skim_spot_out_emit(p->spots, merged->call, merged->mode,
+                       merged->freq_hz, merged->snr_db, merged->speed);
+  }
+  /* RBN etiquette is stricter than the panadapter: only a CALLING
+   * station (regardless of the local CQ-only switch), once the best
+   * score seen clears the RBN threshold AND the call was read twice
+   * (or the dictionary knows it) — and only after it settled. */
+  gatelog_cand(p, ix, sig_hz, d, contested, merged);
+  if (p->rbn_spots && rbn_gate(p, merged)) { rbn_offer(p, merged); }
 }
 
 /* Pass 2 of a block: arbitrate the collected hits (p->hits) and dispatch the
@@ -745,6 +1296,12 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
         L->at = tnow;
       }
       const double sig_hz = L->hz > 0 ? L->hz : raw_hz;
+      /* What is SHOWN is the text as heard: a decoder's correction for the
+       * extractor (callsign.h, SKIM_CALLSIGN_FIX_OPEN) stays out of the
+       * pane and the decode log. */
+      char shown[SKIM_DECODE_TEXT_MAX];
+      g_strlcpy(shown, d.text, sizeof(shown));
+      skim_callsign_strip_fix(shown);
       if (G_UNLIKELY(g_getenv("SKIM_FLOCK_DEBUG")) && d.text[0]) {
         /* per-hit frequency bookkeeping: channel, slot, the backend's
          * in-channel offset, the raw absolute Hz, the lock it landed on,
@@ -758,11 +1315,21 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
         pipe_log_stamp(p, b, tbuf, sizeof(tbuf));
         char khz[G_ASCII_DTOSTR_BUF_SIZE];   /* C locale — parseable dot     */
         g_ascii_formatd(khz, sizeof(khz), "%.2f", sig_hz / 1000.0);
-        if (d.text[0]) {
+        /* SKIM_DLOG_LANE=1 names the decoder (channel.slot) — one signal
+         * is often read by two lanes pinned to the same frequency, and
+         * text rebuilt per frequency then interleaves them. */
+        static gint lane = -1;
+        if (G_UNLIKELY(lane < 0)) { lane = g_getenv("SKIM_DLOG_LANE") != NULL; }
+        if (d.text[0] && lane) {
+          fprintf(p->dlog, "%s %9s %2.0f%s %3.0fdB L%u.%u |%s|\n",
+                  tbuf, khz, d.speed,
+                  p->cfg.mode == SKIM_PIPELINE_MODE_RTTY ? "bd " : "wpm",
+                  d.snr_db, c, h->slot, shown);
+        } else if (d.text[0]) {
           fprintf(p->dlog, "%s %9s %2.0f%s %3.0fdB |%s|\n",
                   tbuf, khz, d.speed,
                   p->cfg.mode == SKIM_PIPELINE_MODE_RTTY ? "bd " : "wpm",
-                  d.snr_db, d.text);
+                  d.snr_db, shown);
         }
         if (h->aux) {
           fprintf(p->dlog, "%s %9s   aux        |%s|\n", tbuf, khz, h->aux);
@@ -775,8 +1342,8 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
        * as ever. Only meaningful for backends with the ops hook — v1 never
        * writes the field (stack garbage otherwise, gate-caught). */
       const gboolean pane_own = cw->take_pane_op && d.pane_own;
-      if (p->text_cb && d.text[0] && !pane_own) {
-        p->text_cb(sig_hz, d.text, p->text_user);
+      if (p->text_cb && shown[0] && !pane_own) {
+        p->text_cb(sig_hz, shown, p->text_user);
       }
       if (h->aux) {
         /* Display-only: pane + log, NEVER the extractor (a lexically primed
@@ -819,69 +1386,7 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
       if (!d.text[0])
         continue;
 
-      /* Two carriers beating inside one slot garble the text — it still
-       * shows (log, monitor panes), but it must not breed callsign
-       * candidates: beat mutations validate often enough to reach the
-       * spot path (live-caught 2026-07-15, the 14036 slot). */
-      /* Contested (beat / unverifiable second line): the garbled text must
-       * not BREED candidates — but the candidate this channel already
-       * proved keeps reporting, so the station rides out the episode
-       * instead of takeover-eviction or TTL-prune (fixture 2026-07-19:
-       * pending episodes on runner channels blocked 100+ feeds and the
-       * frozen extractor was the only thing that still knew the call). */
-      if (h->contested) {
-        if (g_getenv("SKIM_TS_DEBUG")) {
-          g_printerr("pipeline: ch %u slot %u @ %.0f Hz contested-drop |%s|\n",
-                     c, h->slot, sig_hz, d.text);
-        }
-      } else {
-        skim_callsign_extractor_feed(p->ext[SL(c, h->slot)], d.text);
-      }
-      char call[24];
-      gboolean cq = FALSE;
-      double score = skim_callsign_extractor_best_ex(p->ext[SL(c, h->slot)],
-                                                     call, sizeof(call), &cq);
-      if (g_getenv("SKIM_ST_DEBUG")) {
-        g_printerr("cand: ch %u slot %u @ %.0f Hz score %.2f %s |%s| t=%.0f\n",
-                   c, h->slot, sig_hz, score, score > 0 ? call : "-", d.text,
-                   pipe_now_us(p) / 1e6);
-      }
-      if (score <= 0)
-        continue;
-
-      SkimStation st;
-      memset(&st, 0, sizeof(st));
-      g_strlcpy(st.call, call, sizeof(st.call));
-      g_strlcpy(st.mode, pipe_mode_str(p), sizeof(st.mode));
-      st.freq_hz    = sig_hz;
-      st.speed      = d.speed;
-      st.snr_db     = d.snr_db;
-      st.score      = score;
-      st.cq         = cq;
-      st.last_heard = pipe_now_us(p);
-      st.first_heard = st.last_heard;
-      if (g_getenv("SKIM_ST_DEBUG")) {
-        g_printerr("report: ch %u slot %u %s @ %.0f Hz score %.2f t=%.0f s\n",
-                   c, h->slot, st.call, st.freq_hz, score,
-                   st.last_heard / 1e6);
-      }
-      const SkimStation *merged = skim_station_table_report(p->stations, &st);
-      if (p->station_cb) { p->station_cb(merged, p->station_user); }
-      /* The merged record's frequency is the ghost-deduped one. CQ-only
-       * policy: only a station heard CALLING may reach the spot sinks —
-       * an S&P answer does not own the frequency (RBN etiquette). */
-      if (p->spots &&
-          (!g_atomic_int_get(&p->cq_only) || merged->cq)) {
-        skim_spot_out_emit(p->spots, merged->call, merged->mode,
-                           merged->freq_hz, merged->snr_db, merged->speed);
-      }
-      /* RBN etiquette is stricter than the panadapter: only a CALLING
-       * station (regardless of the local CQ-only switch), and only once
-       * the best score seen clears the RBN threshold. */
-      if (p->rbn_spots && merged->cq && merged->score >= p->rbn_min) {
-        skim_spot_out_emit(p->rbn_spots, merged->call, merged->mode,
-                           merged->freq_hz, merged->snr_db, merged->speed);
-      }
+      take_text(p, SL(c, h->slot), sig_hz, &d, h->contested);
     }
   }
 }
@@ -993,6 +1498,7 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
     if (p->center_hz != 0) {
       const SkimDecodeBackend *cwf = pipe_backend(p);
       const double out_rate = skim_channelizer_out_rate(p->bank);
+      skim_gatelog_tap_reset(p->glog, pipe_now_us(p), pipe_wall_us(p), -1);
       for (guint c = 0; c < p->nchan; c++) {
         for (guint s = 0; s < NSLOT; s++) {
           const guint i = SL(c, s);
@@ -1043,6 +1549,9 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
     }
     guint n;
     while ((n = skim_channelizer_read(p->bank, c, buf, DRAIN_FRAMES)) > 0) {
+      if (G_UNLIKELY(p->chdump) && p->chdump[c]) {
+        fwrite(buf, 2 * sizeof(float), n, p->chdump[c]);
+      }
       if (!sp) {
         const gboolean got = cw->process(p->dec[SL(c, WIDE_LANE)], buf, n, &d);
         char *aux = cw->take_aux_text
@@ -1124,6 +1633,8 @@ static gpointer engine_thread(gpointer data) {
       p->last_prune = now;
       skim_station_table_prune(p->stations, now, STATION_TTL_US);
     }
+    rbn_settle_tick(p, now);
+    tap_clock(p);
     /* Logbook verdict flips (answers AND unsolicited "just logged him"
      * pushes) repaint the live label at once — the operator must not wait
      * out the 180 s re-announce to see a station turn gray. */
@@ -1148,16 +1659,36 @@ gboolean skim_pipeline_start(SkimPipeline *p, GError **error) {
   p->holding = FALSE;
   p->hold_capped = FALSE;
   p->grace_frames = 0;
-  p->tci = skim_tci_client_new(p->cfg.host, p->cfg.port);
-  skim_tci_client_set_iq_cb(p->tci, iq_cb, p);
-  skim_tci_client_set_vfo_cb(p->tci, vfo_fwd_cb, p);
-  skim_tci_client_set_tx_cb(p->tci, tx_fwd_cb, p);
-  skim_tci_client_set_closed_cb(p->tci, closed_cb, p);
-  if (!skim_tci_client_start(p->tci, p->cfg.iq_rate, error)) {
-    g_clear_pointer(&p->tci, skim_tci_client_free);
-    return FALSE;
+  const char *device;
+  double centre;
+  if (p->cfg.source == SKIM_PIPELINE_SOURCE_EXTERNAL) {
+    device = p->cfg.host;                      /* a label, e.g. "RP … RX3"   */
+    centre = p->cfg.center_hz;
+  } else if (p->cfg.source == SKIM_PIPELINE_SOURCE_HPSDR) {
+    p->hpsdr = skim_hpsdr_client_new(p->cfg.host, p->cfg.port);
+    skim_hpsdr_client_set_iq_cb(p->hpsdr, iq_cb, p);
+    skim_hpsdr_client_set_closed_cb(p->hpsdr, closed_cb, p);
+    if (!skim_hpsdr_client_start(p->hpsdr, p->cfg.iq_rate, p->cfg.center_hz,
+                                 p->cfg.clock_ppm, p->cfg.take_over, error)) {
+      g_clear_pointer(&p->hpsdr, skim_hpsdr_client_free);
+      return FALSE;
+    }
+    device = skim_hpsdr_client_device(p->hpsdr);
+    centre = skim_hpsdr_client_center_hz(p->hpsdr);
+  } else {
+    p->tci = skim_tci_client_new(p->cfg.host, p->cfg.port);
+    skim_tci_client_set_iq_cb(p->tci, iq_cb, p);
+    skim_tci_client_set_vfo_cb(p->tci, vfo_fwd_cb, p);
+    skim_tci_client_set_tx_cb(p->tci, tx_fwd_cb, p);
+    skim_tci_client_set_closed_cb(p->tci, closed_cb, p);
+    if (!skim_tci_client_start(p->tci, p->cfg.iq_rate, error)) {
+      g_clear_pointer(&p->tci, skim_tci_client_free);
+      return FALSE;
+    }
+    device = skim_tci_client_device(p->tci);
+    centre = skim_tci_client_center_hz(p->tci);
   }
-  p->spots = skim_spot_out_new(p->tci);
+  p->spots = skim_spot_out_new(p->tci);        /* NULL: telnet/RBN sinks only */
   skim_spot_out_set_clock(p->spots, pipe_clock_cb, p);
   skim_spot_out_set_dup_query(p->spots, p->dupq);
   if (p->dlog_path) {
@@ -1166,7 +1697,7 @@ gboolean skim_pipeline_start(SkimPipeline *p, GError **error) {
       GDateTime *now = g_date_time_new_now_local();
       char *ts = g_date_time_format(now, "%Y-%m-%d %H:%M:%S");
       fprintf(p->dlog, "--- session %s — %s, dds %.0f Hz ---\n", ts,
-              skim_tci_client_device(p->tci), skim_tci_client_center_hz(p->tci));
+              device, centre);
       fflush(p->dlog);
       g_free(ts);
       g_date_time_unref(now);
@@ -1179,9 +1710,7 @@ gboolean skim_pipeline_start(SkimPipeline *p, GError **error) {
   p->thread = g_thread_new("skim-engine", engine_thread, p);
   if (p->state_cb) {
     char detail[160];
-    g_snprintf(detail, sizeof(detail), "%s — dds %.0f Hz",
-               skim_tci_client_device(p->tci),
-               skim_tci_client_center_hz(p->tci));
+    g_snprintf(detail, sizeof(detail), "%s — dds %.0f Hz", device, centre);
     p->state_cb(TRUE, detail, p->state_user);
   }
   return TRUE;
@@ -1211,6 +1740,12 @@ gboolean skim_pipeline_start_offline(SkimPipeline *p, GError **error) {
   return TRUE;
 }
 
+void skim_pipeline_push(SkimPipeline *p, const float *iq, guint nframes,
+                        double rate, double center_hz) {
+  if (!g_atomic_int_get(&p->run)) { return; }
+  iq_cb(iq, nframes, rate, center_hz, p);
+}
+
 void skim_pipeline_feed(SkimPipeline *p, const float *iq, guint nframes,
                         double rate, double center_hz) {
   g_return_if_fail(p->offline);
@@ -1227,6 +1762,68 @@ void skim_pipeline_feed(SkimPipeline *p, const float *iq, guint nframes,
   if (p->stream_us - p->last_prune > PRUNE_EVERY_US) {
     p->last_prune = p->stream_us;
     skim_station_table_prune(p->stations, p->stream_us, STATION_TTL_US);
+  }
+  rbn_settle_tick(p, p->stream_us);
+  tap_clock(p);
+}
+
+/* ---- tap replay (skimmer-tap-replay) ------------------------------------------- */
+
+gboolean skim_pipeline_tap_begin(SkimPipeline *p, guint nchan, guint nslot) {
+  g_return_val_if_fail(p->offline, FALSE);
+  if (nslot != NSLOT || nchan == 0 || p->ext)
+    return FALSE;
+  p->nchan = nchan;                    /* extractors only: no bank, no decoders */
+  p->ext = g_new0(SkimCallsignExtractor *, nchan * NSLOT);
+  p->stream_us = 0;
+  return TRUE;
+}
+
+/* Live, the engine thread runs the prune and the settle hold at least every
+ * 100 ms; step the stream clock that finely through the gaps between tap
+ * lines, so held calls are released (or dropped) when they were live. A
+ * clock that goes BACK (a tap appended to across a reboot) just jumps. */
+static void tap_advance(SkimPipeline *p, gint64 t_us, gint64 wall_us) {
+  p->wall_off_us = wall_us - t_us;
+  if (p->stream_us == 0 || t_us < p->stream_us) {
+    p->stream_us  = t_us;
+    p->last_prune = t_us;
+    return;
+  }
+  while (p->stream_us < t_us) {
+    p->stream_us = MIN(t_us, p->stream_us + G_USEC_PER_SEC / 10);
+    if (p->stream_us - p->last_prune > PRUNE_EVERY_US) {
+      p->last_prune = p->stream_us;
+      skim_station_table_prune(p->stations, p->stream_us, STATION_TTL_US);
+    }
+    rbn_settle_tick(p, p->stream_us);
+  }
+}
+
+void skim_pipeline_tap_tick(SkimPipeline *p, gint64 t_us, gint64 wall_us) {
+  g_return_if_fail(p->offline);
+  tap_advance(p, t_us, wall_us);
+  skim_gatelog_tap_clock(p->glog, t_us, wall_us);   /* the replay's tap echoes */
+}
+
+void skim_pipeline_tap_text(SkimPipeline *p, gint64 t_us, gint64 wall_us,
+                            guint ix, double hz, const SkimDecode *d,
+                            gboolean contested) {
+  g_return_if_fail(p->offline && p->ext && ix < p->nchan * NSLOT);
+  tap_advance(p, t_us, wall_us);
+  if (!p->ext[ix]) { p->ext[ix] = skim_callsign_extractor_new(); }
+  take_text(p, ix, hz, d, contested);
+}
+
+void skim_pipeline_tap_reset(SkimPipeline *p, gint64 t_us, gint64 wall_us,
+                             gint ix) {
+  g_return_if_fail(p->offline && p->ext);
+  tap_advance(p, t_us, wall_us);
+  skim_gatelog_tap_reset(p->glog, t_us, wall_us, ix);
+  for (guint i = 0; i < p->nchan * NSLOT; i++) {
+    if (p->ext[i] && (ix < 0 || (guint)ix == i)) {
+      skim_callsign_extractor_reset(p->ext[i]);
+    }
   }
 }
 
@@ -1246,6 +1843,7 @@ void skim_pipeline_stop(SkimPipeline *p) {
   p->thread = NULL;
   if (p->spots) { p->spots_total = skim_spot_out_count(p->spots); }
   g_clear_pointer(&p->tci, skim_tci_client_free);
+  g_clear_pointer(&p->hpsdr, skim_hpsdr_client_free);
   g_clear_pointer(&p->spots, skim_spot_out_free);
   if (p->dlog) {                    /* engine thread is joined — safe here   */
     fclose(p->dlog);
@@ -1293,6 +1891,31 @@ guint64 skim_pipeline_frames(const SkimPipeline *p) { return p->frames; }
 guint64 skim_pipeline_spots(const SkimPipeline *p) {
   return p->spots ? skim_spot_out_count(p->spots) : p->spots_total;
 }
+double skim_pipeline_rbn_settle_nodict(const SkimPipeline *p) {
+  return p->rbn_spots ? p->rbn_settle_nd_us / 1e6 : 0;
+}
+void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
+                              guint *min_hearings, double *settle_s,
+                              double *fresh_s) {
+  const gboolean on = p->rbn_spots != NULL;
+  if (fresh_s)      { *fresh_s      = on ? p->rbn_fresh_us / 1e6 : 0; }
+  if (min_score)    { *min_score    = on ? p->rbn_min : 0; }
+  if (min_hearings) { *min_hearings = on ? p->rbn_hearings : 0; }
+  if (settle_s)     { *settle_s     = on ? p->rbn_settle_us / 1e6 : 0; }
+}
+void skim_pipeline_rbn_fold(const SkimPipeline *p, double *fold_s,
+                            guint64 *folded) {
+  if (fold_s) { *fold_s = p->rbn_fold ? p->rbn_fold_us / 1e6 : 0; }
+  if (folded) { *folded = (guint)g_atomic_int_get(&p->rbn_folded); }
+}
+const char *skim_pipeline_feed_gate_stats(const SkimPipeline *p,
+                                          double *threshold, guint64 *spots,
+                                          guint64 *below) {
+  if (threshold) { *threshold = p->fgate ? skim_feed_gate_threshold(p->fgate) : 0; }
+  if (spots)     { *spots = (guint)g_atomic_int_get(&p->fg_spots); }
+  if (below)     { *below = (guint)g_atomic_int_get(&p->fg_below); }
+  return p->fgate ? skim_feed_gate_id(p->fgate) : NULL;
+}
 guint64 skim_pipeline_rbn_spots(const SkimPipeline *p) {
   return p->rbn_spots ? skim_spot_out_count(p->rbn_spots) : 0;
 }
@@ -1300,3 +1923,9 @@ guint skim_pipeline_stations(const SkimPipeline *p) {
   return skim_station_table_size(p->stations);
 }
 guint64 skim_pipeline_dropped_blocks(const SkimPipeline *p) { return p->dropped; }
+
+guint skim_pipeline_channels(const SkimPipeline *p) { return p->nchan; }
+
+guint64 skim_pipeline_lost_frames(const SkimPipeline *p) {
+  return p->hpsdr ? skim_hpsdr_client_lost_frames(p->hpsdr) : 0;
+}

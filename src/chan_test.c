@@ -91,6 +91,19 @@ static double dbc(double x, double ref) {
   return 20.0 * log10((x + 1e-30) / (ref + 1e-30));
 }
 
+static gpointer bank_churn(gpointer data) {
+  static const double RATES[] = { 48000, 96000, 192000 };
+  int ok = 0;
+  for (int k = 0; k < 25; k++) {
+    SkimChannelizer *c = skim_channelizer_new(RATES[(GPOINTER_TO_INT(data) + k) % 3], 125.0);
+    if (c) {
+      ok++;
+      skim_channelizer_free(c);
+    }
+  }
+  return GINT_TO_POINTER(ok);
+}
+
 int main(void) {
   printf("=== channelizer gate (offline, synthetic tones) ===\n");
   static float out[8192 * 2], out2[8192 * 2];
@@ -271,6 +284,20 @@ int main(void) {
     skim_channelizer_free(ch);
   } else {
     checks += 3; fails += 3;
+  }
+
+  /* Several pipelines build their banks at once (skimmer-headless: one per
+   * band, all on the first IQ block). FFTW's planner is not thread-safe —
+   * without the engine's planner lock this crashed inside fftwf. */
+  printf("--- concurrent construction (8 threads × 25 banks)\n");
+  {
+    GThread *th[8];
+    for (int i = 0; i < 8; i++) {
+      th[i] = g_thread_new("bank", bank_churn, GINT_TO_POINTER(i));
+    }
+    int built = 0;
+    for (int i = 0; i < 8; i++) { built += GPOINTER_TO_INT(g_thread_join(th[i])); }
+    check("200 banks built and freed concurrently, no crash", built == 200);
   }
 
   printf("\n=== %d checks, %d failures ===\n%s\n", checks, fails,

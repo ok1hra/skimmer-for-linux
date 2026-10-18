@@ -19,10 +19,12 @@
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include <glib.h>
+#include <glib/gstdio.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "engine/callsign.h"
 #include "engine/channelizer.h"
 #include "engine/decode_cw.h"
 
@@ -426,6 +428,9 @@ static void run_suite(const SkimDecodeBackend *cw) {
 
 int main(void) {
   printf("=== CW decode gate (offline, synthetic) ===\n");
+  /* The word re-read is on for the whole gate: with no dictionary loaded
+   * (until its own section) it finds no candidate and changes nothing. */
+  g_setenv("SKIM_V2_RESCORE", "1", FALSE);
   run_suite(skim_decode_cw());
   run_suite(skim_decode_cw_v2());
 
@@ -639,6 +644,79 @@ int main(void) {
           last_over_dist(v2, OVER) == 0);
     g_free(v1);
     g_free(v2);
+  }
+
+  /* -- word re-read (SKIM_V2_RESCORE) ---------------------------------------------
+   * A finished word the dictionary does not know is laid against the calls
+   * it does know within two edits; one that the audio barely disputes
+   * replaces it — for the extractor only, bracketed in the text. Three
+   * ways it must behave: noise read as dit chains is never talked into a
+   * call the dictionary holds (EE5E, SE5E … are in MASTER.SCP); a clean,
+   * strong call the dictionary lacks stays as read (EA5BF beside EA5BH —
+   * live 2026-10-15, a real station the re-read would have busted); and an
+   * element keyed on the dit/dah border, read the wrong way, comes back
+   * when the dictionary knows the call (the 6 of EC6AAE read as a 5). */
+  {
+    char *dict = g_build_filename(g_get_tmp_dir(), "skimmer-cw-test.scp", NULL);
+    g_file_set_contents(dict, "EE5E\nSE5E\n5E5E\nN5EE\nEE4E\nEA5BH\nEC6AAE\n",
+                        -1, NULL);
+    skim_callsign_dict_load(dict, NULL);
+    g_cw = skim_decode_cw_v2();
+    GRand *rng = g_rand_new_with_seed(20261016);
+    printf("--- word re-read against the dictionary ---\n");
+
+    GArray *env = g_array_new(FALSE, FALSE, sizeof(float));
+    key_run(env, 60.0 * RATE, 0.0f, 0, rng);
+    char *got = run_decoder(env, 10.0, 0.0, 0, 0, rng, NULL);
+    check("noise: no correction written", strchr(got, SKIM_CALLSIGN_FIX_OPEN) == NULL);
+    g_free(got);
+    g_array_free(env, TRUE);
+
+    env = gen_env("CQ DE EA5BF EA5BF K", 25, RATE, 0.02, rng);
+    got = run_decoder(env, 12.0, 25.0, 0, 0, rng, NULL);
+    show("v2:", got);
+    check("a clean call the dictionary lacks stays as read",
+          strstr(got, "EA5BF") && strchr(got, SKIM_CALLSIGN_FIX_OPEN) == NULL);
+    g_free(got);
+    g_array_free(env, TRUE);
+
+    /* EC6AAE with the 6's dah keyed `x` dits long — on the border, the
+     * lattice reads a dit and the word comes out EC5AAE. */
+    const char *x_env = g_getenv("RS_TEST_DAH");
+    const double x = x_env ? g_ascii_strtod(x_env, NULL) : 1.7;
+    const double wpm = 24, dit = 1.2 / wpm * RATE;
+    env = gen_env("CQ DE", wpm, RATE, 0.0, rng);
+    g_array_set_size(env, env->len - (guint)(1.5 * RATE));   /* drop the flush */
+    key_run(env, 7 * dit, 0.0f, 0, rng);
+    for (guint rep = 0; rep < 2; rep++) {
+      for (const char *p = "EC6AAE"; *p; p++) {
+        const char *m = morse_of(*p);
+        for (const char *e = m; *e; e++) {
+          const double len = *e == '.' ? 1.0 : (*p == '6' ? x : 3.0);
+          key_run(env, len * dit, 1.0f, 0, rng);
+          if (e[1]) { key_run(env, dit, 0.0f, 0, rng); }
+        }
+        key_run(env, 3 * dit, 0.0f, 0, rng);
+      }
+      key_run(env, 4 * dit, 0.0f, 0, rng);                   /* 7-dit word gap */
+    }
+    gen_env_append(env, "K", wpm, RATE, 0.0, rng, 3.0, 7.0);
+    key_run(env, 1.5 * RATE, 0.0f, 0, rng);
+    got = run_decoder(env, 12.0, 20.0, 0, 0, rng, NULL);
+    char *shown = g_strdup(got);
+    skim_callsign_strip_fix(shown);
+    show("v2 shown:", shown);
+    check("border dah: the pane shows what was heard (EC5AAE)",
+          strstr(shown, "EC5AAE") != NULL);
+    check("border dah: the extractor gets EC6AAE",
+          strstr(got, "\x01" "EC6AAE\x02") != NULL);
+    g_free(shown);
+    g_free(got);
+    g_array_free(env, TRUE);
+
+    g_rand_free(rng);
+    g_unlink(dict);
+    g_free(dict);
   }
 
   printf("\n=== %d checks, %d failures ===\n%s\n", checks, fails,

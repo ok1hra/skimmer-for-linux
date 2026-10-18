@@ -37,6 +37,7 @@
 #include "tone_split.h"
 
 #include <fftw3.h>
+#include "fftw_lock.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -170,8 +171,10 @@ SkimToneSplit *skim_tone_split_new(double sample_rate) {
   ts->alpha = 1.0 - exp(-((double)TS_HOP / sample_rate) / TS_AVG_TC_S);
   ts->fin   = fftwf_alloc_complex(TS_FFT);
   ts->fout  = fftwf_alloc_complex(TS_FFT);
+  skim_fftw_lock();
   ts->plan  = fftwf_plan_dft_1d(TS_FFT, ts->fin, ts->fout, FFTW_FORWARD,
                                 FFTW_ESTIMATE);
+  skim_fftw_unlock();
   for (guint i = 0; i < TS_FFT; i++) {
     ts->win[i] = 0.5f - 0.5f * cosf(2.0f * (float)G_PI * i / (TS_FFT - 1));
   }
@@ -199,7 +202,9 @@ void skim_tone_split_hint_wide_solid(SkimToneSplit *ts) {
 void skim_tone_split_free(SkimToneSplit *ts) {
   if (!ts)
     return;
+  skim_fftw_lock();
   fftwf_destroy_plan(ts->plan);
+  skim_fftw_unlock();
   fftwf_free(ts->fin);
   fftwf_free(ts->fout);
   g_free(ts);

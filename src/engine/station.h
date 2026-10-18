@@ -44,6 +44,14 @@ typedef struct {
   gint64  first_heard;  /* g_get_monotonic_time() */
   gint64  last_heard;
   guint   reports;      /* decode events folded into this record */
+  guint   hearings;     /* most copies of the call one extractor counted —
+                         * keyed-and-read, not reported (callsign.h) */
+  gint64  heard_us;     /* when the call was last actually READ — a report
+                         * may come from a candidate long gone quiet */
+  gboolean addressed;   /* a report followed the call outside a clean CQ
+                         * window (callsign.h): a caller, not calling — it
+                         * clears cq for the record's life, whatever a ghost
+                         * channel without the report keeps saying */
 } SkimStation;
 
 typedef struct _SkimStationTable SkimStationTable;

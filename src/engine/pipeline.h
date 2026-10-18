@@ -42,10 +42,30 @@ typedef enum {
   SKIM_CW_ENGINE_DEEPCW,
 } SkimCwEngine;
 
+/* Where the IQ comes from. TCI: a radio's TCI server (it owns the tuning;
+ * spots go back to its panadapter, a station click tunes it). HPSDR: an
+ * HPSDR Protocol 1 receiver the skimmer drives itself (Red Pitaya — see
+ * hpsdr_p1.h): the pipeline sets the DDC centre; no panadapter, no VFO,
+ * no TX state — spots reach the telnet/RBN sinks only. */
+typedef enum {
+  SKIM_PIPELINE_SOURCE_TCI = 0,
+  SKIM_PIPELINE_SOURCE_HPSDR,
+  /* Live, but the OWNER feeds the IQ with skim_pipeline_push() — one
+   * multi-receiver radio link serving several pipelines (skimmer-headless:
+   * one Red Pitaya, one pipeline per band). No radio state, no panadapter;
+   * spots reach the telnet/RBN sinks. cfg.host is only a label. */
+  SKIM_PIPELINE_SOURCE_EXTERNAL,
+} SkimPipelineSource;
+
 typedef struct {
-  const char *host;           /* TCI server (default 127.0.0.1)              */
-  guint16     port;           /* default 40001                               */
-  guint       iq_rate;        /* 48/96/192/384 kHz; 0 = keep device rate     */
+  SkimPipelineSource source;  /* default TCI                                 */
+  const char *host;           /* TCI server (default 127.0.0.1) / HPSDR radio */
+  guint16     port;           /* default 40001 (TCI) / 1024 (HPSDR)          */
+  guint       iq_rate;        /* TCI 48/96/192/384 kHz, 0 = keep device rate;
+                               * HPSDR 48/96/192 kHz, 0 = 192               */
+  double      center_hz;      /* HPSDR: DDC centre (TRUE, after correction)  */
+  double      clock_ppm;      /* HPSDR: sampling-clock error, ppm            */
+  gboolean    take_over;      /* HPSDR: start even when the radio is busy    */
   SkimPipelineMode mode;      /* decoded mode (default CW)                   */
   SkimCwEngine cw_engine;     /* CW engine (default v2; see SkimCwEngine)    */
   double      chan_bw_hz;     /* channel spacing (default 125 Hz CW,
@@ -55,10 +75,59 @@ typedef struct {
 
   /* M6 — RBN telnet feed (borrowed; the app owns it so aggregator sessions
    * survive TCI reconnects). NULL = no RBN. The feed is ALWAYS CQ-only and
-   * gated at rbn_min_score (0 = default 0.85): stricter than the 0.70 that
-   * puts a label on the local panadapter — the network wants certainty. */
+   * gated at rbn_min_score (0 = default 0.90): stricter than the 0.70 that
+   * puts a label on the local panadapter — the network wants certainty.
+   * The score alone is not enough: ONE copy keyed after "CQ DE" scores 0.90,
+   * and so does a garble of it. A call reaches the feed only once it was
+   * read rbn_min_hearings times (0 = default 2; 1 = no such gate) or the
+   * dictionary knows it, and only after it stayed in the station table for
+   * rbn_settle_s (0 = default 8 s; < 0 = send at once): a torn call ("IZ3N"
+   * one token before "YG") is folded away by the table within that time,
+   * but a telnet line cannot be taken back (skimmer-compare vs RBN,
+   * 2026-10-01: 36 % of the feed's calls were never confirmed, VE3NEA's
+   * CW Skimmer Server 2 %). With rbn_fresh_s > 0 the call must also have
+   * been READ within that many seconds (0 = default: no such gate yet,
+   * until it is measured; < 0 = off): a candidate outlives its station, and
+   * noise on the quiet channel reports it again an hour later (2026-10-03:
+   * 98 % of the feed's unconfirmed "heard on the band today" spots were sent
+   * with the call not decoded in the 90 s before; a hand check of ten:
+   * all ten busted). */
   SkimRbnFeed *rbn;
   double       rbn_min_score;
+  guint        rbn_min_hearings;
+  double       rbn_settle_s;
+  double       rbn_fresh_s;
+  /* rbn_fold_s > 0: a call starting a new run of lines is held off the wire
+   * when a call ALIKE to it (an edit or two, or its head or tail) went out
+   * within that many seconds and 300 Hz, and is better attested — the
+   * dictionary knows it and not this one, or it was heard more (feed_fold.h;
+   * skimmer-compare 2026-10-10: half the misread busts were a glued or cut
+   * twin of a call the feed had already spotted there). 0 = default: off
+   * until measured live; < 0 = off. */
+  double       rbn_fold_s;
+  /* A call the dictionary does NOT know is held this long instead of
+   * rbn_settle_s (0 = default 30 s; < 0 = rbn_settle_s). The release re-runs
+   * the gate, so the near-call conflict sees the right call if it is read
+   * meanwhile (CQ WW 2012: busts -1 point, recall -0.2). */
+  double       rbn_settle_nodict_s;
+  /* Measurement only (skimmer-replay against a reference skimmer that spots
+   * S&P answers too): the feed gate drops its CQ requirement, everything
+   * else stays. Never set it for a feed that reaches the network. */
+  gboolean     rbn_any_caller;
+
+  /* Feed-gate learning logs (gatelog.h), appended for the pipeline's whole
+   * life; NULL = off. tap: every decode the extractors eat, replayable by
+   * skimmer-tap-replay; gatelog: the gate's view as JSON lines. */
+  const char  *tap_path;
+  const char  *gatelog_path;
+
+  /* The learned feed gate (feed_gate.h), SHADOW mode: p is computed for
+   * every line the RBN feed sends and only reported — gatelog "spot" rows,
+   * skim_pipeline_feed_gate_stats(). The hand gate still decides. NULL =
+   * none; a bad ini warns and runs without. band names the pipeline's band
+   * for the model's band feature ("40m"; NULL = none). */
+  const char  *feed_gate_path;
+  const char  *band;
 } SkimPipelineConfig;
 
 typedef struct _SkimPipeline SkimPipeline;
@@ -98,11 +167,24 @@ void skim_pipeline_set_over_cb(SkimPipeline *p, SkimPipelineOverCb cb, gpointer 
 void skim_pipeline_set_state_cb(SkimPipeline *p, SkimPipelineStateCb cb, gpointer user);
 void skim_pipeline_set_vfo_cb(SkimPipeline *p, SkimPipelineVfoCb cb, gpointer user);
 void skim_pipeline_set_spectrum_cb(SkimPipeline *p, SkimPipelineSpectrumCb cb, gpointer user);
+/* Every line the RBN feed actually puts out (after gate, settle and the
+ * feed's dedup), with the station record it came from — st->cq tells a
+ * CQ spot from an S&P one under rbn_any_caller. Engine/feeding thread. */
+typedef void (*SkimPipelineFeedCb)(const SkimStation *st, gpointer user);
+/* Offline replays of a recording: UTC (µs) of stream time 0, so the
+ * gatelog/tap wall clock reads real time instead of stream time. */
+void skim_pipeline_set_wall_origin(SkimPipeline *p, gint64 utc_us);
+/* The hold of a call the dictionary does not know (s; see
+ * rbn_settle_nodict_s), 0 when the feed is off. */
+double skim_pipeline_rbn_settle_nodict(const SkimPipeline *p);
+void skim_pipeline_set_feed_cb(SkimPipeline *p, SkimPipelineFeedCb cb, gpointer user);
 /* Thread-safe switch for the spectrum tap (default off). */
 void     skim_pipeline_set_spectrum_enabled(SkimPipeline *p, gboolean on);
 gboolean skim_pipeline_spectrum_enabled(const SkimPipeline *p);
 
-/* Connect + start decoding. Blocks for the TCI handshake. */
+/* Connect + start decoding. Blocks for the TCI handshake / the first HPSDR
+ * packet. An HPSDR radio streaming to another client fails with
+ * SKIM_HPSDR_ERROR_BUSY (hpsdr_p1.h) unless cfg.take_over. */
 gboolean skim_pipeline_start(SkimPipeline *p, GError **error);
 void     skim_pipeline_stop(SkimPipeline *p);
 
@@ -116,6 +198,27 @@ void     skim_pipeline_stop(SkimPipeline *p);
 const char *skim_pipeline_cw_engine_name(const SkimPipeline *p);
 
 gboolean skim_pipeline_start_offline(SkimPipeline *p, GError **error);
+
+/* Tap replay (skimmer-tap-replay): drive an OFFLINE pipeline from a decode
+ * tap (gatelog.h) instead of IQ — the decodes go through the same
+ * extractor → station table → spot/RBN path as live, on the tap's clock.
+ * begin sizes the extractors (nchan × nslot as the tap header says); text,
+ * reset and tick (the tap's T, R and C lines) take its t_us (engine clock)
+ * and wall_us (UTC), and each first runs the station prune and the feed's
+ * settle hold up to t_us. nslot must match the build (FALSE otherwise). */
+gboolean skim_pipeline_tap_begin(SkimPipeline *p, guint nchan, guint nslot);
+void     skim_pipeline_tap_text(SkimPipeline *p, gint64 t_us, gint64 wall_us,
+                                guint ix, double hz, const SkimDecode *d,
+                                gboolean contested);
+void     skim_pipeline_tap_reset(SkimPipeline *p, gint64 t_us, gint64 wall_us,
+                                 gint ix);
+void     skim_pipeline_tap_tick(SkimPipeline *p, gint64 t_us, gint64 wall_us);
+
+/* SOURCE_EXTERNAL: queue one IQ block for the engine thread — any thread,
+ * never blocks (a full queue drops the block and counts it, like the TCI
+ * ingest). A no-op before start / after stop. */
+void     skim_pipeline_push(SkimPipeline *p, const float *iq, guint nframes,
+                            double rate, double center_hz);
 void     skim_pipeline_feed(SkimPipeline *p, const float *iq, guint nframes,
                             double rate, double center_hz);
 
@@ -157,12 +260,36 @@ void   skim_pipeline_set_spot_cq_only(SkimPipeline *p, gboolean cq_only);
  * 0/1 = exact. Applies live. */
 void   skim_pipeline_set_spot_round_hz(SkimPipeline *p, guint hz);
 
+/* The RBN feed policy in force, defaults resolved: score threshold, hearings
+ * needed (1 = no such gate), settle time in s (0 = sends at once), freshness
+ * in s (0 = no such gate). All 0 when the pipeline has no RBN feed. */
+void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
+                              guint *min_hearings, double *settle_s,
+                              double *fresh_s);
+
+/* The twin fold (cfg.rbn_fold_s): its window in s (0 = off) and how many
+ * times it held a call off the wire so far (a held call is judged again
+ * each time it settles, so one twin may count more than once). */
+void skim_pipeline_rbn_fold(const SkimPipeline *p, double *fold_s,
+                            guint64 *folded);
+
+/* The learned feed gate in shadow (cfg.feed_gate_path): its ini name
+ * (NULL = none loaded), threshold, the RBN lines it scored and how many of
+ * them scored below the threshold — the ones it would have held back. */
+const char *skim_pipeline_feed_gate_stats(const SkimPipeline *p,
+                                          double *threshold, guint64 *spots,
+                                          guint64 *below);
+
 /* Counters for the status line / gates. */
 guint64 skim_pipeline_frames(const SkimPipeline *p);
 guint64 skim_pipeline_spots(const SkimPipeline *p);
 guint64 skim_pipeline_rbn_spots(const SkimPipeline *p);
 guint   skim_pipeline_stations(const SkimPipeline *p);
 guint64 skim_pipeline_dropped_blocks(const SkimPipeline *p);
+/* Decoder channels in the bank (0 until the first block sized it). */
+guint   skim_pipeline_channels(const SkimPipeline *p);
+/* HPSDR source: frames zero-filled for lost UDP packets (0 for TCI). */
+guint64 skim_pipeline_lost_frames(const SkimPipeline *p);
 
 G_END_DECLS
 

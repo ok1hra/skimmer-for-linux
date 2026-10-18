@@ -1,0 +1,16 @@
+{
+ "train": [
+  1791052325,
+  1791133758.0
+ ],
+ "val": [
+  1791137358.0,
+  1791216711.0
+ ],
+ "test": [
+  1791220311.0,
+  1791309812
+ ],
+ "created": "2026-10-06T18:04:40Z",
+ "note": "fixed TRAIN/VAL/TEST spans (epoch s); later data is a reserve"
+}
