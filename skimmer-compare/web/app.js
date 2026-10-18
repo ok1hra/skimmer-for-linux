@@ -106,9 +106,10 @@ function niceMax(v) {
 // ---- state + URL --------------------------------------------------------------------
 const url = new URLSearchParams(location.search);
 const st = {
-  S: null, E: [], shown: 200, open: new Set(), last: 0, timer: null, inflight: false,
+  S: null, E: [], shown: 200, open: new Set(), last: 0, took: 0, timer: null, inflight: false,
   f: { band: url.get('band') || '', cat: url.get('cat') || 'diff', v: url.get('v') || '',
        call: url.get('call') || '' },
+  hourUnit: url.get('hunit') === 'calls' ? 'calls' : 'ep',
 };
 function apiQuery() {
   const q = new URLSearchParams();
@@ -127,6 +128,7 @@ async function refresh() {
   if (st.inflight) return;
   st.inflight = true;
   $('#main').classList.add('busy');
+  const t0 = Date.now();
   try {
     const q = apiQuery();
     const [S, E] = await Promise.all([
@@ -136,6 +138,7 @@ async function refresh() {
     if (S.error || E.error) throw new Error(S.error || E.error);
     st.S = S; st.E = E.events;
     st.last = Date.now();
+    st.took = st.last - t0;
     render();
   } catch (e) {
     const S = st.S;
@@ -146,11 +149,19 @@ async function refresh() {
     $('#main').classList.remove('busy');
   }
 }
-// new data arrives every few seconds (RBN); redraw at most every 10 s
+// New data arrives every few seconds (RBN), but the numbers move slowly:
+// redraw at most once a minute, and a summary that takes long to compute
+// (a long range) waits 15× as long as it took. A hidden tab waits until it is
+// shown again, and a range that ended in the past never changes.
+const REFRESH_MIN = 60000;
+function every() { return Math.max(REFRESH_MIN, 15 * (st.took || 0)); }
+function closed() { return st.S && st.S.range.to < st.S.now - 120; }
 function soon() {
-  const wait = Math.max(0, 10000 - (Date.now() - st.last));
-  if (!st.timer) st.timer = setTimeout(() => { st.timer = null; refresh(); }, wait);
+  if (st.timer || document.hidden || closed()) return;
+  const wait = Math.max(0, every() - (Date.now() - st.last));
+  st.timer = setTimeout(() => { st.timer = null; if (!document.hidden) refresh(); }, wait);
 }
+document.addEventListener('visibilitychange', () => { if (!document.hidden && st.last) soon(); });
 
 // ---- render -------------------------------------------------------------------------
 function engLabel(S, key) {
@@ -178,7 +189,8 @@ function render() {
   renderLatency(S.latency);
   renderHists(S);
   renderSessions(S);
-  $('#updated').textContent = `${S.range.label} · updated ${hms(S.now)} UTC`;
+  $('#updated').textContent = `${S.range.label} · updated ${hms(S.now)} UTC · `
+    + (closed() ? 'closed range, no auto-update' : `auto-update every ${Math.round(every() / 1000)} s`);
 }
 
 // The chosen comparison may have no compared time in the range — typically
@@ -337,7 +349,268 @@ function renderVerdict(S) {
     const n = C[key || f] || 0;
     cats.append(el('button', { type: 'button', onclick: () => setCat(f) }, label, el('b', null, n)));
   }
+  renderBreakdown(S);
   renderCI(S);
+}
+
+// One bar per side and unit (episodes, unique calls), each in % of its U.
+// Left of the dashed line is the universe of real stations U (the same for
+// both sides): found, busted (a bust pair the referee settled against this
+// side: the station counts as missed) and missed. Right of it are the side's
+// episodes recall never sees: calls nobody confirms (lone busts), unsettled
+// bust pairs and L's calls R heard only as non-CQ.
+// found + lost + missed = recall's n; lost + unverified = the bust rate's k.
+const BD = ['found', 'lost', 'missed', 'unverified', 'unresolved', 'nonCQ'];
+const BD_IN_U = new Set(['found', 'lost', 'missed']);
+const BD_TEXT = {
+  ep: {
+    found: ['found', 'real station spotted with the right call'],
+    lost: ['busted → missed', 'the other side had the confirmed call; counts as a miss and as a bust'],
+    missed: ['missed', 'real station the other side found, this one never reported'],
+    unverified: ['unverified call', 'nobody confirms the call: a bust, but no real station behind it, so recall cannot see it'],
+    unresolved: ['bust pair, unsettled', 'similar calls at one spot, the referee cannot tell which is right'],
+    nonCQ: ['R heard, not as CQ', 'L spotted a real call R reported only without CQ'],
+  },
+  calls: {
+    found: ['found', 'real call reported right at least once'],
+    lost: ['busted, never right', 'a real call this side only ever reported busted'],
+    missed: ['missed', 'real call the other side found, this one never reported'],
+    unverified: ['unconfirmed call', 'a call string nobody confirms: this side\'s busts'],
+    unresolved: ['unsettled only', 'a call string seen only in bust pairs the referee cannot settle'],
+    nonCQ: ['verified, not as CQ by R', 'a verified call outside U: R heard it only without CQ'],
+  },
+};
+function bdFill(k, side) {
+  const c = side === 'L' ? cL : cR;
+  return {
+    found: { fill: c },
+    lost: { fill: 'url(#bd-lost)', stroke: 'var(--bad)' },
+    missed: { fill: 'var(--out)' },
+    unverified: { fill: 'url(#bd-unv)', stroke: 'var(--bad)' },
+    unresolved: { fill: 'url(#bd-unres)', stroke: 'var(--muted)' },
+    nonCQ: { fill: side === 'L' ? 'var(--L-wash)' : 'var(--R-wash)', stroke: c },
+  }[k];
+}
+function bdDefs(svg, pre) {
+  const defs = sv('defs');
+  for (const [id, angle, color, gap] of [['lost', 45, 'var(--bad)', 4], ['unv', 135, 'var(--bad)', 5],
+    ['unres', 135, 'var(--muted)', 5]]) {
+    const p = sv('pattern', { id: pre + id, width: gap, height: gap, patternUnits: 'userSpaceOnUse',
+      patternTransform: `rotate(${angle})` });
+    p.append(sv('line', { x1: 0, y1: 0, x2: 0, y2: gap, stroke: color, 'stroke-width': 1.5 }));
+    defs.append(p);
+  }
+  svg.append(defs);
+}
+// a breakdown of one side (episodes) or of its unique calls, with the totals
+// the percentages are taken of
+function bdPart(B, side, unit) {
+  const d = B[side];
+  return unit === 'calls'
+    ? { v: d.calls, n: B.calls_real, own: d.calls.own, nWhat: 'real calls', ownWhat: `${side} unique calls` }
+    : { v: d, n: B.n, own: d.episodes, nWhat: 'real stations', ownWhat: `${side} episodes` };
+}
+function bdSegmentTip(side, unit, k, p) {
+  const [label, what] = BD_TEXT[unit][k], v = p.v[k], f = (x) => x.toLocaleString('en');
+  return [`${side} · ${label}`, [
+    [null, f(v), BD_IN_U.has(k) ? `${pct(p.n ? v / p.n : null)} of ${f(p.n)} ${p.nWhat}`
+      : `${pct(p.own ? v / p.own : null)} of ${f(p.own)} ${p.ownWhat}`],
+    [null, '', what]]];
+}
+
+function renderBreakdown(S) {
+  const B = S.breakdown, box = $('#breakdown'), txt = $('#breakdown-text');
+  const t = S.time;
+  $('#breakdown-range').textContent = t.common_from == null
+    ? `${S.range.label}: nothing compared`
+    : `${S.range.label} · ${engLabel(S, S.engine)} · compared ${utc(t.common_from)} – ${utc(t.common_to)} UTC, `
+      + `${dur(t.common_s)} of common time`;
+  if (!B) { box.replaceChildren(); txt.replaceChildren(); return; }
+  // One chart, one axis: every bar in % of its own U, so the U line is the
+  // same place for episodes and unique calls; the found segment reads as
+  // recall and what lies past 100 % is what the side spots on top of U.
+  const total = (v) => BD.reduce((a, k) => a + v[k], 0);
+  const rows = [['ep', 'L'], ['ep', 'R'], ['calls', 'L'], ['calls', 'R']]
+    .map(([unit, side]) => ({ unit, side, p: bdPart(B, side, unit) }));
+  const m = { l: 92, r: 16, t: 34, b: 24 }, rowH = 30, barH = 18, groupGap = 14;
+  const H = m.t + rows.length * rowH + groupGap + m.b;
+  const svg = svgRoot(H);
+  bdDefs(svg, 'bd-');
+  const max = Math.max(1.25, ...rows.map((r) => (r.p.n ? total(r.p.v) / r.p.n : 0)));
+  const top = Math.ceil(max * 4) / 4;
+  const x = (f) => m.l + f / top * (W - m.l - m.r);
+  const rowY = (i) => m.t + i * rowH + (i >= 2 ? groupGap : 0);
+  const yEnd = rowY(rows.length - 1) + rowH;
+  for (let f = 0; f <= top + 1e-9; f += top > 2 ? 0.5 : 0.25) {
+    svg.append(sv('line', { cls: 'grid', x1: x(f), x2: x(f), y1: m.t - 4, y2: yEnd }));
+    svg.append(sv('text', { x: x(f), y: H - 8, 'text-anchor': 'middle' }, pctShort(f)));
+  }
+  // brackets: what recall counts, and what lies outside it
+  const brace = (a, b, label) => {
+    if (x(b) - x(a) < 4) return;
+    const y = m.t - 12;
+    svg.append(sv('path', { d: `M${x(a) + 1},${y + 6}V${y}H${x(b) - 1}V${y + 6}`, fill: 'none', stroke: 'var(--axis)' }));
+    svg.append(sv('text', { cls: 'lbl', x: (x(a) + x(b)) / 2, y: y - 4, 'text-anchor': 'middle' }, label));
+  };
+  brace(0, 1, x(1) - x(0) > 260 ? 'U = 100 % of real stations / calls — recall' : 'U = 100 %');
+  brace(1, max, x(max) - x(1) > 120 ? 'outside recall, in % of U' : '');
+  rows.forEach((r, i) => {
+    const { unit, side, p } = r, y = rowY(i) + (rowH - barH) / 2;
+    svg.append(sv('text', { cls: 'lbl', x: 0, y: y + barH / 2 + 4 },
+      `${side} ${unit === 'calls' ? 'unique calls' : 'episodes'}`));
+    if (!p.n) return;
+    let acc = 0;
+    for (const k of BD) {
+      const v = p.v[k];
+      if (!v) continue;
+      const x0 = x(acc / p.n), x1 = x((acc + v) / p.n);
+      acc += v;
+      const w = x1 - x0 - 2;              // 2px surface gap between segments
+      if (w < 0.5) continue;
+      const f = bdFill(k, side);
+      const g = sv('g');
+      g.append(sv('rect', { x: x0 + 1, y, width: w, height: barH, rx: Math.min(2, w / 2),
+        fill: f.fill, stroke: f.stroke, 'stroke-width': f.stroke ? 1 : null }));
+      g.append(sv('rect', { cls: 'hit', x: x0, y: y - 4, width: Math.max(6, x1 - x0), height: barH + 8 }));
+      hover(g, () => {
+        const [h, rr] = bdSegmentTip(side, unit, k, p);
+        if (!BD_IN_U.has(k)) rr.splice(1, 0, [null, pct(v / p.n), `of U (${p.n.toLocaleString('en')} ${p.nWhat})`]);
+        return [h, rr];
+      });
+      svg.append(g);
+    }
+  });
+  // the edge of U: one place for all four bars
+  svg.append(sv('line', { x1: x(1), x2: x(1), y1: m.t - 6, y2: yEnd, stroke: 'var(--ink-2)', 'stroke-dasharray': '3 3' }));
+  box.replaceChildren(svg);
+
+  const fmt = (v) => v.toLocaleString('en');
+  const spots = { L: `${fmt(S.counts.spots_L)} CQ spots`,
+    R: `${fmt(S.counts.spots_R)} CQ spots (${fmt(S.counts.spots_R_all)} all)` };
+  txt.replaceChildren(...['L', 'R'].map((side) => {
+    const d = B[side], c = d.calls, ok = c.found + c.nonCQ;
+    return el('p', null, el('span', { cls: 'key key-' + side }),
+      el('b', null, side), ` ${spots[side]} → ${fmt(d.episodes)} episodes · recall `,
+      el('b', null, pct(S.recall[side].p)), ` (${fmt(d.found)} of ${fmt(B.n)}) · bust rate `,
+      el('b', null, pct(S.bust[side].p)),
+      ` = ${fmt(d.lost)} busted a real station (lowers recall) + ${fmt(d.unverified)} unverified (bust rate only)`,
+      ' · unique calls ', el('b', null, fmt(c.own)), ', verified ',
+      el('b', null, pct(c.own ? ok / c.own : null)), ` (${fmt(ok)})`,
+      ', found ', el('b', null, pct(B.calls_real ? c.found / B.calls_real : null)),
+      ` of ${fmt(B.calls_real)} real calls`);
+  }));
+  renderHourly(S);
+}
+
+// The same partition per UTC hour: per hour an L and an R column on one count
+// axis, U (found, busted, missed) above the baseline, the side's calls outside
+// recall below it. Wider than the card when there are many hours: the box
+// scrolls sideways and opens at the newest hour.
+function renderHourly(S) {
+  const box = $('#hourly'), Hs = S.hourly || [];
+  const unit = st.hourUnit;
+  for (const b of document.querySelectorAll('#hourly-unit button')) {
+    b.setAttribute('aria-pressed', String(b.dataset.unit === unit));
+  }
+  if (!Hs.length) {
+    $('#hourly-axis').replaceChildren();
+    box.replaceChildren(el('p', { cls: 'muted' }, 'no compared hour in this range'));
+    return;
+  }
+  const P = Hs.map((h) => ({ h, L: bdPart(h, 'L', unit), R: bdPart(h, 'R', unit) }));
+  const upMax = Math.max(1, ...P.map((p) => p.L.n)), tick = niceMax(upMax / 4);
+  const up = Math.ceil(upMax / tick) * tick;
+  const out = (v) => v.unverified + v.unresolved + v.nonCQ;
+  const down = Math.max(...P.map((p) => Math.max(out(p.L.v), out(p.R.v))));
+  const dn = down ? Math.ceil(down / tick) * tick : 0;
+  // the count axis sits in its own box left of the scrolling plot
+  const AX = 62, m = { l: 4, r: 12, t: 10, b: 28 }, H = 280;
+  const slot = Math.max(12, (W - AX - m.l - m.r) / P.length);
+  const Wd = Math.round(m.l + m.r + slot * P.length);
+  const svg = sv('svg', { viewBox: `0 0 ${Wd} ${H}`, role: 'img' });
+  if (Wd > W - AX) svg.setAttribute('style', `width:${Wd}px`);
+  const axis = sv('svg', { viewBox: `0 0 ${AX} ${H}`, role: 'img', style: `width:${AX}px` });
+  bdDefs(svg, 'hr-');
+  const plotH = H - m.t - m.b;
+  const k = plotH / (up + dn);                 // px per count, one scale both ways
+  const y0 = m.t + up * k;
+  const x = (i) => m.l + i * slot;
+  P.forEach((p, i) => {
+    if (p.h.common_s === 0) {
+      svg.append(sv('rect', { x: x(i), y: m.t, width: slot, height: plotH, fill: 'var(--out)' }));
+    }
+  });
+  for (let v = tick; v <= up; v += tick) {
+    svg.append(sv('line', { cls: 'grid', x1: m.l, x2: Wd - m.r, y1: y0 - v * k, y2: y0 - v * k }));
+    axis.append(sv('text', { x: AX - 6, y: y0 - v * k + 4, 'text-anchor': 'end' }, Math.round(v)));
+  }
+  if (dn) {
+    svg.append(sv('line', { cls: 'grid', x1: m.l, x2: Wd - m.r, y1: y0 + dn * k, y2: y0 + dn * k }));
+    axis.append(sv('text', { x: AX - 6, y: y0 + dn * k + 4, 'text-anchor': 'end' }, Math.round(dn)));
+  }
+  axis.append(sv('text', { x: AX - 6, y: y0 + 4, 'text-anchor': 'end' }, 0));
+  // brackets, as on the bars above: U above the line, outside recall below;
+  // the longest label that fits the bracket, none if nothing does
+  const vbrace = (ya, yb, labels) => {
+    if (yb - ya < 6) return;
+    const bx = 18;
+    axis.append(sv('path', { d: `M${bx + 5},${ya + 1}H${bx}V${yb - 1}H${bx + 5}`, fill: 'none', stroke: 'var(--axis)' }));
+    const label = labels.find((l) => l.length * 6 + 6 <= yb - ya);
+    if (label) {
+      const cy = (ya + yb) / 2;
+      axis.append(sv('text', { cls: 'lbl', x: bx - 6, y: cy, 'text-anchor': 'middle',
+        transform: `rotate(-90 ${bx - 6} ${cy})` }, label));
+    }
+  };
+  vbrace(y0 - up * k, y0 - 2, [unit === 'calls' ? 'U (real calls) · recall' : 'U (real stations) · recall',
+    'U · recall', 'U']);
+  if (dn) vbrace(y0 + 2, y0 + dn * k, ['outside recall', 'outside']);
+  // an L and an R column, 1px apart, the pair centred with air between hours
+  const cw = Math.max(2, Math.min(18, (slot * 0.8 - 1) / 2)), pad = (slot - 2 * cw - 1) / 2;
+  P.forEach((p, i) => {
+    const g = sv('g');
+    ['L', 'R'].forEach((side, j) => {
+      const cx = x(i) + pad + j * (cw + 1);
+      let yu = y0, yd = y0;
+      for (const kk of BD) {
+        const v = p[side].v[kk];
+        if (!v) continue;
+        const h = v * k, f = bdFill(kk, side), gap = h >= 4 ? 1 : 0;
+        let yy;
+        if (BD_IN_U.has(kk)) { yu -= h; yy = yu; } else { yy = yd; yd += h; }
+        g.append(sv('rect', { x: cx, y: yy + (BD_IN_U.has(kk) ? gap : 0), width: cw, height: Math.max(0.5, h - gap),
+          fill: f.fill, stroke: f.stroke, 'stroke-width': f.stroke && cw > 3 ? 1 : null }));
+      }
+    });
+    g.append(sv('rect', { cls: 'hit', x: x(i), y: m.t, width: slot, height: plotH }));
+    hover(g, () => {
+      const rows = [];
+      for (const side of ['L', 'R']) {
+        const q = p[side], v = q.v, c = side === 'L' ? cL : cR;
+        const busts = unit === 'calls' ? v.unverified : v.lost + v.unverified;
+        rows.push([c, pct(q.n ? v.found / q.n : null), `${side} recall · ${v.found} of ${q.n} ${q.nWhat}`]);
+        rows.push([null, pct(q.own ? busts / q.own : null),
+          unit === 'calls' ? `${side} unconfirmed calls · ${busts} of ${q.own}`
+            : `${side} bust rate · ${v.lost} busted real + ${v.unverified} unverified of ${q.own}`]);
+      }
+      rows.push([null, dur(p.h.common_s), 'compared']);
+      return [`${utc(p.h.t)} – ${hhmm(p.h.t + 3600)} UTC · ${unit === 'calls' ? 'unique calls' : 'episodes'}`, rows];
+    });
+    svg.append(g);
+  });
+  svg.append(sv('line', { cls: 'axis', x1: m.l, x2: Wd - m.r, y1: y0, y2: y0 }));
+  // labels at least ~70 px apart, on whole hours of the day
+  const every = [1, 2, 3, 6, 12, 24].find((s) => s * slot >= 70) || 24;
+  P.forEach((p, i) => {
+    const hr = (p.h.t / 3600) % 24;
+    if (hr % every || x(i) < 16 || x(i) > Wd - 16) return;
+    svg.append(sv('line', { cls: 'grid', x1: x(i), x2: x(i), y1: H - m.b, y2: H - m.b + 4 }));
+    svg.append(sv('text', { x: x(i), y: H - 10, 'text-anchor': 'middle' },
+      hr === 0 ? iso(p.h.t).slice(5, 10) : hhmm(p.h.t)));
+  });
+  $('#hourly-axis').replaceChildren(axis);
+  box.replaceChildren(svg);
+  box.scrollLeft = box.scrollWidth;
 }
 
 function renderCI(S) {
@@ -758,6 +1031,9 @@ for (const [id, key] of [['#f-band', 'band'], ['#f-cat', 'cat'], ['#f-v', 'v']])
 $('#f-call').value = st.f.call;
 $('#f-call').addEventListener('input', (e) => { st.f.call = e.target.value.trim(); pushUrl(); renderDiffs(); });
 $('#more').addEventListener('click', () => { st.shown += 300; renderDiffs(); });
+for (const b of document.querySelectorAll('#hourly-unit button')) {
+  b.addEventListener('click', () => { st.hourUnit = b.dataset.unit; if (st.S) renderHourly(st.S); });
+}
 
 const themes = ['auto', 'light', 'dark'];
 function applyTheme(t) {

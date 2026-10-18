@@ -112,6 +112,63 @@ def bust_block(evs):
             "verdict": verdict}
 
 
+def breakdown_block(evs):
+    """Every episode of each side in one partition, so recall and bust rate
+    can be read off the same bar. Inside the real-station universe U a side
+    either found the station, busted it (a resolved bust pair: the other side
+    had the confirmed call, so the buster counts it as missed) or never
+    reported it. Outside U: calls nobody can confirm (a lone bust: in the bust
+    rate, but no real station behind it, so recall cannot see it), bust pairs
+    the referee cannot settle, and L's real calls that R heard only as non-CQ.
+    found + lost + missed = recall's n; lost + unverified = the bust rate's k.
+
+    The same partition per unique call ("calls": bands and times folded).
+    Inside the real calls: found, busted and never right, missed. Outside:
+    each of the side's own call strings that is not a found real call —
+    verified but outside U (R heard it without CQ), only ever in an unsettled
+    pair, or confirmed by nobody (its busts, the busted strings of lost pairs
+    included). found + nonCQ + unresolved + unverified = the side's unique
+    calls; found + nonCQ = its verified calls."""
+    real = {e["call"] for e in evs if e["inU"]}
+    out = {"n": sum(e["inU"] for e in evs), "calls_real": len(real)}
+    for X in ("L", "R"):
+        c, b = "c" + X, "b" + X
+        own = [e for e in evs if e[X] is not None]
+        found = {e["call"] for e in evs if e["inU"] and e[c]}
+        lost = {e["call"] for e in evs if e["inU"] and e[b]} - found
+        ok = {e[X]["call"] for e in own
+              if not e[b] and not (e["cat"] == "bust" and not e["inU"])} - found
+        unres = {e[X]["call"] for e in own if e["cat"] == "bust" and not e["inU"]} - found - ok
+        rest = {e[X]["call"] for e in own} - found - ok - unres
+        out[X] = {
+            "found": sum(e["inU"] and e[c] for e in evs),
+            "lost": sum(e["inU"] and e[b] for e in evs),
+            "missed": sum(e["inU"] and not e[c] and not e[b] for e in evs),
+            "unverified": sum(not e["inU"] and e[b] for e in evs),
+            "unresolved": sum(e["cat"] == "bust" and not e["inU"] for e in own),
+            "nonCQ": sum(e["cat"] == "nonCQ" for e in own),
+            "episodes": len(own),
+            "calls": {"found": len(found), "lost": len(lost),
+                      "missed": len(real - found - lost), "unverified": len(rest),
+                      "unresolved": len(unres), "nonCQ": len(ok),
+                      "own": len(found | ok | unres | rest)}}
+    return out
+
+
+def hourly(evs, ta, tb, common):
+    """breakdown_block per UTC hour, trimmed to the hours with compared time."""
+    hrs = [(t, t + 3600) for t in range(int(ta - ta % 3600), int(tb), 3600)]
+    hrs = [h for h in hrs if total(clip(common, *h)) > 0]
+    if not hrs:
+        return []
+    t0, t1 = hrs[0][0], hrs[-1][0]
+    by = {}
+    for e in evs:
+        by.setdefault(int(e["t0"] - e["t0"] % 3600), []).append(e)
+    return [dict(breakdown_block(by.get(t, [])), t=t, common_s=total(clip(common, t, t + 3600)))
+            for t in range(t0, t1 + 1, 3600)]
+
+
 def latency_block(evs):
     lat = [e["lat"] for e in evs if e["cat"] == "match" and e["lat"] is not None]
     Lf = sum(x > 3 for x in lat)            # R later → L first
@@ -289,6 +346,8 @@ def summarize(A, ta, tb):
         "windows": A.win.to_json(),
         "sessions": A.sessions,
         "time": {"span_s": total(clip(A.spans, ta, tb)), "common_s": total(common),
+                 "common_from": common[0][0] if common else None,
+                 "common_to": common[-1][1] if common else None,
                  "rbn_s": total(clip(A.rbn_up, ta, tb))},
         "counts": {
             "spots_L": sum(ta <= sp.t < tb for _, sp in A.Lin),
@@ -297,6 +356,8 @@ def summarize(A, ta, tb):
             "events": len(evs), "rbn_spots": A.rbn_n, "rbn_own": A.rbn_own},
         "cats": cats,
         "recall": rec, "bust": bust, "latency": lat,
+        "breakdown": breakdown_block(evs),
+        "hourly": hourly(evs, ta, tb, common),
         "snr": {"offset": A.snr_offset, "offset_n": A.snr_offset_n, "scale": "R",
                 "curve": [list(p) for p in A.snr_curve],
                 "bins": bins_block(evs, "snr", snr_edges(evs))},

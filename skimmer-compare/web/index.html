@@ -73,6 +73,28 @@
   <section class="card" id="verdict-card">
     <h2>Verdict</h2>
     <div id="verdicts" class="verdicts"></div>
+    <h3>Everything at a glance: real stations, recall and busts</h3>
+    <p class="muted" id="breakdown-range"></p>
+    <div class="legend">
+      <span><span class="key key-L"></span><span class="key key-R"></span>found (recall)</span>
+      <span><span class="key key-lost"></span>busted a real station — counts as missed</span>
+      <span><span class="key key-out"></span>missed</span>
+      <span><span class="key key-unv"></span>unverified call — bust outside recall</span>
+      <span><span class="key key-unres"></span>bust pair, referee cannot tell</span>
+      <span><span class="key key-other"></span>L real, R heard it only as non-CQ</span>
+    </div>
+    <div id="breakdown" class="chart"></div>
+    <div id="breakdown-text" class="bd-text"></div>
+    <h3>The same, hour by hour (UTC)</h3>
+    <div class="legend">
+      <span class="seg" id="hourly-unit" role="group" aria-label="Unit">
+        <button type="button" data-unit="ep" aria-pressed="true">Episodes</button>
+        <button type="button" data-unit="calls" aria-pressed="false">Unique calls</button>
+      </span>
+      <span>per hour an L and an R column, colours as above: U above the line, outside recall below it</span>
+      <span><span class="key key-out"></span>hour not compared</span>
+    </div>
+    <div class="hwrap"><div id="hourly-axis"></div><div id="hourly" class="chart hscroll"></div></div>
     <div id="tiles" class="tiles"></div>
     <div id="cats" class="cats"></div>
     <h3>Recall and bust rate with 95 % confidence intervals</h3>

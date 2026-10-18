@@ -218,6 +218,26 @@ def core(root, logs, A_T, B_T):
     bu = S["bust"]
     check(bu["L"]["k"] == 2 and bu["L"]["n"] == 5 and bu["R"]["k"] == 0 and bu["R"]["n"] == 3,
           "bust rate: L 2 of 5 episodes, R 0 of 3")
+    bd = S["breakdown"]
+    check(bd["L"] == {"found": 2, "lost": 1, "missed": 1, "unverified": 1, "unresolved": 0,
+                      "nonCQ": 1, "episodes": 5,
+                      "calls": {"found": 2, "lost": 1, "missed": 1, "unverified": 2,
+                                "unresolved": 0, "nonCQ": 1, "own": 5}}
+          and bd["R"] == {"found": 3, "lost": 0, "missed": 1, "unverified": 0, "unresolved": 0,
+                          "nonCQ": 0, "episodes": 3,
+                          "calls": {"found": 3, "lost": 0, "missed": 1, "unverified": 0,
+                                    "unresolved": 0, "nonCQ": 0, "own": 3}}
+          and bd["calls_real"] == 4 and bd["n"] == 4,
+          "breakdown: L's EA3G bust costs recall, its ON4HHH bust only the bust rate %s" % bd)
+    check(all(bd[X]["found"] + bd[X]["lost"] + bd[X]["missed"] == r["n"]
+              and bd[X]["lost"] + bd[X]["unverified"] == bu[X]["k"] for X in "LR"),
+          "breakdown: found + lost + missed = recall n, lost + unverified = bust k")
+    hr = S["hourly"]
+    check([h["t"] for h in hr] == [epoch("12:00:00"), epoch("13:00:00")]
+          and all(sum(h[X][k] for h in hr) == bd[X][k] for X in "LR"
+                  for k in ("found", "lost", "missed", "unverified", "unresolved", "nonCQ", "episodes"))
+          and all(h["common_s"] > 0 for h in hr),
+          "hourly: two compared hours whose episode counts add up to the whole range")
     check(S["snr"]["offset"] == 5 and S["snr"]["offset_n"] == 1, "SNR offset R − L = +5 dB from 1 pair")
     check(m is not None and m["snr"] == 25, "DL1AAA: a matched event sits at R's SNR (25 dB)")
     lofr = [(b["LofR"]["k"], b["LofR"]["n"]) for b in S["snr"]["bins"] if b["n"]]
