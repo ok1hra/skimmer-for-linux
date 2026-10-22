@@ -228,7 +228,7 @@ struct _SkimPipeline {
   char             *dlog_path;                 /* decode log (engine thread) */
   FILE             *dlog;
   SkimGateLog      *glog;                      /* feed-gate learning logs    */
-  SkimFeedGate      *fgate;                     /* learned gate, shadow       */
+  SkimFeedGate      *fgate;                     /* learned gate (a reference) */
   SkimFeedGateTrack *fgtrack;                   /* its features               */
   char              *band;
   gint              fg_spots, fg_below;        /* atomic: status thread reads */
@@ -372,10 +372,30 @@ static void station_gone_fwd(const SkimStation *st, gpointer user);
 static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
                          double snr_db, double speed, gpointer user) {
   SkimPipeline *p = user;
-  /* SKIM_FEED_TRACE=1: every line that goes on the wire, after the policy
-   * AND spot_out's dedup — what an A/B of two feed policies compares. The
-   * time is the pipeline clock: stream seconds offline (a replay lines its
-   * feed up with a live log of the same recording), monotonic live. */
+  /* the learned gate scores the line the hand gate let through; in shadow
+   * it only reports, with feed_gate_on it holds back a line below its
+   * threshold — before the fold counts it as sent */
+  double x[SKIM_FEED_GATE_NFEAT];
+  double lr = 1.0;
+  if (p->fgate) {
+    skim_feed_gate_track_features(p->fgtrack, pipe_now_us(p), pipe_wall_us(p),
+                                  call, freq_hz, p->band, x);
+    lr = skim_feed_gate_p(p->fgate, x);
+    g_atomic_int_inc(&p->fg_spots);
+    if (lr < skim_feed_gate_threshold(p->fgate)) {
+      g_atomic_int_inc(&p->fg_below);
+      if (p->cfg.feed_gate_on) {
+        skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "gate_drop", call,
+                           freq_hz, snr_db, speed);
+        return;
+      }
+    }
+  }
+  /* SKIM_FEED_TRACE=1: every line that goes on the wire, after the policy,
+   * spot_out's dedup and the learned gate — what an A/B of two feed
+   * policies compares. The time is the pipeline clock: stream seconds
+   * offline (a replay lines its feed up with a live log of the same
+   * recording), monotonic live. */
   if (g_getenv("SKIM_FEED_TRACE")) {
     g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm t=%.1f\n", call,
                freq_hz / 1000.0, snr_db, speed, pipe_now_us(p) / 1e6);
@@ -386,13 +406,6 @@ static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
                         st ? st->hearings : 0, skim_callsign_dict_has(call));
   }
   if (p->fgate) {
-    /* shadow: score the line, report it — the hand gate already decided */
-    double x[SKIM_FEED_GATE_NFEAT];
-    skim_feed_gate_track_features(p->fgtrack, pipe_now_us(p), pipe_wall_us(p),
-                                  call, freq_hz, p->band, x);
-    const double lr = skim_feed_gate_p(p->fgate, x);
-    g_atomic_int_inc(&p->fg_spots);
-    if (lr < skim_feed_gate_threshold(p->fgate)) { g_atomic_int_inc(&p->fg_below); }
     skim_gatelog_spot(p->glog, pipe_now_us(p), pipe_wall_us(p), call, freq_hz,
                       snr_db, speed, lr, x, SKIM_FEED_GATE_NFEAT);
   } else {
@@ -488,7 +501,11 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
   }
   p->band = g_strdup(cfg->band);
   p->cfg.band = p->band;
-  if (p->cfg.feed_gate_path && p->cfg.rbn) {
+  if (p->cfg.feed_gate && p->cfg.rbn) {
+    p->fgate = skim_feed_gate_ref(p->cfg.feed_gate);
+    p->fgtrack = skim_feed_gate_track_new(skim_feed_gate_win_s(p->fgate),
+                                          skim_feed_gate_near_khz(p->fgate));
+  } else if (p->cfg.feed_gate_path && p->cfg.rbn) {
     GError *err = NULL;
     p->fgate = skim_feed_gate_load(p->cfg.feed_gate_path, &err);
     if (p->fgate) {
@@ -501,6 +518,7 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     }
   }
   p->cfg.feed_gate_path = NULL;                /* borrowed: not kept         */
+  p->cfg.feed_gate = NULL;                     /* p->fgate holds the reference */
   if (p->cfg.dict_path) {
     GError *err = NULL;
     if (!skim_callsign_dict_load(p->cfg.dict_path, &err)) {

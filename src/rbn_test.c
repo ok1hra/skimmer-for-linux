@@ -770,6 +770,62 @@ int main(void) {
           "the wire", fr.ok1br_ghost == 0);
   }
 
+  /* -- the learned gate: shadow reports, on holds back ------------------------- */
+  {
+    printf("  learned gate (a model that scores every line below its threshold)\n");
+    static const char LOW[] = "[gate]\nbias = -50\nthreshold = 0.5\n";
+    GError *err = NULL;
+    SkimFeedGate *g = skim_feed_gate_load_data(LOW, sizeof(LOW) - 1, "low", FALSE, &err);
+    check("an ini in memory loads, with the id given",
+          g && strcmp(skim_feed_gate_id(g), "low") == 0);
+    char *dir = g_dir_make_tmp("skim-gate-on-XXXXXX", NULL);
+    guint64 spots[2] = { 0 }, below[2] = { 0 };
+    char *rows[2] = { NULL };
+    for (guint on = 0; on < 2; on++) {
+      char *rows_path = g_build_filename(dir, on ? "on.jsonl" : "shadow.jsonl", NULL);
+      SkimRbnFeed *f = skim_rbn_feed_new("OK1BR", 0, &err);
+      SkimPipelineConfig cfg = {
+        .chan_bw_hz = 125.0, .rbn = f, .gatelog_path = rows_path,
+        .feed_gate = g, .feed_gate_on = on, .band = "40m",
+      };
+      SkimPipeline *p = skim_pipeline_new(&cfg);
+      skim_pipeline_start_offline(p, &err);
+      for (guint off = 0; off + BLK <= g_pol_frames; off += BLK) {
+        skim_pipeline_feed(p, g_pol + 2 * (gsize)off, BLK, RATE, CENTER);
+      }
+      GRand *rng = g_rand_new_with_seed(7);
+      static float quiet[BLK * 2];
+      for (guint off = 0; off < 65 * RATE; off += BLK) {
+        for (guint i = 0; i < BLK * 2; i++) { quiet[i] = (float)(0.005 * gauss(rng)); }
+        skim_pipeline_feed(p, quiet, BLK, RATE, CENTER);
+      }
+      g_rand_free(rng);
+      skim_pipeline_stop(p);
+      const char *id = skim_pipeline_feed_gate_stats(p, NULL, &spots[on], &below[on]);
+      check(on ? "on: the pipeline names the shared gate" : "shadow: the pipeline names the shared gate",
+            id && strcmp(id, "low") == 0);
+      skim_pipeline_free(p);
+      skim_rbn_feed_free(f);
+      g_file_get_contents(rows_path, &rows[on], NULL, NULL);
+      g_remove(rows_path);
+      g_free(rows_path);
+    }
+    printf("       shadow: %" G_GUINT64_FORMAT " scored, %" G_GUINT64_FORMAT
+           " below; on: %" G_GUINT64_FORMAT " scored, %" G_GUINT64_FORMAT " below\n",
+           spots[0], below[0], spots[1], below[1]);
+    check("shadow: every line is scored below and still goes on the wire",
+          spots[0] > 0 && below[0] == spots[0] && rows[0] &&
+          strstr(rows[0], "{\"ev\":\"spot\"") && !strstr(rows[0], "gate_drop"));
+    check("on: the same lines are held back — none on the wire, each a gate_drop",
+          spots[1] == spots[0] && below[1] == spots[1] && rows[1] &&
+          !strstr(rows[1], "{\"ev\":\"spot\"") && strstr(rows[1], "{\"ev\":\"gate_drop\""));
+    g_free(rows[0]);
+    g_free(rows[1]);
+    g_rmdir(dir);
+    g_free(dir);
+    skim_feed_gate_free(g);                    /* the last reference          */
+  }
+
   /* -- learning logs: the decode tap replays to the same gate rows ------------- */
   {
     printf("  learning logs (policy band → tap + rows, tap replayed → rows again)\n");

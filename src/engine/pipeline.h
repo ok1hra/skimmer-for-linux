@@ -14,6 +14,7 @@
 #include <glib.h>
 #include "decode.h"
 #include "dup_query.h"
+#include "feed_gate.h"
 #include "rbn_feed.h"
 #include "station.h"
 
@@ -128,6 +129,12 @@ typedef struct {
    * for the model's band feature ("40m"; NULL = none). */
   const char  *feed_gate_path;
   const char  *band;
+  /* The same gate already loaded (shared by every band's pipeline; the
+   * pipeline takes its own reference). Wins over feed_gate_path. */
+  SkimFeedGate *feed_gate;
+  /* The gate DECIDES: a line it scores below its threshold does not go on
+   * the wire (gatelog event "gate_drop"). FALSE = shadow. */
+  gboolean     feed_gate_on;
 } SkimPipelineConfig;
 
 typedef struct _SkimPipeline SkimPipeline;
@@ -273,9 +280,10 @@ void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
 void skim_pipeline_rbn_fold(const SkimPipeline *p, double *fold_s,
                             guint64 *folded);
 
-/* The learned feed gate in shadow (cfg.feed_gate_path): its ini name
- * (NULL = none loaded), threshold, the RBN lines it scored and how many of
- * them scored below the threshold — the ones it would have held back. */
+/* The learned feed gate (cfg.feed_gate / feed_gate_path): its id (NULL =
+ * none loaded), threshold, the RBN lines it scored and how many of them
+ * scored below the threshold — the ones it held back (cfg.feed_gate_on) or
+ * would have held back (shadow). */
 const char *skim_pipeline_feed_gate_stats(const SkimPipeline *p,
                                           double *threshold, guint64 *spots,
                                           guint64 *below);

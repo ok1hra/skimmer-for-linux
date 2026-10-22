@@ -108,6 +108,33 @@ int main(void) {
       skim_feed_gate_free(b);
       g_free(p);
     }
+    /* strict (a model built in, or given on the command line): every
+     * feature must be there — one left out would silently weigh nothing */
+    GString *all = g_string_new("[gate]\nbias = 0\nthreshold = 0.3\n[weights]\n");
+    for (const char *const *n = skim_feed_gate_names(); *n; n++) {
+      g_string_append_printf(all, "%s = 0.1 0 1\n", *n);
+    }
+    SkimFeedGate *full = skim_feed_gate_load_data(all->str, all->len, "full", TRUE, &err);
+    check("strict: a model with every feature loads", full != NULL);
+    check("strict: the id is the one given", full && strcmp(skim_feed_gate_id(full), "full") == 0);
+    check("a reference outlives the first free",
+          full && skim_feed_gate_ref(full) == full);
+    skim_feed_gate_free(full);
+    check("… and still scores", full && skim_feed_gate_threshold(full) == 0.3);
+    skim_feed_gate_free(full);
+    char *lacks = g_strdup(all->str);
+    char *at = strstr(lacks, "\nsnr = ");
+    if (at) { at[1] = '#'; }                   /* comment the line out        */
+    SkimFeedGate *g2 = skim_feed_gate_load_data(lacks, strlen(lacks), "lacks", TRUE, &err);
+    check("strict: a model that leaves a feature out is refused, naming it",
+          g2 == NULL && err && strstr(err->message, "\"snr\""));
+    g_clear_error(&err);
+    SkimFeedGate *g3 = skim_feed_gate_load_data(lacks, strlen(lacks), "lacks", FALSE, &err);
+    check("not strict: the same model loads (the feature weighs nothing)", g3 != NULL);
+    skim_feed_gate_free(g3);
+    g_free(lacks);
+    g_string_free(all, TRUE);
+
     char *missing = g_build_filename(dir, "none.ini", NULL);
     check("refused: a missing file", skim_feed_gate_load(missing, &err) == NULL && err);
     g_clear_error(&err);

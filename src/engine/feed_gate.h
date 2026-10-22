@@ -40,14 +40,25 @@ const char *const *skim_feed_gate_names(void);
 
 /* NULL + error on a missing file, a missing [gate] bias/threshold, an
  * unknown feature, a weight line that is not three numbers, or sd <= 0.
- * Features the ini leaves out weigh nothing. */
+ * Features the ini leaves out weigh nothing. The id is the file's basename. */
 SkimFeedGate *skim_feed_gate_load(const char *path, GError **error);
+
+/* The same from an ini in memory (a model built into the binary), with the
+ * id given. strict: also refuse an ini that leaves any feature out — a
+ * model learned for another feature set must not run with those weighing
+ * nothing. */
+SkimFeedGate *skim_feed_gate_load_data(const char *text, gsize len, const char *id,
+                                       gboolean strict, GError **error);
+
+/* Reference counted: a gate is read-only once loaded, so the pipelines of
+ * all bands may share one. free drops a reference. */
+SkimFeedGate *skim_feed_gate_ref(SkimFeedGate *g);
 void          skim_feed_gate_free(SkimFeedGate *g);
 
 double      skim_feed_gate_threshold(const SkimFeedGate *g);
 double      skim_feed_gate_win_s(const SkimFeedGate *g);
 double      skim_feed_gate_near_khz(const SkimFeedGate *g);
-const char *skim_feed_gate_id(const SkimFeedGate *g);   /* the ini's basename */
+const char *skim_feed_gate_id(const SkimFeedGate *g);   /* basename, or the id given */
 
 /* p for a feature vector of SKIM_FEED_GATE_NFEAT values. */
 double skim_feed_gate_p(const SkimFeedGate *g, const double *x);
