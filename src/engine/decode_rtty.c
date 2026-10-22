@@ -273,16 +273,6 @@ static guint bin_at(const RttyState *st, double hz) {
   return (guint)((b % RT_FFT + RT_FFT) % RT_FFT);
 }
 
-/* Strongest bin within ±RT_TONE_WIN of hz. */
-static double tone_power(const RttyState *st, double hz) {
-  const guint c = bin_at(st, hz);
-  double p = 0.0;
-  for (gint d = -RT_TONE_WIN; d <= RT_TONE_WIN; d++) {
-    p = MAX(p, st->psd[(c + (guint)(d + RT_FFT)) % RT_FFT]);
-  }
-  return p;
-}
-
 /* Sub-bin tone position: floor-subtracted power centroid over the search
  * window — the bin grid alone (3.9 Hz) plus a flat ±2-bin score plateau let
  * the reported centre wander several Hz (gate-caught at −120 Hz offset). */
@@ -301,9 +291,35 @@ static double tone_centroid(const RttyState *st, double hz, double floor_p) {
   return psum > 0.0 ? wsum / psum : hz;
 }
 
-static int cmp_double(const void *a, const void *b) {
-  const double x = *(const double *)a, y = *(const double *)b;
-  return x < y ? -1 : x > y ? 1 : 0;
+/* The k-th smallest of v[0..n) (v is reordered) — the value a full sort
+ * would put at v[k], in O(n): the noise floor needs only the median, and
+ * a qsort per hop per channel was a fifth of an idle RTTY bank's time. */
+static double nth_smallest(double *v, guint n, guint k) {
+  guint lo = 0, hi = n - 1;
+  while (lo < hi) {
+    const double pivot = v[(lo + hi) / 2];
+    guint i = lo, j = hi;
+    while (i <= j) {
+      while (v[i] < pivot) { i++; }
+      while (v[j] > pivot) { j--; }
+      if (i <= j) {
+        const double t = v[i];
+        v[i] = v[j];
+        v[j] = t;
+        i++;
+        if (j == 0) { break; }
+        j--;
+      }
+    }
+    if (k <= j) {
+      hi = j;
+    } else if (k >= i) {
+      lo = i;
+    } else {
+      break;
+    }
+  }
+  return v[k];
 }
 
 static void release(RttyState *st, gboolean full);
@@ -323,10 +339,29 @@ static void pair_scan(RttyState *st) {
   }
   st->primed = TRUE;
 
+  /* Idle channel, nothing to acquire: a pair scores by its weaker tone,
+   * which can never exceed the strongest bin — when even that bin stays
+   * under the acquisition bar over the floor, the scan below cannot
+   * acquire and its result is not used (pair_q only labels text, which an
+   * idle channel does not make; an over's break mark keeps the q of the
+   * scan that released). Nearly every channel of the bank is in this
+   * state nearly all the time, so it is decided cheaply first: at most
+   * half the bins under top/7.9 puts the median (the floor) at or above
+   * it, so top/floor ≤ 7.9 — under the bar without selecting the median.
+   */
+  double top = 0.0;
+  if (!st->acq) {
+    for (guint i = 0; i < RT_FFT; i++) { top = MAX(top, st->psd[i]); }
+    const double thr = top / (RT_ACQ_RATIO - 0.1);
+    guint under = 0;
+    for (guint i = 0; i < RT_FFT; i++) { under += st->psd[i] < thr; }
+    if (under <= RT_FFT / 2) { return; }
+  }
+
   double sorted[RT_FFT];
   memcpy(sorted, st->psd, sizeof(sorted));
-  qsort(sorted, RT_FFT, sizeof(double), cmp_double);
-  const double floor_p = MAX(sorted[RT_FFT / 2], 1e-30);
+  const double floor_p = MAX(nth_smallest(sorted, RT_FFT, RT_FFT / 2), 1e-30);
+  if (!st->acq && top / floor_p < RT_ACQ_RATIO) { return; }
 
   /* Candidate centres on the bin grid; the weaker tone scores (a lone
    * carrier or one-sided splatter can never acquire). While acquired the
@@ -339,12 +374,22 @@ static void pair_scan(RttyState *st) {
     lo = st->center_hz - 3.0 * bin_hz;
     hi = st->center_hz + 3.0 * bin_hz;
   }
+  /* A tone's power: the strongest bin within ±RT_TONE_WIN of it — for
+   * every bin once, not twice per candidate centre. */
+  double near_max[RT_FFT];
+  for (guint b = 0; b < RT_FFT; b++) {
+    double p = 0.0;
+    for (gint d = -RT_TONE_WIN; d <= RT_TONE_WIN; d++) {
+      p = MAX(p, st->psd[(b + (guint)(d + RT_FFT)) % RT_FFT]);
+    }
+    near_max[b] = p;
+  }
   double best_q = 0.0, best_c = 0.0, best_sum = 0.0;
   for (double c = lo; c <= hi; c += bin_hz) {
     if (fabs(c) > lim)
       continue;
-    const double pm = tone_power(st, c + RT_HALF);
-    const double ps = tone_power(st, c - RT_HALF);
+    const double pm = near_max[bin_at(st, c + RT_HALF)];
+    const double ps = near_max[bin_at(st, c - RT_HALF)];
     const double q  = MIN(pm, ps) / floor_p;
     if (q > best_q || (q == best_q && pm + ps > best_sum)) {
       best_q   = q;
@@ -353,33 +398,33 @@ static void pair_scan(RttyState *st) {
     }
   }
   st->pair_q = best_q;
+  if (!st->acq && best_q < RT_ACQ_RATIO)
+    return;
 
   /* Sub-bin centre: mean of the two tones' floor-subtracted centroids. */
   const double c_ref = 0.5 * (tone_centroid(st, best_c + RT_HALF, floor_p) +
                               tone_centroid(st, best_c - RT_HALF, floor_p));
 
   if (!st->acq) {
-    if (best_q >= RT_ACQ_RATIO) {
-      st->acq       = TRUE;
-      st->center_hz = c_ref;
-      st->lost_s    = 0.0;
-      st->npend     = 0;
-      st->emitted   = FALSE;
-      st->sq_open   = FALSE;
-      st->shift     = 0;
-      st->acq_samps = 0.0;
-      /* Prime the envelope moments NEUTRAL (corr = 0): unprimed zeros made
-       * the early correlation estimate swing hard negative and opened the
-       * squelch on two unrelated carriers (gate-caught). */
-      st->c_m  = st->c_s  = 0.5;
-      st->c_mm = st->c_ss = 0.30;
-      st->c_ms = 0.25;
-      st->corr = 0.0;
-      st->presence = 1.0;
-      uart_reset(&st->uart[0]);
-      uart_reset(&st->uart[1]);
-      RT_DBG("rtty acq @ %+.0f Hz q %.1f\n", st->center_hz, best_q);
-    }
+    st->acq       = TRUE;
+    st->center_hz = c_ref;
+    st->lost_s    = 0.0;
+    st->npend     = 0;
+    st->emitted   = FALSE;
+    st->sq_open   = FALSE;
+    st->shift     = 0;
+    st->acq_samps = 0.0;
+    /* Prime the envelope moments NEUTRAL (corr = 0): unprimed zeros made
+     * the early correlation estimate swing hard negative and opened the
+     * squelch on two unrelated carriers (gate-caught). */
+    st->c_m  = st->c_s  = 0.5;
+    st->c_mm = st->c_ss = 0.30;
+    st->c_ms = 0.25;
+    st->corr = 0.0;
+    st->presence = 1.0;
+    uart_reset(&st->uart[0]);
+    uart_reset(&st->uart[1]);
+    RT_DBG("rtty acq @ %+.0f Hz q %.1f\n", st->center_hz, best_q);
     return;
   }
 
@@ -637,6 +682,14 @@ static void rtty_resync(gpointer state) {
   st->ms_pos = 0;
 }
 
+static gboolean rtty_held_pair(gpointer state, double *centre_hz) {
+  const RttyState *st = state;
+  if (!st->acq || !st->sq_open)
+    return FALSE;
+  *centre_hz = st->center_hz;
+  return TRUE;
+}
+
 const SkimDecodeBackend *skim_decode_rtty(void) {
   static const SkimDecodeBackend backend = {
     .name           = "rtty",
@@ -647,6 +700,7 @@ const SkimDecodeBackend *skim_decode_rtty(void) {
     .tone_offset_hz = rtty_tone_offset_hz,
     .set_freq       = rtty_set_freq,
     .resync         = rtty_resync,
+    .held_pair      = rtty_held_pair,
   };
   return &backend;
 }

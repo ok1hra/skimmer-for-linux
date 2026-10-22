@@ -2,35 +2,48 @@
  * skimmer-headless — multi-band skimmer without a GUI.
  *
  *   skimmer-headless [--config FILE] [--take-over] [--status-every S]
- *                    [--http-port N]
+ *                    [--http-port N] [--feed-gate FILE]
+ *                    [--feed-gate-mode off|shadow|on] [--check-config]
+ *                    [--list-switches] [--fetch-deepcw-model]
+ *                    [--install-service] [--uninstall-service]
  *
- * One HPSDR Protocol 1 receiver (Red Pitaya sdr_receiver_hpsdr) streams up
- * to 8 receivers at once; each receiver feeds its own engine pipeline (one
- * band each, SOURCE_EXTERNAL). Every pipeline's validated CQ spots go to ONE
- * shared telnet feed (cluster dialect — the CW Skimmer Server model). Status:
- * a table on stdout every few seconds and a small web page (+ /status.json).
+ * An IQ source (headless/source.h — a Red Pitaya running sdr_receiver_hpsdr,
+ * up to 8 receivers at once) feeds one engine pipeline per band and mode
+ * (SOURCE_EXTERNAL): CW, and RTTY beside it on the same IQ where the band
+ * asks for it ([bands] 20m=14045500 cw,rtty). Every pipeline's validated CQ
+ * spots go to ONE shared telnet feed (cluster dialect — the CW Skimmer
+ * Server model); [feed] rtty=false keeps RTTY off it. Status: a
+ * table on stdout every few seconds and a small web page (+ /status.json).
  *
- * Config (default ~/.config/skimmer-for-linux/headless.ini, written with
- * defaults when missing):
- *   [radio]  host — one radio or a list (comma separated, tried in order),
- *            each optionally host@ppm: that radio's own clock error;
- *            rate (48000/96000/192000 — one rate for all receivers),
- *            clock_ppm (the radios without @ppm)
- *   [bands]  <name>=<centre Hz>, in receiver order (RX1 first), ≤ 8
- *   [decode] engine=v2|deepcw, log=true|false (per-band decode logs)
- *   [feed]   call, port (0 = no telnet feed)
- *   [status] console_s (0 = quiet), http_port (0 = no web page)
- *   [record] bands (comma list; empty = off), minutes, dir, start_utc
- *            (HH:MM, empty = at once) — raw IQ of the chosen bands as
- *            cf32 + .meta, what skimmer-replay reads, while decoding on
+ * Config: ~/.config/skimmer-for-linux/headless.ini by default, written with
+ * defaults when missing — headless/config.h has the keys. A config that
+ * does not parse stops the start (exit 2).
+ *
+ * The SKIM_* environment switches the start runs with are logged and listed
+ * in /status.json ("switches"); --list-switches prints the known ones.
+ *
+ * The learned feed gate is built in (weights/feed-gate.ini — a new model is
+ * a new commit) and runs in SHADOW unless told otherwise: it scores every
+ * line the hand gate lets through and only reports. --feed-gate FILE (or
+ * [feed] gate=) replaces the model for this start; it must name every
+ * feature. --feed-gate-mode (or [feed] gate_mode=) off drops it, on lets it
+ * hold back the lines it scores below its threshold. The gate's id —
+ * builtin:… or file:…, with the first 8 hex of its sha256 — is in the log
+ * and in /status.json, so a measurement can tell its periods apart.
  *
  * The radio is never taken from another client unless --take-over is given
- * (one-shot: for the first start only — it then takes the first busy radio of
- * the list). The scanner streams from the first IDLE radio of the list, at
- * start and again whenever the stream is lost. When every radio answers busy,
- * or none is free within RADIO_SEARCH_S, it reports which and exits (3) —
- * waiting on a busy radio once left it silent for 15 h unnoticed
- * (2026-10-07: CW Skimmer Server took .21 when its own radio dropped out).
+ * (headless/source_hpsdr_p1.c). When the source gives up — every radio busy,
+ * or none free within its search time, also after a lost stream — the
+ * skimmer exits with code 3 and its supervisor retries.
+ *
+ * Exit codes: 0 stopped (SIGTERM / Ctrl+C), 2 the config is wrong, 3 no
+ * free radio / the stream was lost, 75 a restart for a supervisor
+ * (SKIM_SUPERVISED=1). --install-service writes a systemd user unit built
+ * on them (headless/service.h): 3 and crashes start again after a minute,
+ * 2 stays down. A restart the web page asks for re-executes the program in
+ * place (same PID — systemd sees nothing) unless SKIM_SUPERVISED=1 asks
+ * for exit 75. Under systemd the console table is off (the journal is no
+ * place for it; the web page and /status.json have it).
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -41,11 +54,23 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
+#include <glib/gstdio.h>
 #include <unistd.h>
 
-#include "app/scp_update.h"
+#include "headless/config.h"
+#include "headless/deepcw_model.h"
+#include "headless/json.h"
+#include "headless/logring.h"
+#include "headless/record.h"
+#include "headless/scp_update.h"
+#include "headless/service.h"
+#include "headless/source.h"
+#include "headless/stats.h"
+#include "headless/switches.h"
+#include "headless/web.h"
 #include "engine/callsign.h"
-#include "engine/hpsdr_p1.h"
+#include "engine/decode_deepcw.h"
 #include "engine/pipeline.h"
 #include "engine/rbn_feed.h"
 
@@ -67,68 +92,71 @@ static double act_now(const Act *a, gint64 now) {
 }
 #define RECENT_STATIONS  10                      /* per band on the web page */
 
-/* How long the radios may stay silent (no discovery reply — the network not
- * up yet after a boot, a radio rebooting) before the search gives up. A busy
- * reply is final at once. */
-#define RADIO_SEARCH_S   30
+#define EXIT_CONFIG      2
 #define EXIT_NO_RADIO    3
+#define EXIT_RESTART     75            /* the settings page asked for one     */
 
-typedef struct _Rec Rec;
+/* The modes a band decodes, each its own pipeline on the band's IQ; the
+ * index is the stats mode (stats.h). */
+enum { M_CW = 0, M_RTTY = 1, M_N = SKIM_STATS_MODES };
+static const char *const MODE_KEY[M_N] = { "cw", "rtty" };
+
+typedef struct {
+  const char   *band;          /* the band's name                             */
+  guint         mode;          /* M_CW / M_RTTY                               */
+  double        bin_hz;        /* channel spacing: the active-decoder key     */
+  SkimPipeline *p;             /* NULL = the band does not decode this mode   */
+  GMutex        lock;          /* engine-thread callbacks ↔ main loop         */
+  GHashTable   *active;        /* channel key → Act                           */
+  GHashTable   *stations;      /* call → SkimStation copy                     */
+  /* the minute's history (stats.h): under lock, from the engine thread */
+  guint         appeared;      /* stations new in the table this minute       */
+  GArray       *snr;           /* SNR of the minute's feed lines (float)      */
+  /* main loop: the cumulative counters at the last minute's end */
+  guint64       spots_prev, folded_prev, below_prev;
+} Dec;
 
 typedef struct {
   char          name[16];
   double        centre_hz;
   char          label[96];
-  SkimPipeline *p;
-  GMutex        lock;          /* engine-thread callbacks ↔ main loop         */
-  GHashTable   *active;        /* channel key → last text µs (gint64 *)       */
-  GHashTable   *stations;      /* call → SkimStation copy                     */
+  Dec           dec[M_N];
+  SkimRttyPairs *pairs;        /* CW and RTTY: the pairs RTTY copies (or NULL) */
   guint64       frames_prev;   /* main loop: for kS/s                         */
   double        ksps;
   Rec          *rec;           /* [record]: this band's IQ tap, or NULL       */
 } Band;
 
-typedef struct {
-  /* config */
-  char    *cfg_path;
-  char   **hosts;              /* [radio] host, in search order               */
-  double  *host_ppm;           /* each radio's clock_ppm (host@ppm)           */
-  const char *host;            /* the radio streaming now (or hosts[0])       */
-  double   ppm_now;            /* … and its clock correction                  */
-  char    *hosts_text;         /* "a, b" for messages                         */
-  guint    rate;
-  double   ppm;
-  char    *engine;
-  gboolean decode_log;
-  char    *feed_call;
-  int      feed_port;
-  double   feed_min_score;     /* 0 = the pipeline's default                  */
-  guint    feed_min_hearings;  /* 0 = default; 1 = no hearings gate          */
-  double   feed_settle_s;      /* 0 = default; < 0 = send at once            */
-  double   feed_settle_nodict_s; /* 0 = default (60); < 0 = = settle_s       */
-  double   feed_fresh_s;       /* 0 = default (120); < 0 = off               */
-  double   feed_fold_s;        /* 0 = default (600); < 0 = off               */
-  gboolean feed_learn;         /* decode tap (gatelog.h)                      */
-  char    *feed_gate;          /* learned gate ini, shadow (feed_gate.h)      */
-  int      console_s;
-  int      http_port;
-  char   **rec_bands;          /* [record] bands, NULL = no recording         */
-  double   rec_minutes;
-  char    *rec_dir;
-  gint64   rec_at_us;          /* real time to start, 0 = at once             */
-  gboolean take_over;          /* --take-over: the first start only           */
+/* A pipeline of the band — every one of them sees the same IQ. */
+static SkimPipeline *band_p(const Band *b) {
+  return b->dec[M_CW].p ? b->dec[M_CW].p : b->dec[M_RTTY].p;
+}
 
-  Band     band[SKIM_HPSDR_MAX_RX];
+typedef struct {
+  SkimHdConfig cfg;
+  char    *cfg_path;
+  /* start switches: the command line wins over the config */
+  int      console_s;          /* -1 = the config's (10)                      */
+  int      http_port;          /* -1 = the config's (8073)                    */
+  gboolean take_over;          /* --take-over: the first start only           */
+  char    *feed_gate;          /* learned gate ini; NULL = the built-in one   */
+  char    *feed_gate_mode;     /* off | shadow | on                           */
+  char    *cli_gate;           /* --feed-gate: wins over the config           */
+  char    *cli_gate_mode;      /* --feed-gate-mode                            */
+  SkimFeedGate *gate;          /* loaded once, shared by the pipelines        */
+  char    *gate_id;            /* builtin:… / file:…, #sha8                   */
+  char    *switches_json;      /* the SKIM_* switches set at start            */
+  char   **argv;               /* as started, for a restart without a supervisor */
+  gint64   started_us;         /* real time of this start: tells starts apart */
+
+  Band     band[SKIM_HD_MAX_BANDS];
   guint    nb;
 
-  SkimHpsdrClient *rp;
-  gboolean  streaming;
-  gint64    search_since_us;   /* 0 = not searching                           */
-  int       exit_code;         /* != 0: stop the main loop with it            */
-  volatile gint closed;        /* set by the client's thread                 */
-  char      rp_state[160];
+  SkimIqSource      *src;
+  SkimIqSourceStatus src_st;   /* main loop: refreshed every tick             */
   guint64   packets_prev;
   double    pps;
+  int       exit_code;         /* != 0: stop the main loop with it            */
   SkimRbnFeed    *feed;
   SkimScpUpdater *scp;
   GMainLoop      *loop;
@@ -138,248 +166,94 @@ typedef struct {
   double          cpu_pct;
   guint           ticks;
 
+  SkimStats *stats;            /* the 7-day history (stats.h)                 */
+  gint64    minute;            /* the unix minute being collected             */
+  guint64   min_frames_prev, min_lost_prev;
+  guint     minutes;           /* minutes recorded since start                */
+
   GMutex   snap_lock;          /* the web page's copy of the status           */
-  char    *snap_html;
   char    *snap_json;
+
+  /* DeepCW: the model on disk, why a band that asks for it runs v2, and a
+   * fetch the web page started (on its own thread, under dcw_lock) */
+  gboolean      dcw_wanted;    /* a band names deepcw                         */
+  char         *dcw_model;     /* where the engine looks for it               */
+  char         *dcw_base_url;  /* $SKIM_DEEPCW_URL, NULL = upstream           */
+  char         *dcw_ca;        /* TLS trust store (AppImage)                  */
+  char         *dcw_fallback;  /* why the bands asking for it run v2          */
+  GMutex        dcw_lock;
+  gboolean      dcw_model_ok;
+  char         *dcw_model_err;
+  const char   *dcw_state;     /* idle | running | done | failed              */
+  guint64       dcw_got, dcw_total;
+  char         *dcw_err;
+  GThread      *dcw_thread;
+  GCancellable *dcw_cancel;
 } Hd;
-
-/* ---- config --------------------------------------------------------------------- */
-
-static const char *DEFAULT_CONFIG =
-  "# skimmer-headless — one Red Pitaya, one pipeline per band.\n"
-  "# Bands are receivers in order (RX1 first), at most 8, all at one rate.\n"
-  "# 6 x 96 kHz is ~30 Mb/s of UDP: use a wired link.\n"
-  "\n[radio]\n# one radio, or a list tried in order: the first idle one is used;\n"
-  "# host@ppm gives that radio its own clock_ppm (192.168.1.21@3.81,192.168.1.71)\n"
-  "host=192.168.1.21\nrate=96000\n"
-  "# sampling-clock error: (true - shown) / true * 1e6, measured with 0 here;\n"
-  "# for the radios without @ppm\n"
-  "clock_ppm=0\n"
-  "\n[bands]\n"
-  "# name=centre Hz; with 96 kHz each band spans centre +-48 kHz\n"
-  "160m=1840000\n80m=3540000\n40m=7040000\n30m=10125000\n20m=14040000\n"
-  "15m=21040000\n"
-  "\n[decode]\n# v2 (classical) or deepcw (needs ONNX Runtime + model)\n"
-  "engine=v2\n# per-band raw decode logs in ~/.local/share/skimmer-for-linux/headless\n"
-  "log=false\n"
-  "\n[feed]\n# telnet spot feed (validated CQ spots only); port 0 = off\n"
-  "call=\nport=7300\n"
-  "# a call is spotted once it scored min_score, was read min_hearings times\n"
-  "# (or MASTER.SCP knows it) and stayed settle_s seconds in the station table;\n"
-  "# min_hearings=1 and settle_s=0 switch those two off\n"
-  "#min_score=0.90\n#min_hearings=2\n#settle_s=8\n"
-  "# a call MASTER.SCP does not know waits settle_nodict_s instead (a misread\n"
-  "# of a nearby call is held back once the right one is read); 0 = settle_s\n"
-  "#settle_nodict_s=60\n"
-  "# fresh_s=N also wants the call READ within the last N s: a stale candidate\n"
-  "# on a quiet channel is not a station (off unless set; 120 = the station TTL)\n"
-  "#fresh_s=120\n"
-  "# fold_s=N holds back a call alike to one spotted within N s and 300 Hz that\n"
-  "# MASTER.SCP knows better or that was read more (a glued or cut twin: F6FXXK,\n"
-  "# RK3D next to F6FXX, RK3DJW); off unless set\n"
-  "#fold_s=600\n"
-  "# learn=true records what the feed gate saw, for learning a better one: per\n"
-  "# band a decode tap in ~/.local/share/skimmer-for-linux/headless/learn —\n"
-  "# skimmer-tap-replay turns it into the gate's rows (~80 MB/day/band raw)\n"
-  "#learn=false\n"
-  "# gate=FILE scores every spot with the learned feed gate (skimmer-compare\n"
-  "# gate/learn.py) — SHADOW: reported in the status, the hand gate decides\n"
-  "#gate=feed-gate.ini\n"
-  "\n[status]\n# console table every N s (0 = off); web page port (0 = off)\n"
-  "console_s=10\nhttp_port=8073\n"
-  "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
-  "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
-  "bands=\nminutes=10\ndir=/var/tmp/skimmer-iq\nstart_utc=\n";
-
-static gboolean config_load(Hd *h, GError **error) {
-  if (!g_file_test(h->cfg_path, G_FILE_TEST_EXISTS)) {
-    char *dir = g_path_get_dirname(h->cfg_path);
-    g_mkdir_with_parents(dir, 0755);
-    g_free(dir);
-    if (!g_file_set_contents(h->cfg_path, DEFAULT_CONFIG, -1, error)) { return FALSE; }
-    g_message("config: %s did not exist — written with defaults", h->cfg_path);
-  }
-  GKeyFile *kf = g_key_file_new();
-  if (!g_key_file_load_from_file(kf, h->cfg_path, G_KEY_FILE_NONE, error)) {
-    g_key_file_free(kf);
-    return FALSE;
-  }
-  h->ppm = g_key_file_has_key(kf, "radio", "clock_ppm", NULL)
-               ? g_key_file_get_double(kf, "radio", "clock_ppm", NULL) : 0;
-  /* host[@ppm], …: each radio has its own sampling clock */
-  char *hv = g_key_file_get_string(kf, "radio", "host", NULL);
-  GPtrArray *hl = g_ptr_array_new();
-  GArray *pl = g_array_new(FALSE, FALSE, sizeof(double));
-  char **parts = g_strsplit_set(hv ? hv : "", ",; \t", -1);
-  gboolean bad = FALSE;
-  for (char **q = parts; *q && !bad; q++) {
-    if (!**q) { continue; }
-    char *at = strchr(*q, '@');
-    double ppm = h->ppm;
-    if (at) {
-      char *end = NULL;
-      ppm = g_ascii_strtod(at + 1, &end);
-      if (end == at + 1 || *end || at == *q) {
-        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                    "%s: [radio] host \"%s\" (host or host@ppm)", h->cfg_path, *q);
-        bad = TRUE;
-        break;
-      }
-      *at = '\0';
-    }
-    g_ptr_array_add(hl, g_strdup(*q));
-    g_array_append_val(pl, ppm);
-  }
-  g_strfreev(parts);
-  g_free(hv);
-  if (bad) {
-    g_ptr_array_free(hl, TRUE);
-    g_array_free(pl, TRUE);
-    g_key_file_free(kf);
-    return FALSE;
-  }
-  if (hl->len == 0) {
-    g_ptr_array_add(hl, g_strdup("192.168.1.21"));
-    g_array_append_val(pl, h->ppm);
-  }
-  g_ptr_array_add(hl, NULL);
-  h->hosts = (char **)g_ptr_array_free(hl, FALSE);
-  h->host_ppm = (double *)g_array_free(pl, FALSE);
-  h->host = h->hosts[0];
-  h->ppm_now = h->host_ppm[0];
-  h->hosts_text = g_strjoinv(", ", h->hosts);
-  h->rate = 96000;
-  if (g_key_file_has_key(kf, "radio", "rate", NULL)) {
-    h->rate = (guint)g_key_file_get_integer(kf, "radio", "rate", NULL);
-  }
-  h->engine = g_key_file_get_string(kf, "decode", "engine", NULL);
-  h->decode_log = g_key_file_has_key(kf, "decode", "log", NULL) &&
-                  g_key_file_get_boolean(kf, "decode", "log", NULL);
-  h->feed_call = g_key_file_get_string(kf, "feed", "call", NULL);
-  h->feed_port = g_key_file_has_key(kf, "feed", "port", NULL)
-                     ? g_key_file_get_integer(kf, "feed", "port", NULL) : 7300;
-  h->feed_min_score = g_key_file_has_key(kf, "feed", "min_score", NULL)
-                          ? g_key_file_get_double(kf, "feed", "min_score", NULL) : 0;
-  h->feed_min_hearings = g_key_file_has_key(kf, "feed", "min_hearings", NULL)
-      ? (guint)MAX(1, g_key_file_get_integer(kf, "feed", "min_hearings", NULL)) : 0;
-  h->feed_settle_s = 0;
-  if (g_key_file_has_key(kf, "feed", "settle_s", NULL)) {
-    const double v = g_key_file_get_double(kf, "feed", "settle_s", NULL);
-    h->feed_settle_s = v > 0 ? v : -1;          /* 0 in the file = off        */
-  }
-  h->feed_settle_nodict_s = 0;
-  if (g_key_file_has_key(kf, "feed", "settle_nodict_s", NULL)) {
-    const double v = g_key_file_get_double(kf, "feed", "settle_nodict_s", NULL);
-    h->feed_settle_nodict_s = v > 0 ? v : -1;   /* 0 in the file = settle_s   */
-  }
-  h->feed_fresh_s = 0;
-  if (g_key_file_has_key(kf, "feed", "fresh_s", NULL)) {
-    const double v = g_key_file_get_double(kf, "feed", "fresh_s", NULL);
-    h->feed_fresh_s = v > 0 ? v : -1;           /* 0 in the file = off        */
-  }
-  h->feed_fold_s = 0;
-  if (g_key_file_has_key(kf, "feed", "fold_s", NULL)) {
-    const double v = g_key_file_get_double(kf, "feed", "fold_s", NULL);
-    h->feed_fold_s = v > 0 ? v : -1;            /* 0 in the file = off        */
-  }
-  h->feed_learn = g_key_file_has_key(kf, "feed", "learn", NULL) &&
-                  g_key_file_get_boolean(kf, "feed", "learn", NULL);
-  g_clear_pointer(&h->feed_gate, g_free);
-  char *gate = g_key_file_get_string(kf, "feed", "gate", NULL);
-  if (gate && gate[0]) {
-    char *dir = g_path_get_dirname(h->cfg_path);   /* relative: next to the ini */
-    char *x = gate[0] == '~' ? g_build_filename(g_get_home_dir(), gate + 1, NULL)
-                             : g_strdup(gate);
-    h->feed_gate = g_path_is_absolute(x) ? g_strdup(x) : g_build_filename(dir, x, NULL);
-    g_free(x);
-    g_free(dir);
-  }
-  g_free(gate);
-  if (h->console_s < 0) {
-    h->console_s = g_key_file_has_key(kf, "status", "console_s", NULL)
-                       ? g_key_file_get_integer(kf, "status", "console_s", NULL) : 10;
-  }
-  if (h->http_port < 0) {
-    h->http_port = g_key_file_has_key(kf, "status", "http_port", NULL)
-                       ? g_key_file_get_integer(kf, "status", "http_port", NULL) : 8073;
-  }
-
-  char *rb = g_key_file_get_string(kf, "record", "bands", NULL);
-  if (rb && g_strstrip(rb)[0]) {
-    h->rec_bands = g_strsplit(rb, ",", -1);
-    for (char **x = h->rec_bands; *x; x++) { g_strstrip(*x); }
-    h->rec_minutes = g_key_file_has_key(kf, "record", "minutes", NULL)
-                         ? g_key_file_get_double(kf, "record", "minutes", NULL) : 10;
-    if (h->rec_minutes <= 0) { h->rec_minutes = 10; }
-    h->rec_dir = g_key_file_get_string(kf, "record", "dir", NULL);
-    if (!h->rec_dir || !g_strstrip(h->rec_dir)[0]) {
-      g_free(h->rec_dir);
-      h->rec_dir = g_strdup("/var/tmp/skimmer-iq");
-    }
-    char *at = g_key_file_get_string(kf, "record", "start_utc", NULL);
-    guint hh, mm;
-    if (at && sscanf(g_strstrip(at), "%u:%u", &hh, &mm) == 2 && hh < 24 && mm < 60) {
-      GDateTime *now = g_date_time_new_now_utc();
-      GDateTime *t = g_date_time_new_utc(g_date_time_get_year(now),
-                                         g_date_time_get_month(now),
-                                         g_date_time_get_day_of_month(now), hh, mm, 0);
-      if (g_date_time_compare(t, now) <= 0) {   /* today's is gone: tomorrow */
-        GDateTime *t2 = g_date_time_add_days(t, 1);
-        g_date_time_unref(t);
-        t = t2;
-      }
-      h->rec_at_us = g_date_time_to_unix(t) * G_USEC_PER_SEC;
-      g_date_time_unref(t);
-      g_date_time_unref(now);
-    }
-    g_free(at);
-  }
-  g_free(rb);
-
-  gsize n = 0;
-  char **keys = g_key_file_get_keys(kf, "bands", &n, NULL);   /* file order */
-  for (gsize i = 0; keys && i < n; i++) {
-    const double hz = g_key_file_get_double(kf, "bands", keys[i], NULL);
-    if (hz < 100000 || hz > 62000000) {
-      g_warning("config: band %s=%s ignored (not a centre in Hz)", keys[i],
-                g_key_file_get_value(kf, "bands", keys[i], NULL));
-      continue;
-    }
-    if (h->nb == SKIM_HPSDR_MAX_RX) {
-      g_warning("config: band %s ignored — %d receivers at most", keys[i],
-                SKIM_HPSDR_MAX_RX);
-      continue;
-    }
-    Band *b = &h->band[h->nb++];
-    g_strlcpy(b->name, keys[i], sizeof(b->name));
-    b->centre_hz = hz;
-  }
-  g_strfreev(keys);
-  g_key_file_free(kf);
-  if (h->nb == 0) {
-    g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                "%s: no [bands] entries", h->cfg_path);
-    return FALSE;
-  }
-  if (h->rate != 48000 && h->rate != 96000 && h->rate != 192000) {
-    g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                "%s: rate %u (48000, 96000 or 192000)", h->cfg_path, h->rate);
-    return FALSE;
-  }
-  return TRUE;
-}
 
 /* ---- pipeline callbacks (engine threads) ----------------------------------------- */
 
+/* ---- the learned feed gate ------------------------------------------------------- */
+
+#define GATE_BUILTIN "/skimmer-for-linux/weights/feed-gate.ini"
+
+static gboolean gate_on(const Hd *h) { return g_strcmp0(h->feed_gate_mode, "on") == 0; }
+
+/* The model this start runs: --feed-gate, else [feed] gate=, else the
+ * built-in one — strict either way (every feature named). Mode off loads
+ * none. */
+static gboolean gate_load(Hd *h, GError **error) {
+  if (h->cli_gate) { g_free(h->feed_gate); h->feed_gate = g_strdup(h->cli_gate); }
+  if (h->cli_gate_mode) {
+    g_free(h->feed_gate_mode);
+    h->feed_gate_mode = g_strdup(h->cli_gate_mode);
+  }
+  if (!h->feed_gate_mode || !h->feed_gate_mode[0]) {
+    g_free(h->feed_gate_mode);
+    h->feed_gate_mode = g_strdup("shadow");
+  }
+  if (g_strcmp0(h->feed_gate_mode, "off") && g_strcmp0(h->feed_gate_mode, "shadow") &&
+      !gate_on(h)) {
+    g_set_error(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
+                "feed gate mode \"%s\": off, shadow or on", h->feed_gate_mode);
+    return FALSE;
+  }
+  if (g_strcmp0(h->feed_gate_mode, "off") == 0) { return TRUE; }
+  GBytes *data = NULL;
+  char *src;
+  if (h->feed_gate) {
+    char *text = NULL;
+    gsize len = 0;
+    if (!g_file_get_contents(h->feed_gate, &text, &len, error)) { return FALSE; }
+    data = g_bytes_new_take(text, len);
+    char *base = g_path_get_basename(h->feed_gate);
+    src = g_strdup_printf("file:%s", base);
+    g_free(base);
+  } else {
+    data = g_resources_lookup_data(GATE_BUILTIN, G_RESOURCE_LOOKUP_FLAGS_NONE, error);
+    if (!data) { return FALSE; }
+    src = g_strdup("builtin:feed-gate.ini");
+  }
+  gsize len = 0;
+  const char *text = g_bytes_get_data(data, &len);
+  char *sha = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)text, len);
+  h->gate_id = g_strdup_printf("%s#%.8s", src, sha);
+  h->gate = skim_feed_gate_load_data(text, len, h->gate_id, TRUE, error);
+  g_free(sha);
+  g_free(src);
+  g_bytes_unref(data);
+  return h->gate != NULL;
+}
+
 static void text_cb(double freq_hz, const char *text, gpointer user) {
-  Band *b = user;
+  Dec *b = user;
   guint chars = 0;
   for (const char *c = text; *c; c++) {
     if (g_ascii_isalnum(*c) || *c == '/' || *c == '?') { chars++; }
   }
   if (!chars) { return; }
   const gint64 now = g_get_monotonic_time();
-  const gpointer key = GINT_TO_POINTER((gint)(freq_hz / 125.0 + 0.5));
+  const gpointer key = GINT_TO_POINTER((gint)(freq_hz / b->bin_hz + 0.5));
   g_mutex_lock(&b->lock);
   Act *a = g_hash_table_lookup(b->active, key);
   if (!a) {
@@ -393,254 +267,49 @@ static void text_cb(double freq_hz, const char *text, gpointer user) {
 }
 
 static void station_cb(const SkimStation *st, gpointer user) {
-  Band *b = user;
+  Dec *b = user;
   g_mutex_lock(&b->lock);
   SkimStation *copy = g_hash_table_lookup(b->stations, st->call);
   if (!copy) {
     copy = g_new0(SkimStation, 1);
     g_hash_table_insert(b->stations, g_strdup(st->call), copy);
+    b->appeared++;
   }
   *copy = *st;
   g_mutex_unlock(&b->lock);
 }
 
+/* Every line the feed puts out (engine thread): its SNR for the minute. */
+static void feed_cb(const SkimStation *st, gpointer user) {
+  Dec *b = user;
+  const float v = (float)st->snr_db;
+  g_mutex_lock(&b->lock);
+  g_array_append_val(b->snr, v);
+  g_mutex_unlock(&b->lock);
+}
+
 static void gone_cb(const SkimStation *st, gpointer user) {
-  Band *b = user;
+  Dec *b = user;
   g_mutex_lock(&b->lock);
   g_hash_table_remove(b->stations, st->call);
   g_mutex_unlock(&b->lock);
 }
 
 static void state_cb(gboolean connected, const char *detail, gpointer user) {
-  Band *b = user;
+  Dec *b = user;
   if (connected && detail && strstr(detail, "channels")) {
-    g_message("%s: %s", b->name, detail);      /* the bank got sized          */
+    g_message("%s %s: %s", b->band, MODE_KEY[b->mode], detail);  /* bank sized */
   }
 }
 
-/* ---- the radio link -------------------------------------------------------------- */
-
-/* ---- [record]: a band's IQ to disk, beside the decoding ------------------------- */
-
-/* The receiver thread copies each block into a queue; a writer thread puts
- * it on disk — a slow disk never stalls the radio. Exactly the samples the
- * band's pipeline gets, so a replay of the file is the live input. */
-struct _Rec {
-  char        *path;           /* …/hd-<band>-<UTC>.cf32                       */
-  char         label[96];
-  double       ppm;
-  gint64       at_us;          /* real time to start, 0 = at once              */
-  guint64      max_frames;
-  double       minutes;
-  /* receiver thread */
-  gboolean     started, ended;
-  guint64      frames;
-  double       rate, centre;
-  gint64       t0_us;          /* real time of the first block                 */
-  /* writer */
-  GAsyncQueue *q;
-  GThread     *th;
-};
-
-static gpointer REC_END = (gpointer)&REC_END;  /* queue sentinel              */
-
-static void rec_meta(Rec *r, gint64 t1_us) {
-  GDateTime *t = g_date_time_new_from_unix_local_usec(r->t0_us);
-  char *start = g_date_time_format(t, "%Y-%m-%d %H:%M:%S %z");
-  g_date_time_unref(t);
-  char *meta = g_strdup_printf(
-      "file: %s\nstart: %s\nstart_unix: %.3f\n"
-      "source: skimmer-headless %s\n"
-      "format: cf32 interleaved I,Q — TRUE spectrum orientation\n"
-      "center_hz: %.0f\nrate_hz: %.0f\nclock_ppm: %.3f\nframes: %" G_GUINT64_FORMAT "\n"
-      "duration_s: %.1f\nwall_s: %.1f\n---\n",
-      r->path, start, r->t0_us / 1e6, r->label, r->centre, r->rate, r->ppm, r->frames,
-      r->rate > 0 ? r->frames / r->rate : 0.0, (t1_us - r->t0_us) / 1e6);
-  char *mp = g_strdup_printf("%s.meta", r->path);
-  GError *err = NULL;
-  if (!g_file_set_contents(mp, meta, -1, &err)) {
-    g_warning("record: %s: %s", mp, err->message);
-    g_clear_error(&err);
+/* Source thread: one block of band i to its pipeline (and its recording). */
+static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double centre,
+                     gpointer user) {
+  Band *b = &((Hd *)user)->band[i];
+  if (b->rec) { skim_rec_push(b->rec, iq, n, rate, centre); }
+  for (guint k = 0; k < M_N; k++) {
+    if (b->dec[k].p) { skim_pipeline_push(b->dec[k].p, iq, n, rate, centre); }
   }
-  g_free(mp);
-  g_free(meta);
-  g_free(start);
-}
-
-static gpointer rec_writer(gpointer data) {
-  Rec *r = data;
-  FILE *f = fopen(r->path, "wb");
-  if (!f) { g_warning("record: cannot write %s", r->path); }
-  for (;;) {
-    GBytes *b = g_async_queue_pop(r->q);
-    if ((gpointer)b == REC_END) { break; }
-    gsize len;
-    const void *d = g_bytes_get_data(b, &len);
-    if (f && fwrite(d, 1, len, f) != len) {
-      g_warning("record: %s: write failed — recording stopped", r->path);
-      fclose(f);
-      f = NULL;
-    }
-    g_bytes_unref(b);
-  }
-  if (f) { fclose(f); }
-  rec_meta(r, g_get_real_time());
-  g_message("record: %s done (%.1f min)", r->path, r->frames / r->rate / 60.0);
-  return NULL;
-}
-
-/* Receiver thread: start at the set time, stop after the set length. */
-static void rec_push(Rec *r, const float *iq, guint n, double rate, double centre) {
-  if (r->ended) { return; }
-  const gint64 now = g_get_real_time();
-  if (!r->started) {
-    if (r->at_us && now < r->at_us) { return; }
-    GDateTime *t = g_date_time_new_from_unix_utc_usec(now);
-    char *ts = g_date_time_format(t, "%Y%m%d-%H%M%SZ");
-    g_date_time_unref(t);
-    char *dir = g_path_get_dirname(r->path);   /* path holds dir/band so far  */
-    char *band = g_path_get_basename(r->path);
-    g_free(r->path);
-    r->path = g_strdup_printf("%s/hd-%s-%s.cf32", dir, band, ts);
-    g_free(dir);
-    g_free(band);
-    g_free(ts);
-    r->rate = rate;
-    r->centre = centre;
-    r->t0_us = now;
-    r->max_frames = (guint64)(r->minutes * 60.0 * rate);
-    r->q = g_async_queue_new();
-    r->th = g_thread_new("record", rec_writer, r);
-    r->started = TRUE;
-    g_message("record: %s started (%.1f min)", r->path, r->minutes);
-  }
-  const guint take = (guint)MIN((guint64)n, r->max_frames - r->frames);
-  g_async_queue_push(r->q, g_bytes_new(iq, (gsize)take * 2 * sizeof(float)));
-  r->frames += take;
-  if (r->frames >= r->max_frames) {
-    r->ended = TRUE;
-    g_async_queue_push(r->q, REC_END);
-  }
-}
-
-/* Teardown: an unfinished recording is closed with what it has. */
-static void rec_free(Rec *r) {
-  if (!r) { return; }
-  if (r->started) {
-    if (!r->ended) { g_async_queue_push(r->q, REC_END); }
-    g_thread_join(r->th);
-    g_async_queue_unref(r->q);
-  }
-  g_free(r->path);
-  g_free(r);
-}
-
-static void rx_iq_cb(const float *iq, guint n, double rate, double centre, gpointer user) {
-  Band *b = user;
-  if (b->rec) { rec_push(b->rec, iq, n, rate, centre); }
-  skim_pipeline_push(b->p, iq, n, rate, centre);
-}
-
-static void rp_closed_cb(gpointer user) { g_atomic_int_set(&((Hd *)user)->closed, 1); }
-
-static void rp_state(Hd *h, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
-static void rp_state(Hd *h, const char *fmt, ...) {
-  char s[160];
-  va_list ap;
-  va_start(ap, fmt);
-  g_vsnprintf(s, sizeof(s), fmt, ap);
-  va_end(ap);
-  if (strcmp(s, h->rp_state) != 0) {           /* log changes, not repeats    */
-    g_strlcpy(h->rp_state, s, sizeof(h->rp_state));
-    g_message("radio: %s", s);
-  }
-}
-
-/* Start streaming from hosts[i] at its clock_ppm; FALSE (state set) when the
- * start fails. */
-static gboolean rp_start_on(Hd *h, guint i, gboolean took) {
-  const char *host = h->hosts[i];
-  const double ppm = h->host_ppm[i];
-  GError *err = NULL;
-  double centres[SKIM_HPSDR_MAX_RX];
-  h->take_over = FALSE;                         /* one-shot: the first start   */
-  h->rp = skim_hpsdr_client_new(host, SKIM_HPSDR_DEFAULT_PORT);
-  for (guint b = 0; b < h->nb; b++) {
-    centres[b] = h->band[b].centre_hz;
-    skim_hpsdr_client_set_rx_iq_cb(h->rp, b, rx_iq_cb, &h->band[b]);
-  }
-  skim_hpsdr_client_set_closed_cb(h->rp, rp_closed_cb, h);
-  g_atomic_int_set(&h->closed, 0);
-  if (!skim_hpsdr_client_start_multi(h->rp, h->rate, centres, h->nb, ppm, took,
-                                     &err)) {
-    rp_state(h, "%s: start failed: %s", host, err->message);
-    g_clear_error(&err);
-    g_clear_pointer(&h->rp, skim_hpsdr_client_free);
-    return FALSE;
-  }
-  h->host = host;
-  h->ppm_now = ppm;
-  h->streaming = TRUE;
-  h->packets_prev = 0;
-  h->search_since_us = 0;
-  rp_state(h, "streaming — %s, %u RX × %u kHz, clock %+.2f ppm%s",
-           skim_hpsdr_client_device(h->rp), h->nb, h->rate / 1000, ppm,
-           took ? " (taken over)" : "");
-  return TRUE;
-}
-
-/* One search round over [radio] host: the first idle radio wins. None idle —
- * every one busy, or the rest silent past RADIO_SEARCH_S — stops the scanner
- * with EXIT_NO_RADIO. */
-static void rp_try_start(Hd *h) {
-  const gint64 now = g_get_monotonic_time();
-  if (!h->search_since_us) { h->search_since_us = now; }
-  const gboolean take = h->take_over;
-  GString *why = g_string_new(NULL);
-  int first_busy = -1;
-  gboolean all_answered = TRUE;
-  for (guint i = 0; h->hosts[i]; i++) {
-    const char *hp = h->hosts[i];
-    SkimHpsdrInfo info;
-    GError *err = NULL;
-    if (why->len) { g_string_append(why, ", "); }
-    if (!skim_hpsdr_discover(hp, SKIM_HPSDR_DEFAULT_PORT, 1000, &info, &err)) {
-      g_string_append_printf(why, "%s no reply", hp);
-      g_clear_error(&err);
-      all_answered = FALSE;
-    } else if (info.busy) {
-      g_string_append_printf(why, "%s busy", hp);
-      if (first_busy < 0) { first_busy = (int)i; }
-    } else if (rp_start_on(h, i, FALSE)) {
-      g_string_free(why, TRUE);
-      return;
-    } else {
-      g_string_append_printf(why, "%s start failed", hp);
-      all_answered = FALSE;                     /* may work on the next round  */
-    }
-  }
-  if (take && first_busy >= 0 && rp_start_on(h, (guint)first_busy, TRUE)) {
-    g_string_free(why, TRUE);
-    return;
-  }
-  if (all_answered || now - h->search_since_us >= RADIO_SEARCH_S * G_USEC_PER_SEC) {
-    rp_state(h, "no free radio (%s) — stopping", why->str);
-    g_printerr("skimmer-headless: no free radio (%s)%s\n", why->str,
-               first_busy >= 0 ? " — another client streams from it; "
-                            "--take-over grabs the first busy one" : "");
-    h->exit_code = EXIT_NO_RADIO;
-    if (h->loop) { g_main_loop_quit(h->loop); }
-  } else {
-    rp_state(h, "searching for a free radio… (%s)", why->str);
-  }
-  g_string_free(why, TRUE);
-}
-
-static void rp_drop(Hd *h) {
-  g_clear_pointer(&h->rp, skim_hpsdr_client_free);   /* sends no stop: not ours */
-  h->streaming = FALSE;
-  rp_state(h, "stream lost from %s (another client took the radio, or it left "
-              "the network) — searching %s", h->host, h->hosts_text);
 }
 
 /* ---- status ---------------------------------------------------------------------- */
@@ -666,7 +335,9 @@ typedef struct {
   guint64 spots, drops;
 } BandStat;
 
-static void band_stat(Band *b, BandStat *s) {
+static void band_stat(Dec *b, BandStat *s) {
+  memset(s, 0, sizeof(*s));
+  if (!b->p) { return; }
   const gint64 now = g_get_monotonic_time();
   s->channels = skim_pipeline_channels(b->p);
   s->spots = skim_pipeline_rbn_spots(b->p);
@@ -694,7 +365,7 @@ static gint station_newest_first(gconstpointer a, gconstpointer b) {
 }
 
 /* The band's stations newest first (copies; caller frees the array). */
-static GPtrArray *band_recent(Band *b, guint max) {
+static GPtrArray *band_recent(Dec *b, guint max) {
   GPtrArray *all = g_ptr_array_new_with_free_func(g_free);
   g_mutex_lock(&b->lock);
   GHashTableIter it;
@@ -709,35 +380,96 @@ static GPtrArray *band_recent(Band *b, guint max) {
   return all;
 }
 
-/* A JSON string body: quote, backslash and control characters escaped,
- * UTF-8 passed through (g_strescape octal-escapes it — not JSON). */
-static char *json_str(const char *in) {
-  GString *o = g_string_new(NULL);
-  for (const guchar *p = (const guchar *)in; *p; p++) {
-    if (*p == '"' || *p == '\\') { g_string_append_c(o, '\\'); g_string_append_c(o, (char)*p); }
-    else if (*p < 0x20) { g_string_append_printf(o, "\\u%04x", *p); }
-    else { g_string_append_c(o, (char)*p); }
+/* The pipeline the feed policy is read from: any that feeds (one policy
+ * for all). */
+static SkimPipeline *feed_pipeline(const Hd *h) {
+  if (!h->feed) { return NULL; }
+  for (guint i = 0; i < h->nb; i++) {
+    if (h->band[i].dec[M_CW].p) { return h->band[i].dec[M_CW].p; }
   }
-  return g_string_free(o, FALSE);
+  return h->cfg.feed_rtty && h->nb ? h->band[0].dec[M_RTTY].p : NULL;
 }
 
-static void fmt_age(char *out, gsize n, gint64 us) {
-  const gint64 s = us / G_USEC_PER_SEC;
-  if (s < 60) { g_snprintf(out, n, "%" G_GINT64_FORMAT " s", s); }
-  else { g_snprintf(out, n, "%" G_GINT64_FORMAT " min", s / 60); }
+/* One mode of a band as JSON fields (no braces): what decodes it, its
+ * counters and its newest stations. A mode not decoded gives zeros. */
+static void dec_json(GString *json, Dec *d, gint64 now) {
+  BandStat s;
+  band_stat(d, &s);
+  g_string_append_printf(json,
+      "\"engine\":\"%s\",\"decoders\":%u,\"active\":%u,\"stations\":%u,"
+      "\"spots\":%" G_GUINT64_FORMAT ",\"drops\":%" G_GUINT64_FORMAT ",\"recent\":[",
+      d->p ? skim_pipeline_cw_engine_name(d->p) : "", s.channels, s.active, s.stations,
+      s.spots, s.drops);
+  GPtrArray *rec = d->p ? band_recent(d, RECENT_STATIONS) : g_ptr_array_new();
+  for (guint k = 0; k < rec->len; k++) {
+    const SkimStation *st = rec->pdata[k];
+    char *jcall = skim_json_str(st->call);
+    /* wpm: the CW speed, or the RTTY baud rate */
+    g_string_append_printf(json,
+        "%s{\"call\":\"%s\",\"freq_hz\":%.0f,\"wpm\":%.0f,\"snr_db\":%.0f,"
+        "\"cq\":%s,\"age_s\":%" G_GINT64_FORMAT "}",
+        k ? "," : "", jcall, st->freq_hz, st->speed, st->snr_db,
+        st->cq ? "true" : "false", (now - st->last_heard) / G_USEC_PER_SEC);
+    g_free(jcall);
+  }
+  g_string_append_c(json, ']');
+  g_ptr_array_unref(rec);
+}
+
+static const char *engine_key(SkimCwEngine e) {
+  return e == SKIM_CW_ENGINE_DEEPCW ? "deepcw" : e == SKIM_CW_ENGINE_V1 ? "v1" : "v2";
+}
+
+static void json_opt_str(GString *o, const char *v) {
+  if (!v) {
+    g_string_append(o, "null");
+    return;
+  }
+  g_string_append_c(o, '"');
+  skim_json_append(o, v);
+  g_string_append_c(o, '"');
+}
+
+/* "deepcw": the model, the runtime, why a band asking for it runs v2, and
+ * the fetch the web page can start. */
+static void dcw_json(Hd *h, GString *o) {
+  g_mutex_lock(&h->dcw_lock);
+  g_string_append_printf(o, "{\"wanted\":%s,\"model\":", h->dcw_wanted ? "true" : "false");
+  json_opt_str(o, h->dcw_model);
+  g_string_append_printf(o, ",\"model_ok\":%s,\"model_error\":",
+                         h->dcw_model_ok ? "true" : "false");
+  json_opt_str(o, h->dcw_model_ok ? NULL : h->dcw_model_err);
+  g_string_append(o, ",\"runtime\":");
+  json_opt_str(o, skim_decode_deepcw_runtime_info());
+  g_string_append(o, ",\"fallback\":");
+  json_opt_str(o, h->dcw_fallback);
+  g_string_append_printf(o, ",\"commit\":\"%s\",\"fetch\":{\"state\":\"%s\",\"got\":%"
+                         G_GUINT64_FORMAT ",\"total\":%" G_GUINT64_FORMAT ",\"error\":",
+                         SKIM_DEEPCW_COMMIT, h->dcw_state, h->dcw_got, h->dcw_total);
+  json_opt_str(o, h->dcw_err);
+  g_string_append(o, "}}");
+  g_mutex_unlock(&h->dcw_lock);
+}
+
+/* Who restarts this process: "systemd" (the user unit), "supervisor"
+ * (SKIM_SUPERVISED=1: exit 75 for a restart) or null (nobody). */
+static const char *supervisor_json(void) {
+  return g_strcmp0(g_getenv("SKIM_SUPERVISED"), "1") == 0 ? "\"supervisor\""
+         : skim_hd_service_under_systemd()                ? "\"systemd\""
+                                                          : "null";
 }
 
 static void status_build(Hd *h, gboolean print) {
   const gint64 now = g_get_monotonic_time();
-  const guint64 lost = h->rp ? skim_hpsdr_client_lost_frames(h->rp) : 0;
-  guint64 frames0 = h->nb ? skim_pipeline_frames(h->band[0].p) : 0;
+  const SkimIqSourceStatus *src = &h->src_st;
+  const guint64 lost = src->lost_frames;
+  guint64 frames0 = h->nb ? skim_pipeline_frames(band_p(&h->band[0])) : 0;
   const double lost_pct = frames0 ? 100.0 * (double)lost / (double)frames0 : 0;
   const guint fclients = h->feed ? skim_rbn_feed_clients(h->feed) : 0;
   const guint64 flines = h->feed ? skim_rbn_feed_lines(h->feed) : 0;
   const gint64 up_s = (now - h->t_start) / G_USEC_PER_SEC;
 
   GString *con = g_string_new(NULL);
-  GString *html = g_string_new(NULL);
   GString *json = g_string_new(NULL);
   GDateTime *dt = g_date_time_new_now_local();
   char *clock = g_date_time_format(dt, "%H:%M:%S");
@@ -746,167 +478,126 @@ static void status_build(Hd *h, gboolean print) {
   g_string_append_printf(con,
       "── %s · %s · lost %.2f %% · %.0f pkt/s · CPU %.0f %% · feed :%d %u client%s, "
       "%" G_GUINT64_FORMAT " lines · dict %u · up %" G_GINT64_FORMAT ":%02d\n"
-      "   band     centre kHz   span kHz        decoders  active  stations  spots  drops  kS/s\n",
-      clock, h->rp_state, lost_pct, h->pps, h->cpu_pct, h->feed ? h->feed_port : 0,
+      "   band  mode  centre kHz   span kHz        decoders  active  stations  spots  drops  kS/s\n",
+      clock, src->state, lost_pct, h->pps, h->cpu_pct, h->feed ? h->cfg.feed_port : 0,
       fclients, fclients == 1 ? "" : "s", flines, (guint)skim_callsign_dict_size(),
       up_s / 3600, (int)(up_s / 60 % 60));
 
-  char *esc_state = g_markup_escape_text(h->rp_state, -1);
-  g_string_append_printf(html,
-      "<!doctype html><html><head><meta charset=utf-8>"
-      "<meta name=viewport content='width=device-width,initial-scale=1'>"
-      "<meta http-equiv=refresh content=5><title>Skimmer status</title><style>"
-      ":root{color-scheme:light dark;--fg:#1d1d1f;--bg:#fafafa;--mut:#6b6b70;--ln:#ddd;--ok:#1a7f37;--cq:#0b62c4}"
-      "@media(prefers-color-scheme:dark){:root{--fg:#e6e6e6;--bg:#18181b;--mut:#9a9aa2;--ln:#333;--ok:#4ac26b;--cq:#5aa9ff}}"
-      "body{font:14px/1.4 system-ui,sans-serif;margin:16px;color:var(--fg);background:var(--bg)}"
-      "h1{font-size:18px;margin:0 0 4px}.mut{color:var(--mut)}"
-      "table{border-collapse:collapse;margin:12px 0;width:100%%;max-width:900px}"
-      "th,td{padding:4px 8px;border-bottom:1px solid var(--ln);text-align:right;white-space:nowrap}"
-      "th:first-child,td:first-child{text-align:left}th{color:var(--mut);font-weight:500}"
-      ".bands{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;max-width:1200px}"
-      ".b{border:1px solid var(--ln);border-radius:8px;padding:8px 10px}.b h2{font-size:15px;margin:0}"
-      ".b table{margin:6px 0 0}.cq{color:var(--cq);font-weight:600}.on{color:var(--ok)}"
-      ".wrap{overflow-x:auto}</style></head><body>"
-      "<h1>Skimmer for Linux — headless</h1><div class=mut>%s · <span class=%s>%s</span><br>"
-      "lost %.2f %% · %.0f packets/s · CPU %.0f %% · telnet feed :%d (%u client%s, %"
-      G_GUINT64_FORMAT " lines) · MASTER.SCP %u calls · up %" G_GINT64_FORMAT ":%02d</div>"
-      "<div class=wrap><table><tr><th>band</th><th>centre kHz</th><th>span kHz</th>"
-      "<th>decoders</th><th>active</th><th>stations</th><th>spots</th><th>drops</th><th>kS/s</th></tr>",
-      clock, h->streaming ? "on" : "mut", esc_state, lost_pct, h->pps, h->cpu_pct,
-      h->feed ? h->feed_port : 0, fclients, fclients == 1 ? "" : "s", flines,
-      (guint)skim_callsign_dict_size(), up_s / 3600, (int)(up_s / 60 % 60));
-  g_free(esc_state);
 
-  char *jstate = json_str(h->rp_state);
-  char *jhost = json_str(h->host);
+  char *jstate = skim_json_str(src->state);
+  char *jhost = skim_json_str(src->host);
   /* the decoder that actually runs (deepcw falls back to cw-v2 without its
    * runtime or model) — a feed comparison needs to know which one spotted */
-  const char *engine = h->nb && h->band[0].p ? skim_pipeline_cw_engine_name(h->band[0].p) : "";
+  const char *engine = "";
+  for (guint i = 0; i < h->nb && !engine[0]; i++) {
+    if (h->band[i].dec[M_CW].p) { engine = skim_pipeline_cw_engine_name(h->band[i].dec[M_CW].p); }
+  }
   /* the feed policy that let the spots out — a comparison before and after
    * a policy change must be able to tell the two apart */
   double pol_score = 0, pol_settle = 0, pol_fresh = 0, pol_fold = 0, pol_nd = 0;
   guint pol_hear = 0;
   guint64 folded = 0;
-  if (h->feed && h->nb && h->band[0].p) {
-    skim_pipeline_rbn_policy(h->band[0].p, &pol_score, &pol_hear, &pol_settle,
-                             &pol_fresh);
-    skim_pipeline_rbn_fold(h->band[0].p, &pol_fold, NULL);
+  SkimPipeline *fp = feed_pipeline(h);
+  if (fp) {
+    skim_pipeline_rbn_policy(fp, &pol_score, &pol_hear, &pol_settle, &pol_fresh);
+    skim_pipeline_rbn_fold(fp, &pol_fold, NULL);
     for (guint i = 0; i < h->nb; i++) {
-      guint64 n = 0;
-      if (h->band[i].p) { skim_pipeline_rbn_fold(h->band[i].p, NULL, &n); }
-      folded += n;
+      for (guint k = 0; k < M_N; k++) {
+        guint64 n = 0;
+        if (h->band[i].dec[k].p) { skim_pipeline_rbn_fold(h->band[i].dec[k].p, NULL, &n); }
+        folded += n;
+      }
     }
-    pol_nd = skim_pipeline_rbn_settle_nodict(h->band[0].p);
+    pol_nd = skim_pipeline_rbn_settle_nodict(fp);
   }
-  /* the learned gate in shadow: what it would have held back, all bands */
+  /* the learned gate: what it held back (on) or would have (shadow) */
   const char *fg_id = NULL;
   double fg_thr = 0;
   guint64 fg_spots = 0, fg_below = 0;
   for (guint i = 0; i < h->nb; i++) {
     guint64 n = 0, k = 0;
-    const char *id = h->band[i].p ? skim_pipeline_feed_gate_stats(h->band[i].p, &fg_thr,
-                                                                  &n, &k) : NULL;
+    SkimPipeline *cw = h->band[i].dec[M_CW].p;          /* RTTY has no gate */
+    const char *id = cw ? skim_pipeline_feed_gate_stats(cw, &fg_thr, &n, &k) : NULL;
     if (id) { fg_id = id; }
     fg_spots += n;
     fg_below += k;
   }
-  char *jgid = fg_id ? json_str(fg_id) : NULL;
+  char *jgid = fg_id ? skim_json_str(fg_id) : NULL;
   char *jgate = fg_id
-      ? g_strdup_printf("{\"id\":\"%s\",\"mode\":\"shadow\",\"threshold\":%.2f,"
+      ? g_strdup_printf("{\"id\":\"%s\",\"mode\":\"%s\",\"threshold\":%.2f,"
                         "\"spots\":%" G_GUINT64_FORMAT ",\"below\":%" G_GUINT64_FORMAT "}",
-                        jgid, fg_thr, fg_spots, fg_below)
+                        jgid, gate_on(h) ? "on" : "shadow", fg_thr, fg_spots, fg_below)
       : g_strdup("null");
   g_free(jgid);
   g_string_append_printf(json,
-      "{\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
+      "{\"version\":\"%s\",\"started_us\":%" G_GINT64_FORMAT ",\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
       "\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
       "\"settle_nodict_s\":%.1f,"
       "\"fresh_s\":%.1f,\"fold_s\":%.1f,\"folded\":%" G_GUINT64_FORMAT "},"
-      "\"feed_gate\":%s,"
-      "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
+      "\"feed_gate\":%s,\"switches\":%s,\"supervisor\":%s,"
+      "\"suppress_cw_on_rtty\":%s,\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
-      clock, jstate, h->streaming ? "true" : "false", jhost, h->ppm_now, h->rate, lost_pct,
+      SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
       h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_nd, pol_fresh,
-      pol_fold, folded, jgate,
-      h->feed ? h->feed_port : 0, fclients, flines,
+      pol_fold, folded, jgate, h->switches_json, supervisor_json(),
+      h->cfg.suppress_cw_on_rtty ? "true" : "false",
+      h->feed ? h->cfg.feed_port : 0, h->cfg.feed_rtty ? "true" : "false", fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
   g_free(jgate);
   g_free(jhost);
 
-  GString *cards = g_string_new("<div class=bands>");
   for (guint i = 0; i < h->nb; i++) {
     Band *b = &h->band[i];
-    BandStat s;
-    band_stat(b, &s);
-    const double lo = (b->centre_hz - h->rate / 2.0) / 1000.0;
-    const double hi = (b->centre_hz + h->rate / 2.0) / 1000.0;
-    g_string_append_printf(con,
-        "   %-6s %11.1f   %8.0f–%-8.0f %6u  %6u  %8u  %5" G_GUINT64_FORMAT
-        "  %5" G_GUINT64_FORMAT "  %4.0f\n",
-        b->name, b->centre_hz / 1000.0, lo, hi, s.channels, s.active, s.stations,
-        s.spots, s.drops, b->ksps);
-    g_string_append_printf(html,
-        "<tr><td>%s</td><td>%.1f</td><td>%.0f–%.0f</td><td>%u</td><td>%u</td>"
-        "<td>%u</td><td>%" G_GUINT64_FORMAT "</td><td>%" G_GUINT64_FORMAT
-        "</td><td>%.0f</td></tr>",
-        b->name, b->centre_hz / 1000.0, lo, hi, s.channels, s.active, s.stations,
-        s.spots, s.drops, b->ksps);
-    char *jname = json_str(b->name);
-    g_string_append_printf(json,
-        "%s{\"band\":\"%s\",\"centre_hz\":%.0f,\"decoders\":%u,\"active\":%u,"
-        "\"stations\":%u,\"spots\":%" G_GUINT64_FORMAT ",\"drops\":%" G_GUINT64_FORMAT
-        ",\"ksps\":%.1f,\"recent\":[",
-        i ? "," : "", jname, b->centre_hz, s.channels, s.active, s.stations,
-        s.spots, s.drops, b->ksps);
+    const double lo = (b->centre_hz - h->cfg.rate / 2.0) / 1000.0;
+    const double hi = (b->centre_hz + h->cfg.rate / 2.0) / 1000.0;
+    for (guint k = 0; k < M_N; k++) {
+      Dec *d = &b->dec[k];
+      if (!d->p) { continue; }
+      BandStat s;
+      band_stat(d, &s);
+      g_string_append_printf(con,
+          "   %-5s %-4s %11.1f   %8.0f–%-8.0f %6u  %6u  %8u  %5" G_GUINT64_FORMAT
+          "  %5" G_GUINT64_FORMAT "  %4.0f\n",
+          b->name, MODE_KEY[k], b->centre_hz / 1000.0, lo, hi, s.channels, s.active,
+          s.stations, s.spots, s.drops, b->ksps);
+    }
+    /* The band's CW at the top level (what skimmer-compare and older pages
+     * read; zeros when the band decodes RTTY only), its RTTY in "rtty". */
+    char *jname = skim_json_str(b->name);
+    /* rtty_suppressed: CW decodes dropped on an RTTY pair (0 while off) */
+    /* engine_wanted: what the config asks for — "deepcw" beside an
+     * engine "cw-v2" is a band that fell back (the reason: "deepcw") */
+    g_string_append_printf(json, "%s{\"band\":\"%s\",\"centre_hz\":%.0f,\"ksps\":%.1f,"
+                           "\"cw\":%s,\"engine_wanted\":\"%s\","
+                           "\"rtty_suppressed\":%" G_GUINT64_FORMAT ",",
+                           i ? "," : "", jname, b->centre_hz, b->ksps,
+                           b->dec[M_CW].p ? "true" : "false",
+                           b->dec[M_CW].p ? engine_key(h->cfg.band[i].cw_engine) : "",
+                           b->dec[M_CW].p ? skim_pipeline_rtty_suppressed(b->dec[M_CW].p) : 0);
     g_free(jname);
-
-    GPtrArray *rec = band_recent(b, RECENT_STATIONS);
-    g_string_append_printf(cards, "<div class=b><h2>%s <span class=mut>· %u stations</span></h2>"
-                           "<table><tr><th>call</th><th>kHz</th><th>wpm</th><th>dB</th>"
-                           "<th>heard</th></tr>", b->name, s.stations);
-    for (guint k = 0; k < rec->len; k++) {
-      const SkimStation *st = rec->pdata[k];
-      char age[24];
-      fmt_age(age, sizeof(age), now - st->last_heard);
-      char *call = g_markup_escape_text(st->call, -1);
-      char *jcall = json_str(st->call);
-      g_string_append_printf(cards,
-          "<tr><td%s>%s</td><td>%.1f</td><td>%.0f</td><td>%.0f</td><td>%s</td></tr>",
-          st->cq ? " class=cq" : "", call, st->freq_hz / 1000.0, st->speed,
-          st->snr_db, age);
-      g_string_append_printf(json,
-          "%s{\"call\":\"%s\",\"freq_hz\":%.0f,\"wpm\":%.0f,\"snr_db\":%.0f,"
-          "\"cq\":%s,\"age_s\":%" G_GINT64_FORMAT "}",
-          k ? "," : "", jcall, st->freq_hz, st->speed, st->snr_db,
-          st->cq ? "true" : "false", (now - st->last_heard) / G_USEC_PER_SEC);
-      g_free(call);
-      g_free(jcall);
+    dec_json(json, &b->dec[M_CW], now);
+    g_string_append(json, ",\"rtty\":");
+    if (b->dec[M_RTTY].p) {
+      g_string_append_c(json, '{');
+      dec_json(json, &b->dec[M_RTTY], now);
+      /* the pairs it copies now (published for the band's CW) */
+      g_string_append_printf(json, ",\"pairs\":%u}",
+                             b->pairs ? skim_rtty_pairs_count(b->pairs, now) : 0);
+    } else {
+      g_string_append(json, "null");
     }
-    if (!rec->len) {
-      g_string_append(cards, "<tr><td colspan=5 class=mut>nothing yet</td></tr>");
-    }
-    g_string_append(cards, "</table></div>");
-    g_string_append(json, "]}");
-    g_ptr_array_unref(rec);
+    g_string_append_c(json, '}');
   }
-  g_string_append(cards, "</div>");
-  g_string_append(html, "</table></div><div class=mut>decoders = channel "
-                  "decoders in the band · active = decoding running text now (noise fragments don't count) · "
-                  "<span class=cq>blue</span> = heard calling CQ · refreshes every 5 s · "
-                  "<a href=status.json>status.json</a></div>");
-  g_string_append(html, cards->str);
-  g_string_append(html, "</body></html>");
-  g_string_append(json, "]}");
-  g_string_free(cards, TRUE);
+  g_string_append(json, "],\"deepcw\":");
+  dcw_json(h, json);
+  g_string_append_c(json, '}');
   g_free(clock);
 
   g_mutex_lock(&h->snap_lock);
-  g_free(h->snap_html);
   g_free(h->snap_json);
-  h->snap_html = g_string_free(html, FALSE);
   h->snap_json = g_string_free(json, FALSE);
   g_mutex_unlock(&h->snap_lock);
 
@@ -917,18 +608,93 @@ static void status_build(Hd *h, gboolean print) {
   g_string_free(con, TRUE);
 }
 
+/* ---- history (headless/stats.h) ------------------------------------------------- */
+
+static gint float_cmp(gconstpointer a, gconstpointer b) {
+  const float x = *(const float *)a, y = *(const float *)b;
+  return x < y ? -1 : x > y;
+}
+
+/* Close the minute h->minute: what each band did in it, and the machine. */
+static void stats_minute(Hd *h) {
+  SkimStatsMinute m;
+  memset(&m, 0, sizeof(m));
+  for (guint b = 0; b < SKIM_STATS_BANDS; b++) {
+    for (guint k = 0; k < SKIM_STATS_MODES; k++) {
+      for (guint j = 0; j < SKIM_SM_N; j++) { m.band[b][k][j] = NAN; }
+    }
+  }
+  for (guint i = 0; i < h->nb && i < SKIM_STATS_BANDS; i++) {
+    for (guint k = 0; k < M_N; k++) {
+      Dec *b = &h->band[i].dec[k];
+      if (!b->p) { continue; }                 /* stays NaN: not decoded      */
+      BandStat bs;
+      band_stat(b, &bs);
+      guint64 folded = 0, gspots = 0, below = 0;
+      skim_pipeline_rbn_fold(b->p, NULL, &folded);
+      skim_pipeline_feed_gate_stats(b->p, NULL, &gspots, &below);
+      float *v = m.band[i][k];
+      v[SKIM_SM_SPOTS] = (float)(bs.spots - b->spots_prev);
+      v[SKIM_SM_FOLDED] = (float)(folded - b->folded_prev);
+      v[SKIM_SM_GATE_BELOW] = (float)(below - b->below_prev);
+      v[SKIM_SM_ACTIVE] = (float)bs.active;
+      b->spots_prev = bs.spots;
+      b->folded_prev = folded;
+      b->below_prev = below;
+      g_mutex_lock(&b->lock);
+      v[SKIM_SM_STATIONS] = (float)b->appeared;
+      b->appeared = 0;
+      if (b->snr->len) {
+        g_array_sort(b->snr, float_cmp);
+        v[SKIM_SM_SNR] = g_array_index(b->snr, float, b->snr->len / 2);
+        g_array_set_size(b->snr, 0);
+      }
+      g_mutex_unlock(&b->lock);
+    }
+  }
+  const SkimIqSourceStatus *src = &h->src_st;
+  const guint64 frames = h->nb ? skim_pipeline_frames(band_p(&h->band[0])) : 0;
+  const guint64 df = frames - h->min_frames_prev, dl = src->lost_frames - h->min_lost_prev;
+  m.glob[SKIM_SG_CPU] = (float)h->cpu_pct;
+  m.glob[SKIM_SG_LOST] = df + dl && src->lost_frames >= h->min_lost_prev
+                             ? (float)(100.0 * (double)dl / (double)(df + dl)) : 0;
+  m.glob[SKIM_SG_CLIENTS] = h->feed ? (float)skim_rbn_feed_clients(h->feed) : 0;
+  m.glob[SKIM_SG_STREAMING] = src->streaming ? 1 : 0;
+  m.glob[SKIM_SG_RADIO] = 0;
+  for (guint i = 0; src->streaming && h->cfg.hosts[i]; i++) {
+    if (strcmp(h->cfg.hosts[i], src->host) == 0) { m.glob[SKIM_SG_RADIO] = (float)(i + 1); }
+  }
+  h->min_frames_prev = frames;
+  h->min_lost_prev = src->lost_frames;
+  /* the first minute after a start is partial and its deltas start from
+   * zero — not a record */
+  if (h->minutes++) { skim_stats_put(h->stats, h->minute, &m); }
+  if (h->minutes % 5 == 0) {
+    GError *err = NULL;
+    if (!skim_stats_save(h->stats, &err)) {
+      g_warning("stats: %s", err->message);
+      g_clear_error(&err);
+    }
+  }
+}
+
 /* 1 Hz: link supervision, rates, status. */
 static gboolean tick(gpointer data) {
   Hd *h = data;
-  if (h->streaming && g_atomic_int_get(&h->closed)) { rp_drop(h); }
-  if (!h->streaming && h->ticks % 3 == 0) { rp_try_start(h); }
-  if (h->exit_code) { return G_SOURCE_REMOVE; }
+  skim_iq_source_tick(h->src);
+  skim_iq_source_status(h->src, &h->src_st);
+  if (h->src_st.gave_up) {
+    h->exit_code = EXIT_NO_RADIO;
+    g_main_loop_quit(h->loop);
+    return G_SOURCE_REMOVE;
+  }
 
-  const guint64 pk = h->rp ? skim_hpsdr_client_packets(h->rp) : 0;
-  h->pps = h->streaming && h->packets_prev ? (double)(pk - h->packets_prev) : 0;
+  const guint64 pk = h->src_st.packets;
+  h->pps = h->src_st.streaming && h->packets_prev && pk >= h->packets_prev
+               ? (double)(pk - h->packets_prev) : 0;
   h->packets_prev = pk;
   for (guint i = 0; i < h->nb; i++) {
-    const guint64 fr = skim_pipeline_frames(h->band[i].p);
+    const guint64 fr = skim_pipeline_frames(band_p(&h->band[i]));
     h->band[i].ksps = h->band[i].frames_prev ? (fr - h->band[i].frames_prev) / 1000.0 : 0;
     h->band[i].frames_prev = fr;
   }
@@ -942,47 +708,354 @@ static gboolean tick(gpointer data) {
   h->cpu_prev = cpu;
   h->cpu_prev_us = now;
 
+  const gint64 minute = g_get_real_time() / (60 * G_USEC_PER_SEC);
+  if (minute != h->minute) {
+    if (h->minute) { stats_minute(h); }
+    h->minute = minute;
+  }
+
   h->ticks++;
   const gboolean print = h->console_s > 0 && h->ticks % (guint)h->console_s == 0;
   status_build(h, print);
   return G_SOURCE_CONTINUE;
 }
 
-/* ---- web page -------------------------------------------------------------------- */
+/* ---- web page (headless/web.h) --------------------------------------------------- */
 
-static gboolean http_run(GThreadedSocketService *svc, GSocketConnection *conn,
-                         GObject *src, gpointer user) {
-  (void)svc; (void)src;
+static char *web_status(GHashTable *q, gboolean may, guint *st, const char **type,
+                        gpointer user) {
+  (void)q; (void)may; (void)st; (void)type;
   Hd *h = user;
-  GInputStream *in = g_io_stream_get_input_stream(G_IO_STREAM(conn));
-  GOutputStream *out = g_io_stream_get_output_stream(G_IO_STREAM(conn));
-  g_socket_set_timeout(g_socket_connection_get_socket(conn), 5);
-  char req[2048];
-  const gssize n = g_input_stream_read(in, req, sizeof(req) - 1, NULL, NULL);
-  if (n <= 0) { return TRUE; }
-  req[n] = '\0';
-  const gboolean want_json = g_str_has_prefix(req, "GET /status.json");
-  const gboolean root = g_str_has_prefix(req, "GET / ") || g_str_has_prefix(req, "GET /index");
   g_mutex_lock(&h->snap_lock);
-  char *body = g_strdup(want_json ? h->snap_json : root ? h->snap_html : NULL);
+  char *body = g_strdup(h->snap_json ? h->snap_json : "{}");
   g_mutex_unlock(&h->snap_lock);
-  char *head;
-  if (!body) {
-    body = g_strdup("not found\n");
-    head = g_strdup_printf("HTTP/1.0 404 Not Found\r\nContent-Type: text/plain\r\n"
-                           "Content-Length: %zu\r\nConnection: close\r\n\r\n", strlen(body));
-  } else {
-    head = g_strdup_printf("HTTP/1.0 200 OK\r\nContent-Type: %s\r\n"
-                           "Cache-Control: no-store\r\nContent-Length: %zu\r\n"
-                           "Connection: close\r\n\r\n",
-                           want_json ? "application/json" : "text/html; charset=utf-8",
-                           strlen(body));
+  return body;
+}
+
+static char *web_stats(GHashTable *q, gboolean may, guint *st, const char **type,
+                       gpointer user) {
+  (void)may; (void)st; (void)type;
+  Hd *h = user;
+  const char *hv = q ? g_hash_table_lookup(q, "hours") : NULL;
+  const char *sv = q ? g_hash_table_lookup(q, "step") : NULL;
+  return skim_stats_json(h->stats, g_get_real_time() / (60 * G_USEC_PER_SEC),
+                         hv ? (guint)g_ascii_strtoull(hv, NULL, 10) : 24,
+                         sv ? (guint)g_ascii_strtoull(sv, NULL, 10) : 0);
+}
+
+/* ---- settings (POST from settings_from only — web.c checks) ---------------------- */
+
+static gboolean quit_soon(gpointer user) {
+  g_main_loop_quit(((Hd *)user)->loop);
+  return G_SOURCE_REMOVE;
+}
+
+/* Restart once the answer is out: under a supervisor that asks for it
+ * (SKIM_SUPERVISED=1) exit EXIT_RESTART and let it start us again;
+ * otherwise — alone, or as the systemd unit, whose RestartSec would keep
+ * the page waiting a minute — main execs itself after the teardown. */
+static void restart_soon(Hd *h, const char *why) {
+  g_message("restart: %s", why);
+  h->exit_code = EXIT_RESTART;
+  g_timeout_add(400, quit_soon, h);
+}
+
+static char *json_error(guint *st, guint code, const char *msg) {
+  *st = code;
+  char *e = skim_json_str(msg);
+  char *body = g_strdup_printf("{\"error\":\"%s\"}", e);
+  g_free(e);
+  return body;
+}
+
+static void json_kv(GString *o, const char *k, const char *v, gboolean comma) {
+  g_string_append_printf(o, "%s\"", comma ? "," : "");
+  skim_json_append(o, k);
+  g_string_append(o, "\":\"");
+  skim_json_append(o, v);
+  g_string_append_c(o, '"');
+}
+
+/* GET /api/config: the file on disk (what a restart would run) — its
+ * editable values, its bands, the rest read-only, the backups. */
+static char *web_config(GHashTable *q, gboolean may, guint *st, const char **type,
+                        gpointer user) {
+  (void)q; (void)type;
+  Hd *h = user;
+  char *text = NULL;
+  gsize len = 0;
+  GError *err = NULL;
+  if (!g_file_get_contents(h->cfg_path, &text, &len, &err)) {
+    char *b = json_error(st, 500, err->message);
+    g_error_free(err);
+    return b;
   }
-  g_output_stream_write_all(out, head, strlen(head), NULL, NULL, NULL);
-  g_output_stream_write_all(out, body, strlen(body), NULL, NULL, NULL);
-  g_free(head);
-  g_free(body);
-  return TRUE;
+  GString *o = g_string_new("{");
+  json_kv(o, "path", h->cfg_path, FALSE);
+  g_string_append_printf(o, ",\"may_change\":%s,\"settings_from\":[", may ? "true" : "false");
+  for (guint i = 0; h->cfg.settings_from[i]; i++) {
+    g_string_append_printf(o, "%s\"", i ? "," : "");
+    skim_json_append(o, h->cfg.settings_from[i]);
+    g_string_append_c(o, '"');
+  }
+  g_string_append(o, "],\"values\":{");
+  GKeyFile *kf = g_key_file_new();
+  g_key_file_load_from_data(kf, text, len, G_KEY_FILE_NONE, NULL);
+  gboolean first = TRUE;
+  for (const char *const *k = SKIM_HD_EDITABLE; *k; k++) {
+    if (strcmp(*k, "bands") == 0) { continue; }
+    char *group = g_strndup(*k, (gsize)(strchr(*k, '.') - *k));
+    char *v = g_key_file_get_value(kf, group, strchr(*k, '.') + 1, NULL);
+    json_kv(o, *k, v ? g_strstrip(v) : "", !first);
+    first = FALSE;
+    g_free(v);
+    g_free(group);
+  }
+  g_string_append(o, "},\"readonly\":{");
+  first = TRUE;
+  static const char *const RO_GROUPS[] = { "feed", "decode", "web", "radio", "status", NULL };
+  for (const char *const *g = RO_GROUPS; *g; g++) {
+    gsize n = 0;
+    char **keys = g_key_file_get_keys(kf, *g, &n, NULL);
+    for (gsize i = 0; keys && i < n; i++) {
+      char *full = g_strconcat(*g, ".", keys[i], NULL);
+      gboolean ed = FALSE;
+      for (const char *const *k = SKIM_HD_EDITABLE; *k && !ed; k++) { ed = strcmp(*k, full) == 0; }
+      if (!ed) {
+        char *v = g_key_file_get_value(kf, *g, keys[i], NULL);
+        json_kv(o, full, v ? g_strstrip(v) : "", !first);
+        first = FALSE;
+        g_free(v);
+      }
+      g_free(full);
+    }
+    g_strfreev(keys);
+  }
+  g_string_append_c(o, '}');
+  g_key_file_free(kf);
+  SkimHdConfig c;
+  if (skim_hd_config_parse(&c, text, len, h->cfg_path, &err)) {
+    g_string_append(o, ",\"file_error\":null,\"bands\":[");
+    for (guint i = 0; i < c.nb; i++) {
+      g_string_append_printf(o, "%s{", i ? "," : "");
+      json_kv(o, "name", c.band[i].name, FALSE);
+      g_string_append_printf(o, ",\"centre_hz\":%.0f,\"cw\":%s,\"engine\":\"%s\",\"rtty\":%s}",
+                             c.band[i].centre_hz, c.band[i].cw ? "true" : "false",
+                             engine_key(c.band[i].cw_engine), c.band[i].rtty ? "true" : "false");
+    }
+    g_string_append_c(o, ']');
+    skim_hd_config_clear(&c);
+  } else {
+    g_string_append(o, ",\"bands\":[],\"file_error\":\"");
+    skim_json_append(o, err->message);
+    g_string_append_c(o, '"');
+    g_clear_error(&err);
+  }
+  g_string_append(o, ",\"backups\":[");
+  char **baks = skim_hd_config_backups(h->cfg_path);
+  char *dir = g_path_get_dirname(h->cfg_path);
+  for (guint i = 0; baks[i]; i++) {
+    char *p = g_build_filename(dir, baks[i], NULL);
+    GStatBuf sb;
+    const gint64 mt = g_stat(p, &sb) == 0 ? (gint64)sb.st_mtime : 0;
+    g_string_append_printf(o, "%s{", i ? "," : "");
+    json_kv(o, "name", baks[i], FALSE);
+    g_string_append_printf(o, ",\"time\":%" G_GINT64_FORMAT "}", mt);
+    g_free(p);
+  }
+  g_free(dir);
+  g_strfreev(baks);
+  g_string_append(o, "],");
+  json_kv(o, "ini", text, FALSE);
+  g_string_append_printf(o, ",\"started\":%" G_GINT64_FORMAT "}",
+                         (g_get_real_time() - (g_get_monotonic_time() - h->t_start)) /
+                             G_USEC_PER_SEC);
+  g_free(text);
+  return g_string_free(o, FALSE);
+}
+
+/* POST /api/config: the form applied to the file, checked by the start's
+ * own parser, saved (the old file backed up), and a restart. */
+static char *web_config_post(GHashTable *form, guint *st, gpointer user) {
+  Hd *h = user;
+  char *text = NULL;
+  gsize len = 0;
+  GError *err = NULL;
+  char *body = NULL, *out = NULL, *bak = NULL;
+  SkimHdConfig c;
+  if (!g_file_get_contents(h->cfg_path, &text, &len, &err) ||
+      !(out = skim_hd_config_apply_form(text, len, form, &err))) {
+    body = json_error(st, 400, err->message);
+  } else if (!skim_hd_config_parse(&c, out, strlen(out), h->cfg_path, &err)) {
+    body = json_error(st, 400, err->message);         /* nothing written     */
+  } else {
+    skim_hd_config_clear(&c);
+    if (strcmp(out, text) == 0) {
+      body = g_strdup("{\"ok\":true,\"changed\":false}");
+    } else if (!skim_hd_config_save(h->cfg_path, out, &bak, &err)) {
+      body = json_error(st, 500, err->message);
+    } else {
+      g_message("config: %s saved from the web page (previous: %s)", h->cfg_path, bak);
+      GString *o = g_string_new("{\"ok\":true,\"changed\":true");
+      json_kv(o, "backup", bak, TRUE);
+      g_string_append(o, ",\"restart\":true}");
+      body = g_string_free(o, FALSE);
+      restart_soon(h, "the config changed");
+    }
+  }
+  g_clear_error(&err);
+  g_free(bak);
+  g_free(out);
+  g_free(text);
+  return body;
+}
+
+static char *web_restart(GHashTable *form, guint *st, gpointer user) {
+  (void)form; (void)st;
+  restart_soon(user, "asked for on the web page");
+  return g_strdup("{\"ok\":true,\"restart\":true}");
+}
+
+/* POST /api/rollback name=<backup>: that backup back as the config. */
+static char *web_rollback(GHashTable *form, guint *st, gpointer user) {
+  Hd *h = user;
+  const char *name = g_hash_table_lookup(form, "name");
+  GError *err = NULL;
+  if (!name) { return json_error(st, 400, "which backup? (name=)"); }
+  char *dir = g_path_get_dirname(h->cfg_path);
+  char *p = g_build_filename(dir, name, NULL);
+  g_free(dir);
+  char *text = NULL;
+  gsize len = 0;
+  SkimHdConfig c;
+  char *body;
+  /* a backup that would not start is not restored */
+  if (strchr(name, '/') || !g_file_get_contents(p, &text, &len, &err) ||
+      !skim_hd_config_parse(&c, text, len, h->cfg_path, &err)) {
+    body = json_error(st, 400, err ? err->message : "no such backup");
+  } else {
+    skim_hd_config_clear(&c);
+    if (!skim_hd_config_restore(h->cfg_path, name, &err)) {
+      body = json_error(st, 400, err->message);
+    } else {
+      g_message("config: %s restored from %s on the web page", h->cfg_path, name);
+      body = g_strdup("{\"ok\":true,\"restart\":true}");
+      restart_soon(h, "a backup of the config was restored");
+    }
+  }
+  g_clear_error(&err);
+  g_free(text);
+  g_free(p);
+  return body;
+}
+
+/* ---- the DeepCW model, fetched on request ------------------------------------- */
+
+static void dcw_progress(guint64 got, guint64 total, gpointer user) {
+  Hd *h = user;
+  g_mutex_lock(&h->dcw_lock);
+  h->dcw_got = got;
+  h->dcw_total = total;
+  g_mutex_unlock(&h->dcw_lock);
+}
+
+static gpointer dcw_fetch_thread(gpointer user) {
+  Hd *h = user;
+  const SkimDeepcwFetch f = {
+    .model_path = h->dcw_model, .base_url = h->dcw_base_url, .ca_path = h->dcw_ca,
+    .cancel = h->dcw_cancel, .progress = dcw_progress, .user = h,
+  };
+  GError *err = NULL;
+  gboolean ok = skim_deepcw_model_fetch(&f, &err);
+  GError *cerr = NULL;
+  const gboolean model_ok = ok && skim_deepcw_model_check(h->dcw_model, &cerr);
+  g_mutex_lock(&h->dcw_lock);
+  h->dcw_state = model_ok ? "done" : "failed";
+  h->dcw_model_ok = model_ok;
+  g_clear_pointer(&h->dcw_err, g_free);
+  if (!model_ok) { h->dcw_err = g_strdup(err ? err->message : cerr->message); }
+  g_mutex_unlock(&h->dcw_lock);
+  if (model_ok) {
+    g_message("deepcw: model %s installed (commit %.7s)%s", h->dcw_model, SKIM_DEEPCW_COMMIT,
+              h->dcw_wanted ? " — a restart puts it to work" : "");
+  } else {
+    g_warning("deepcw: model fetch failed: %s", err ? err->message : cerr->message);
+  }
+  g_clear_error(&err);
+  g_clear_error(&cerr);
+  return NULL;
+}
+
+/* POST /api/deepcw: fetch the model (once at a time; a model already in
+ * place is not fetched again). The answer says what is going on. */
+static char *web_deepcw(GHashTable *form, guint *st, gpointer user) {
+  (void)form; (void)st;
+  Hd *h = user;
+  g_mutex_lock(&h->dcw_lock);
+  const gboolean start = !h->dcw_model_ok && g_strcmp0(h->dcw_state, "running") != 0;
+  if (start) {
+    h->dcw_state = "running";
+    h->dcw_got = h->dcw_total = 0;
+    g_clear_pointer(&h->dcw_err, g_free);
+  }
+  char *body = g_strdup_printf("{\"ok\":true,\"state\":\"%s\"}",
+                               h->dcw_model_ok ? "done" : h->dcw_state);
+  g_mutex_unlock(&h->dcw_lock);
+  if (start) {
+    g_message("deepcw: fetching the model (commit %.7s) into %s, asked for on the web page",
+              SKIM_DEEPCW_COMMIT, h->dcw_model);
+    if (h->dcw_thread) { g_thread_join(h->dcw_thread); }
+    h->dcw_thread = g_thread_new("deepcw-fetch", dcw_fetch_thread, h);
+  }
+  return body;
+}
+
+/* --fetch-deepcw-model: the same, in the foreground. */
+static void cli_progress(guint64 got, guint64 total, gpointer user) {
+  guint *last = user;
+  const guint pct = total ? (guint)(100 * got / total) : 0;
+  if (pct / 10 != *last / 10) {
+    g_printerr("  %3u %%  (%.1f of %.1f MB)\n", pct, got / 1e6, total / 1e6);
+    *last = pct;
+  }
+}
+
+static int fetch_model_cli(void) {
+  char *model = skim_decode_deepcw_model_path();
+  GError *err = NULL;
+  int rc = 0;
+  if (skim_deepcw_model_check(model, NULL)) {
+    printf("%s is the pinned DeepCW model (commit %.7s) — nothing to fetch\n", model,
+           SKIM_DEEPCW_COMMIT);
+  } else {
+    char *base = skim_deepcw_env_base_url();
+    char *ca = skim_scp_env_ca_path();
+    guint last = 0;
+    const SkimDeepcwFetch f = {
+      .model_path = model, .base_url = base, .ca_path = ca, .progress = cli_progress,
+      .user = &last,
+    };
+    g_printerr("DeepCW model by e04 (AGPL-3.0-only), commit %.7s of %s\n  into %s\n",
+               SKIM_DEEPCW_COMMIT, base ? base : SKIM_DEEPCW_UPSTREAM, model);
+    if (skim_deepcw_model_fetch(&f, &err)) {
+      printf("%s installed (sha256 %.8s…, LICENSE and NOTICE beside it)\n", model,
+             SKIM_DEEPCW_MODEL_SHA);
+    } else {
+      g_printerr("fetch failed: %s\n", err->message);
+      g_clear_error(&err);
+      rc = 1;
+    }
+    g_free(base);
+    g_free(ca);
+  }
+  g_free(model);
+  return rc;
+}
+
+static char *web_log(GHashTable *q, gboolean may, guint *st, const char **type,
+                     gpointer user) {
+  (void)q; (void)may; (void)st; (void)type; (void)user;
+  return skim_log_ring_json();
 }
 
 /* ---- main ------------------------------------------------------------------------ */
@@ -999,11 +1072,70 @@ static gboolean on_signal(gpointer user) {
   return G_SOURCE_REMOVE;
 }
 
+/* Start one mode of a band: its pipeline on the band's IQ, its logs (the
+ * CW ones keep their old names, RTTY's carry "-rtty"). learndir NULL = no
+ * tap. RTTY spots the feed only with [feed] rtty, and never through the
+ * learned gate — its model knows CW. */
+static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const char *logdir,
+                          const char *day, const char *learndir, const char *start,
+                          GError **error) {
+  const SkimHdConfig *c = &h->cfg;
+  Dec *d = &b->dec[k];
+  const gboolean rtty = k == M_RTTY;
+  const char *sfx = rtty ? "-rtty" : "";
+  d->band = b->name;
+  d->mode = k;
+  d->bin_hz = rtty ? 250.0 : 125.0;
+  g_mutex_init(&d->lock);
+  d->active = g_hash_table_new_full(NULL, NULL, NULL, g_free);
+  d->stations = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+  d->snr = g_array_new(FALSE, FALSE, sizeof(float));
+  char *dlog = c->decode_log ? g_strdup_printf("%s/decodes-%s%s-%s.log", logdir, b->name,
+                                               sfx, day)
+                             : NULL;
+  char *tap = learndir ? g_strdup_printf("%s/tap-%s%s-%s.log", learndir, b->name, sfx, start)
+                       : NULL;
+  SkimPipelineConfig pc = {
+    .source = SKIM_PIPELINE_SOURCE_EXTERNAL,
+    .host = b->label,
+    .iq_rate = c->rate,
+    .center_hz = b->centre_hz,
+    .mode = rtty ? SKIM_PIPELINE_MODE_RTTY : SKIM_PIPELINE_MODE_CW,
+    .cw_engine = cb->cw_engine,
+    .decode_log_path = dlog,
+    .rbn = rtty && !c->feed_rtty ? NULL : h->feed,
+    .rbn_min_score = c->feed_min_score,
+    .rbn_min_hearings = c->feed_min_hearings,
+    .rbn_settle_s = c->feed_settle_s,
+    .rbn_settle_nodict_s = c->feed_settle_nodict_s,
+    .rbn_fresh_s = c->feed_fresh_s,
+    .rbn_fold_s = c->feed_fold_s,
+    .tap_path = tap,
+    .feed_gate = rtty ? NULL : h->gate,
+    .feed_gate_on = gate_on(h),
+    .band = b->name,
+    /* RTTY publishes what it copies; CW stays off it only when told to */
+    .rtty_pairs = rtty || c->suppress_cw_on_rtty ? b->pairs : NULL,
+  };
+  d->p = skim_pipeline_new(&pc);
+  g_free(dlog);
+  g_free(tap);
+  skim_pipeline_set_text_cb(d->p, text_cb, d);
+  skim_pipeline_set_station_cb(d->p, station_cb, d);
+  skim_pipeline_set_station_gone_cb(d->p, gone_cb, d);
+  skim_pipeline_set_feed_cb(d->p, feed_cb, d);
+  skim_pipeline_set_state_cb(d->p, state_cb, d);
+  return skim_pipeline_start(d->p, error);
+}
+
 int main(int argc, char **argv) {
+  skim_log_ring_install();
   Hd *h = g_new0(Hd, 1);
   h->console_s = -1;
   h->http_port = -1;
   char *cfg = NULL;
+  gboolean list_switches = FALSE, check_config = FALSE, fetch_model = FALSE;
+  gboolean install_service = FALSE, uninstall_service = FALSE;
   GOptionEntry opts[] = {
     { "config", 'c', 0, G_OPTION_ARG_FILENAME, &cfg,
       "Config file (default ~/.config/skimmer-for-linux/headless.ini)", "FILE" },
@@ -1014,26 +1146,144 @@ int main(int argc, char **argv) {
       "Console status every N s (0 = off; overrides the config)", "N" },
     { "http-port", 'p', 0, G_OPTION_ARG_INT, &h->http_port,
       "Web status port (0 = off; overrides the config)", "PORT" },
+    { "feed-gate", 0, 0, G_OPTION_ARG_FILENAME, &h->cli_gate,
+      "Learned feed gate model for this start instead of the built-in one "
+      "(must name every feature; overrides the config)", "FILE" },
+    { "feed-gate-mode", 0, 0, G_OPTION_ARG_STRING, &h->cli_gate_mode,
+      "off | shadow (default: score and report) | on (hold back the spots "
+      "below the threshold); overrides the config", "MODE" },
+    { "check-config", 0, 0, G_OPTION_ARG_NONE, &check_config,
+      "Read and check the config and the feed gate, print what would run, and "
+      "exit (0 = fine, 2 = not) — no radio is touched", NULL },
+    { "fetch-deepcw-model", 0, 0, G_OPTION_ARG_NONE, &fetch_model,
+      "Fetch the DeepCW model (e04/deepcw-engine, AGPL-3.0-only, ~15 MB) at the "
+      "commit this version pins, check its sha256, install it where the "
+      "engine looks, and exit (0 = in place)", NULL },
+    { "install-service", 0, 0, G_OPTION_ARG_NONE, &install_service,
+      "Write a systemd user service that runs this program (with --config, "
+      "that config) and exit — it starts nothing; the next steps are printed", NULL },
+    { "uninstall-service", 0, 0, G_OPTION_ARG_NONE, &uninstall_service,
+      "Stop and remove that service and exit (the config stays)", NULL },
+    { "list-switches", 0, 0, G_OPTION_ARG_NONE, &list_switches,
+      "Print the SKIM_* environment switches the engine reads, and exit", NULL },
     { NULL, 0, 0, 0, NULL, NULL, NULL },
   };
-  GOptionContext *oc = g_option_context_new("— multi-band CW skimmer on a Red Pitaya, no GUI");
+  /* for a restart without a supervisor: the command line as given, less
+   * --take-over (one-shot: the first start only) */
+  GPtrArray *av = g_ptr_array_new();
+  for (int i = 0; i < argc; i++) {
+    if (strcmp(argv[i], "--take-over") != 0) { g_ptr_array_add(av, g_strdup(argv[i])); }
+  }
+  g_ptr_array_add(av, NULL);
+  h->argv = (char **)g_ptr_array_free(av, FALSE);
+  GOptionContext *oc = g_option_context_new("— multi-band CW and RTTY skimmer on a Red Pitaya, no GUI");
   g_option_context_add_main_entries(oc, opts, NULL);
   GError *err = NULL;
   if (!g_option_context_parse(oc, &argc, &argv, &err)) {
     g_printerr("%s\n", err->message);
-    return 2;
+    return EXIT_CONFIG;
   }
   g_option_context_free(oc);
+  if (list_switches) {
+    skim_switches_print_known();
+    return 0;
+  }
+  if (fetch_model) { return fetch_model_cli(); }
+  if (install_service || uninstall_service) {
+    gboolean ok;
+    if (install_service) {
+      char *exe = skim_hd_service_exe();
+      char *conf = cfg ? g_canonicalize_filename(cfg, NULL) : NULL;
+      ok = skim_hd_service_install(exe, conf, &err);
+      g_free(conf);
+      g_free(exe);
+    } else {
+      ok = skim_hd_service_uninstall(&err);
+    }
+    if (!ok) { g_printerr("service: %s\n", err->message); }
+    return ok ? 0 : 1;
+  }
   h->cfg_path = cfg ? cfg : g_build_filename(g_get_user_config_dir(), "skimmer-for-linux",
                                              "headless.ini", NULL);
-  if (!config_load(h, &err)) {
+  if (!g_file_test(h->cfg_path, G_FILE_TEST_EXISTS) && !check_config) {
+    if (!skim_hd_config_write_default(h->cfg_path, &err)) {
+      g_printerr("config: %s\n", err->message);
+      return EXIT_CONFIG;
+    }
+    g_message("config: %s did not exist — written with defaults", h->cfg_path);
+  }
+  SkimHdConfig *c = &h->cfg;
+  if (!skim_hd_config_load(c, h->cfg_path, &err)) {
     g_printerr("config: %s\n", err->message);
-    return 2;
+    return EXIT_CONFIG;
+  }
+  if (h->console_s < 0) {
+    h->console_s = skim_hd_service_under_systemd() ? 0 : c->console_s >= 0 ? c->console_s : 10;
+  }
+  if (h->http_port < 0) { h->http_port = c->http_port >= 0 ? c->http_port : 8073; }
+  h->feed_gate = g_strdup(c->feed_gate);
+  h->feed_gate_mode = g_strdup(c->feed_gate_mode);
+  if (!gate_load(h, &err)) {
+    g_printerr("feed gate: %s\n", err->message);
+    return EXIT_CONFIG;
+  }
+  if (check_config) {
+    printf("%s: fine\n  radio  %s, %u kHz\n", h->cfg_path,
+           c->source == SKIM_HD_SOURCE_MOCK ? "mock (no radio)" : c->hosts_text,
+           c->rate / 1000);
+    for (guint i = 0; i < c->nb; i++) {
+      char *m = skim_hd_band_modes(&c->band[i], c->engine);
+      printf("  RX%u    %-5s %.1f kHz  %s\n", i + 1, c->band[i].name,
+             c->band[i].centre_hz / 1000.0, m);
+      g_free(m);
+    }
+    printf("  feed   %s port %d, %s\n  gate   %s, %s (CW)\n",
+           c->feed_call && c->feed_call[0] ? c->feed_call : "(no call)", c->feed_port,
+           c->feed_rtty ? "CW and RTTY" : "CW only",
+           h->gate_id ? h->gate_id : "none", h->feed_gate_mode);
+    gboolean dcw = FALSE;
+    for (guint i = 0; i < c->nb; i++) {
+      dcw |= c->band[i].cw && c->band[i].cw_engine == SKIM_CW_ENGINE_DEEPCW;
+    }
+    if (dcw) {
+      /* the bands asking for DeepCW start anyway — on v2 when it is not here */
+      char *model = skim_decode_deepcw_model_path();
+      if (!skim_deepcw_model_check(model, &err)) {
+        printf("  deepcw NOT AVAILABLE, those bands run v2: %s\n", err->message);
+      } else if (!skim_decode_deepcw_available(&err)) {
+        printf("  deepcw NOT AVAILABLE, those bands run v2: %s\n", err->message);
+      } else {
+        printf("  deepcw %s, ONNX Runtime %s\n", model, skim_decode_deepcw_runtime_info());
+      }
+      g_clear_error(&err);
+      g_free(model);
+    }
+    return 0;
   }
   g_mutex_init(&h->snap_lock);
+  g_mutex_init(&h->dcw_lock);
+  h->dcw_state = "idle";
+  h->dcw_model = skim_decode_deepcw_model_path();
+  h->dcw_base_url = skim_deepcw_env_base_url();
+  h->dcw_ca = skim_scp_env_ca_path();
+  h->dcw_cancel = g_cancellable_new();
+  {
+    GError *e = NULL;
+    h->dcw_model_ok = skim_deepcw_model_check(h->dcw_model, &e);
+    if (e) { h->dcw_model_err = g_strdup(e->message); }
+    g_clear_error(&e);
+  }
   h->t_start = g_get_monotonic_time();
-  g_message("skimmer-headless %s — %s, %u band%s × %u kHz, config %s", SKIMMER_VERSION,
-            h->hosts_text, h->nb, h->nb == 1 ? "" : "s", h->rate / 1000, h->cfg_path);
+  h->started_us = g_get_real_time();
+  g_message("skimmer-headless %s — %s %s, %u band%s × %u kHz, config %s", SKIMMER_VERSION,
+            c->source == SKIM_HD_SOURCE_MOCK ? "mock source" : "HPSDR P1",
+            c->source == SKIM_HD_SOURCE_MOCK ? "(no radio)" : c->hosts_text, c->nb,
+            c->nb == 1 ? "" : "s", c->rate / 1000, h->cfg_path);
+  h->switches_json = skim_switches_scan();
+  if (skim_hd_service_under_systemd()) {
+    g_message("service: running under systemd — exit 3 retries after a minute, a "
+              "restart re-executes in place%s", h->console_s ? "" : "; console table off");
+  }
 
   /* Callsign dictionary: loaded once for every pipeline, kept current. */
   char *scp = g_build_filename(g_get_user_config_dir(), "skimmer-for-linux", "master.scp", NULL);
@@ -1045,16 +1295,16 @@ int main(int argc, char **argv) {
   skim_scp_updater_start(h->scp, 15);
   g_free(scp);
 
-  if (h->feed_port > 0) {
-    if (!h->feed_call || !h->feed_call[0]) {
+  if (c->feed_port > 0) {
+    if (!c->feed_call || !c->feed_call[0]) {
       g_warning("feed: [feed] call is empty — telnet feed off");
     } else {
-      h->feed = skim_rbn_feed_new(h->feed_call, (guint16)h->feed_port, &err);
+      h->feed = skim_rbn_feed_new(c->feed_call, (guint16)c->feed_port, &err);
       if (!h->feed) {
-        g_warning("feed: port %d: %s — telnet feed off", h->feed_port, err->message);
+        g_warning("feed: port %d: %s — telnet feed off", c->feed_port, err->message);
         g_clear_error(&err);
       } else {
-        g_message("feed: telnet spots on port %d as %s", h->feed_port, h->feed_call);
+        g_message("feed: telnet spots on port %d as %s", c->feed_port, c->feed_call);
       }
     }
   }
@@ -1063,7 +1313,7 @@ int main(int argc, char **argv) {
   GDateTime *now = g_date_time_new_now_local();
   char *day = g_date_time_format(now, "%Y-%m-%d");
   g_date_time_unref(now);
-  if (h->decode_log) { g_mkdir_with_parents(logdir, 0755); }
+  if (c->decode_log) { g_mkdir_with_parents(logdir, 0755); }
   /* Learning log: a decode tap per band and START (UTC) — a restart begins
    * a fresh tap, as the extractors and the station table begin fresh. Only
    * the tap: the gate rows are four times its size live (2026-10-03, 20 m:
@@ -1073,60 +1323,40 @@ int main(int argc, char **argv) {
   GDateTime *utc = g_date_time_new_now_utc();
   char *start = g_date_time_format(utc, "%Y%m%d-%H%M%S");
   g_date_time_unref(utc);
-  if (h->feed_learn) { g_mkdir_with_parents(learndir, 0755); }
+  if (c->feed_learn) { g_mkdir_with_parents(learndir, 0755); }
+  h->nb = c->nb;
   for (guint i = 0; i < h->nb; i++) {
     Band *b = &h->band[i];
-    g_mutex_init(&b->lock);
-    b->active = g_hash_table_new_full(NULL, NULL, NULL, g_free);
-    b->stations = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    const SkimHdBand *cb = &c->band[i];
+    g_strlcpy(b->name, cb->name, sizeof(b->name));
+    b->centre_hz = cb->centre_hz;
     g_snprintf(b->label, sizeof(b->label), "RX%u %s", i + 1, b->name);
-    char *dlog = h->decode_log ? g_strdup_printf("%s/decodes-%s-%s.log", logdir, b->name, day)
-                               : NULL;
-    char *tap = h->feed_learn ? g_strdup_printf("%s/tap-%s-%s.log", learndir, b->name, start)
-                              : NULL;
-    SkimPipelineConfig pc = {
-      .source = SKIM_PIPELINE_SOURCE_EXTERNAL,
-      .host = b->label,
-      .iq_rate = h->rate,
-      .center_hz = b->centre_hz,
-      .mode = SKIM_PIPELINE_MODE_CW,
-      .cw_engine = g_strcmp0(h->engine, "deepcw") == 0 ? SKIM_CW_ENGINE_DEEPCW
-                                                       : SKIM_CW_ENGINE_V2,
-      .decode_log_path = dlog,
-      .rbn = h->feed,
-      .rbn_min_score = h->feed_min_score,
-      .rbn_min_hearings = h->feed_min_hearings,
-      .rbn_settle_s = h->feed_settle_s,
-      .rbn_settle_nodict_s = h->feed_settle_nodict_s,
-      .rbn_fresh_s = h->feed_fresh_s,
-      .rbn_fold_s = h->feed_fold_s,
-      .tap_path = tap,
-      .feed_gate_path = h->feed_gate,
-      .band = b->name,
-    };
-    b->p = skim_pipeline_new(&pc);
-    g_free(dlog);
-    g_free(tap);
-    skim_pipeline_set_text_cb(b->p, text_cb, b);
-    skim_pipeline_set_station_cb(b->p, station_cb, b);
-    skim_pipeline_set_station_gone_cb(b->p, gone_cb, b);
-    skim_pipeline_set_state_cb(b->p, state_cb, b);
-    if (!skim_pipeline_start(b->p, &err)) {
-      g_printerr("pipeline %s: %s\n", b->name, err->message);
-      return 1;
+    if (cb->cw && cb->rtty) { b->pairs = skim_rtty_pairs_new(); }
+    for (guint k = 0; k < M_N; k++) {
+      if (k == M_CW ? !cb->cw : !cb->rtty) { continue; }
+      if (!dec_start(h, b, k, cb, logdir, day, c->feed_learn ? learndir : NULL, start,
+                     &err)) {
+        g_printerr("pipeline %s %s: %s\n", b->name, MODE_KEY[k], err->message);
+        return 1;
+      }
     }
   }
-  if (h->feed_learn) { g_message("learn: decode tap in %s", learndir); }
-  if (h->feed_gate) {
-    const char *id = h->nb ? skim_pipeline_feed_gate_stats(h->band[0].p, NULL, NULL, NULL)
-                           : NULL;
-    if (id) { g_message("feed gate: %s in SHADOW (logged only)", h->feed_gate); }
+  if (c->feed_learn) { g_message("learn: decode tap in %s", learndir); }
+  if (!h->gate) {
+    g_message("feed gate: off");
+  } else if (!h->feed) {
+    g_message("feed gate: %s — no telnet feed, not used", h->gate_id);
+  } else {
+    g_message("feed gate: %s, threshold %.2f, %s", h->gate_id,
+              skim_feed_gate_threshold(h->gate),
+              gate_on(h) ? "ON (holds back the spots below it)" : "SHADOW (logged only)");
   }
+  g_clear_pointer(&h->gate, skim_feed_gate_free);   /* the pipelines hold theirs */
   g_free(learndir);
   g_free(start);
   g_free(logdir);
   g_free(day);
-  for (char **x = h->rec_bands; x && *x; x++) {
+  for (char **x = c->rec_bands; x && *x; x++) {
     Band *b = NULL;
     for (guint i = 0; i < h->nb; i++) {
       if (strcmp(h->band[i].name, *x) == 0) { b = &h->band[i]; }
@@ -1135,55 +1365,95 @@ int main(int argc, char **argv) {
       g_warning("record: no band %s in [bands] — not recorded", *x);
       continue;
     }
-    g_mkdir_with_parents(h->rec_dir, 0755);
-    b->rec = g_new0(Rec, 1);
-    b->rec->path = g_build_filename(h->rec_dir, b->name, NULL);
-    g_strlcpy(b->rec->label, b->label, sizeof(b->rec->label));
-    b->rec->ppm = h->ppm;
-    b->rec->at_us = h->rec_at_us;
-    b->rec->minutes = h->rec_minutes;
-    if (h->rec_at_us) {
-      GDateTime *t = g_date_time_new_from_unix_utc_usec(h->rec_at_us);
+    g_mkdir_with_parents(c->rec_dir, 0755);
+    b->rec = skim_rec_new(c->rec_dir, b->name, b->label, c->ppm, c->rec_at_us,
+                          c->rec_minutes);
+    if (c->rec_at_us) {
+      GDateTime *t = g_date_time_new_from_unix_utc(c->rec_at_us / G_USEC_PER_SEC);
       char *ts = g_date_time_format(t, "%Y-%m-%d %H:%M UTC");
-      g_message("record: %s for %.0f min from %s into %s", b->name, h->rec_minutes,
-                ts, h->rec_dir);
+      g_message("record: %s for %.0f min from %s into %s", b->name, c->rec_minutes,
+                ts, c->rec_dir);
       g_free(ts);
       g_date_time_unref(t);
     }
   }
-  g_message("decode: %u pipelines, engine %s", h->nb,
-            skim_pipeline_cw_engine_name(h->band[0].p));
-  if (h->feed) {
+  for (guint i = 0; i < h->nb; i++) {
+    const Band *b = &h->band[i];
+    g_message("decode: %s%s%s%s%s", b->name, b->dec[M_CW].p ? " CW, engine " : "",
+              b->dec[M_CW].p ? skim_pipeline_cw_engine_name(b->dec[M_CW].p) : "",
+              b->dec[M_RTTY].p ? " + RTTY" : "",
+              b->dec[M_RTTY].p && h->feed && !c->feed_rtty ? " (not on the feed)" : "");
+    if (b->pairs && c->suppress_cw_on_rtty) {
+      g_message("decode: %s CW stays off the RTTY stations RTTY copies", b->name);
+    }
+  }
+  /* A band that asks for DeepCW and runs v2: why, for the log and the page
+   * (the pipeline has tried and cached the answer). */
+  for (guint i = 0; i < h->nb; i++) {
+    const Band *b = &h->band[i];
+    if (!b->dec[M_CW].p || c->band[i].cw_engine != SKIM_CW_ENGINE_DEEPCW) { continue; }
+    h->dcw_wanted = TRUE;
+    if (strcmp(skim_pipeline_cw_engine_name(b->dec[M_CW].p), "deepcw") != 0 && !h->dcw_fallback) {
+      GError *e = NULL;
+      if (!h->dcw_model_ok) {
+        h->dcw_fallback = g_strdup(h->dcw_model_err);
+      } else if (!skim_decode_deepcw_available(&e)) {
+        h->dcw_fallback = g_strdup(e->message);
+      } else {
+        h->dcw_fallback = g_strdup("the engine chose v2 (SKIM_CW_ENGINE?)");
+      }
+      g_clear_error(&e);
+      g_warning("decode: DeepCW asked for, not available (%s) — those bands run cw-v2",
+                h->dcw_fallback);
+    }
+  }
+  SkimPipeline *fp = feed_pipeline(h);
+  if (fp) {
     double fs, fset, ffr, ffo;
     guint fh;
-    skim_pipeline_rbn_policy(h->band[0].p, &fs, &fh, &fset, &ffr);
-    skim_pipeline_rbn_fold(h->band[0].p, &ffo, NULL);
+    skim_pipeline_rbn_policy(fp, &fs, &fh, &fset, &ffr);
+    skim_pipeline_rbn_fold(fp, &ffo, NULL);
     g_message("feed: spots a call at score >= %.2f, read %u times (or in "
               "MASTER.SCP), after %.0f s settled, last read <= %.0f s ago "
               "(0 = any), twins of a call sent <= %.0f s ago held back "
               "(0 = off)", fs, fh, fset, ffr, ffo);
   }
 
-  GSocketService *web = NULL;
+  const char *names[SKIM_HD_MAX_BANDS];
+  for (guint i = 0; i < h->nb; i++) { names[i] = h->band[i].name; }
+  char *stats_path = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux",
+                                      "stats.bin", NULL);
+  h->stats = skim_stats_open(stats_path, names, h->nb);
+  g_message("stats: %s (7 days, a record a minute)", stats_path);
+  g_free(stats_path);
+
+  SkimHdWeb *web = NULL;
   if (h->http_port > 0) {
-    web = g_threaded_socket_service_new(4);
-    if (!g_socket_listener_add_inet_port(G_SOCKET_LISTENER(web), (guint16)h->http_port,
-                                         NULL, &err)) {
-      g_warning("web: port %d: %s — web status off", h->http_port, err->message);
+    const SkimHdWebHooks hooks = {
+      .status = web_status, .stats = web_stats, .log = web_log, .config = web_config,
+      .config_post = web_config_post, .restart = web_restart, .rollback = web_rollback,
+      .deepcw = web_deepcw,
+      .user = h,
+    };
+    web = skim_hd_web_new((guint16)h->http_port, (const char *const *)c->settings_from,
+                          &hooks, &err);
+    if (!web) {
+      g_warning("web: port %d: %s — web page off", h->http_port, err->message);
       g_clear_error(&err);
-      g_clear_object(&web);
     } else {
-      g_signal_connect(web, "run", G_CALLBACK(http_run), h);
-      g_socket_service_start(web);
-      g_message("web: status on http://<this machine>:%d/ (JSON: /status.json)",
-                h->http_port);
+      char *from = g_strjoinv(", ", c->settings_from);
+      g_message("web: http://<this machine>:%d/ (JSON: /status.json); settings "
+                "from %s", h->http_port, from);
+      g_free(from);
     }
   }
 
   h->loop = g_main_loop_new(NULL, FALSE);
   g_unix_signal_add(SIGINT, on_signal, h);
   g_unix_signal_add(SIGTERM, on_signal, h);
-  tick(h);                                     /* first start attempt now     */
+  h->src = skim_iq_source_new(c, h->take_over, rx_iq_cb, h);
+  skim_iq_source_start(h->src);                /* first start attempt now     */
+  tick(h);
   if (!h->exit_code) {                         /* a quit before run is lost   */
     g_timeout_add_seconds(1, tick, h);
     g_main_loop_run(h->loop);
@@ -1191,17 +1461,24 @@ int main(int argc, char **argv) {
 
   /* Teardown: the radio first (stop — only if the stream is still ours),
    * then the engines, then the feed they spot into. */
-  if (web) {
-    g_socket_service_stop(web);
-    g_object_unref(web);
-  }
-  g_clear_pointer(&h->rp, skim_hpsdr_client_free);
+  g_clear_pointer(&web, skim_hd_web_free);
+  g_cancellable_cancel(h->dcw_cancel);         /* a fetch in flight stops      */
+  if (h->dcw_thread) { g_thread_join(h->dcw_thread); }
+  g_clear_pointer(&h->src, skim_iq_source_free);
   for (guint i = 0; i < h->nb; i++) {
-    skim_pipeline_free(h->band[i].p);
-    rec_free(h->band[i].rec);
+    for (guint k = 0; k < M_N; k++) { skim_pipeline_free(h->band[i].dec[k].p); }
+    g_clear_pointer(&h->band[i].pairs, skim_rtty_pairs_unref);
+    skim_rec_free(h->band[i].rec);
   }
+  g_clear_pointer(&h->stats, skim_stats_free);  /* saves                       */
   g_clear_pointer(&h->feed, skim_rbn_feed_free);
   g_clear_pointer(&h->scp, skim_scp_updater_free);
+  if (h->exit_code == EXIT_RESTART && g_strcmp0(g_getenv("SKIM_SUPERVISED"), "1") != 0) {
+    g_message("restart: starting again");
+    fflush(stdout);
+    execv("/proc/self/exe", h->argv);
+    g_printerr("restart: exec failed: %s — exiting %d\n", g_strerror(errno), EXIT_RESTART);
+  }
   g_message("stopped");
   return h->exit_code;
 }

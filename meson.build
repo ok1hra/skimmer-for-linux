@@ -1,5 +1,5 @@
 project('skimmer-for-linux', 'c',
-  version : '0.6.0',
+  version : '0.7.0',
   license : 'GPL-3.0-or-later',
   default_options : [
     'c_std=c11',
@@ -9,26 +9,29 @@ project('skimmer-for-linux', 'c',
 )
 
 add_project_arguments('-D_GNU_SOURCE', language : 'c')
+# GLib 2.74 is the floor (Debian 12 — the AppImage's base): newer API is a
+# compile error, not a crash on the target.
+add_project_arguments('-DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_74',
+                      '-DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_74',
+                      '-Werror=deprecated-declarations', language : 'c')
 add_project_arguments('-DSKIMMER_VERSION="@0@"'.format(meson.project_version()),
                       language : 'c')
 
 # --- Dependencies -----------------------------------------------------------
-# The engine is GLib-only (headless). The app adds GTK4/libadwaita. As milestones
-# land, their deps are added here: M1 → libwebsockets (TCI client), M2 → fftw3f
-# (+ vendored WDSP resampler). They are declared now because they are already on
-# the system (sdr-for-linux uses them) and the engine will reach for them soon.
+# GLib only — no GUI: the engine (src/engine/) and skimmer-headless
+# (src/headless/ + src/headless_main.c). libwebsockets is the TCI client's
+# transport, fftw3f the channelizer FFT (+ the vendored WDSP resampler).
 cc        = meson.get_compiler('c')
-gnome     = import('gnome')  # used in data/ for post-install icon/desktop DB refresh
-glib_dep  = dependency('glib-2.0')            # headless engine
-gio_dep   = dependency('gio-2.0')             # M6: RBN telnet server sockets
-gtk_dep   = dependency('gtk4')                # app front-end
-adw_dep   = dependency('libadwaita-1')        # app control surface
+gnome     = import('gnome')  # GResource: the built-in weights
+glib_dep  = dependency('glib-2.0', version : '>=2.74')  # headless engine
+gio_dep   = dependency('gio-2.0', version : '>=2.74')   # sockets, GResource
 m_dep     = cc.find_library('m', required : false)
 lws_dep   = dependency('libwebsockets')       # M1: TCI client transport
 fftw3f_dep  = dependency('fftw3f')            # M2: channelizer FFT (float)
 fftw3_dep   = dependency('fftw3')             # WDSP fir.c min-phase path (double)
 threads_dep = dependency('threads')
-curl_dep  = dependency('libcurl', version : '>=7.85')  # app: MASTER.SCP updater
+curl_dep  = dependency('libcurl', version : '>=7.85')  # MASTER.SCP updater
+soup_dep  = dependency('libsoup-3.0', version : '>=3.0') # the web page
 
 # WDSP subset (FIR designer + resampler) — declares wdsp_dep. VENDOR.md there
 # records provenance and the subset rationale.
@@ -50,18 +53,15 @@ engine_sources = [
   'src/engine/decode_cw.c',    # M3: CW backend (implements decode.h)
   'src/engine/decode_cw_v2.c', # CW v2: semi-Markov Viterbi (QSB-proof)
   'src/engine/decode_rtty.c',  # M7: RTTY backend (Baudot FSK)
+  'src/engine/rtty_pairs.c',   # RTTY pairs held → the band's CW stays off them
   'src/engine/ort_shim.c',     # ONNX Runtime C API behind dlopen (optional)
   'src/engine/decode_deepcw.c',# DeepCW neural CW backend (Conformer + CTC)
   'src/engine/cw_reader.c',    # neural over re-reader (TCN+CTC, pane-only)
-  'src/engine/pane_log.c',     # phase B: pane text + live over region (ops)
-  'src/engine/cw_words.c',     # role of a whole CW token (pane tints by it)
   'src/engine/tone_split.c',   # per-channel carrier splitter (multi-signal)
   'src/engine/station.c',      # M5: per-frequency station tracker
   'src/engine/callsign.c',     # M4: extraction + validation
   'src/engine/spot_out.c',     # M5/M6: spot policy — dedup, rate, sinks
-  'src/engine/dup_query.c',    # logbook dup lookup (UDP 2238) → spot colour
   'src/engine/rbn_feed.c',     # M6: RBN telnet server (CW Skimmer dialect)
-  'src/engine/spectrum.c',     # M8: band spectrum rows for the waterfall
   'src/engine/pipeline.c',     # M5: the engine assembled end to end
   'src/engine/gatelog.c',      # feed-gate learning logs (decode tap + rows)
   'src/engine/feed_gate.c',    # the learned feed gate (shadow mode)
@@ -117,7 +117,7 @@ executable('skimmer-hpsdr-probe',
 
 # M3 A/B harness: offline decode of a probe-recorded cf32 sample through the
 # full pipeline — decoder versions diff on the same off-air corpus.
-executable('skimmer-replay',
+skimmer_replay = executable('skimmer-replay',
   ['src/replay_main.c'],
   include_directories : include_directories('src'),
   dependencies : engine_deps,
@@ -126,7 +126,7 @@ executable('skimmer-replay',
 
 # Feed-gate learning: replay a decode tap (headless [feed] tap=) through the
 # extractor → station table → RBN gate, offline, on the tap's own clock.
-executable('skimmer-tap-replay',
+skimmer_tap_replay = executable('skimmer-tap-replay',
   ['src/tap_replay_main.c'],
   include_directories : include_directories('src'),
   dependencies : engine_deps,
@@ -161,16 +161,6 @@ skimmer_chan_test = executable('skimmer-chan-test',
   link_with : engine_lib,
 )
 test('channelizer', skimmer_chan_test, timeout : 120)
-
-# M8: offline gate — spectrum tap orientation (+f ABOVE centre) at every
-# rate, bin/row bookkeeping, byte dynamic range, pipeline enable/TX-hold.
-skimmer_spectrum_test = executable('skimmer-spectrum-test',
-  ['src/spectrum_test.c', 'src/app/wf_compose.c'],   # composer is GLib-only
-  include_directories : include_directories('src'),
-  dependencies : engine_deps,
-  link_with : engine_lib,
-)
-test('spectrum', skimmer_spectrum_test, timeout : 120)
 
 # M3: offline gate — CW backend on synthetic keying (speeds, SNR, jitter,
 # QSB, speed change, squelch-on-noise, channelizer integration).
@@ -234,8 +224,16 @@ test('callsign', skimmer_call_test, timeout : 60)
 
 # Learned feed gate: a known ini gives a known p, bad inis are refused,
 # the tracker's window/neighbour features, likeness as skimcmp's similar().
+# The learned weights built into skimmer-headless (weights/: a new model is a
+# new commit of its ini; --feed-gate overrides it for one start).
+weights_res = gnome.compile_resources('skimmer-weights',
+  'weights/weights.gresource.xml',
+  source_dir : 'weights',
+  c_name : 'skim_weights',
+)
+
 skimmer_feed_gate_test = executable('skimmer-feed-gate-test',
-  ['src/feed_gate_test.c'],
+  ['src/feed_gate_test.c', weights_res],
   include_directories : include_directories('src'),
   dependencies : engine_deps,
   link_with : engine_lib,
@@ -251,28 +249,6 @@ skimmer_feed_fold_test = executable('skimmer-feed-fold-test',
   link_with : engine_lib,
 )
 test('feed-fold', skimmer_feed_fold_test, timeout : 60)
-
-# Logbook dup lookup gate: mock log-for-linux UDP responder — verdict
-# round-trips (newline answers), silence→UNKNOWN, TTL cache, re-ask
-# suppression, and the shared verdict→colour rule.
-skimmer_dup_test = executable('skimmer-dup-test',
-  ['src/dup_test.c'],
-  include_directories : include_directories('src'),
-  dependencies : engine_deps,
-  link_with : engine_lib,
-)
-test('dup-lookup', skimmer_dup_test, timeout : 60)
-
-# Decode pane gate: SkimPaneLog op semantics — the ONE applier the app's
-# decode pane is built on (the neural reader that once fed it richer ops
-# is gone; the units keep the applier honest).
-skimmer_pane_test = executable('skimmer-pane-test',
-  ['src/pane_test.c'],
-  include_directories : include_directories('src'),
-  dependencies : engine_deps,
-  link_with : engine_lib,
-)
-test('decode-pane', skimmer_pane_test, timeout : 120)
 
 # M5: offline gate — station tracker units, spot policy units, and the WHOLE
 # pipeline over a real WebSocket against a mock TCI server (spots come back).
@@ -295,12 +271,37 @@ skimmer_rbn_test = executable('skimmer-rbn-test',
 )
 test('rbn-feed', skimmer_rbn_test, timeout : 120)
 
+# headless.ini parsing: defaults, band modes, host@ppm, refusals with reasons.
+skimmer_config_test = executable('skimmer-config-test',
+  ['src/config_test.c', 'src/headless/config.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+)
+test('config', skimmer_config_test, timeout : 30)
+
+# The 7-day history: buckets, reopen with re-ordered bands, a foreign file.
+skimmer_stats_test = executable('skimmer-stats-test',
+  ['src/stats_test.c', 'src/headless/stats.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+)
+test('stats', skimmer_stats_test, timeout : 30)
+
+# Golden gate: real-air IQ + decode-tap slices through the whole engine with
+# no SKIM_* switches — every output byte-identical to tests/golden/
+# expected.sha256. Inputs live outside git (tests/golden/README.md); without
+# them the gate SKIPs.
+test('golden', find_program('tests/golden/run.sh'),
+  args : [skimmer_replay, skimmer_tap_replay],
+  timeout : 900,
+)
+
 # gh#15: offline gate — the MASTER.SCP updater against a mock HTTP server:
 # the good path, every way a server or a download can be wrong (the old file
 # and the loaded dictionary must survive each), the persisted rate limits,
 # and the app handle (main loop never blocked, teardown never waits).
 skimmer_scp_test = executable('skimmer-scp-test',
-  ['src/scp_test.c', 'src/app/scp_update.c'],      # updater is GTK-free
+  ['src/scp_test.c', 'src/headless/scp_update.c'],      # MASTER.SCP updater
   include_directories : [include_directories('src'), engine_inc],
   dependencies : engine_deps + [curl_dep],
   link_with : engine_lib,
@@ -309,23 +310,41 @@ test('scp-update', skimmer_scp_test, timeout : 180)
 
 # Multi-band skimmer without a GUI: one HPSDR P1 receiver (Red Pitaya) with
 # up to 8 RX, one pipeline per band, one telnet feed, console + web status.
-executable('skimmer-headless',
-  ['src/headless_main.c', 'src/app/scp_update.c'],   # updater is GTK-free
+# The product layer (src/headless/): config, IQ sources, recording, switches.
+headless_sources = files(
+  'src/headless/config.c',          # headless.ini, parsed and checked
+  'src/headless/deepcw_model.c',    # the DeepCW model: check, fetch
+  'src/headless/logring.c',         # the last log lines (/api/log)
+  'src/headless/record.c',          # [record]: a band's IQ to disk
+  'src/headless/scp_update.c',      # MASTER.SCP updater
+  'src/headless/service.c',         # --install-service: the systemd user unit
+  'src/headless/source.c',          # IQ sources: the interface
+  'src/headless/source_hpsdr_p1.c', # … a Red Pitaya (HPSDR P1)
+  'src/headless/source_mock.c',     # … synthetic CW (the headless gate)
+  'src/headless/stats.c',           # the 7-day per-minute history
+  'src/headless/switches.c',        # the SKIM_* switches a start runs with
+  'src/headless/web.c',             # the web page (libsoup 3)
+)
+
+# The web page's static files (web/), built in.
+web_res = gnome.compile_resources('skimmer-web',
+  'web/web.gresource.xml',
+  source_dir : 'web',
+  c_name : 'skim_web',
+)
+
+skimmer_headless = executable('skimmer-headless',
+  ['src/headless_main.c', headless_sources, weights_res, web_res],
   include_directories : [include_directories('src'), engine_inc],
-  dependencies : engine_deps + [curl_dep],
+  dependencies : engine_deps + [curl_dep, soup_dep],
   link_with : engine_lib,
 )
 
-# --- Application ------------------------------------------------------------
-executable('skimmer-for-linux',
-  ['src/app/main.c', 'src/app/wf_compose.c', 'src/app/wf_view.c',
-   'src/app/scp_update.c'],
-  include_directories : engine_inc,
-  dependencies : [gtk_dep, adw_dep, glib_dep, gio_dep, curl_dep],
-  link_with : engine_lib,
-  install : true,
-  c_args : ['-DSKIMMER_DATADIR="@0@"'.format(
-    get_option('prefix') / get_option('datadir') / 'skimmer-for-linux')],
-)
+# Headless gate: the whole skimmer-headless on the mock source (no radio) —
+# config, two bands, telnet spot, /status.json, SIGTERM, a refused config.
+test('headless-mock', find_program('tests/headless-mock.sh'),
+  args : [skimmer_headless], timeout : 120)
 
-subdir('data')   # .desktop + icon + AppStream metainfo (install only)
+# The known SKIM_* switches (src/headless/switches.c) = the ones the sources read.
+test('switches', find_program('tests/switches.sh'),
+  args : [skimmer_headless, meson.project_source_root()], timeout : 30)

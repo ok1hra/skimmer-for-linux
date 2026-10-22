@@ -38,6 +38,7 @@ sys.path.insert(0, HERE)
 from skimcmp.arbiter import RbnIndex, load_scp          # noqa: E402
 from skimcmp.config import PARAMS, Config, clamp_params  # noqa: E402
 from skimcmp.match import analyze, compared_time, engine_summary  # noqa: E402
+from skimcmp.rtty import analyze_rtty                     # noqa: E402
 from skimcmp.stats import overview, summarize            # noqa: E402
 from skimcmp.windows import loose_bands                  # noqa: E402
 
@@ -85,6 +86,7 @@ class App:
         self.store = Store(cfg.logs, lambda: RbnIndex(bands, cfg.exclude))
         self.scp = load_scp(cfg.scp)
         self.cache = {}
+        self.rcache = {}
         self.clock = threading.Lock()
         self.store.poll()
 
@@ -128,6 +130,21 @@ class App:
                 while len(self.cache) > 8:
                     self.cache.pop(min(self.cache, key=lambda k: self.cache[k].computed))
             return A
+
+    def rtty(self, P, ta, tb):
+        """RTTY against RBN over [ta, tb] (rtty.py), recomputed like the CW
+        analysis: on new data at most every MIN_RECOMPUTE_S."""
+        key = (ta, tb) + tuple(sorted(P.items()))
+        with self.clock:
+            now = time.time()
+            hit = self.rcache.get(key)
+            if hit is None or (hit[0] != self.store.version and now - hit[1] >= MIN_RECOMPUTE_S):
+                with self.store.lock:
+                    hit = (self.store.version, now, analyze_rtty(self.store, self.scp, P, now, ta, tb))
+                self.rcache[key] = hit
+                while len(self.rcache) > 8:
+                    self.rcache.pop(min(self.rcache, key=lambda k: self.rcache[k][1]))
+            return hit[2]
 
     def range(self, q, A):
         now = A.computed
@@ -194,6 +211,7 @@ class App:
             o = overview(A if e["key"] == engine else self.analysis(P, e["key"]), ta, tb)
             o.update(key=e["key"], label=e["label"])
             S["overview"].append(o)
+        S["rtty"] = self.rtty(P, ta, tb)
         S["range"]["label"] = label
         S["range"]["key"] = q.get("range", "all")
         S["now"] = A.computed

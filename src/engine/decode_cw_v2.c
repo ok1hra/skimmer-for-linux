@@ -195,6 +195,8 @@ typedef struct {
 
   /* --- soft discriminator ---------------------------------------------------- */
   double mu_m, mu_s;                    /* mark / space level trackers        */
+  gboolean edge_now;                    /* SKIM_V2_EDGE_WEAK: this channel is
+                                         * weak enough for the edge model   */
   double smear;                         /* EMA of (mark - space)/(mark+space)
                                          * over committed DIT/ESP pairs       */
   double k_m_dn, k_s;
@@ -233,6 +235,7 @@ typedef struct {
     guint32  pen_at[5][W / 2 + 1];
     guint32  pen_gen;
     double   pen_dit, pen_csp, pen_wsp, pen_esp;
+    gboolean pen_edge;
   } *lat;
 
   /* --- character assembly ----------------------------------------------------- */
@@ -890,12 +893,38 @@ static gint edge_on(void) {
   return on;
 }
 
+/* SKIM_V2_EDGE_WEAK=<dB>: the edge model on a weak channel only. Weak
+ * signals come out of the envelope smeared — marks long, spaces short —
+ * and a short character gap then reads as an element gap: HA3HS at 12 dB,
+ * dits of 20 samples, element gaps of 14, character gaps of 29–31 = 1.5
+ * biased dits, "CQ CQ DE HA3HS" read as QCSRQT (recording 2026-10-16). The
+ * edge model fixes that, but switched on everywhere it cost busts and
+ * strong signals (docs/LIVE-AIR.md), so it acts while the channel's
+ * mark/space level ratio is under this many dB (3 dB hysteresis). Off
+ * unless set. */
+static const double *edge_weak(void) {
+  static double r[2];                    /* on below r[0], off above r[1]    */
+  static gsize once = 0;
+  if (g_once_init_enter(&once)) {
+    const char *e = g_getenv("SKIM_V2_EDGE_WEAK");
+    const double db = e && e[0] ? g_ascii_strtod(e, NULL) : 0.0;
+    r[0] = db > 0 ? pow(10.0, db / 20.0) : 0.0;
+    r[1] = db > 0 ? pow(10.0, (db + 3.0) / 20.0) : 0.0;
+    g_once_init_leave(&once, 1);
+  }
+  return r;
+}
+
+static inline gboolean edge_use(const Cw2State *st) {
+  return edge_on() || st->edge_now;
+}
+
 /* Ideal duration of a segment type in samples. */
 static inline double seg_ideal(const Cw2State *st, int type) {
   const double k = type == SEG_CSP   ? st->fist_csp
                    : type == SEG_WSP ? st->fist_wsp
                                      : SEG_IDEAL[type];
-  if (!edge_on() || st->esp <= 0)
+  if (!edge_use(st) || st->esp <= 0)
     return k * st->dit;
   const double tu = 0.5 * (st->dit + st->esp);
   const double dl = CLAMP(0.5 * (st->dit - st->esp), -0.4 * tu, 0.4 * tu);
@@ -978,13 +1007,14 @@ static void pen_sync(Cw2State *st) {
   struct Lattice *L = st->lat;
   if (L->pen_gen == 0 || L->pen_dit != st->dit ||
       L->pen_csp != st->fist_csp || L->pen_wsp != st->fist_wsp ||
-      L->pen_esp != st->esp) {
+      L->pen_esp != st->esp || L->pen_edge != st->edge_now) {
     L->pen_gen++;                       /* 0 never matches a stamp: g_new0    */
     if (L->pen_gen == 0) { L->pen_gen = 1; }
     L->pen_dit = st->dit;
     L->pen_csp = st->fist_csp;
     L->pen_wsp = st->fist_wsp;
     L->pen_esp = st->esp;
+    L->pen_edge = st->edge_now;
   }
 }
 
@@ -1027,7 +1057,7 @@ static void seg_window(const Cw2State *st, int type, int *dlo, int *dhi) {
   case SEG_ESP: {
     /* With the edge model the ESP floor sits under the SPACE ideal, not
      * the mark-biased dit. */
-    const double Tk = edge_on() ? seg_ideal(st, SEG_ESP) : T;
+    const double Tk = edge_use(st) ? seg_ideal(st, SEG_ESP) : T;
     lo = (st->elem_err > 0.20 ? 0.50 : 0.70) * Tk;
     hi = 2.6 * T;
     break;
@@ -1511,8 +1541,23 @@ static void clock_push(Cw2State *st, double d) {
   }
   if (est > 0.80 * st->dit && est < 1.25 * st->dit)
     return;                                 /* the clock is already right    */
-  CW2_DBG("[clock relock %.1f -> %.1f (err %.2f)]\n", st->dit, est,
-          st->elem_err);
+  /* SKIM_V2_RELOCK_DB=<dB>: on a weak signal noise chops marks in two, and
+   * the halves make a perfect "faster" cluster — SM7ZFB at 16 WPM and
+   * 11 dB re-locked from 17.4 to 12.0 samples and read TMEE EETE ever after
+   * (recording 2026-10-16). Below this mark/space level ratio a jump to a
+   * FASTER clock is refused; slower stays allowed. Off unless set. */
+  static double relock_db = -1;
+  if (G_UNLIKELY(relock_db < 0)) {
+    const char *e = g_getenv("SKIM_V2_RELOCK_DB");
+    relock_db = e && e[0] ? g_ascii_strtod(e, NULL) : 0.0;
+  }
+  const double ms_db = 20.0 * log10(MAX(st->mu_m, 1e-12) / MAX(st->mu_s, 1e-12));
+  if (relock_db > 0 && est < st->dit && ms_db < relock_db) {
+    CW2_DBG("[clock relock %.1f -> %.1f refused (%.1f dB)]\n", st->dit, est, ms_db);
+    return;
+  }
+  CW2_DBG("[clock relock %.1f -> %.1f (err %.2f, %.1f dB)]\n", st->dit, est,
+          st->elem_err, ms_db);
   st->dit      = CLAMP(est, st->rate * 0.022, st->rate * 0.30);
   st->elem_err = 0.2;                       /* neutral — re-measure          */
   st->clk_hold = CLK_HOLD;
@@ -1795,6 +1840,15 @@ static void soft_step(Cw2State *st, float m, SkimDecode *out, guint *pos) {
   lattice_step(st);
 
   if ((st->t & 7) == 0) {                      /* lagged commit, every 8     */
+    const double *ew = edge_weak();
+    if (ew[0] > 0) {
+      const double r = st->mu_m / MAX(st->mu_s, 1e-12);
+      if (!st->edge_now && r < ew[0]) {
+        st->edge_now = TRUE;
+      } else if (st->edge_now && r > ew[1]) {
+        st->edge_now = FALSE;
+      }
+    }
     /* Healthy signal (discriminator riding near the envelope peak, clock
      * trusted) → short lag; a fade or a re-lock keeps the full window. */
     const double lag =

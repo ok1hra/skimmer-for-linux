@@ -544,7 +544,7 @@ int main(void) {
         wait_ms(cond_click, 2000));
 
   skim_tci_client_stop(c);
-  check("stop() sends iq_stop:0;", wait_ms(cond_stop, 1000));
+  check("stop() sends iq_stop:0;", wait_ms(cond_stop, 3000));   /* 1 s missed it under a loaded build (golden beside it) */
   int frozen = g_atomic_int_get(&c_blocks);
   g_usleep(300 * 1000);
   check("no IQ callback after stop()", g_atomic_int_get(&c_blocks) == frozen);

@@ -47,6 +47,12 @@
  * out is written as "<UTC ISO> <kHz> <call> <dB> <wpm> CQ|-" — UTC from the
  * recording's start time (WAV auxi chunk or the .meta start_unix).
  *
+ * SKIM_REPLAY_RTTY_PAIRS=1 (CW) runs an RTTY pipeline beside the CW one on
+ * the same IQ, as skimmer-headless does on a "cw,rtty" band, and the CW
+ * pipeline drops the decodes on the pairs it copies (rtty_pairs.h — the
+ * [decode] suppress_cw_on_rtty switch). Its output is the CW pipeline's,
+ * plus how many decodes were dropped.
+ *
  * SKIM_REPLAY_TAP=<file> / SKIM_REPLAY_ROWS=<file> write the feed-gate
  * learning logs (a decode tap and the gate's rows, gatelog.h) — with
  * SKIM_REPLAY_FEED set the rows carry the feed's events too.
@@ -62,7 +68,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "app/wf_compose.h"                     /* floor-tracker constants (dump) */
 #include "engine/pipeline.h"
 #include "engine/rbn_feed.h"
 
@@ -101,38 +106,6 @@ static double meta_get(const char *path, const char *key) {
     g_free(body);
   }
   return v;
-}
-
-static void spectrum_cb(const guint8 *row, guint nbins, double center_hz,
-                        double bin_hz, gpointer user) {
-  (void)user;
-  static guint rows;
-  static double t_per_row;
-  /* The view's floor tracker replayed on the rows (wf_compose.h constants):
-   * what the colour map would hang off, and how far a run of rows drags it. */
-  static double trk;
-  static guint  trk_min = 255;
-  if (!t_per_row) { t_per_row = 1.0 / (bin_hz * nbins) * (nbins / 4.0); }
-  guint pk = 0;
-  guint hist[256] = { 0 };
-  for (guint i = 0; i < nbins; i++) {
-    if (row[i] > row[pk]) { pk = i; }
-    hist[row[i]]++;
-  }
-  guint cum = 0, fl = 0;
-  const guint target = nbins * SKIM_WF_FLOOR_PCT / 100;
-  for (guint b = 0; b < 256; b++) { cum += hist[b]; if (cum >= target) { fl = b; break; } }
-  trk = rows ? trk + SKIM_WF_FLOOR_SMOOTH * ((double)fl - trk) : (double)fl;
-  trk_min = MIN(trk_min, fl);
-  rows++;
-  const guint per_sec = (guint)(1.0 / t_per_row + 0.5);
-  if (rows % MAX(per_sec, 1u)) { return; }
-  fprintf(stderr, "spectrum: row %6u peak %.1f kHz (byte %u, floor %u, +%.1f dB)"
-          " tracked floor %.1f dBFS, lowest row floor %.0f dBFS\n",
-          rows, (center_hz + ((double)pk - nbins / 2.0) * bin_hz) / 1000.0,
-          row[pk], fl, (double)row[pk] - fl,
-          trk - SKIM_WF_DB_OFFSET, (double)trk_min - SKIM_WF_DB_OFFSET);
-  trk_min = 255;
 }
 
 /* ---- input: cf32 or WAV (file or stdin) -------------------------------- */
@@ -487,10 +460,24 @@ int main(int argc, char **argv) {
    * replay runs DeepCW inference INLINE (deterministic, stream order) —
    * the app uses the async workers. */
   g_setenv("SKIM_DEEPCW_SYNC", "1", FALSE);
+  SkimPipeline *rp = NULL;                 /* SKIM_REPLAY_RTTY_PAIRS: RTTY beside */
+  const char *penv = g_getenv("SKIM_REPLAY_RTTY_PAIRS");
+  if (!rtty && penv && penv[0] && strcmp(penv, "0") != 0) {
+    cfg.rtty_pairs = skim_rtty_pairs_new();
+    const SkimPipelineConfig rc = { .mode = SKIM_PIPELINE_MODE_RTTY,
+                                    .rtty_pairs = cfg.rtty_pairs };
+    rp = skim_pipeline_new(&rc);
+    GError *rerr = NULL;
+    if (!skim_pipeline_start_offline(rp, &rerr)) {
+      fprintf(stderr, "FAIL — RTTY beside: %s\n", rerr ? rerr->message : "?");
+      return 1;
+    }
+  }
   SkimPipeline *p = skim_pipeline_new(&cfg);
-  printf("=== skimmer-replay %s — %.0f Hz, centre %.0f Hz, %s, engine %s, "
+  printf("=== skimmer-replay %s — %.0f Hz, centre %.0f Hz, %s%s, engine %s, "
          "dict %s ===\n",
          path, rate, center, rtty ? "RTTY" : "CW",
+         rp ? " (off the RTTY pairs an RTTY pipeline copies)" : "",
          skim_pipeline_cw_engine_name(p), cfg.dict_path ? "yes" : "NO");
   g_free(dict);
   g_stations = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
@@ -498,13 +485,6 @@ int main(int argc, char **argv) {
   skim_pipeline_set_station_cb(p, station_cb, NULL);
   skim_pipeline_set_station_gone_cb(p, gone_cb, NULL);
   if (g_spots) { skim_pipeline_set_feed_cb(p, feed_cb, NULL); }
-  /* SKIM_SPECTRUM_DUMP=1: run the M8 spectrum tap too and print the
-   * strongest bin's ABSOLUTE frequency about once a second — the real-air
-   * orientation check (a known station must land on its own kHz). */
-  if (g_getenv("SKIM_SPECTRUM_DUMP")) {
-    skim_pipeline_set_spectrum_cb(p, spectrum_cb, NULL);
-    skim_pipeline_set_spectrum_enabled(p, TRUE);
-  }
 
   GError *err = NULL;
   if (!skim_pipeline_start_offline(p, &err)) {
@@ -558,6 +538,7 @@ int main(int argc, char **argv) {
       const gsize i0 = a > 0 ? (gsize)a : 0, i1 = z < (double)n ? (gsize)z : n;
       memset(buf + 2 * i0, 0, (i1 - i0) * 2 * sizeof(float));
     }
+    if (rp) { skim_pipeline_feed(rp, buf, (guint)n, rate, center); }
     skim_pipeline_feed(p, buf, (guint)n, rate, center);
     frames += n;
   }
@@ -565,6 +546,7 @@ int main(int argc, char **argv) {
   if (feed) {                          /* let the held calls settle          */
     memset(buf, 0, sizeof(buf));
     for (guint64 q = 0; q < (guint64)(10 * rate); q += BLK) {
+      if (rp) { skim_pipeline_feed(rp, buf, BLK, rate, center); }
       skim_pipeline_feed(p, buf, BLK, rate, center);
     }
   }
@@ -597,6 +579,10 @@ int main(int argc, char **argv) {
          stream, wall, stream / MAX(wall, 0.001), frames, g_fragments,
          rows->len);
   printf("decode log: %s\n", dlog);
+  if (rp) {
+    printf("on RTTY pairs: %" G_GUINT64_FORMAT " CW decodes dropped\n",
+           skim_pipeline_rtty_suppressed(p));
+  }
   if (feed) {
     double ms, ss, fs;
     guint mh;
@@ -609,6 +595,11 @@ int main(int argc, char **argv) {
   g_ptr_array_free(rows, TRUE);
   g_hash_table_destroy(g_stations);
   skim_pipeline_free(p);
+  if (rp) {
+    skim_pipeline_stop(rp);
+    skim_pipeline_free(rp);
+    skim_rtty_pairs_unref(cfg.rtty_pairs);
+  }
   if (feed) { skim_rbn_feed_free(feed); }
   if (g_spots) { fclose(g_spots); }
   g_free(dlog);

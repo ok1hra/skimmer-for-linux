@@ -29,6 +29,7 @@ G_STATIC_ASSERT(F_BAND0 + 7 == SKIM_FEED_GATE_NFEAT);
 const char *const *skim_feed_gate_names(void) { return NAMES; }
 
 struct _SkimFeedGate {
+  gint   refs;
   double bias, threshold, win_s, near_khz;
   double w[SKIM_FEED_GATE_NFEAT], mean[SKIM_FEED_GATE_NFEAT],
          sd[SKIM_FEED_GATE_NFEAT];
@@ -42,12 +43,26 @@ static gboolean parse_num(const char *s, double *out) {
 }
 
 SkimFeedGate *skim_feed_gate_load(const char *path, GError **error) {
+  char *text = NULL;
+  gsize len = 0;
+  if (!g_file_get_contents(path, &text, &len, error)) { return NULL; }
+  char *id = g_path_get_basename(path);
+  SkimFeedGate *g = skim_feed_gate_load_data(text, len, id, FALSE, error);
+  g_free(id);
+  g_free(text);
+  return g;
+}
+
+SkimFeedGate *skim_feed_gate_load_data(const char *text, gsize len, const char *id,
+                                       gboolean strict, GError **error) {
   GKeyFile *kf = g_key_file_new();
-  if (!g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, error)) {
+  if (!g_key_file_load_from_data(kf, text, len, G_KEY_FILE_NONE, error)) {
+    g_prefix_error(error, "%s: ", id);
     g_key_file_free(kf);
     return NULL;
   }
   SkimFeedGate *g = g_new0(SkimFeedGate, 1);
+  g->refs = 1;
   for (guint k = 0; k < SKIM_FEED_GATE_NFEAT; k++) { g->sd[k] = 1.0; }
   g->win_s = 120.0;
   g->near_khz = 0.15;
@@ -99,22 +114,35 @@ SkimFeedGate *skim_feed_gate_load(const char *path, GError **error) {
     g_strfreev(f);
     g_free(v);
   }
+  /* strict: a model that leaves a feature out was learned for another
+   * feature set — refuse it rather than let the feature weigh nothing */
+  for (guint k = 0; ok && strict && k < SKIM_FEED_GATE_NFEAT; k++) {
+    if (!g_key_file_has_key(kf, "weights", NAMES[k], NULL)) {
+      ok = FALSE;
+      bad = NAMES[k];
+    }
+  }
   if (!ok) {
     g_set_error(error, G_KEY_FILE_ERROR, G_KEY_FILE_ERROR_INVALID_VALUE,
-                "%s: bad or missing \"%s\"", path, bad ? bad : "?");
+                "%s: bad or missing \"%s\"", id, bad ? bad : "?");
     g_strfreev(keys);
     g_key_file_free(kf);
     g_free(g);
     return NULL;
   }
-  g->id = g_path_get_basename(path);
+  g->id = g_strdup(id);
   g_strfreev(keys);
   g_key_file_free(kf);
   return g;
 }
 
+SkimFeedGate *skim_feed_gate_ref(SkimFeedGate *g) {
+  g_atomic_int_inc(&g->refs);
+  return g;
+}
+
 void skim_feed_gate_free(SkimFeedGate *g) {
-  if (!g)
+  if (!g || !g_atomic_int_dec_and_test(&g->refs))
     return;
   g_free(g->id);
   g_free(g);

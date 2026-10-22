@@ -13,8 +13,9 @@
 
 #include <glib.h>
 #include "decode.h"
-#include "dup_query.h"
+#include "feed_gate.h"
 #include "rbn_feed.h"
+#include "rtty_pairs.h"
 #include "station.h"
 
 G_BEGIN_DECLS
@@ -24,7 +25,7 @@ G_BEGIN_DECLS
  * decode backend, the bank geometry (CW: 125 Hz channels; RTTY: 250 Hz
  * spacing with a wide ±225 Hz passband so both FSK tones of a station
  * anywhere between channel centres stay in one channel) and the mode string
- * on stations/spots/dup queries. */
+ * on stations and spots. */
 typedef enum {
   SKIM_PIPELINE_MODE_CW = 0,
   SKIM_PIPELINE_MODE_RTTY,
@@ -128,6 +129,19 @@ typedef struct {
    * for the model's band feature ("40m"; NULL = none). */
   const char  *feed_gate_path;
   const char  *band;
+  /* The same gate already loaded (shared by every band's pipeline; the
+   * pipeline takes its own reference). Wins over feed_gate_path. */
+  SkimFeedGate *feed_gate;
+  /* The gate DECIDES: a line it scores below its threshold does not go on
+   * the wire (gatelog event "gate_drop"). FALSE = shadow. */
+  gboolean     feed_gate_on;
+
+  /* RTTY beside CW on one band (rtty_pairs.h; borrowed, the pipeline takes
+   * a reference). An RTTY pipeline publishes the pairs it copies into it;
+   * a CW pipeline given it drops the decodes whose carrier lies on one —
+   * no pane text, no extractor, no candidates (the decode log keeps them).
+   * NULL = neither: the CW pipeline is byte-for-byte what it was. */
+  SkimRttyPairs *rtty_pairs;
 } SkimPipelineConfig;
 
 typedef struct _SkimPipeline SkimPipeline;
@@ -149,14 +163,6 @@ typedef void (*SkimPipelineOverCb)(double freq_hz, SkimPaneOpKind kind,
 typedef void (*SkimPipelineStateCb)(gboolean connected, const char *detail, gpointer user);
 /* The radio's tuned frequency (vfo:0,0) changed. */
 typedef void (*SkimPipelineVfoCb)(double vfo_hz, gpointer user);
-/* M8 waterfall: one spectrum row of the raw IQ band (spectrum.h — nbins
- * bytes, fftshifted, byte = dBFS + 200). center_hz is the stream centre the
- * row was taken at; row index i sits at center_hz + (i − nbins/2) · bin_hz.
- * Fires only while enabled (display-only work — no FFT for a hidden view). */
-typedef void (*SkimPipelineSpectrumCb)(const guint8 *row, guint nbins,
-                                       double center_hz, double bin_hz,
-                                       gpointer user);
-
 SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg);
 void          skim_pipeline_free(SkimPipeline *p);
 
@@ -166,7 +172,6 @@ void skim_pipeline_set_text_cb(SkimPipeline *p, SkimPipelineTextCb cb, gpointer 
 void skim_pipeline_set_over_cb(SkimPipeline *p, SkimPipelineOverCb cb, gpointer user);
 void skim_pipeline_set_state_cb(SkimPipeline *p, SkimPipelineStateCb cb, gpointer user);
 void skim_pipeline_set_vfo_cb(SkimPipeline *p, SkimPipelineVfoCb cb, gpointer user);
-void skim_pipeline_set_spectrum_cb(SkimPipeline *p, SkimPipelineSpectrumCb cb, gpointer user);
 /* Every line the RBN feed actually puts out (after gate, settle and the
  * feed's dedup), with the station record it came from — st->cq tells a
  * CQ spot from an S&P one under rbn_any_caller. Engine/feeding thread. */
@@ -178,9 +183,6 @@ void skim_pipeline_set_wall_origin(SkimPipeline *p, gint64 utc_us);
  * rbn_settle_nodict_s), 0 when the feed is off. */
 double skim_pipeline_rbn_settle_nodict(const SkimPipeline *p);
 void skim_pipeline_set_feed_cb(SkimPipeline *p, SkimPipelineFeedCb cb, gpointer user);
-/* Thread-safe switch for the spectrum tap (default off). */
-void     skim_pipeline_set_spectrum_enabled(SkimPipeline *p, gboolean on);
-gboolean skim_pipeline_spectrum_enabled(const SkimPipeline *p);
 
 /* Connect + start decoding. Blocks for the TCI handshake / the first HPSDR
  * packet. An HPSDR radio streaming to another client fails with
@@ -245,12 +247,6 @@ void   skim_pipeline_tune(SkimPipeline *p, double freq_hz);
 void   skim_pipeline_spot_clicked(SkimPipeline *p, const char *call,
                                   double freq_hz);
 
-/* The logbook's cached dup verdict for call (UNKNOWN when the logbook is
- * closed or has not answered yet). Never blocks — safe from the GTK thread;
- * the app tints the decode-pane highlight with it. */
-SkimDupVerdict skim_pipeline_dup_verdict(SkimPipeline *p, const char *call,
-                                         double freq_hz);
-
 /* Spot policy: when TRUE, only stations heard CALLING (CQ/TEST/QRZ context)
  * reach the spot sinks — S&P answers stay off the panadapter/RBN. The
  * station list still tracks everything. Runtime-switchable, thread-safe. */
@@ -273,9 +269,10 @@ void skim_pipeline_rbn_policy(const SkimPipeline *p, double *min_score,
 void skim_pipeline_rbn_fold(const SkimPipeline *p, double *fold_s,
                             guint64 *folded);
 
-/* The learned feed gate in shadow (cfg.feed_gate_path): its ini name
- * (NULL = none loaded), threshold, the RBN lines it scored and how many of
- * them scored below the threshold — the ones it would have held back. */
+/* The learned feed gate (cfg.feed_gate / feed_gate_path): its id (NULL =
+ * none loaded), threshold, the RBN lines it scored and how many of them
+ * scored below the threshold — the ones it held back (cfg.feed_gate_on) or
+ * would have held back (shadow). */
 const char *skim_pipeline_feed_gate_stats(const SkimPipeline *p,
                                           double *threshold, guint64 *spots,
                                           guint64 *below);
@@ -286,6 +283,8 @@ guint64 skim_pipeline_spots(const SkimPipeline *p);
 guint64 skim_pipeline_rbn_spots(const SkimPipeline *p);
 guint   skim_pipeline_stations(const SkimPipeline *p);
 guint64 skim_pipeline_dropped_blocks(const SkimPipeline *p);
+/* CW decodes dropped for lying on an RTTY pair (cfg.rtty_pairs). */
+guint64 skim_pipeline_rtty_suppressed(const SkimPipeline *p);
 /* Decoder channels in the bank (0 until the first block sized it). */
 guint   skim_pipeline_channels(const SkimPipeline *p);
 /* HPSDR source: frames zero-filled for lost UDP packets (0 for TCI). */

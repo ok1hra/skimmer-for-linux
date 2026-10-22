@@ -60,8 +60,9 @@ sys.path.insert(0, HERE)
 
 from skimcmp.arbiter import RbnIndex, load_scp  # noqa: E402
 from skimcmp.config import Config               # noqa: E402
-from skimcmp.logs import Store                  # noqa: E402
+from skimcmp.logs import Store, parse_spot      # noqa: E402
 from skimcmp.match import analyze, compared_time, curve_at, engine_summary, snr_curve  # noqa: E402
+from skimcmp.rtty import analyze_rtty           # noqa: E402
 from skimcmp.stats import summarize             # noqa: E402
 from skimcmp.windows import Windows, loose_bands  # noqa: E402
 
@@ -311,6 +312,8 @@ def web(root):
         S = json.load(get("/api/summary?range=session:20261001-120000&engine=cw-v2"))
         check(S["recall"]["n"] == 4 and S["range"]["label"] == "session 20261001-120000",
               "/api/summary for session A, cw-v2: 4 real stations")
+        check(S["rtty"]["time_s"] == 0 and S["rtty"]["bands"] == {},
+              "/api/summary carries the RTTY comparison (none here: no band decoded RTTY)")
         S2 = json.load(get("/api/summary?range=session:20261001-120000&engine=cw-v2&df_khz=0.05"))
         check(S2["params"]["df_khz"] == 1.5, "an out-of-range parameter falls back to the default")
         S3 = json.load(get("/api/summary?range=session:20261001-120000&engine=cw-v2&bust_edit=0"))
@@ -603,6 +606,83 @@ def band_plan():
           "the bands shown: 40 m and 17 m (%s)" % [n for n, _, _ in An.win.common])
 
 
+def RT(hms, spotter, f, call, cm="CQ"):
+    """An RTTY line: skimmer-headless and RBN name the mode, 45 BPS."""
+    return "%s\tDX de %-9s %7.2f  %-12s RTTY  20 dB  45 BPS  %-6s 1200Z\n" % (
+        ts(hms), spotter + ":", f, call, cm)
+
+
+def rtty():
+    print("=== RTTY — the local RTTY against RBN, kept out of the CW comparison")
+    sp = parse_spot(0, "DX de OK1HRA-#:   7035.5  OK1RTY       RTTY  24 dB  45 BPS  CQ      1351Z")
+    check(sp and sp.mode == "RTTY" and sp.call == "OK1RTY" and sp.wpm == 45 and sp.cm == "CQ",
+          "skimmer-headless's RTTY line: mode RTTY, 45 Bd, CQ")
+    sp = parse_spot(0, "DX de OK1HRA-#:   7035.5  OK1RTY         24 dB  45 BPS                1351Z")
+    check(sp and sp.mode == "RTTY", "a line without the mode word: BPS = RTTY")
+    sp = parse_spot(0, "DX de OK1HRA-#:   1826.1  RZ3DX          15 dB  29 WPM                1727Z")
+    check(sp and sp.mode == "CW", "… WPM = CW (CW Skimmer Server)")
+    root = tempfile.mkdtemp(prefix="compare-rtty-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    with open(os.path.join(root, "headless.ini"), "w") as fh:
+        fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n20m=14040000\n")
+    with open(os.path.join(root, "master.scp"), "w") as fh:
+        fh.write("# test\nLZ2BBB\nDL1CW\n")
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\n"
+                 "[remote]\nwindows = 7000-7091 14000-14091\n[rbn]\nexclude = OK1HRA\n")
+    T = "20261001-120000"
+    loc = [mark("12:00:00", "connected to 127.0.0.1:7302"),
+           L("12:05:00", 7010.0, "DL1CW"),
+           RT("12:10:00", "OK1HRA-#", 7045.00, "JA1AAA"), RT("12:12:00", "OK1HRA-#", 7045.02, "JA1AAA"),
+           RT("12:30:00", "OK1HRA-#", 7060.00, "LZ2BBB"), RT("12:40:00", "OK1HRA-#", 7066.00, "XX9XQ"),
+           RT("12:42:00", "OK1HRA-#", 14080.00, "W1RTY"),
+           mark("13:00:00", "disconnected — retry in 10 s"),
+           mark("13:10:00", "connected to 127.0.0.1:7302")]
+    rem = [mark("12:00:00", "connected to 192.168.1.201:7301"), R("12:06:00", 7010.0, "DL1CW")]
+    rbn = [mark("12:00:00", "connected to telnet.reversebeacon.net:7000"),
+           B("12:07:00", "DK0XX-#", 7010.0, "DL1CW")]
+    rbn += [RT("12:11:%02d" % i, s, 7045.05, "JA1AAA") for i, s in enumerate(("DK0XX-#", "G4ZZZ-#", "SM5YY-#"))]
+    rbn += [RT("12:20:00", "DK0XX-#", 7050.00, "VK3CCC"),        # L missed it, one spotter
+            RT("12:21:00", "DK0XX-#", 7100.00, "PY2OUT"),        # outside the windows
+            RT("13:05:00", "DK0XX-#", 7055.00, "ZL1DOWN"),       # while the L feed was down
+            RT("12:43:00", "DK0XX-#", 14080.00, "W1RTY")]        # 20 m decodes no RTTY
+    plan = [{"band": "40m", "centre_hz": 7040000, "rtty": {"engine": "rtty"}},
+            {"band": "20m", "centre_hz": 14040000, "rtty": None}]
+    status = ["%s\t%s\n" % (ts("%02d:%02d:00" % (12 + m // 60, m % 60)), json.dumps(
+        {"streaming": True, "lost_pct": 0, "rate": 96000, "bands": plan}))
+        for m in range(1, 120, 5)]
+    events = ["%s recording as OK1HRA since %s UTC\n" % (ts("12:00:00"), T),
+              "%s stopped — write check OK\n" % ts("14:00:00")]
+    for kind, lines in (("local", loc), ("remote", rem), ("rbn", rbn), ("events", events)):
+        with open(os.path.join(logs, "%s-%s.log" % (kind, T)), "w") as fh:
+            fh.writelines(lines)
+    with open(os.path.join(logs, "status-%s.jsonl" % T), "w") as fh:
+        fh.writelines(status)
+    cfg = Config(os.path.join(root, "compare.ini"))
+    store = Store(cfg.logs, lambda: RbnIndex(loose_bands(cfg.local_windows, 2.0), cfg.exclude))
+    store.poll()
+    check([sp.call for sp in store.L] == ["DL1CW"] and len(store.Lr) == 5,
+          "the local feed split: CW in L (1), RTTY in Lr (5)")
+    An = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
+                 epoch("23:00:00"))
+    calls = {e["call"] for e in An.events}
+    check(calls == {"DL1CW"}, "the CW comparison sees no RTTY call (%s)" % sorted(calls))
+    X = analyze_rtty(store, load_scp(cfg.scp), cfg.params, epoch("23:00:00"))
+    b = X["bands"].get("40m", {})
+    check(abs(X["time_s"] - 110 * 60) < 61,
+          "RTTY time: the L feed up with RBN, 12:00–14:00 less the 10 min outage (%d s)" % X["time_s"])
+    check(list(X["bands"]) == ["40m"], "only 40 m decodes RTTY (%s)" % list(X["bands"]))
+    check(b.get("rbn") == 2 and b.get("matched") == 1 and b.get("recall") == 0.5,
+          "RBN's JA1AAA spotted, VK3CCC missed; outside the window / while down ignored: recall 50 %")
+    check(b.get("rbn_strong") == 1 and b.get("recall_strong") == 1.0,
+          "JA1AAA heard by 3 RBN skimmers: strong, caught")
+    check((b.get("local"), b.get("local_rbn"), b.get("local_scp"), b.get("local_none")) == (3, 1, 1, 1),
+          "L's three: JA1AAA confirmed by RBN, LZ2BBB by MASTER.SCP, XX9XQ by nobody")
+    check([x["call"] for x in X["busts"]] == ["XX9XQ"] and abs(b.get("bust") - 1 / 3) < 1e-9,
+          "bust: XX9XQ, 1 of 3")
+
+
 if __name__ == "__main__":
     root = tempfile.mkdtemp(prefix="compare-test-")
     root, logs, A, Bs = build(root)
@@ -614,6 +694,7 @@ if __name__ == "__main__":
     split_episodes()
     remote_plan_test()
     dead_feed()
+    rtty()
     print("  (files in %s)" % root)
     print("\n%s (%d failure%s)" % ("FAIL" if fails else "PASS", fails, "" if fails == 1 else "s"))
     sys.exit(1 if fails else 0)

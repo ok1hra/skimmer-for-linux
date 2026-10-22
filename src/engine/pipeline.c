@@ -16,7 +16,6 @@
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include "pipeline.h"
-#include "spectrum.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -187,7 +186,6 @@ struct _SkimPipeline {
   SkimStationTable *stations;
   SkimSpotOut      *spots;
   SkimSpotOut      *rbn_spots;                 /* RBN policy → cfg.rbn feed  */
-  SkimDupQuery     *dupq;                      /* logbook dup verdicts       */
   double            rbn_min;
   guint             rbn_hearings;              /* feed gate: copies read     */
   gint64            rbn_settle_us;             /* feed hold-back; 0 = none   */
@@ -228,7 +226,10 @@ struct _SkimPipeline {
   char             *dlog_path;                 /* decode log (engine thread) */
   FILE             *dlog;
   SkimGateLog      *glog;                      /* feed-gate learning logs    */
-  SkimFeedGate      *fgate;                     /* learned gate, shadow       */
+  SkimFeedGate      *fgate;                     /* learned gate (a reference) */
+  SkimRttyPairs     *pairs;                     /* cfg.rtty_pairs (a reference) */
+  double            *pair_hz;                   /* RTTY: this block's held pairs */
+  guint64            rtty_supp;                 /* CW: decodes dropped on a pair */
   SkimFeedGateTrack *fgtrack;                   /* its features               */
   char              *band;
   gint              fg_spots, fg_below;        /* atomic: status thread reads */
@@ -250,19 +251,6 @@ struct _SkimPipeline {
   SkimPipelineVfoCb     vfo_cb;
   gpointer              vfo_user;
 
-  /* M8 waterfall: FFT tap on the raw band (spectrum.h). Built lazily on the
-   * engine thread at the block's rate (fftw planning is not thread-safe —
-   * same thread as the channelizer's plan), fed BEFORE the TX hold check:
-   * the picture follows the DATA, not the trx flag. A muted stream (exact
-   * zeros — own TX on sdr-for-linux) pauses it inside the tap, to the sample
-   * (spectrum.c, gh#17: the flag comes from a 500 ms poll there, 0.04–0.43 s
-   * behind the zeros); a server that keeps sending the band through TX
-   * keeps the picture flowing while the decoders freeze. */
-  SkimSpectrum         *spec;
-  double                spec_rate;
-  volatile gint         spec_on;
-  SkimPipelineSpectrumCb spec_cb;
-  gpointer              spec_user;
 
   volatile guint64 frames;
   volatile guint64 dropped;
@@ -372,10 +360,30 @@ static void station_gone_fwd(const SkimStation *st, gpointer user);
 static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
                          double snr_db, double speed, gpointer user) {
   SkimPipeline *p = user;
-  /* SKIM_FEED_TRACE=1: every line that goes on the wire, after the policy
-   * AND spot_out's dedup — what an A/B of two feed policies compares. The
-   * time is the pipeline clock: stream seconds offline (a replay lines its
-   * feed up with a live log of the same recording), monotonic live. */
+  /* the learned gate scores the line the hand gate let through; in shadow
+   * it only reports, with feed_gate_on it holds back a line below its
+   * threshold — before the fold counts it as sent */
+  double x[SKIM_FEED_GATE_NFEAT];
+  double lr = 1.0;
+  if (p->fgate) {
+    skim_feed_gate_track_features(p->fgtrack, pipe_now_us(p), pipe_wall_us(p),
+                                  call, freq_hz, p->band, x);
+    lr = skim_feed_gate_p(p->fgate, x);
+    g_atomic_int_inc(&p->fg_spots);
+    if (lr < skim_feed_gate_threshold(p->fgate)) {
+      g_atomic_int_inc(&p->fg_below);
+      if (p->cfg.feed_gate_on) {
+        skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "gate_drop", call,
+                           freq_hz, snr_db, speed);
+        return;
+      }
+    }
+  }
+  /* SKIM_FEED_TRACE=1: every line that goes on the wire, after the policy,
+   * spot_out's dedup and the learned gate — what an A/B of two feed
+   * policies compares. The time is the pipeline clock: stream seconds
+   * offline (a replay lines its feed up with a live log of the same
+   * recording), monotonic live. */
   if (g_getenv("SKIM_FEED_TRACE")) {
     g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm t=%.1f\n", call,
                freq_hz / 1000.0, snr_db, speed, pipe_now_us(p) / 1e6);
@@ -386,13 +394,6 @@ static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
                         st ? st->hearings : 0, skim_callsign_dict_has(call));
   }
   if (p->fgate) {
-    /* shadow: score the line, report it — the hand gate already decided */
-    double x[SKIM_FEED_GATE_NFEAT];
-    skim_feed_gate_track_features(p->fgtrack, pipe_now_us(p), pipe_wall_us(p),
-                                  call, freq_hz, p->band, x);
-    const double lr = skim_feed_gate_p(p->fgate, x);
-    g_atomic_int_inc(&p->fg_spots);
-    if (lr < skim_feed_gate_threshold(p->fgate)) { g_atomic_int_inc(&p->fg_below); }
     skim_gatelog_spot(p->glog, pipe_now_us(p), pipe_wall_us(p), call, freq_hz,
                       snr_db, speed, lr, x, SKIM_FEED_GATE_NFEAT);
   } else {
@@ -406,6 +407,7 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
   SkimPipeline *p = g_new0(SkimPipeline, 1);
   p->cfg = *cfg;
   p->cw_engine = cw_engine_pick(cfg);
+  p->pairs = skim_rtty_pairs_ref(cfg->rtty_pairs);
   p->host = g_strdup(cfg->host ? cfg->host
                     : cfg->source == SKIM_PIPELINE_SOURCE_HPSDR ? "192.168.1.21"
                                                                 : "127.0.0.1");
@@ -435,7 +437,6 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
   p->hits     = g_array_new(FALSE, FALSE, sizeof(Hit));
   /* Logbook dup lookup — pipeline-lifetime like the RBN memo: the verdict
    * cache rides out reconnects. Harmless when no logbook listens. */
-  p->dupq     = skim_dup_query_new();
   if (p->cfg.rbn) {
     /* Lives for the pipeline's whole life (not per-connection like the TCI
      * sink): the dedup memo rides out reconnects, no re-spot burst. */
@@ -488,7 +489,11 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
   }
   p->band = g_strdup(cfg->band);
   p->cfg.band = p->band;
-  if (p->cfg.feed_gate_path && p->cfg.rbn) {
+  if (p->cfg.feed_gate && p->cfg.rbn) {
+    p->fgate = skim_feed_gate_ref(p->cfg.feed_gate);
+    p->fgtrack = skim_feed_gate_track_new(skim_feed_gate_win_s(p->fgate),
+                                          skim_feed_gate_near_khz(p->fgate));
+  } else if (p->cfg.feed_gate_path && p->cfg.rbn) {
     GError *err = NULL;
     p->fgate = skim_feed_gate_load(p->cfg.feed_gate_path, &err);
     if (p->fgate) {
@@ -501,6 +506,7 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     }
   }
   p->cfg.feed_gate_path = NULL;                /* borrowed: not kept         */
+  p->cfg.feed_gate = NULL;                     /* p->fgate holds the reference */
   if (p->cfg.dict_path) {
     GError *err = NULL;
     if (!skim_callsign_dict_load(p->cfg.dict_path, &err)) {
@@ -542,7 +548,6 @@ void skim_pipeline_free(SkimPipeline *p) {
     return;
   skim_pipeline_stop(p);
   bank_teardown(p);
-  g_clear_pointer(&p->spec, skim_spectrum_free);
   skim_station_table_free(p->stations);
   g_clear_pointer(&p->spots, skim_spot_out_free);
   g_clear_pointer(&p->rbn_spots, skim_spot_out_free);
@@ -555,9 +560,10 @@ void skim_pipeline_free(SkimPipeline *p) {
     }
     g_clear_pointer(&p->chdump, g_free);
   }
-  g_clear_pointer(&p->dupq, skim_dup_query_free);
   g_clear_pointer(&p->glog, skim_gatelog_close);
   g_clear_pointer(&p->fgate, skim_feed_gate_free);
+  g_clear_pointer(&p->pairs, skim_rtty_pairs_unref);
+  g_clear_pointer(&p->pair_hz, g_free);
   g_clear_pointer(&p->fgtrack, skim_feed_gate_track_free);
   g_free(p->band);
   IqBlock *b;
@@ -888,19 +894,6 @@ void skim_pipeline_set_vfo_cb(SkimPipeline *p, SkimPipelineVfoCb cb, gpointer us
   p->vfo_user = user;
 }
 
-void skim_pipeline_set_spectrum_cb(SkimPipeline *p, SkimPipelineSpectrumCb cb, gpointer user) {
-  p->spec_cb   = cb;
-  p->spec_user = user;
-}
-
-void skim_pipeline_set_spectrum_enabled(SkimPipeline *p, gboolean on) {
-  g_atomic_int_set(&p->spec_on, on ? 1 : 0);
-}
-
-gboolean skim_pipeline_spectrum_enabled(const SkimPipeline *p) {
-  return g_atomic_int_get(&p->spec_on) != 0;
-}
-
 /* ---- network-thread side: retune + connection loss ---------------------------- */
 
 static void vfo_fwd_cb(double vfo_hz, gpointer user) {
@@ -958,6 +951,7 @@ static void bank_build(SkimPipeline *p, double rate) {
   }
   p->bank_rate = rate;
   p->nchan = skim_channelizer_count(p->bank);
+  g_clear_pointer(&p->pair_hz, g_free);       /* sized for the old bank   */
   p->dec = g_new0(gpointer, p->nchan * NSLOT);
   p->ext = g_new0(SkimCallsignExtractor *, p->nchan * NSLOT);
   p->sgen = g_new0(guint, p->nchan * NSLOT);
@@ -1113,27 +1107,6 @@ static void hold_begin(SkimPipeline *p) {
   for (guint i = 0; i < p->nchan * NSLOT; i++) {
     if (p->dec[i]) { be->hold_begin(p->dec[i]); }
   }
-}
-
-static void spec_row_cb(const guint8 *row, guint nbins, double center_hz, gpointer user) {
-  SkimPipeline *p = user;
-  if (p->spec_cb) {
-    p->spec_cb(row, nbins, center_hz, skim_spectrum_bin_hz(p->spec), p->spec_user);
-  }
-}
-
-static void spec_feed(SkimPipeline *p, const IqBlock *b) {
-  if (!g_atomic_int_get(&p->spec_on) || !p->spec_cb) {
-    if (p->spec) { skim_spectrum_reset(p->spec); }  /* no stale half-row   */
-    return;
-  }
-  if (!p->spec || p->spec_rate != b->rate) {
-    g_clear_pointer(&p->spec, skim_spectrum_free);
-    p->spec      = skim_spectrum_new(b->rate);
-    p->spec_rate = b->rate;
-    skim_spectrum_set_row_cb(p->spec, spec_row_cb, p);
-  }
-  skim_spectrum_push(p->spec, b->iq, b->nframes, b->center_hz);
 }
 
 /* The extractor's view after one decode, for the learning log: its leading
@@ -1341,6 +1314,16 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
        * double every draft char. Extractor/station/spot paths read d.text
        * as ever. Only meaningful for backends with the ops hook — v1 never
        * writes the field (stack garbage otherwise, gate-caught). */
+      /* On a copied RTTY pair (rtty_pairs.h): an FSK tone read as CW. The
+       * decode log has it; the pane, the extractor and the station table
+       * do not. */
+      if (p->pairs && p->cfg.mode == SKIM_PIPELINE_MODE_CW && d.text[0] &&
+          skim_rtty_pairs_covers(p->pairs, pipe_now_us(p), sig_hz)) {
+        p->rtty_supp++;
+        g_free(h->aux);
+        hit_free_ops(h->ops);
+        continue;
+      }
       const gboolean pane_own = cw->take_pane_op && d.pane_own;
       if (p->text_cb && shown[0] && !pane_own) {
         p->text_cb(sig_hz, shown, p->text_user);
@@ -1429,9 +1412,21 @@ static void hold_pump(SkimPipeline *p, const IqBlock *b) {
   if (p->hits->len) { dispatch_hits(p, b, cw); }
 }
 
+/* RTTY: the pairs the bank copies after this block, to the band's board. */
+static void pairs_publish(SkimPipeline *p, const IqBlock *b, const SkimDecodeBackend *be) {
+  if (!p->pair_hz) { p->pair_hz = g_new(double, p->nchan); }
+  guint n = 0;
+  for (guint c = 0; c < p->nchan; c++) {
+    double off;
+    gpointer dec = p->dec[SL(c, WIDE_LANE)];
+    if (dec && be->held_pair(dec, &off)) {
+      p->pair_hz[n++] = b->center_hz + skim_channelizer_offset_hz(p->bank, c) + off;
+    }
+  }
+  skim_rtty_pairs_publish(p->pairs, pipe_now_us(p), p->pair_hz, n);
+}
+
 static void process_block(SkimPipeline *p, IqBlock *b) {
-  spec_feed(p, b);                             /* M8: the picture follows the
-                                                * data, not the hold below    */
   /* TX hold (TX hold): while the operator's own TX deafens the RX
    * (T/R relay + 31 dB TX attenuators), the band the decoders would see is
    * self-inflicted silence — evaluating it releases every channel and the
@@ -1617,6 +1612,7 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
   }
 
   dispatch_hits(p, b, cw);
+  if (p->pairs && cw->held_pair) { pairs_publish(p, b, cw); }
 }
 
 static gpointer engine_thread(gpointer data) {
@@ -1635,14 +1631,6 @@ static gpointer engine_thread(gpointer data) {
     }
     rbn_settle_tick(p, now);
     tap_clock(p);
-    /* Logbook verdict flips (answers AND unsolicited "just logged him"
-     * pushes) repaint the live label at once — the operator must not wait
-     * out the 180 s re-announce to see a station turn gray. */
-    char dup_call[24];
-    SkimDupVerdict dup_v;
-    while (skim_dup_query_take_change(p->dupq, dup_call, &dup_v)) {
-      if (p->spots) { skim_spot_out_recolour(p->spots, dup_call, dup_v); }
-    }
   }
   return NULL;
 }
@@ -1690,7 +1678,6 @@ gboolean skim_pipeline_start(SkimPipeline *p, GError **error) {
   }
   p->spots = skim_spot_out_new(p->tci);        /* NULL: telnet/RBN sinks only */
   skim_spot_out_set_clock(p->spots, pipe_clock_cb, p);
-  skim_spot_out_set_dup_query(p->spots, p->dupq);
   if (p->dlog_path) {
     p->dlog = fopen(p->dlog_path, "a");
     if (p->dlog) {
@@ -1871,13 +1858,6 @@ void skim_pipeline_spot_clicked(SkimPipeline *p, const char *call,
   if (p->tci) { skim_tci_client_spot_clicked(p->tci, call, freq_hz); }
 }
 
-SkimDupVerdict skim_pipeline_dup_verdict(SkimPipeline *p, const char *call,
-                                         double freq_hz) {
-  /* wait 0: the GTK thread must never stall on the socket — a miss fires
-   * the request and the answer colours the next highlight pass. */
-  return skim_dup_query_lookup(p->dupq, call, freq_hz, pipe_mode_str(p), 0);
-}
-
 void skim_pipeline_set_spot_cq_only(SkimPipeline *p, gboolean cq_only) {
   g_atomic_int_set(&p->cq_only, cq_only ? 1 : 0);
 }
@@ -1923,6 +1903,8 @@ guint skim_pipeline_stations(const SkimPipeline *p) {
   return skim_station_table_size(p->stations);
 }
 guint64 skim_pipeline_dropped_blocks(const SkimPipeline *p) { return p->dropped; }
+
+guint64 skim_pipeline_rtty_suppressed(const SkimPipeline *p) { return p->rtty_supp; }
 
 guint skim_pipeline_channels(const SkimPipeline *p) { return p->nchan; }
 

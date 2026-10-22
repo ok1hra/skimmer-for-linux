@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Skimmer for Linux
+Comment=Multi-band CW and RTTY skimmer for a Red Pitaya, with a web page
+Exec=skimmer-headless
+Icon=skimmer-headless
+Terminal=true
+NoDisplay=true
+Categories=Network;HamRadio;

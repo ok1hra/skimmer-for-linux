@@ -6,24 +6,31 @@ changes, work in Czech with Richard, etc.)
 
 ## What this is
 
-A native **GTK4 multi-channel skimmer** for Linux — CW first, then RTTY and PSK
-(BPSK31/63). It is a **TCI client**: it pulls a wideband IQ stream from the
-**TCI server in [`sdr-for-linux`](https://github.com/OK1BR/sdr-for-linux)**,
-channelizes it, decodes every signal in the segment in parallel, and feeds spots
-back to the radio panadapter and to the RBN. What is still to do lives in
-GitHub Issues.
+**This is Dan OK1HRA's fork** (ok1hra/skimmer-for-linux) of Richard OK1BR's
+GTK4 skimmer. The fork has **dropped the GUI** (2026-10-22): it is
+`skimmer-headless`, a multi-band skimmer without a GUI — a Red Pitaya (HPSDR
+Protocol 1) streams up to 8 receivers, one pipeline per band decodes CW (v2,
+or DeepCW) and feeds one telnet cluster feed; status on the console and a web
+page. The plan for turning it into the product (web settings and statistics,
+RTTY beside CW, AppImage, systemd service) is
+`~/.claude/plans/headless-product.md` on hra2. The engine is still Richard's
+and still has its TCI client.
 
 ## Ground rules
 
-- **Language: C** (GTK4/libadwaita front-end, GLib-only headless engine), built
-  with **meson**. All of OK1BR's Linux apps are C so DSP/render code is shared
+- **Language: C** (GLib only — no GUI since 2026-10-22), built with **meson**. All of OK1BR's Linux apps are C so DSP/render code is shared
   across projects. Do not introduce Rust/Go/Python as a primary language.
 - **Don't reimplement DSP — reuse WDSP** (in-tree `vendor/wdsp`, same policy as
   `sdr-for-linux`: a copy, not a submodule; `VENDOR.md` records upstream +
   pinned commit). Use its FFT + `create_resample`.
-- **Engine is headless and GLib-only** (`src/engine/`) — no GTK in the engine, so
-  every milestone has an offline/headless gate binary. GTK4/libadwaita lives only
-  in `src/app/`.
+- **Engine is headless and GLib-only** (`src/engine/`), so every milestone has an
+  offline gate binary. The product layer is `src/headless/` +
+  `src/headless_main.c`.
+- **The golden gate** (`meson test golden`, `tests/golden/`) replays recorded
+  real air (CW, and RTTY from the JARTS contest) through the whole engine with
+  no `SKIM_*` switches. A refactor must
+  leave it byte-identical; a deliberate behaviour change regenerates the
+  reference (`--update`) in its own commit and says why.
 - **The channelizer is complex/phase-preserving and mode-agnostic** from the
   start (RTTY/PSK need phase). Decode backends implement the `decode.h` interface.
 - **Read-only to the radio — except an explicit user tune.** The skimmer
@@ -92,23 +99,50 @@ sitting there as "open", and nobody could see what was really left.
 What the tree does today. Anything still to DO is a GitHub Issue, not a line
 here; what was done and why is in git.
 
-- **Milestones M0–M8 are in:** TCI ingest, channelizer, CW (v1 classical, v2
-  semi-Markov Viterbi), callsign extraction/validation, the spot pipeline, the
-  local telnet feed, RTTY (45.45 Bd), and the waterfall with its callsign
-  column and click-to-tune.
+- **Milestones M0–M7 are in the engine:** TCI ingest, channelizer, CW (v1
+  classical, v2 semi-Markov Viterbi), callsign extraction/validation, the spot
+  pipeline, the local telnet feed, RTTY (45.45 Bd). M8 (the waterfall) went
+  with the GUI, and so did the engine's spectrum tap.
 - **CW backend: v2 is the default.** `SKIM_CW_V1=1` selects the classical v1.
   A third backend, DeepCW (neural, ONNX Runtime via `dlopen`, model outside
-  git), is chosen in Preferences → Decoding; without the runtime or the model
-  the pipeline falls back to v2.
+  git), is chosen per band (`cw:deepcw`) or with `[decode] engine=deepcw`;
+  without the runtime or the model the pipeline falls back to v2 and the
+  status says why. The model (AGPL) is never shipped: `--fetch-deepcw-model`
+  / the web page fetch e04/deepcw-engine at a pinned commit, sha256-checked
+  (`src/headless/deepcw_model.c` — a new model = a new pin there).
 - **IQ sources: TCI, or HPSDR Protocol 1 direct** (Red Pitaya
   `sdr_receiver_hpsdr`, 48/96/192 kHz, clock ppm correction; the wire is
-  RF-inverted and ingest conjugates — `docs/HPSDR-P1.md`). The app uses one
-  receiver; `skimmer-headless` runs up to 8 (one pipeline per band, one
-  telnet feed, console + web status). The FFTW planner is not thread-safe:
+  RF-inverted and ingest conjugates — `docs/HPSDR-P1.md`). `skimmer-headless`
+  runs up to 8 receivers (one pipeline per band and mode — CW, and RTTY
+  beside it on the same IQ where `[bands]` says `rtty`; one telnet feed,
+  console + web status). RTTY spots skip the learned gate (a CW model).
+  The RTTY pipeline publishes the pairs it copies (`rtty_pairs.c`); with
+  `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
+  on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 17 gates** (DeepCW skips without the model). It does NOT relink the app — build
-  `ninja skimmer-for-linux` explicitly or an old binary keeps running.
-- Richard's live instance runs from `builddir`; recorded IQ fixtures live in
+- **`meson test` = 19 gates** (DeepCW skips without the model, golden skips
+  without its inputs in `/var/tmp/skimmer-iq/golden`). `headless-mock` runs
+  the whole skimmer-headless on `[radio] type=mock` (no radio).
+- **The web page** (libsoup 3, `src/headless/web.c`, static files in `web/`
+  built in as a GResource, plain JS/SVG — no libraries, it must work
+  offline): status, 7-day statistics (`stats.c`), settings (one parser:
+  `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
+  backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
+  POSTs only from `[web] settings_from`, no foreign Origin.
+- **Exit codes are the service contract:** 0 stopped, 2 bad config, 3 no
+  free radio / stream lost, 75 restart for a `SKIM_SUPERVISED=1`
+  supervisor. `--install-service` (`src/headless/service.c`) writes the
+  systemd user unit on them (RestartSec=60 for 3 and crashes, 2 stays
+  down); a web restart execs in place even under systemd, so it never
+  waits out RestartSec.
+- **GLib 2.74 is the floor** (Debian 12, the AppImage's base):
+  `GLIB_VERSION_MAX_ALLOWED` makes newer API a compile error. It does NOT relink
+  every binary — `ninja -C builddir` first.
+- **The learned feed gate** is built in (`weights/feed-gate.ini`, GResource)
+  and runs in shadow; `--feed-gate FILE` / `--feed-gate-mode off|shadow|on`
+  override it per start.
+- Dan's live instance runs on hra2 from the main clone's `builddir`; work on
+  the product goes in a worktree. Recorded IQ fixtures live in
   `/var/tmp/skimmer-iq/` (a fresh one takes minutes:
   `skimmer-tci-probe <host> <port> <rate> <secs> <dump.cf32>`).
 - **Decoder and feed defaults (v0.6.0) come from live air** against CW
@@ -121,15 +155,14 @@ here; what was done and why is in git.
 
 ## Releasing
 
-Tag FIRST, then take the tarball's sha256 from the published tag — the
-checksum cannot exist before it. `gh release create --verify-tag
---notes-file` runs right after the tag push, so CI attaches its artifacts to
-the curated release instead of an empty one. Then `packaging/PKGBUILD`
-(`pkgver`, `_pkgtag`, sha256) → `makepkg --printsrcinfo` → commit and push to
-`ssh://aur@aur.archlinux.org/skimmer-for-linux.git` (key `~/.ssh/aur_ed25519`);
-this repo's PKGBUILD is the single source, the AUR clone is a copy. Release
-titles carry no epithet: "Skimmer for Linux 0.4.1", tag message
-"release: v0.4.1".
+One artifact: the AppImage (`packaging/appimage/`; deb, rpm and the AUR
+package went with the GUI, 2026-10-22). Tag first; `gh release create
+--verify-tag --notes-file` right after the tag push, so CI (build.yml) builds
+the AppImage in debian:12, smoke-tests it in a clean debian:12 and attaches
+it to the curated release instead of an empty one. Release titles carry no
+epithet: "Skimmer for Linux 0.7.0", tag message "release: v0.7.0". A new
+pinned download (linuxdeploy, ONNX Runtime) = new URL + sha256 in
+`packaging/appimage/build.sh`.
 
 ## Layout
 
@@ -146,10 +179,15 @@ src/engine/   headless, GLib-only:
   station      per-frequency station tracker
   callsign     extraction + validation (RBN-grade)
   spot_out     TCI SPOT feed + RBN telnet feed
-src/app/      GTK4/libadwaita: main.c (window: waterfall + callsign column over the
-              decode pane), wf_view.c (widget), wf_compose.c (GLib-only pixels + layout),
-              scp_update.c (GLib + libcurl, GTK-free: MASTER.SCP background updater)
+src/headless/ the product layer: config (headless.ini, one parser), source
+              (IQ source interface) + source_hpsdr_p1 / source_mock, record
+              ([record] IQ to disk), switches (SKIM_* visibility), stats
+              (7-day history), web (libsoup server), logring, scp_update
+              (MASTER.SCP background updater)
+web/          the web page (HTML, CSS, JS — built in as a GResource)
 src/headless_main.c  skimmer-headless: multi-band, no GUI (HPSDR P1 → N pipelines)
+weights/      learned weights built into skimmer-headless (feed-gate.ini)
+tests/golden/ the golden gate: real-air replay, byte for byte
 vendor/wdsp/  in-tree WDSP copy (FFT + resampler)
 vendor/onnxruntime/  ONNX Runtime C API header only (MIT) — dlopen at run time
 ```

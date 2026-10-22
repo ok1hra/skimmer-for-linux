@@ -12,38 +12,19 @@
 #define SKIMMER_SPOT_OUT_H
 
 #include <glib.h>
-#include "dup_query.h"
 #include "tci_client.h"
 
 G_BEGIN_DECLS
 
 /* The colour of our spots on the radio panadapter — sent as the ARGB field
- * of every TCI SPOT. The app's decode-pane callsign highlight uses the SAME
- * constant, so a highlighted call and its panadapter label always match
- * (Richard, 2026-08-01). Calls the logbook grays out (DUP in the active
- * contest, B4 = worked some earlier time, or INV = the contest rules score
- * no QSO with that station at all) dim to gray — the operator skips them
- * at a glance; the 180 s re-announce recolours a label whose verdict
- * changed (dedup by callsign on the radio side). */
+ * of every TCI SPOT. */
 #define SKIM_SPOT_ARGB     0xFF30C060u
-#define SKIM_SPOT_ARGB_DUP 0xFF808080u
-
-/* One mapping from a logbook verdict to the spot colour — shared by the TCI
- * spot path and the app's pane highlight so they can never disagree. */
-static inline guint32 skim_spot_argb_for_dup(SkimDupVerdict v) {
-  return skim_dup_verdict_gray(v) ? SKIM_SPOT_ARGB_DUP : SKIM_SPOT_ARGB;
-}
 
 typedef struct _SkimSpotOut SkimSpotOut;
 
 /* Spot sink policy instance. tci may be NULL (no radio feed). */
 SkimSpotOut *skim_spot_out_new(SkimTciClient *tci);
 void         skim_spot_out_free(SkimSpotOut *s);
-
-/* Colour spots by the logbook's dup verdict (borrowed; NULL = default
- * colour for everything). Emit asks with a ~5 ms budget — localhost answers
- * in µs, an absent logbook costs one poll and stays UNKNOWN. */
-void  skim_spot_out_set_dup_query(SkimSpotOut *s, SkimDupQuery *q);
 
 /* Dedup/rate policy (defaults: re-spot 180 s, QSY 30 Hz, ≤5 spots/s). */
 void  skim_spot_out_set_policy(SkimSpotOut *s, guint respot_s,
@@ -72,14 +53,6 @@ void  skim_spot_out_set_sink(SkimSpotOut *s, SkimSpotSink sink, gpointer user);
  * Returns TRUE when actually emitted. */
 gboolean skim_spot_out_emit(SkimSpotOut *s, const char *call, const char *mode,
                             double freq_hz, double snr_db, double speed);
-
-/* Repaint a live label in the verdict's colour RIGHT NOW (the logbook says
- * "just logged him" — the operator must not wait out the re-announce).
- * A resend of the last emission with only the ARGB changed; dedup memo and
- * re-announce schedule stay untouched. No-op for calls without a fresh
- * label (≤10 min, the radio's own spot TTL). */
-void skim_spot_out_recolour(SkimSpotOut *s, const char *call,
-                            SkimDupVerdict verdict);
 
 /* The station is gone (TTL / takeover): pull its label off the panadapter
  * (SPOT_DELETE) and forget its dedup memo, so a comeback re-spots at once. */

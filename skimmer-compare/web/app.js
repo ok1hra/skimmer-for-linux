@@ -181,6 +181,7 @@ function render() {
   renderVerdict(S);
   renderDiffs();
   renderBands(S);
+  renderRtty(S);
   renderTimeline(S);
   renderBins('#snr', S.snr.bins, ' dB');
   const curve = (S.snr.curve || []).map(([x, d]) => `${x}→${signed(d, '')}`).join(' ');
@@ -765,6 +766,29 @@ function renderBands(S) {
         b.lat == null ? '—' : signed(Math.round(b.lat), ' s')].map((v) => el('td', { cls: 'num' }, v))));
   }
   t.append(tb);
+}
+
+function renderRtty(S) {
+  const R = S.rtty;
+  $('#rtty-card').hidden = !R || !R.time_s;
+  if (!R || !R.time_s) return;
+  const t = $('#rtty');
+  const head = ['Band', 'RBN stations', 'L spotted', 'Recall', 'Recall strong', 'L stations',
+    'RBN knows', 'SCP only', 'Bust'];
+  t.replaceChildren(el('thead', null, el('tr', null, head.map((h, i) => el('th', { cls: i ? 'num' : '' }, h)))));
+  const tb = el('tbody');
+  const row = (name, b) => el('tr', null, el('td', null, name),
+    ...[b.rbn, b.matched, pct(b.recall), `${pct(b.recall_strong)} (${b.matched_strong} / ${b.rbn_strong})`,
+      b.local, b.local_rbn, b.local_scp, `${pct(b.bust)} (${b.local_none})`].map((v) => el('td', { cls: 'num' }, v)));
+  for (const [name, b] of Object.entries(R.bands)) tb.append(row(name, b));
+  tb.append(row(`all · ${dur(R.time_s)}`, R.total));
+  t.append(tb);
+  const bl = R.busts;
+  $('#rtty-busts').replaceChildren(bl.length
+    ? el('table', null, el('tbody', null, bl.slice(-200).reverse().map((x) => el('tr', null,
+      el('td', null, `${utc(x.t0)}`), el('td', null, x.band), el('td', { cls: 'num' }, x.f.toFixed(2)),
+      el('td', null, x.call), el('td', { cls: 'num' }, `${x.spots} spot${x.spots === 1 ? '' : 's'}`)))))
+    : el('p', { cls: 'muted' }, 'none'));
 }
 
 function timeTicks(a, b) {

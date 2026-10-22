@@ -28,6 +28,7 @@
 #include "engine/channelizer.h"
 #include "engine/decode_rtty.h"
 #include "engine/pipeline.h"
+#include "engine/rtty_pairs.h"
 
 #define RATE  500.0
 #define BAUD  45.45
@@ -761,6 +762,58 @@ int main(void) {
     g_array_free(iq_b, TRUE);
     g_array_free(s1, TRUE);
     g_array_free(s2, TRUE);
+  }
+
+  /* -- held pairs: what the band's CW stays off (rtty_pairs.h) ------------------ */
+  {
+    const SkimDecodeBackend *be = skim_decode_rtty();
+    check("the backend reports the pairs it copies", be->held_pair != NULL);
+    GArray *sym = g_array_new(FALSE, FALSE, sizeof(Sym));
+    enc_diddle(sym, 8);
+    enc_text(sym, "CQ CQ DE OK1RTY OK1RTY K");
+    GArray *iq = render(sym, RATE, 40.0, FALSE, 1.0, 1.0);
+    add_noise(iq, 0.02, rng);
+    GArray *nz = g_array_new(FALSE, FALSE, sizeof(float));
+    add_tail(nz, 10.0, 0.02, rng);
+    gboolean held = FALSE, noise_held = FALSE;
+    double centre = 0.0;
+    for (guint k = 0; k < 2; k++) {
+      const GArray *x = k ? nz : iq;
+      gpointer st = be->channel_new(RATE);
+      for (guint at = 0; at < x->len / 2; at += 64) {
+        be->process(st, (const float *)x->data + 2 * at, MIN(64u, x->len / 2 - at), &d);
+        double c;
+        if (be->held_pair(st, &c)) {
+          if (k) { noise_held = TRUE; } else { held = TRUE; centre = c; }
+        }
+      }
+      be->channel_free(st);
+    }
+    printf("       held pair centre %+.1f Hz (sent +40)\n", centre);
+    check("clean FSK at +40 Hz: held, centre within 5 Hz", held && fabs(centre - 40.0) < 5.0);
+    check("noise alone: never held", !noise_held);
+    g_array_free(sym, TRUE);
+    g_array_free(iq, TRUE);
+    g_array_free(nz, TRUE);
+
+    SkimRttyPairs *bd = skim_rtty_pairs_new();
+    const double c1[] = { 7045000.0 };
+    skim_rtty_pairs_publish(bd, 0, c1, 1);
+    check("a carrier on the mark tone is covered", skim_rtty_pairs_covers(bd, 0, 7045085.0));
+    check("… 110 Hz from the centre still (85 + 30 edge)", skim_rtty_pairs_covers(bd, 0, 7044890.0));
+    check("… 120 Hz away not: a CW station beside the pair stays",
+          !skim_rtty_pairs_covers(bd, 0, 7045120.0));
+    const double c2[] = { 7045010.0, 7046000.0 };
+    skim_rtty_pairs_publish(bd, G_USEC_PER_SEC, c2, 2);
+    check("a pair 10 Hz off is the same pair; a new one adds",
+          skim_rtty_pairs_count(bd, G_USEC_PER_SEC) == 2);
+    const gint64 late = G_USEC_PER_SEC + SKIM_RTTY_PAIR_LINGER_US + 1;
+    check("pairs linger 5 s after their last sighting, then go",
+          skim_rtty_pairs_covers(bd, late - 2, 7046000.0) &&
+          !skim_rtty_pairs_covers(bd, late, 7046000.0));
+    skim_rtty_pairs_publish(bd, late, NULL, 0);
+    check("an empty publish clears the expired ones", skim_rtty_pairs_count(bd, late) == 0);
+    skim_rtty_pairs_unref(bd);
   }
 
   g_rand_free(rng);
