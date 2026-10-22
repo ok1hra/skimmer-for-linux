@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <!-- The learned weights built into skimmer-headless (a new model = a new
+       commit of the file here; a start switch may override it). -->
+  <gresource prefix="/skimmer-for-linux/weights">
+    <file>feed-gate.ini</file>
+  </gresource>
+</gresources>

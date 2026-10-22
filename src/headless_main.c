@@ -2,7 +2,8 @@
  * skimmer-headless — multi-band skimmer without a GUI.
  *
  *   skimmer-headless [--config FILE] [--take-over] [--status-every S]
- *                    [--http-port N]
+ *                    [--http-port N] [--feed-gate FILE]
+ *                    [--feed-gate-mode off|shadow|on]
  *
  * One HPSDR Protocol 1 receiver (Red Pitaya sdr_receiver_hpsdr) streams up
  * to 8 receivers at once; each receiver feeds its own engine pipeline (one
@@ -18,11 +19,21 @@
  *            clock_ppm (the radios without @ppm)
  *   [bands]  <name>=<centre Hz>, in receiver order (RX1 first), ≤ 8
  *   [decode] engine=v2|deepcw, log=true|false (per-band decode logs)
- *   [feed]   call, port (0 = no telnet feed)
+ *   [feed]   call, port (0 = no telnet feed), the hand gate's policy,
+ *            gate=FILE / gate_mode=off|shadow|on (the learned gate)
  *   [status] console_s (0 = quiet), http_port (0 = no web page)
  *   [record] bands (comma list; empty = off), minutes, dir, start_utc
  *            (HH:MM, empty = at once) — raw IQ of the chosen bands as
  *            cf32 + .meta, what skimmer-replay reads, while decoding on
+ *
+ * The learned feed gate is built in (weights/feed-gate.ini — a new model is
+ * a new commit) and runs in SHADOW unless told otherwise: it scores every
+ * line the hand gate lets through and only reports. --feed-gate FILE (or
+ * [feed] gate=) replaces the model for this start; it must name every
+ * feature. --feed-gate-mode (or [feed] gate_mode=) off drops it, on lets it
+ * hold back the lines it scores below its threshold. The gate's id —
+ * builtin:… or file:…, with the first 8 hex of its sha256 — is in the log
+ * and in /status.json, so a measurement can tell its periods apart.
  *
  * The radio is never taken from another client unless --take-over is given
  * (one-shot: for the first start only — it then takes the first busy radio of
@@ -109,7 +120,12 @@ typedef struct {
   double   feed_fresh_s;       /* 0 = default (120); < 0 = off               */
   double   feed_fold_s;        /* 0 = default (600); < 0 = off               */
   gboolean feed_learn;         /* decode tap (gatelog.h)                      */
-  char    *feed_gate;          /* learned gate ini, shadow (feed_gate.h)      */
+  char    *feed_gate;          /* learned gate ini; NULL = the built-in one   */
+  char    *feed_gate_mode;     /* off | shadow | on                           */
+  char    *cli_gate;           /* --feed-gate: wins over the config           */
+  char    *cli_gate_mode;      /* --feed-gate-mode                            */
+  SkimFeedGate *gate;          /* loaded once, shared by the pipelines        */
+  char    *gate_id;            /* builtin:… / file:…, #sha8                   */
   int      console_s;
   int      http_port;
   char   **rec_bands;          /* [record] bands, NULL = no recording         */
@@ -182,9 +198,11 @@ static const char *DEFAULT_CONFIG =
   "# band a decode tap in ~/.local/share/skimmer-for-linux/headless/learn —\n"
   "# skimmer-tap-replay turns it into the gate's rows (~80 MB/day/band raw)\n"
   "#learn=false\n"
-  "# gate=FILE scores every spot with the learned feed gate (skimmer-compare\n"
-  "# gate/learn.py) — SHADOW: reported in the status, the hand gate decides\n"
-  "#gate=feed-gate.ini\n"
+  "# the learned feed gate (skimmer-compare gate/learn.py) is built in; gate=FILE\n"
+  "# runs another model (it must name every feature). gate_mode: shadow scores\n"
+  "# every spot and only reports, on holds back the ones below its threshold,\n"
+  "# off drops it\n"
+  "#gate=feed-gate.ini\n#gate_mode=shadow\n"
   "\n[status]\n# console table every N s (0 = off); web page port (0 = off)\n"
   "console_s=10\nhttp_port=8073\n"
   "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
@@ -295,6 +313,9 @@ static gboolean config_load(Hd *h, GError **error) {
     g_free(dir);
   }
   g_free(gate);
+  g_clear_pointer(&h->feed_gate_mode, g_free);
+  h->feed_gate_mode = g_key_file_get_string(kf, "feed", "gate_mode", NULL);
+  if (h->feed_gate_mode) { g_strstrip(h->feed_gate_mode); }
   if (h->console_s < 0) {
     h->console_s = g_key_file_has_key(kf, "status", "console_s", NULL)
                        ? g_key_file_get_integer(kf, "status", "console_s", NULL) : 10;
@@ -370,6 +391,58 @@ static gboolean config_load(Hd *h, GError **error) {
 }
 
 /* ---- pipeline callbacks (engine threads) ----------------------------------------- */
+
+/* ---- the learned feed gate ------------------------------------------------------- */
+
+#define GATE_BUILTIN "/skimmer-for-linux/weights/feed-gate.ini"
+
+static gboolean gate_on(const Hd *h) { return g_strcmp0(h->feed_gate_mode, "on") == 0; }
+
+/* The model this start runs: --feed-gate, else [feed] gate=, else the
+ * built-in one — strict either way (every feature named). Mode off loads
+ * none. */
+static gboolean gate_load(Hd *h, GError **error) {
+  if (h->cli_gate) { g_free(h->feed_gate); h->feed_gate = g_strdup(h->cli_gate); }
+  if (h->cli_gate_mode) {
+    g_free(h->feed_gate_mode);
+    h->feed_gate_mode = g_strdup(h->cli_gate_mode);
+  }
+  if (!h->feed_gate_mode || !h->feed_gate_mode[0]) {
+    g_free(h->feed_gate_mode);
+    h->feed_gate_mode = g_strdup("shadow");
+  }
+  if (g_strcmp0(h->feed_gate_mode, "off") && g_strcmp0(h->feed_gate_mode, "shadow") &&
+      !gate_on(h)) {
+    g_set_error(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE,
+                "feed gate mode \"%s\": off, shadow or on", h->feed_gate_mode);
+    return FALSE;
+  }
+  if (g_strcmp0(h->feed_gate_mode, "off") == 0) { return TRUE; }
+  GBytes *data = NULL;
+  char *src;
+  if (h->feed_gate) {
+    char *text = NULL;
+    gsize len = 0;
+    if (!g_file_get_contents(h->feed_gate, &text, &len, error)) { return FALSE; }
+    data = g_bytes_new_take(text, len);
+    char *base = g_path_get_basename(h->feed_gate);
+    src = g_strdup_printf("file:%s", base);
+    g_free(base);
+  } else {
+    data = g_resources_lookup_data(GATE_BUILTIN, G_RESOURCE_LOOKUP_FLAGS_NONE, error);
+    if (!data) { return FALSE; }
+    src = g_strdup("builtin:feed-gate.ini");
+  }
+  gsize len = 0;
+  const char *text = g_bytes_get_data(data, &len);
+  char *sha = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)text, len);
+  h->gate_id = g_strdup_printf("%s#%.8s", src, sha);
+  h->gate = skim_feed_gate_load_data(text, len, h->gate_id, TRUE, error);
+  g_free(sha);
+  g_free(src);
+  g_bytes_unref(data);
+  return h->gate != NULL;
+}
 
 static void text_cb(double freq_hz, const char *text, gpointer user) {
   Band *b = user;
@@ -798,7 +871,7 @@ static void status_build(Hd *h, gboolean print) {
     }
     pol_nd = skim_pipeline_rbn_settle_nodict(h->band[0].p);
   }
-  /* the learned gate in shadow: what it would have held back, all bands */
+  /* the learned gate: what it held back (on) or would have (shadow) */
   const char *fg_id = NULL;
   double fg_thr = 0;
   guint64 fg_spots = 0, fg_below = 0;
@@ -812,9 +885,9 @@ static void status_build(Hd *h, gboolean print) {
   }
   char *jgid = fg_id ? json_str(fg_id) : NULL;
   char *jgate = fg_id
-      ? g_strdup_printf("{\"id\":\"%s\",\"mode\":\"shadow\",\"threshold\":%.2f,"
+      ? g_strdup_printf("{\"id\":\"%s\",\"mode\":\"%s\",\"threshold\":%.2f,"
                         "\"spots\":%" G_GUINT64_FORMAT ",\"below\":%" G_GUINT64_FORMAT "}",
-                        jgid, fg_thr, fg_spots, fg_below)
+                        jgid, gate_on(h) ? "on" : "shadow", fg_thr, fg_spots, fg_below)
       : g_strdup("null");
   g_free(jgid);
   g_string_append_printf(json,
@@ -1014,6 +1087,12 @@ int main(int argc, char **argv) {
       "Console status every N s (0 = off; overrides the config)", "N" },
     { "http-port", 'p', 0, G_OPTION_ARG_INT, &h->http_port,
       "Web status port (0 = off; overrides the config)", "PORT" },
+    { "feed-gate", 0, 0, G_OPTION_ARG_FILENAME, &h->cli_gate,
+      "Learned feed gate model for this start instead of the built-in one "
+      "(must name every feature; overrides the config)", "FILE" },
+    { "feed-gate-mode", 0, 0, G_OPTION_ARG_STRING, &h->cli_gate_mode,
+      "off | shadow (default: score and report) | on (hold back the spots "
+      "below the threshold); overrides the config", "MODE" },
     { NULL, 0, 0, 0, NULL, NULL, NULL },
   };
   GOptionContext *oc = g_option_context_new("— multi-band CW skimmer on a Red Pitaya, no GUI");
@@ -1028,6 +1107,10 @@ int main(int argc, char **argv) {
                                              "headless.ini", NULL);
   if (!config_load(h, &err)) {
     g_printerr("config: %s\n", err->message);
+    return 2;
+  }
+  if (!gate_load(h, &err)) {
+    g_printerr("feed gate: %s\n", err->message);
     return 2;
   }
   g_mutex_init(&h->snap_lock);
@@ -1101,7 +1184,8 @@ int main(int argc, char **argv) {
       .rbn_fresh_s = h->feed_fresh_s,
       .rbn_fold_s = h->feed_fold_s,
       .tap_path = tap,
-      .feed_gate_path = h->feed_gate,
+      .feed_gate = h->gate,
+      .feed_gate_on = gate_on(h),
       .band = b->name,
     };
     b->p = skim_pipeline_new(&pc);
@@ -1117,11 +1201,16 @@ int main(int argc, char **argv) {
     }
   }
   if (h->feed_learn) { g_message("learn: decode tap in %s", learndir); }
-  if (h->feed_gate) {
-    const char *id = h->nb ? skim_pipeline_feed_gate_stats(h->band[0].p, NULL, NULL, NULL)
-                           : NULL;
-    if (id) { g_message("feed gate: %s in SHADOW (logged only)", h->feed_gate); }
+  if (!h->gate) {
+    g_message("feed gate: off");
+  } else if (!h->feed) {
+    g_message("feed gate: %s — no telnet feed, not used", h->gate_id);
+  } else {
+    g_message("feed gate: %s, threshold %.2f, %s", h->gate_id,
+              skim_feed_gate_threshold(h->gate),
+              gate_on(h) ? "ON (holds back the spots below it)" : "SHADOW (logged only)");
   }
+  g_clear_pointer(&h->gate, skim_feed_gate_free);   /* the pipelines hold theirs */
   g_free(learndir);
   g_free(start);
   g_free(logdir);

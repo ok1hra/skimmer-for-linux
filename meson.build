@@ -234,8 +234,16 @@ test('callsign', skimmer_call_test, timeout : 60)
 
 # Learned feed gate: a known ini gives a known p, bad inis are refused,
 # the tracker's window/neighbour features, likeness as skimcmp's similar().
+# The learned weights built into skimmer-headless (weights/: a new model is a
+# new commit of its ini; --feed-gate overrides it for one start).
+weights_res = gnome.compile_resources('skimmer-weights',
+  'weights/weights.gresource.xml',
+  source_dir : 'weights',
+  c_name : 'skim_weights',
+)
+
 skimmer_feed_gate_test = executable('skimmer-feed-gate-test',
-  ['src/feed_gate_test.c'],
+  ['src/feed_gate_test.c', weights_res],
   include_directories : include_directories('src'),
   dependencies : engine_deps,
   link_with : engine_lib,
@@ -319,7 +327,8 @@ test('scp-update', skimmer_scp_test, timeout : 180)
 # Multi-band skimmer without a GUI: one HPSDR P1 receiver (Red Pitaya) with
 # up to 8 RX, one pipeline per band, one telnet feed, console + web status.
 executable('skimmer-headless',
-  ['src/headless_main.c', 'src/app/scp_update.c'],   # updater is GTK-free
+  ['src/headless_main.c', 'src/app/scp_update.c',    # updater is GTK-free
+   weights_res],
   include_directories : [include_directories('src'), engine_inc],
   dependencies : engine_deps + [curl_dep],
   link_with : engine_lib,

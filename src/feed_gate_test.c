@@ -8,6 +8,7 @@
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
+#include <gio/gio.h>
 #include <glib.h>
 #include <glib/gstdio.h>
 #include <math.h>
@@ -134,6 +135,19 @@ int main(void) {
     skim_feed_gate_free(g3);
     g_free(lacks);
     g_string_free(all, TRUE);
+
+    /* the model skimmer-headless runs by default: built in, and it must
+     * pass the strict load it gets there */
+    GBytes *bi = g_resources_lookup_data("/skimmer-for-linux/weights/feed-gate.ini",
+                                         G_RESOURCE_LOOKUP_FLAGS_NONE, &err);
+    gsize bn = 0;
+    const char *bt = bi ? g_bytes_get_data(bi, &bn) : NULL;
+    SkimFeedGate *builtin = bt ? skim_feed_gate_load_data(bt, bn, "builtin", TRUE, &err) : NULL;
+    check("the built-in model (weights/feed-gate.ini) loads strictly", builtin != NULL);
+    if (!builtin) { printf("       (%s)\n", err ? err->message : "?"); }
+    g_clear_error(&err);
+    skim_feed_gate_free(builtin);
+    if (bi) { g_bytes_unref(bi); }
 
     char *missing = g_build_filename(dir, "none.ini", NULL);
     check("refused: a missing file", skim_feed_gate_load(missing, &err) == NULL && err);
