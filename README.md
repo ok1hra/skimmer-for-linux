@@ -12,20 +12,21 @@ hardware requirements low.*
 
 > **This is a fork.** It is maintained by Dan, OK1HRA, from
 > [OK1BR/skimmer-for-linux](https://github.com/OK1BR/skimmer-for-linux).
-> Skimmer for Linux is the work of Richard Fakenberg, OK1BR. The fork has
-> dropped the GTK application: it is a **multi-band skimmer without a GUI**,
-> fed by a Red Pitaya. Please report problems with it here, not upstream.
+> Skimmer for Linux is the work of Richard Fakenberg, OK1BR; the fork has
+> dropped its GTK application. Please report problems with the fork here,
+> not upstream.
 
 `skimmer-headless` takes IQ from one **Red Pitaya** running Pavel Demin's
 `sdr_receiver_hpsdr` (HPSDR Protocol 1), up to 8 receivers at once, one band
 each. Every band runs its own pipeline: a channelizer splits the band into
-125 Hz channels, each channel runs a CW decoder, and validated callsigns go
-through a station table and a feed policy. The CQ spots of all bands go to
+125 Hz channels, each channel runs a CW decoder (and, on the bands that ask
+for it, a second pipeline decodes RTTY from the same IQ), and validated
+callsigns go through a station table and a feed policy. The CQ spots of all bands go to
 **one** telnet feed in the cluster dialect, the CW Skimmer Server model.
 Status comes as a table on the console and as a web page with `/status.json`.
 
 ```
-Red Pitaya ──UDP IQ, 1..8 receivers──► skimmer-headless ──► per band: channelizer ──► CW decode
+Red Pitaya ──UDP IQ, 1..8 receivers──► skimmer-headless ──► per band: channelizer ──► CW / RTTY decode
                                                │                                         │
                                                └── telnet cluster feed ◄── callsigns ◄───┘
 ```
@@ -159,10 +160,17 @@ does not parse stops the start with exit 2 and names the bad line.
 Point a logger or a cluster client at `telnet <host> 7300`. Ctrl+C stops the
 skimmer cleanly and frees the radio.
 
+When every listed radio is busy, or none answers within 30 s, the skimmer
+says which and exits with code 3 — also when the stream is lost later; the
+service (`--install-service`) starts it again a minute later. Eight
+receivers at 96 kHz are about 40 Mb/s of UDP, so **use a wired link**. Over
+Wi-Fi, 192 kHz lost about 30 % of the packets. `[radio] type=mock` replaces
+the radio with synthetic CW on every band (the headless gate uses it).
+
 ### As a service
 
 ```sh
-./build/skimmer-headless --install-service        # [--config FILE] to run another config
+skimmer-headless --install-service                # [--config FILE] to run another config
 systemctl --user enable --now skimmer-headless
 journalctl --user -u skimmer-headless -f
 loginctl enable-linger $USER                      # once: keep running while logged out
@@ -238,13 +246,6 @@ use a tunnel: `ssh -L 8073:127.0.0.1:8073 <host>`, then
 `http://localhost:8073/`. A restart re-executes the skimmer; under a
 supervisor that sets `SKIM_SUPERVISED=1` it exits with code 75 instead.
 
-`[radio] type=mock` replaces the radio with synthetic CW on every band (the
-headless gate uses it). When every listed radio is busy, or none answers within 30 s, the skimmer
-says which and exits with code 3 — also when the stream is lost later; the
-service (`--install-service`) starts it again a minute later. Seven receivers at 96 kHz are about
-35 Mb/s of UDP, so **use a wired link**. Over Wi-Fi, 192 kHz lost about
-30 % of the packets.
-
 ## The feed gate
 
 The learned gate's weights are part of the code
@@ -288,10 +289,12 @@ It needs bash, curl and Python 3, standard library only.
 
 | Path | What |
 | --- | --- |
-| `~/.config/skimmer-for-linux/headless.ini` | Settings |
+| `~/.config/skimmer-for-linux/headless.ini` | Settings (`headless.ini.bak-<UTC>`: the last 10 saved from the web page) |
+| `~/.config/skimmer-for-linux/headless.env` | `SKIM_*` variables for the service (`--install-service`) |
 | `~/.config/skimmer-for-linux/master.scp` | Super Check Partial call list (`.state` records the update rate limits) |
 | `~/.local/share/skimmer-for-linux/headless/` | Decode logs (`[decode] log=true`), decode taps (`learn/`) |
 | `~/.local/share/skimmer-for-linux/models/deepcw/` | DeepCW model (`--fetch-deepcw-model`), its LICENSE and NOTICE |
+| `~/.local/state/skimmer-for-linux/stats.bin` | Seven days of statistics for the web page |
 
 ## Environment variables
 
