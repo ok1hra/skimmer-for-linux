@@ -76,6 +76,13 @@ check "status: the built-in gate in shadow" $?
 [[ $(py 'd["switches"]["SKIM_SCP_URL"]') == http://127.0.0.1:9/ ]]
 check "status: the SKIM_* switches of the start" $?
 [[ $(py 'sum(b["spots"] for b in d["bands"]) > 0') == True ]]; check "status: spots counted" $?
+page=$(curl -s "http://127.0.0.1:$HTTP/")
+[[ $page == *"<title>Skimmer for Linux</title>"* ]]; check "web: the page" $?
+[[ $(curl -s -o /dev/null -w '%{http_code} %{content_type}' "http://127.0.0.1:$HTTP/app.js") == "200 text/javascript"* ]]
+check "web: app.js" $?
+[[ $(curl -s "http://127.0.0.1:$HTTP/api/log") == '[{"t":'*'"text":"skimmer-headless '* ]]; check "web: the log" $?
+[[ $(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$HTTP/../headless.ini") == 404 ]]
+check "web: no path out of the page" $?
 grep -q "band 40m: RTTY decoding is not in skimmer-headless yet" "$T/log"
 check "log: RTTY asked for but not there yet — said so" $?
 grep -q "switch: SKIM_SCP_URL=http://127.0.0.1:9/ (system)" "$T/log"

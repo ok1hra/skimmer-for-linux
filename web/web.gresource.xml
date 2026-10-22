@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <!-- skimmer-headless's web page: static, draws from the JSON endpoints -->
+  <gresource prefix="/skimmer-for-linux/web">
+    <file>index.html</file>
+    <file>app.css</file>
+    <file>app.js</file>
+  </gresource>
+</gresources>

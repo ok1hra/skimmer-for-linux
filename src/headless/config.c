@@ -51,6 +51,9 @@ static const char DEFAULT_CONFIG[] =
   "#gate=feed-gate.ini\n#gate_mode=shadow\n"
   "\n[status]\n# console table every N s (0 = off); web page port (0 = off)\n"
   "console_s=10\nhttp_port=8073\n"
+  "\n[web]\n# who may change the settings from the web page (addresses or\n"
+  "# networks, comma separated); everyone else sees them read-only\n"
+  "settings_from=127.0.0.1,::1\n"
   "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
   "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
   "bands=\nminutes=10\ndir=/var/tmp/skimmer-iq\nstart_utc=\n";
@@ -70,6 +73,7 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_free(cfg->feed_call);
   g_free(cfg->feed_gate);
   g_free(cfg->feed_gate_mode);
+  g_strfreev(cfg->settings_from);
   g_strfreev(cfg->rec_bands);
   g_free(cfg->rec_dir);
   memset(cfg, 0, sizeof(*cfg));
@@ -254,6 +258,29 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
                      ? g_key_file_get_integer(kf, "status", "console_s", NULL) : -1;
   h->http_port = g_key_file_has_key(kf, "status", "http_port", NULL)
                      ? g_key_file_get_integer(kf, "status", "http_port", NULL) : -1;
+
+  char *sf = g_key_file_get_string(kf, "web", "settings_from", NULL);
+  GPtrArray *nets = g_ptr_array_new();
+  char **sp = g_strsplit_set(sf ? sf : "", ", \t", -1);
+  for (char **q = sp; *q && ok; q++) {
+    if (!**q) { continue; }
+    GInetAddressMask *m = g_inet_address_mask_new_from_string(*q, NULL);
+    if (!m) {
+      ok = bad(error, path, "[web] settings_from \"%s\" (an address or address/bits)", *q);
+    } else {
+      g_object_unref(m);
+      g_ptr_array_add(nets, g_strdup(*q));
+    }
+  }
+  g_strfreev(sp);
+  g_free(sf);
+  if (!nets->len) {
+    g_ptr_array_add(nets, g_strdup("127.0.0.1"));
+    g_ptr_array_add(nets, g_strdup("::1"));
+  }
+  g_ptr_array_add(nets, NULL);
+  h->settings_from = (char **)g_ptr_array_free(nets, FALSE);
+  if (!ok) { return FALSE; }
 
   char *rb = g_key_file_get_string(kf, "record", "bands", NULL);
   if (rb && g_strstrip(rb)[0]) {

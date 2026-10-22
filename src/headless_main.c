@@ -45,10 +45,13 @@
 #include <unistd.h>
 
 #include "headless/config.h"
+#include "headless/json.h"
+#include "headless/logring.h"
 #include "headless/record.h"
 #include "headless/scp_update.h"
 #include "headless/source.h"
 #include "headless/switches.h"
+#include "headless/web.h"
 #include "engine/callsign.h"
 #include "engine/pipeline.h"
 #include "engine/rbn_feed.h"
@@ -120,7 +123,6 @@ typedef struct {
   guint           ticks;
 
   GMutex   snap_lock;          /* the web page's copy of the status           */
-  char    *snap_html;
   char    *snap_json;
 } Hd;
 
@@ -299,24 +301,6 @@ static GPtrArray *band_recent(Band *b, guint max) {
   return all;
 }
 
-/* A JSON string body: quote, backslash and control characters escaped,
- * UTF-8 passed through (g_strescape octal-escapes it — not JSON). */
-static char *json_str(const char *in) {
-  GString *o = g_string_new(NULL);
-  for (const guchar *p = (const guchar *)in; *p; p++) {
-    if (*p == '"' || *p == '\\') { g_string_append_c(o, '\\'); g_string_append_c(o, (char)*p); }
-    else if (*p < 0x20) { g_string_append_printf(o, "\\u%04x", *p); }
-    else { g_string_append_c(o, (char)*p); }
-  }
-  return g_string_free(o, FALSE);
-}
-
-static void fmt_age(char *out, gsize n, gint64 us) {
-  const gint64 s = us / G_USEC_PER_SEC;
-  if (s < 60) { g_snprintf(out, n, "%" G_GINT64_FORMAT " s", s); }
-  else { g_snprintf(out, n, "%" G_GINT64_FORMAT " min", s / 60); }
-}
-
 static void status_build(Hd *h, gboolean print) {
   const gint64 now = g_get_monotonic_time();
   const SkimIqSourceStatus *src = &h->src_st;
@@ -328,7 +312,6 @@ static void status_build(Hd *h, gboolean print) {
   const gint64 up_s = (now - h->t_start) / G_USEC_PER_SEC;
 
   GString *con = g_string_new(NULL);
-  GString *html = g_string_new(NULL);
   GString *json = g_string_new(NULL);
   GDateTime *dt = g_date_time_new_now_local();
   char *clock = g_date_time_format(dt, "%H:%M:%S");
@@ -342,34 +325,9 @@ static void status_build(Hd *h, gboolean print) {
       fclients, fclients == 1 ? "" : "s", flines, (guint)skim_callsign_dict_size(),
       up_s / 3600, (int)(up_s / 60 % 60));
 
-  char *esc_state = g_markup_escape_text(src->state, -1);
-  g_string_append_printf(html,
-      "<!doctype html><html><head><meta charset=utf-8>"
-      "<meta name=viewport content='width=device-width,initial-scale=1'>"
-      "<meta http-equiv=refresh content=5><title>Skimmer status</title><style>"
-      ":root{color-scheme:light dark;--fg:#1d1d1f;--bg:#fafafa;--mut:#6b6b70;--ln:#ddd;--ok:#1a7f37;--cq:#0b62c4}"
-      "@media(prefers-color-scheme:dark){:root{--fg:#e6e6e6;--bg:#18181b;--mut:#9a9aa2;--ln:#333;--ok:#4ac26b;--cq:#5aa9ff}}"
-      "body{font:14px/1.4 system-ui,sans-serif;margin:16px;color:var(--fg);background:var(--bg)}"
-      "h1{font-size:18px;margin:0 0 4px}.mut{color:var(--mut)}"
-      "table{border-collapse:collapse;margin:12px 0;width:100%%;max-width:900px}"
-      "th,td{padding:4px 8px;border-bottom:1px solid var(--ln);text-align:right;white-space:nowrap}"
-      "th:first-child,td:first-child{text-align:left}th{color:var(--mut);font-weight:500}"
-      ".bands{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;max-width:1200px}"
-      ".b{border:1px solid var(--ln);border-radius:8px;padding:8px 10px}.b h2{font-size:15px;margin:0}"
-      ".b table{margin:6px 0 0}.cq{color:var(--cq);font-weight:600}.on{color:var(--ok)}"
-      ".wrap{overflow-x:auto}</style></head><body>"
-      "<h1>Skimmer for Linux — headless</h1><div class=mut>%s · <span class=%s>%s</span><br>"
-      "lost %.2f %% · %.0f packets/s · CPU %.0f %% · telnet feed :%d (%u client%s, %"
-      G_GUINT64_FORMAT " lines) · MASTER.SCP %u calls · up %" G_GINT64_FORMAT ":%02d</div>"
-      "<div class=wrap><table><tr><th>band</th><th>centre kHz</th><th>span kHz</th>"
-      "<th>decoders</th><th>active</th><th>stations</th><th>spots</th><th>drops</th><th>kS/s</th></tr>",
-      clock, src->streaming ? "on" : "mut", esc_state, lost_pct, h->pps, h->cpu_pct,
-      h->feed ? h->cfg.feed_port : 0, fclients, fclients == 1 ? "" : "s", flines,
-      (guint)skim_callsign_dict_size(), up_s / 3600, (int)(up_s / 60 % 60));
-  g_free(esc_state);
 
-  char *jstate = json_str(src->state);
-  char *jhost = json_str(src->host);
+  char *jstate = skim_json_str(src->state);
+  char *jhost = skim_json_str(src->host);
   /* the decoder that actually runs (deepcw falls back to cw-v2 without its
    * runtime or model) — a feed comparison needs to know which one spotted */
   const char *engine = h->nb && h->band[0].p ? skim_pipeline_cw_engine_name(h->band[0].p) : "";
@@ -401,7 +359,7 @@ static void status_build(Hd *h, gboolean print) {
     fg_spots += n;
     fg_below += k;
   }
-  char *jgid = fg_id ? json_str(fg_id) : NULL;
+  char *jgid = fg_id ? skim_json_str(fg_id) : NULL;
   char *jgate = fg_id
       ? g_strdup_printf("{\"id\":\"%s\",\"mode\":\"%s\",\"threshold\":%.2f,"
                         "\"spots\":%" G_GUINT64_FORMAT ",\"below\":%" G_GUINT64_FORMAT "}",
@@ -409,7 +367,7 @@ static void status_build(Hd *h, gboolean print) {
       : g_strdup("null");
   g_free(jgid);
   g_string_append_printf(json,
-      "{\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
+      "{\"version\":\"%s\",\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
       "\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
@@ -418,7 +376,7 @@ static void status_build(Hd *h, gboolean print) {
       "\"feed_gate\":%s,\"switches\":%s,"
       "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
-      clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
+      SKIMMER_VERSION, clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
       h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_nd, pol_fresh,
       pol_fold, folded, jgate, h->switches_json,
       h->feed ? h->cfg.feed_port : 0, fclients, flines,
@@ -427,7 +385,6 @@ static void status_build(Hd *h, gboolean print) {
   g_free(jgate);
   g_free(jhost);
 
-  GString *cards = g_string_new("<div class=bands>");
   for (guint i = 0; i < h->nb; i++) {
     Band *b = &h->band[i];
     BandStat s;
@@ -439,13 +396,7 @@ static void status_build(Hd *h, gboolean print) {
         "  %5" G_GUINT64_FORMAT "  %4.0f\n",
         b->name, b->centre_hz / 1000.0, lo, hi, s.channels, s.active, s.stations,
         s.spots, s.drops, b->ksps);
-    g_string_append_printf(html,
-        "<tr><td>%s</td><td>%.1f</td><td>%.0f–%.0f</td><td>%u</td><td>%u</td>"
-        "<td>%u</td><td>%" G_GUINT64_FORMAT "</td><td>%" G_GUINT64_FORMAT
-        "</td><td>%.0f</td></tr>",
-        b->name, b->centre_hz / 1000.0, lo, hi, s.channels, s.active, s.stations,
-        s.spots, s.drops, b->ksps);
-    char *jname = json_str(b->name);
+    char *jname = skim_json_str(b->name);
     g_string_append_printf(json,
         "%s{\"band\":\"%s\",\"centre_hz\":%.0f,\"engine\":\"%s\",\"decoders\":%u,\"active\":%u,"
         "\"stations\":%u,\"spots\":%" G_GUINT64_FORMAT ",\"drops\":%" G_GUINT64_FORMAT
@@ -456,49 +407,24 @@ static void status_build(Hd *h, gboolean print) {
     g_free(jname);
 
     GPtrArray *rec = band_recent(b, RECENT_STATIONS);
-    g_string_append_printf(cards, "<div class=b><h2>%s <span class=mut>· %u stations</span></h2>"
-                           "<table><tr><th>call</th><th>kHz</th><th>wpm</th><th>dB</th>"
-                           "<th>heard</th></tr>", b->name, s.stations);
     for (guint k = 0; k < rec->len; k++) {
       const SkimStation *st = rec->pdata[k];
-      char age[24];
-      fmt_age(age, sizeof(age), now - st->last_heard);
-      char *call = g_markup_escape_text(st->call, -1);
-      char *jcall = json_str(st->call);
-      g_string_append_printf(cards,
-          "<tr><td%s>%s</td><td>%.1f</td><td>%.0f</td><td>%.0f</td><td>%s</td></tr>",
-          st->cq ? " class=cq" : "", call, st->freq_hz / 1000.0, st->speed,
-          st->snr_db, age);
+      char *jcall = skim_json_str(st->call);
       g_string_append_printf(json,
           "%s{\"call\":\"%s\",\"freq_hz\":%.0f,\"wpm\":%.0f,\"snr_db\":%.0f,"
           "\"cq\":%s,\"age_s\":%" G_GINT64_FORMAT "}",
           k ? "," : "", jcall, st->freq_hz, st->speed, st->snr_db,
           st->cq ? "true" : "false", (now - st->last_heard) / G_USEC_PER_SEC);
-      g_free(call);
       g_free(jcall);
     }
-    if (!rec->len) {
-      g_string_append(cards, "<tr><td colspan=5 class=mut>nothing yet</td></tr>");
-    }
-    g_string_append(cards, "</table></div>");
     g_string_append(json, "]}");
     g_ptr_array_unref(rec);
   }
-  g_string_append(cards, "</div>");
-  g_string_append(html, "</table></div><div class=mut>decoders = channel "
-                  "decoders in the band · active = decoding running text now (noise fragments don't count) · "
-                  "<span class=cq>blue</span> = heard calling CQ · refreshes every 5 s · "
-                  "<a href=status.json>status.json</a></div>");
-  g_string_append(html, cards->str);
-  g_string_append(html, "</body></html>");
   g_string_append(json, "]}");
-  g_string_free(cards, TRUE);
   g_free(clock);
 
   g_mutex_lock(&h->snap_lock);
-  g_free(h->snap_html);
   g_free(h->snap_json);
-  h->snap_html = g_string_free(html, FALSE);
   h->snap_json = g_string_free(json, FALSE);
   g_mutex_unlock(&h->snap_lock);
 
@@ -545,41 +471,20 @@ static gboolean tick(gpointer data) {
   return G_SOURCE_CONTINUE;
 }
 
-/* ---- web page -------------------------------------------------------------------- */
+/* ---- web page (headless/web.h) --------------------------------------------------- */
 
-static gboolean http_run(GThreadedSocketService *svc, GSocketConnection *conn,
-                         GObject *src, gpointer user) {
-  (void)svc; (void)src;
+static char *web_status(GHashTable *q, guint *st, const char **type, gpointer user) {
+  (void)q; (void)st; (void)type;
   Hd *h = user;
-  GInputStream *in = g_io_stream_get_input_stream(G_IO_STREAM(conn));
-  GOutputStream *out = g_io_stream_get_output_stream(G_IO_STREAM(conn));
-  g_socket_set_timeout(g_socket_connection_get_socket(conn), 5);
-  char req[2048];
-  const gssize n = g_input_stream_read(in, req, sizeof(req) - 1, NULL, NULL);
-  if (n <= 0) { return TRUE; }
-  req[n] = '\0';
-  const gboolean want_json = g_str_has_prefix(req, "GET /status.json");
-  const gboolean root = g_str_has_prefix(req, "GET / ") || g_str_has_prefix(req, "GET /index");
   g_mutex_lock(&h->snap_lock);
-  char *body = g_strdup(want_json ? h->snap_json : root ? h->snap_html : NULL);
+  char *body = g_strdup(h->snap_json ? h->snap_json : "{}");
   g_mutex_unlock(&h->snap_lock);
-  char *head;
-  if (!body) {
-    body = g_strdup("not found\n");
-    head = g_strdup_printf("HTTP/1.0 404 Not Found\r\nContent-Type: text/plain\r\n"
-                           "Content-Length: %zu\r\nConnection: close\r\n\r\n", strlen(body));
-  } else {
-    head = g_strdup_printf("HTTP/1.0 200 OK\r\nContent-Type: %s\r\n"
-                           "Cache-Control: no-store\r\nContent-Length: %zu\r\n"
-                           "Connection: close\r\n\r\n",
-                           want_json ? "application/json" : "text/html; charset=utf-8",
-                           strlen(body));
-  }
-  g_output_stream_write_all(out, head, strlen(head), NULL, NULL, NULL);
-  g_output_stream_write_all(out, body, strlen(body), NULL, NULL, NULL);
-  g_free(head);
-  g_free(body);
-  return TRUE;
+  return body;
+}
+
+static char *web_log(GHashTable *q, guint *st, const char **type, gpointer user) {
+  (void)q; (void)st; (void)type; (void)user;
+  return skim_log_ring_json();
 }
 
 /* ---- main ------------------------------------------------------------------------ */
@@ -597,6 +502,7 @@ static gboolean on_signal(gpointer user) {
 }
 
 int main(int argc, char **argv) {
+  skim_log_ring_install();
   Hd *h = g_new0(Hd, 1);
   h->console_s = -1;
   h->http_port = -1;
@@ -826,19 +732,21 @@ int main(int argc, char **argv) {
               "(0 = off)", fs, fh, fset, ffr, ffo);
   }
 
-  GSocketService *web = NULL;
+  SkimHdWeb *web = NULL;
   if (h->http_port > 0) {
-    web = g_threaded_socket_service_new(4);
-    if (!g_socket_listener_add_inet_port(G_SOCKET_LISTENER(web), (guint16)h->http_port,
-                                         NULL, &err)) {
-      g_warning("web: port %d: %s — web status off", h->http_port, err->message);
+    const SkimHdWebHooks hooks = {
+      .status = web_status, .log = web_log, .user = h,
+    };
+    web = skim_hd_web_new((guint16)h->http_port, (const char *const *)c->settings_from,
+                          &hooks, &err);
+    if (!web) {
+      g_warning("web: port %d: %s — web page off", h->http_port, err->message);
       g_clear_error(&err);
-      g_clear_object(&web);
     } else {
-      g_signal_connect(web, "run", G_CALLBACK(http_run), h);
-      g_socket_service_start(web);
-      g_message("web: status on http://<this machine>:%d/ (JSON: /status.json)",
-                h->http_port);
+      char *from = g_strjoinv(", ", c->settings_from);
+      g_message("web: http://<this machine>:%d/ (JSON: /status.json); settings "
+                "from %s", h->http_port, from);
+      g_free(from);
     }
   }
 
@@ -855,10 +763,7 @@ int main(int argc, char **argv) {
 
   /* Teardown: the radio first (stop — only if the stream is still ours),
    * then the engines, then the feed they spot into. */
-  if (web) {
-    g_socket_service_stop(web);
-    g_object_unref(web);
-  }
+  g_clear_pointer(&web, skim_hd_web_free);
   g_clear_pointer(&h->src, skim_iq_source_free);
   for (guint i = 0; i < h->nb; i++) {
     skim_pipeline_free(h->band[i].p);

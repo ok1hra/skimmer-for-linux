@@ -31,6 +31,7 @@ fftw3f_dep  = dependency('fftw3f')            # M2: channelizer FFT (float)
 fftw3_dep   = dependency('fftw3')             # WDSP fir.c min-phase path (double)
 threads_dep = dependency('threads')
 curl_dep  = dependency('libcurl', version : '>=7.85')  # MASTER.SCP updater
+soup_dep  = dependency('libsoup-3.0', version : '>=3.0') # the web page
 
 # WDSP subset (FIR designer + resampler) — declares wdsp_dep. VENDOR.md there
 # records provenance and the subset rationale.
@@ -303,18 +304,27 @@ test('scp-update', skimmer_scp_test, timeout : 180)
 # The product layer (src/headless/): config, IQ sources, recording, switches.
 headless_sources = files(
   'src/headless/config.c',          # headless.ini, parsed and checked
+  'src/headless/logring.c',         # the last log lines (/api/log)
   'src/headless/record.c',          # [record]: a band's IQ to disk
   'src/headless/scp_update.c',      # MASTER.SCP updater
   'src/headless/source.c',          # IQ sources: the interface
   'src/headless/source_hpsdr_p1.c', # … a Red Pitaya (HPSDR P1)
   'src/headless/source_mock.c',     # … synthetic CW (the headless gate)
   'src/headless/switches.c',        # the SKIM_* switches a start runs with
+  'src/headless/web.c',             # the web page (libsoup 3)
+)
+
+# The web page's static files (web/), built in.
+web_res = gnome.compile_resources('skimmer-web',
+  'web/web.gresource.xml',
+  source_dir : 'web',
+  c_name : 'skim_web',
 )
 
 skimmer_headless = executable('skimmer-headless',
-  ['src/headless_main.c', headless_sources, weights_res],
+  ['src/headless_main.c', headless_sources, weights_res, web_res],
   include_directories : [include_directories('src'), engine_inc],
-  dependencies : engine_deps + [curl_dep],
+  dependencies : engine_deps + [curl_dep, soup_dep],
   link_with : engine_lib,
 )
 

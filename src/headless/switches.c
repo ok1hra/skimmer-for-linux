@@ -1,6 +1,8 @@
 /* switches.c — see switches.h. Part of skimmer-for-linux. GPL-3.0-or-later. */
 #include "switches.h"
 
+#include "json.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -64,16 +66,6 @@ void skim_switches_print_known(void) {
   }
 }
 
-static char *json_str(const char *in) {
-  GString *o = g_string_new(NULL);
-  for (const guchar *p = (const guchar *)in; *p; p++) {
-    if (*p == '"' || *p == '\\') { g_string_append_c(o, '\\'); g_string_append_c(o, (char)*p); }
-    else if (*p < 0x20) { g_string_append_printf(o, "\\u%04x", *p); }
-    else { g_string_append_c(o, (char)*p); }
-  }
-  return g_string_free(o, FALSE);
-}
-
 static gint by_name(gconstpointer a, gconstpointer b) {
   return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
@@ -100,7 +92,7 @@ char *skim_switches_scan(void) {
       g_warning("switch: %s=%s is not a switch the engine reads — a typo? "
                 "It changes nothing", name, val);
     }
-    char *jn = json_str(name), *jv = json_str(val);
+    char *jn = skim_json_str(name), *jv = skim_json_str(val);
     g_string_append_printf(js, "%s\"%s\":\"%s\"", i ? "," : "", jn, jv);
     g_free(jn);
     g_free(jv);

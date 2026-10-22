@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skimmer for Linux</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header>
+  <div class="title">
+    <h1>Skimmer for Linux</h1>
+    <span id="version" class="mut"></span>
+  </div>
+  <div id="radio" class="radio"><span class="dot"></span><span id="radio-text">…</span></div>
+  <nav>
+    <button data-tab="status" class="on">Status</button>
+    <button data-tab="stats">Statistics</button>
+    <button data-tab="settings">Settings</button>
+    <button data-tab="log">Log</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-status">
+    <div id="tiles" class="tiles"></div>
+    <div class="wrap"><table id="bands" class="grid"></table></div>
+    <p class="mut note">decoders = channel decoders in the band · active = decoding running
+      text now (noise fragments don't count) · <span class="cq">CQ</span> = heard calling</p>
+    <div id="recent" class="cards"></div>
+    <details class="more">
+      <summary>Feed policy, learned gate and switches</summary>
+      <div id="policy"></div>
+    </details>
+  </section>
+
+  <section id="tab-stats" hidden>
+    <p class="mut">Statistics arrive with the next update.</p>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <p class="mut">Settings arrive with the next update.</p>
+  </section>
+
+  <section id="tab-log" hidden>
+    <pre id="log" class="log"></pre>
+  </section>
+</main>
+
+<footer class="mut">
+  <a href="status.json">status.json</a> · <a href="stats.json">stats.json</a> ·
+  <span id="updated"></span>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>

@@ -16,6 +16,9 @@
  *   [feed]   call, port (0 = off), min_score, min_hearings, settle_s,
  *            settle_nodict_s, fresh_s, fold_s, learn, gate, gate_mode
  *   [status] console_s (0 = quiet), http_port (0 = no web page)
+ *   [web]    settings_from — the addresses / networks that may change the
+ *            settings from the web page (a.b.c.d, a.b.c.d/n, ::1), default
+ *            127.0.0.1,::1; editable here only, never from the page
  *   [record] bands, minutes, dir, start_utc (HH:MM)
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
@@ -74,6 +77,8 @@ typedef struct {
   /* [status] — -1 = not in the file */
   int              console_s;
   int              http_port;
+  /* [web] */
+  char           **settings_from;     /* NULL-terminated, never empty list  */
   /* [record] */
   char           **rec_bands;         /* NULL = no recording                 */
   double           rec_minutes;

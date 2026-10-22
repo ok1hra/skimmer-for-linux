@@ -1,0 +1,69 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1d1d1f; --bg: #fafafa; --panel: #ffffff; --mut: #6b6b70; --ln: #e2e2e6;
+  --ok: #1a7f37; --warn: #9a6700; --bad: #c62828; --cq: #0b62c4; --accent: #0b62c4;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e6e6e6; --bg: #17171a; --panel: #1f1f23; --mut: #9a9aa2; --ln: #333338;
+    --ok: #4ac26b; --warn: #d4a72c; --bad: #ff6b6b; --cq: #5aa9ff; --accent: #5aa9ff;
+  }
+}
+* { box-sizing: border-box; }
+body { font: 14px/1.45 system-ui, sans-serif; margin: 0; color: var(--fg); background: var(--bg); }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px;
+         padding: 12px 16px; border-bottom: 1px solid var(--ln); background: var(--panel);
+         position: sticky; top: 0; z-index: 1; }
+.title { display: flex; align-items: baseline; gap: 8px; }
+h1 { font-size: 17px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 6px; }
+.mut { color: var(--mut); }
+.radio { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 280px; }
+.radio #radio-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--mut); flex: none; }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+nav { display: flex; gap: 4px; }
+nav button { font: inherit; border: 1px solid var(--ln); background: transparent; color: var(--fg);
+             padding: 4px 12px; border-radius: 6px; cursor: pointer; }
+nav button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+main { padding: 16px; max-width: 1280px; }
+footer { padding: 8px 16px 24px; font-size: 12px; }
+footer a { color: inherit; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px;
+         margin-bottom: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--ln); border-radius: 8px; padding: 8px 10px; }
+.tile .k { font-size: 12px; color: var(--mut); }
+.tile .v { font-size: 20px; font-variant-numeric: tabular-nums; }
+.tile .v small { font-size: 12px; color: var(--mut); }
+.wrap { overflow-x: auto; }
+table.grid { border-collapse: collapse; width: 100%; background: var(--panel);
+             border: 1px solid var(--ln); border-radius: 8px; }
+.grid th, .grid td { padding: 5px 10px; border-bottom: 1px solid var(--ln); text-align: right;
+                     white-space: nowrap; font-variant-numeric: tabular-nums; }
+.grid th:first-child, .grid td:first-child { text-align: left; }
+.grid th { color: var(--mut); font-weight: 500; font-size: 12px; }
+.grid tr:last-child td { border-bottom: 0; }
+.note { font-size: 12px; margin: 6px 0 14px; }
+.cq { color: var(--cq); font-weight: 600; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 10px; }
+.card { background: var(--panel); border: 1px solid var(--ln); border-radius: 8px; padding: 8px 10px; }
+.card table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.card td, .card th { padding: 2px 4px; text-align: right; white-space: nowrap; }
+.card td:first-child, .card th:first-child { text-align: left; }
+.card th { color: var(--mut); font-weight: 500; font-size: 12px; }
+.more { margin-top: 16px; }
+.more summary { cursor: pointer; color: var(--mut); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 8px 0;
+      font-variant-numeric: tabular-nums; }
+.kv dt { color: var(--mut); }
+.kv dd { margin: 0; font-family: var(--mono); font-size: 13px; word-break: break-all; }
+.log { background: var(--panel); border: 1px solid var(--ln); border-radius: 8px; padding: 10px;
+       font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word;
+       max-height: 75vh; overflow: auto; margin: 0; }
+.log .warn { color: var(--warn); } .log .crit, .log .error { color: var(--bad); }
+.warnbox { border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; }
+@media (max-width: 600px) {
+  main { padding: 12px; }
+  .tile .v { font-size: 17px; }
+}
