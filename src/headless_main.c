@@ -1176,7 +1176,7 @@ int main(int argc, char **argv) {
   }
   g_ptr_array_add(av, NULL);
   h->argv = (char **)g_ptr_array_free(av, FALSE);
-  GOptionContext *oc = g_option_context_new("— multi-band CW skimmer on a Red Pitaya, no GUI");
+  GOptionContext *oc = g_option_context_new("— multi-band CW and RTTY skimmer on a Red Pitaya, no GUI");
   g_option_context_add_main_entries(oc, opts, NULL);
   GError *err = NULL;
   if (!g_option_context_parse(oc, &argc, &argv, &err)) {
