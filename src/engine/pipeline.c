@@ -227,6 +227,9 @@ struct _SkimPipeline {
   FILE             *dlog;
   SkimGateLog      *glog;                      /* feed-gate learning logs    */
   SkimFeedGate      *fgate;                     /* learned gate (a reference) */
+  SkimRttyPairs     *pairs;                     /* cfg.rtty_pairs (a reference) */
+  double            *pair_hz;                   /* RTTY: this block's held pairs */
+  guint64            rtty_supp;                 /* CW: decodes dropped on a pair */
   SkimFeedGateTrack *fgtrack;                   /* its features               */
   char              *band;
   gint              fg_spots, fg_below;        /* atomic: status thread reads */
@@ -404,6 +407,7 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
   SkimPipeline *p = g_new0(SkimPipeline, 1);
   p->cfg = *cfg;
   p->cw_engine = cw_engine_pick(cfg);
+  p->pairs = skim_rtty_pairs_ref(cfg->rtty_pairs);
   p->host = g_strdup(cfg->host ? cfg->host
                     : cfg->source == SKIM_PIPELINE_SOURCE_HPSDR ? "192.168.1.21"
                                                                 : "127.0.0.1");
@@ -558,6 +562,8 @@ void skim_pipeline_free(SkimPipeline *p) {
   }
   g_clear_pointer(&p->glog, skim_gatelog_close);
   g_clear_pointer(&p->fgate, skim_feed_gate_free);
+  g_clear_pointer(&p->pairs, skim_rtty_pairs_unref);
+  g_clear_pointer(&p->pair_hz, g_free);
   g_clear_pointer(&p->fgtrack, skim_feed_gate_track_free);
   g_free(p->band);
   IqBlock *b;
@@ -945,6 +951,7 @@ static void bank_build(SkimPipeline *p, double rate) {
   }
   p->bank_rate = rate;
   p->nchan = skim_channelizer_count(p->bank);
+  g_clear_pointer(&p->pair_hz, g_free);       /* sized for the old bank   */
   p->dec = g_new0(gpointer, p->nchan * NSLOT);
   p->ext = g_new0(SkimCallsignExtractor *, p->nchan * NSLOT);
   p->sgen = g_new0(guint, p->nchan * NSLOT);
@@ -1307,6 +1314,16 @@ static void dispatch_hits(SkimPipeline *p, const IqBlock *b,
        * double every draft char. Extractor/station/spot paths read d.text
        * as ever. Only meaningful for backends with the ops hook — v1 never
        * writes the field (stack garbage otherwise, gate-caught). */
+      /* On a copied RTTY pair (rtty_pairs.h): an FSK tone read as CW. The
+       * decode log has it; the pane, the extractor and the station table
+       * do not. */
+      if (p->pairs && p->cfg.mode == SKIM_PIPELINE_MODE_CW && d.text[0] &&
+          skim_rtty_pairs_covers(p->pairs, pipe_now_us(p), sig_hz)) {
+        p->rtty_supp++;
+        g_free(h->aux);
+        hit_free_ops(h->ops);
+        continue;
+      }
       const gboolean pane_own = cw->take_pane_op && d.pane_own;
       if (p->text_cb && shown[0] && !pane_own) {
         p->text_cb(sig_hz, shown, p->text_user);
@@ -1393,6 +1410,20 @@ static void hold_pump(SkimPipeline *p, const IqBlock *b) {
     }
   }
   if (p->hits->len) { dispatch_hits(p, b, cw); }
+}
+
+/* RTTY: the pairs the bank copies after this block, to the band's board. */
+static void pairs_publish(SkimPipeline *p, const IqBlock *b, const SkimDecodeBackend *be) {
+  if (!p->pair_hz) { p->pair_hz = g_new(double, p->nchan); }
+  guint n = 0;
+  for (guint c = 0; c < p->nchan; c++) {
+    double off;
+    gpointer dec = p->dec[SL(c, WIDE_LANE)];
+    if (dec && be->held_pair(dec, &off)) {
+      p->pair_hz[n++] = b->center_hz + skim_channelizer_offset_hz(p->bank, c) + off;
+    }
+  }
+  skim_rtty_pairs_publish(p->pairs, pipe_now_us(p), p->pair_hz, n);
 }
 
 static void process_block(SkimPipeline *p, IqBlock *b) {
@@ -1581,6 +1612,7 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
   }
 
   dispatch_hits(p, b, cw);
+  if (p->pairs && cw->held_pair) { pairs_publish(p, b, cw); }
 }
 
 static gpointer engine_thread(gpointer data) {
@@ -1871,6 +1903,8 @@ guint skim_pipeline_stations(const SkimPipeline *p) {
   return skim_station_table_size(p->stations);
 }
 guint64 skim_pipeline_dropped_blocks(const SkimPipeline *p) { return p->dropped; }
+
+guint64 skim_pipeline_rtty_suppressed(const SkimPipeline *p) { return p->rtty_supp; }
 
 guint skim_pipeline_channels(const SkimPipeline *p) { return p->nchan; }
 

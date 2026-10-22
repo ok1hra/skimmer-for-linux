@@ -47,6 +47,12 @@
  * out is written as "<UTC ISO> <kHz> <call> <dB> <wpm> CQ|-" — UTC from the
  * recording's start time (WAV auxi chunk or the .meta start_unix).
  *
+ * SKIM_REPLAY_RTTY_PAIRS=1 (CW) runs an RTTY pipeline beside the CW one on
+ * the same IQ, as skimmer-headless does on a "cw,rtty" band, and the CW
+ * pipeline drops the decodes on the pairs it copies (rtty_pairs.h — the
+ * [decode] suppress_cw_on_rtty switch). Its output is the CW pipeline's,
+ * plus how many decodes were dropped.
+ *
  * SKIM_REPLAY_TAP=<file> / SKIM_REPLAY_ROWS=<file> write the feed-gate
  * learning logs (a decode tap and the gate's rows, gatelog.h) — with
  * SKIM_REPLAY_FEED set the rows carry the feed's events too.
@@ -454,10 +460,24 @@ int main(int argc, char **argv) {
    * replay runs DeepCW inference INLINE (deterministic, stream order) —
    * the app uses the async workers. */
   g_setenv("SKIM_DEEPCW_SYNC", "1", FALSE);
+  SkimPipeline *rp = NULL;                 /* SKIM_REPLAY_RTTY_PAIRS: RTTY beside */
+  const char *penv = g_getenv("SKIM_REPLAY_RTTY_PAIRS");
+  if (!rtty && penv && penv[0] && strcmp(penv, "0") != 0) {
+    cfg.rtty_pairs = skim_rtty_pairs_new();
+    const SkimPipelineConfig rc = { .mode = SKIM_PIPELINE_MODE_RTTY,
+                                    .rtty_pairs = cfg.rtty_pairs };
+    rp = skim_pipeline_new(&rc);
+    GError *rerr = NULL;
+    if (!skim_pipeline_start_offline(rp, &rerr)) {
+      fprintf(stderr, "FAIL — RTTY beside: %s\n", rerr ? rerr->message : "?");
+      return 1;
+    }
+  }
   SkimPipeline *p = skim_pipeline_new(&cfg);
-  printf("=== skimmer-replay %s — %.0f Hz, centre %.0f Hz, %s, engine %s, "
+  printf("=== skimmer-replay %s — %.0f Hz, centre %.0f Hz, %s%s, engine %s, "
          "dict %s ===\n",
          path, rate, center, rtty ? "RTTY" : "CW",
+         rp ? " (off the RTTY pairs an RTTY pipeline copies)" : "",
          skim_pipeline_cw_engine_name(p), cfg.dict_path ? "yes" : "NO");
   g_free(dict);
   g_stations = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
@@ -518,6 +538,7 @@ int main(int argc, char **argv) {
       const gsize i0 = a > 0 ? (gsize)a : 0, i1 = z < (double)n ? (gsize)z : n;
       memset(buf + 2 * i0, 0, (i1 - i0) * 2 * sizeof(float));
     }
+    if (rp) { skim_pipeline_feed(rp, buf, (guint)n, rate, center); }
     skim_pipeline_feed(p, buf, (guint)n, rate, center);
     frames += n;
   }
@@ -525,6 +546,7 @@ int main(int argc, char **argv) {
   if (feed) {                          /* let the held calls settle          */
     memset(buf, 0, sizeof(buf));
     for (guint64 q = 0; q < (guint64)(10 * rate); q += BLK) {
+      if (rp) { skim_pipeline_feed(rp, buf, BLK, rate, center); }
       skim_pipeline_feed(p, buf, BLK, rate, center);
     }
   }
@@ -557,6 +579,10 @@ int main(int argc, char **argv) {
          stream, wall, stream / MAX(wall, 0.001), frames, g_fragments,
          rows->len);
   printf("decode log: %s\n", dlog);
+  if (rp) {
+    printf("on RTTY pairs: %" G_GUINT64_FORMAT " CW decodes dropped\n",
+           skim_pipeline_rtty_suppressed(p));
+  }
   if (feed) {
     double ms, ss, fs;
     guint mh;
@@ -569,6 +595,11 @@ int main(int argc, char **argv) {
   g_ptr_array_free(rows, TRUE);
   g_hash_table_destroy(g_stations);
   skim_pipeline_free(p);
+  if (rp) {
+    skim_pipeline_stop(rp);
+    skim_pipeline_free(rp);
+    skim_rtty_pairs_unref(cfg.rtty_pairs);
+  }
   if (feed) { skim_rbn_feed_free(feed); }
   if (g_spots) { fclose(g_spots); }
   g_free(dlog);

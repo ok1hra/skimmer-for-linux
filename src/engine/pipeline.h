@@ -15,6 +15,7 @@
 #include "decode.h"
 #include "feed_gate.h"
 #include "rbn_feed.h"
+#include "rtty_pairs.h"
 #include "station.h"
 
 G_BEGIN_DECLS
@@ -134,6 +135,13 @@ typedef struct {
   /* The gate DECIDES: a line it scores below its threshold does not go on
    * the wire (gatelog event "gate_drop"). FALSE = shadow. */
   gboolean     feed_gate_on;
+
+  /* RTTY beside CW on one band (rtty_pairs.h; borrowed, the pipeline takes
+   * a reference). An RTTY pipeline publishes the pairs it copies into it;
+   * a CW pipeline given it drops the decodes whose carrier lies on one —
+   * no pane text, no extractor, no candidates (the decode log keeps them).
+   * NULL = neither: the CW pipeline is byte-for-byte what it was. */
+  SkimRttyPairs *rtty_pairs;
 } SkimPipelineConfig;
 
 typedef struct _SkimPipeline SkimPipeline;
@@ -275,6 +283,8 @@ guint64 skim_pipeline_spots(const SkimPipeline *p);
 guint64 skim_pipeline_rbn_spots(const SkimPipeline *p);
 guint   skim_pipeline_stations(const SkimPipeline *p);
 guint64 skim_pipeline_dropped_blocks(const SkimPipeline *p);
+/* CW decodes dropped for lying on an RTTY pair (cfg.rtty_pairs). */
+guint64 skim_pipeline_rtty_suppressed(const SkimPipeline *p);
 /* Decoder channels in the bank (0 until the first block sized it). */
 guint   skim_pipeline_channels(const SkimPipeline *p);
 /* HPSDR source: frames zero-filled for lost UDP packets (0 for TCI). */

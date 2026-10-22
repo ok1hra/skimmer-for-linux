@@ -637,6 +637,14 @@ static void rtty_resync(gpointer state) {
   st->ms_pos = 0;
 }
 
+static gboolean rtty_held_pair(gpointer state, double *centre_hz) {
+  const RttyState *st = state;
+  if (!st->acq || !st->sq_open)
+    return FALSE;
+  *centre_hz = st->center_hz;
+  return TRUE;
+}
+
 const SkimDecodeBackend *skim_decode_rtty(void) {
   static const SkimDecodeBackend backend = {
     .name           = "rtty",
@@ -647,6 +655,7 @@ const SkimDecodeBackend *skim_decode_rtty(void) {
     .tone_offset_hz = rtty_tone_offset_hz,
     .set_freq       = rtty_set_freq,
     .resync         = rtty_resync,
+    .held_pair      = rtty_held_pair,
   };
   return &backend;
 }

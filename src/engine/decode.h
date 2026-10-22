@@ -117,6 +117,12 @@ struct _SkimDecodeBackend {
    * A backend without the hook is left alone through the hold, as before.
    * Optional. */
   void (*hold_begin)(gpointer state);
+
+  /* An FSK backend: TRUE while the channel COPIES a pair — acquired and
+   * its squelch open — with the pair's centre offset in the channel (Hz).
+   * The pipeline publishes it (rtty_pairs.h) so the band's CW decoders can
+   * stay off the RTTY station. Optional. */
+  gboolean (*held_pair)(gpointer state, double *centre_hz);
 };
 
 G_END_DECLS
