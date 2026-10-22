@@ -56,7 +56,6 @@ engine_sources = [
   'src/engine/spot_out.c',     # M5/M6: spot policy — dedup, rate, sinks
   'src/engine/dup_query.c',    # logbook dup lookup (UDP 2238) → spot colour
   'src/engine/rbn_feed.c',     # M6: RBN telnet server (CW Skimmer dialect)
-  'src/engine/spectrum.c',     # M8: band spectrum rows for the waterfall
   'src/engine/pipeline.c',     # M5: the engine assembled end to end
   'src/engine/gatelog.c',      # feed-gate learning logs (decode tap + rows)
   'src/engine/feed_gate.c',    # the learned feed gate (shadow mode)

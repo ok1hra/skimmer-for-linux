@@ -101,7 +101,7 @@ here; what was done and why is in git.
 - **Milestones M0–M7 are in the engine:** TCI ingest, channelizer, CW (v1
   classical, v2 semi-Markov Viterbi), callsign extraction/validation, the spot
   pipeline, the local telnet feed, RTTY (45.45 Bd). M8 (the waterfall) went
-  with the GUI; the engine's spectrum tap is still wired in pipeline.c.
+  with the GUI, and so did the engine's spectrum tap.
 - **CW backend: v2 is the default.** `SKIM_CW_V1=1` selects the classical v1.
   A third backend, DeepCW (neural, ONNX Runtime via `dlopen`, model outside
   git), is chosen with `[decode] engine=deepcw`; without the runtime or the model

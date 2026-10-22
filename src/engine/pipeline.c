@@ -16,7 +16,6 @@
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include "pipeline.h"
-#include "spectrum.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -250,19 +249,6 @@ struct _SkimPipeline {
   SkimPipelineVfoCb     vfo_cb;
   gpointer              vfo_user;
 
-  /* M8 waterfall: FFT tap on the raw band (spectrum.h). Built lazily on the
-   * engine thread at the block's rate (fftw planning is not thread-safe —
-   * same thread as the channelizer's plan), fed BEFORE the TX hold check:
-   * the picture follows the DATA, not the trx flag. A muted stream (exact
-   * zeros — own TX on sdr-for-linux) pauses it inside the tap, to the sample
-   * (spectrum.c, gh#17: the flag comes from a 500 ms poll there, 0.04–0.43 s
-   * behind the zeros); a server that keeps sending the band through TX
-   * keeps the picture flowing while the decoders freeze. */
-  SkimSpectrum         *spec;
-  double                spec_rate;
-  volatile gint         spec_on;
-  SkimPipelineSpectrumCb spec_cb;
-  gpointer              spec_user;
 
   volatile guint64 frames;
   volatile guint64 dropped;
@@ -560,7 +546,6 @@ void skim_pipeline_free(SkimPipeline *p) {
     return;
   skim_pipeline_stop(p);
   bank_teardown(p);
-  g_clear_pointer(&p->spec, skim_spectrum_free);
   skim_station_table_free(p->stations);
   g_clear_pointer(&p->spots, skim_spot_out_free);
   g_clear_pointer(&p->rbn_spots, skim_spot_out_free);
@@ -906,19 +891,6 @@ void skim_pipeline_set_vfo_cb(SkimPipeline *p, SkimPipelineVfoCb cb, gpointer us
   p->vfo_user = user;
 }
 
-void skim_pipeline_set_spectrum_cb(SkimPipeline *p, SkimPipelineSpectrumCb cb, gpointer user) {
-  p->spec_cb   = cb;
-  p->spec_user = user;
-}
-
-void skim_pipeline_set_spectrum_enabled(SkimPipeline *p, gboolean on) {
-  g_atomic_int_set(&p->spec_on, on ? 1 : 0);
-}
-
-gboolean skim_pipeline_spectrum_enabled(const SkimPipeline *p) {
-  return g_atomic_int_get(&p->spec_on) != 0;
-}
-
 /* ---- network-thread side: retune + connection loss ---------------------------- */
 
 static void vfo_fwd_cb(double vfo_hz, gpointer user) {
@@ -1131,27 +1103,6 @@ static void hold_begin(SkimPipeline *p) {
   for (guint i = 0; i < p->nchan * NSLOT; i++) {
     if (p->dec[i]) { be->hold_begin(p->dec[i]); }
   }
-}
-
-static void spec_row_cb(const guint8 *row, guint nbins, double center_hz, gpointer user) {
-  SkimPipeline *p = user;
-  if (p->spec_cb) {
-    p->spec_cb(row, nbins, center_hz, skim_spectrum_bin_hz(p->spec), p->spec_user);
-  }
-}
-
-static void spec_feed(SkimPipeline *p, const IqBlock *b) {
-  if (!g_atomic_int_get(&p->spec_on) || !p->spec_cb) {
-    if (p->spec) { skim_spectrum_reset(p->spec); }  /* no stale half-row   */
-    return;
-  }
-  if (!p->spec || p->spec_rate != b->rate) {
-    g_clear_pointer(&p->spec, skim_spectrum_free);
-    p->spec      = skim_spectrum_new(b->rate);
-    p->spec_rate = b->rate;
-    skim_spectrum_set_row_cb(p->spec, spec_row_cb, p);
-  }
-  skim_spectrum_push(p->spec, b->iq, b->nframes, b->center_hz);
 }
 
 /* The extractor's view after one decode, for the learning log: its leading
@@ -1448,8 +1399,6 @@ static void hold_pump(SkimPipeline *p, const IqBlock *b) {
 }
 
 static void process_block(SkimPipeline *p, IqBlock *b) {
-  spec_feed(p, b);                             /* M8: the picture follows the
-                                                * data, not the hold below    */
   /* TX hold (TX hold): while the operator's own TX deafens the RX
    * (T/R relay + 31 dB TX attenuators), the band the decoders would see is
    * self-inflicted silence — evaluating it releases every channel and the
