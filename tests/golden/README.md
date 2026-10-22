@@ -8,6 +8,7 @@ engine with an empty environment (no `SKIM_*` switches, code defaults only):
 |---|---|
 | `g20m-day`, `g20m-eve`, `g30m-day`, `g40m-night`, `g40m-rtty` — 10 min of 96 kHz IQ each | `skimmer-replay` in CW with the feed on: decode log, feed lines, station table |
 | `g40m-rtty` (JARTS WW RTTY contest, 30 stations, 107 feed lines), `g20m-eve` (an RTTY net, no CQ) | the same in RTTY (`rtty-<slice>/`) |
+| `g40m-rtty` | CW kept off the RTTY pairs an RTTY pipeline beside it copies (`pairs-g40m-rtty/`, `SKIM_REPLAY_RTTY_PAIRS=1`) |
 | `tap-<band>.log` — the first hour of the 2026-10-17 20:17Z decode tap, 7 bands | `skimmer-tap-replay` with the learned gate in shadow: gate rows, faithfulness |
 | `tap-40m-rtty.log` — the RTTY decode tap of `g40m-rtty` (`SKIM_REPLAY_TAP`) | `skimmer-tap-replay` in RTTY (the header says `engine=rtty`), no learned gate |
 | `scp/master.scp`, `feed-gate-20261006.ini` | frozen, so the reference cannot drift with the SCP updater |

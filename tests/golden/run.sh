@@ -35,21 +35,25 @@ mkdir -p "$OUT/cfg/skimmer-for-linux"
 cp "$G/scp/master.scp" "$OUT/cfg/skimmer-for-linux/"
 run() { env -i HOME="$OUT" PATH=/usr/bin:/bin XDG_CONFIG_HOME="$OUT/cfg" "$@"; }
 
-# <output dir>:<slice>:<mode> — CW on every slice; RTTY on the contest
-# slice (g40m-rtty, JARTS) and on a 20 m evening with an RTTY net (text, no
-# spots); CW on the contest slice too: what CW makes of a band full of FSK
+# <output dir>:<slice>:<mode>[:pairs] — CW on every slice; RTTY on the
+# contest slice (g40m-rtty, JARTS) and on a 20 m evening with an RTTY net
+# (text, no spots); CW on the contest slice too: what CW makes of a band
+# full of FSK — and, with "pairs", CW kept off the RTTY pairs an RTTY
+# pipeline beside it copies ([decode] suppress_cw_on_rtty)
 IQ=(g20m-day:g20m-day:cw g20m-eve:g20m-eve:cw g30m-day:g30m-day:cw
     g40m-night:g40m-night:cw g40m-rtty:g40m-rtty:cw
-    rtty-g40m-rtty:g40m-rtty:rtty rtty-g20m-eve:g20m-eve:rtty)
+    rtty-g40m-rtty:g40m-rtty:rtty rtty-g20m-eve:g20m-eve:rtty
+    pairs-g40m-rtty:g40m-rtty:cw:pairs)
 BANDS=(160m 80m 40m 30m 20m 17m 15m 40m-rtty)
 
 # IQ → channelizer → CW v2 / RTTY → extractor → station table → feed
 # (stderr feed:)
 for job in "${IQ[@]}"; do
-  IFS=: read -r d s mode <<< "$job"
+  IFS=: read -r d s mode pairs <<< "$job"
   mkdir -p "$OUT/$d"
   ln -s "$G/$s.cf32" "$G/$s.cf32.meta" "$OUT/$d/"
-  ( run SKIM_MODE=$mode SKIM_REPLAY_FEED=new "$REPLAY" "$OUT/$d/$s.cf32" \
+  ( run SKIM_MODE=$mode SKIM_REPLAY_RTTY_PAIRS=${pairs:+1} SKIM_REPLAY_FEED=new \
+      "$REPLAY" "$OUT/$d/$s.cf32" \
       > "$OUT/$d/out.raw" 2> "$OUT/$d/feed.txt"
     # paths and wall time are the only run-dependent bytes
     sed -e "s#$OUT/$d/##g" -e 's/ in [0-9.]* s wall ([0-9.]*x)//' \
