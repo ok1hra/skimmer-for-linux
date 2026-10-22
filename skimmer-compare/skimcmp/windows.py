@@ -31,13 +31,16 @@ def load_local(path):
     return sorted(out, key=lambda w: w[1])
 
 
-def snapshot_windows(d):
-    """((band, lo, hi), ...) from a /status.json snapshot, or None."""
+def snapshot_windows(d, rtty=False):
+    """((band, lo, hi), ...) from a /status.json snapshot, or None; rtty:
+    only the bands that decode RTTY ("rtty" not null)."""
     rate, bands = d.get("rate"), d.get("bands")
     if not rate or not isinstance(bands, list):
         return None
     out = []
     for b in bands:
+        if rtty and not (isinstance(b, dict) and b.get("rtty")):
+            continue
         try:
             name, c = str(b["band"]), float(b["centre_hz"]) / 1000.0
         except (KeyError, TypeError, ValueError):

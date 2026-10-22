@@ -26,8 +26,8 @@ FILE_RE = re.compile(r"^(local|remote|rbn|events|status)-(\d{8}-\d{6})\.(?:log|j
 #   DX de OK1HRA-#:   1826.1  RZ3DX          15 dB  29 WPM                1727Z   CW Skimmer Server
 #   DX de KM3T-2-#:14024.9  OK1ABC       CW    18 dB  25 WPM  CQ      1832Z     RBN
 SPOT_RE = re.compile(
-    r"^DX de (\S+?):\s*(\d+(?:\.\d+)?)\s+(\S+)\s+(?:[A-Z][A-Z0-9]*\s+)?"
-    r"(-?\d+)\s+dB\s+(\d+)\s+(?:WPM|BPS)\b\s*(.*?)\s*\d{4}Z\s*$")
+    r"^DX de (\S+?):\s*(\d+(?:\.\d+)?)\s+(\S+)\s+(?:([A-Z][A-Z0-9]*)\s+)?"
+    r"(-?\d+)\s+dB\s+(\d+)\s+(WPM|BPS)\b\s*(.*?)\s*\d{4}Z\s*$")
 
 STALE_S = 180          # a live session whose events log is this quiet has died
 
@@ -53,19 +53,23 @@ def session_epoch(T):
 
 
 class Spot:
-    __slots__ = ("t", "f", "call", "snr", "wpm", "cm", "spotter", "line")
+    __slots__ = ("t", "f", "call", "snr", "wpm", "cm", "spotter", "line", "mode")
 
-    def __init__(self, t, f, call, snr, wpm, cm, spotter, line):
+    def __init__(self, t, f, call, snr, wpm, cm, spotter, line, mode="CW"):
         self.t, self.f, self.call, self.snr, self.wpm = t, f, call, snr, wpm
-        self.cm, self.spotter, self.line = cm, spotter, line
+        self.cm, self.spotter, self.line, self.mode = cm, spotter, line, mode
 
 
 def parse_spot(t, body):
+    """The spot of a line; its mode as the line names it — CW Skimmer
+    Server names none: CW for WPM, RTTY for BPS."""
     m = SPOT_RE.match(body)
     if not m:
         return None
-    return Spot(t, float(m.group(2)), m.group(3).upper(), int(m.group(4)),
-                int(m.group(5)), m.group(6).strip().upper(), m.group(1).upper(), body)
+    mode = m.group(4) or ("CW" if m.group(7) == "WPM" else "RTTY")
+    return Spot(t, float(m.group(2)), m.group(3).upper(), int(m.group(5)),
+                int(m.group(6)), m.group(8).strip().upper(), m.group(1).upper(), body,
+                mode)
 
 
 class Truncated(Exception):
@@ -146,6 +150,14 @@ class Session:
             out.append((a, b, eng or ("unknown" if named else default)))
         return out
 
+    def rtty_windows(self, local_up):
+        """[(a, b, RTTY windows)] for each local connection: the bands its
+        first status snapshot decodes RTTY on (() = none, or an old snapshot
+        from before RTTY)."""
+        return [(a, b, next((h[5] if len(h) > 5 else None
+                             for h in self.health if a <= h[0] <= b and h[4]), None) or ())
+                for a, b in local_up]
+
     def windows(self, local_up):
         """[(a, b, local windows or None)] for each local connection: the
         bands its first status snapshot lists — changing them restarts the
@@ -178,8 +190,13 @@ class Store:
 
     def reset(self):
         self.sessions = {}
-        self.L, self.R = [], []        # Spot, chronological
+        # Spot, chronological. L and R are CW — the comparison of two CW
+        # skimmers; the local RTTY spots are Lr, RBN's RTTY spots rbn_rtty
+        # (RTTY against RBN, rtty.py). The referee (rbn) takes every mode:
+        # a call RBN heard in RTTY is a real call too.
+        self.L, self.R, self.Lr = [], [], []
         self.rbn = self.rbn_factory()
+        self.rbn_rtty = self.rbn_factory()
         self.version += 1
 
     def ordered(self):
@@ -255,7 +272,7 @@ class Store:
                 return
             s.health.append((t, bool(d.get("streaming", True)),
                              float(d.get("lost_pct") or 0.0), d.get("engine") or None,
-                             snapshot_windows(d)))
+                             snapshot_windows(d), snapshot_windows(d, rtty=True)))
             s.seen(t)
             return
         if line.startswith("#"):
@@ -281,8 +298,12 @@ class Store:
             return
         if kind == "rbn":
             self.rbn.add(sp)
+            if sp.mode == "RTTY":
+                self.rbn_rtty.add(sp)
+        elif sp.mode not in ("CW", "RTTY"):
+            return
         else:
-            lst = self.L if kind == "local" else self.R
+            lst = (self.R if kind == "remote" else self.L if sp.mode == "CW" else self.Lr)
             if lst and lst[-1].t > t:          # keep the lists sorted
                 i = len(lst)
                 while i > 0 and lst[i - 1].t > t:
