@@ -18,7 +18,6 @@
 
 #include "engine/decode.h"
 #include "engine/decode_deepcw.h"
-#include "engine/pane_log.h"
 #include "engine/pipeline.h"
 
 static int fails, checks;
@@ -538,68 +537,6 @@ int main(void) {
       check("no cross-talk between batched channels",
             !strstr(os[0]->str, "DL1ABC") && !strstr(os[1]->str, "OK1BR") && !strstr(os[2]->str, "OK1BR"));
       for (int k = 0; k < 3; k++) { be->channel_free(sts[k]); g_free(iqs[k]); g_array_free(envs[k], TRUE); g_string_free(os[k], TRUE); }
-    }
-    /* The pane draft through the vtable: apply d.text, then the channel's
-     * pane ops, to ONE SkimPaneLog in the pipeline's order. Invariant at
-     * every step: everything outside the over region is exactly the
-     * appended text (no doubled word at the seam, no hole); a dim tail
-     * (final_len < text) was seen; no op ever carries `fresh` (the decode
-     * log never learns a draft); once the over is over and the mailbox
-     * drained, the region is CLOSED and the pane equals the text. */
-    {
-      GArray *env = keyer("CQ CQ DE OK1BR OK1BR K", 25.0, RATE, 40, 120);
-      float *iq = tone_iq(env, RATE, +20.0, 0.05f, 0.004f, 7);
-      gpointer st = be->channel_new(RATE);
-      SkimPaneLog *pl = skim_pane_log_new();
-      GString *o = g_string_new(NULL);
-      guint ops_n = 0, dim_n = 0, fresh_n = 0, bad_n = 0, open_n = 0, close_n = 0;
-      SkimDecode d; SkimPaneOp op;
-      const guint blk = 64;
-#define STEP(nfr, iqp) do { \
-        if (be->process(st, (iqp), (nfr), &d)) { g_string_append(o, d.text); skim_pane_log_append(pl, d.text); } \
-        while (be->take_pane_op(st, &op)) { \
-          ops_n++; \
-          if (op.fresh) fresh_n++; \
-          if (op.text && op.final_len < strlen(op.text)) dim_n++; \
-          if (op.kind == SKIM_PANE_OP_OPEN) open_n++; \
-          if (op.kind == SKIM_PANE_OP_CLOSE) close_n++; \
-          skim_pane_log_apply(pl, &op); g_free(op.text); g_free(op.fresh); \
-        } \
-        const gsize outside = skim_pane_log_len(pl) - skim_pane_log_over_len(pl); \
-        if (outside != o->len || strncmp(skim_pane_log_text(pl), o->str, o->len) != 0) bad_n++; \
-      } while (0)
-      for (guint i = 0; i < env->len; i += blk) {
-        STEP(MIN(blk, env->len - i), iq + 2 * i);
-        if (!sync_env) g_usleep(2000);
-      }
-      /* the over is over: 4 s more silence, paced so every tick completes,
-       * then drain the mailbox and the pending words */
-      {
-        float *z = g_new0(float, 2 * blk);
-        for (guint i = 0; i < 4 * (guint)RATE; i += blk) {
-          STEP(blk, z);
-          if (!sync_env) g_usleep(20000);
-        }
-        for (int k = 0; k < 60; k++) {
-          STEP(0, z);
-          SkimDeepcwDebug dg; skim_decode_deepcw_debug(st, &dg);
-          if (!dg.inflight && !dg.pane_open) break;
-          if (!sync_env) g_usleep(10000);
-        }
-        g_free(z);
-      }
-#undef STEP
-      printf("      pane |%s| text |%s| ops %u (open %u close %u dim %u) seam faults %u\n",
-             skim_pane_log_text(pl), o->str, ops_n, open_n, close_n, dim_n, bad_n);
-      check("pane ops arrive (OPEN … CLOSE)", ops_n > 0 && open_n >= 1 && close_n >= 1);
-      check("a dim draft tail was shown at least once", dim_n > 0);
-      check("no op carries `fresh` — the decode log never sees a draft", fresh_n == 0);
-      check("at every step the text outside the region == the appended text (no doubled word, no hole)",
-            bad_n == 0);
-      check("after the over: region closed, pane == committed text",
-            skim_pane_log_over_len(pl) == 0 && strcmp(skim_pane_log_text(pl), o->str) == 0);
-      check("the committed text still reads the call", strstr(o->str, "OK1BR") != NULL);
-      be->channel_free(st); skim_pane_log_free(pl); g_free(iq); g_array_free(env, TRUE); g_string_free(o, TRUE);
     }
     /* Routing through the WHOLE offline pipeline: a tone 40 Hz off the
      * channel centre (past the app's 25 Hz pane-slot merge radius). The

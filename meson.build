@@ -13,22 +13,19 @@ add_project_arguments('-DSKIMMER_VERSION="@0@"'.format(meson.project_version()),
                       language : 'c')
 
 # --- Dependencies -----------------------------------------------------------
-# The engine is GLib-only (headless). The app adds GTK4/libadwaita. As milestones
-# land, their deps are added here: M1 → libwebsockets (TCI client), M2 → fftw3f
-# (+ vendored WDSP resampler). They are declared now because they are already on
-# the system (sdr-for-linux uses them) and the engine will reach for them soon.
+# GLib only — no GUI: the engine (src/engine/) and skimmer-headless
+# (src/headless/ + src/headless_main.c). libwebsockets is the TCI client's
+# transport, fftw3f the channelizer FFT (+ the vendored WDSP resampler).
 cc        = meson.get_compiler('c')
-gnome     = import('gnome')  # used in data/ for post-install icon/desktop DB refresh
+gnome     = import('gnome')  # GResource: the built-in weights
 glib_dep  = dependency('glib-2.0')            # headless engine
 gio_dep   = dependency('gio-2.0')             # M6: RBN telnet server sockets
-gtk_dep   = dependency('gtk4', required : false)          # app front-end (optional: headless builds without it)
-adw_dep   = dependency('libadwaita-1', required : false)  # app control surface
 m_dep     = cc.find_library('m', required : false)
 lws_dep   = dependency('libwebsockets')       # M1: TCI client transport
 fftw3f_dep  = dependency('fftw3f')            # M2: channelizer FFT (float)
 fftw3_dep   = dependency('fftw3')             # WDSP fir.c min-phase path (double)
 threads_dep = dependency('threads')
-curl_dep  = dependency('libcurl', version : '>=7.85')  # app: MASTER.SCP updater
+curl_dep  = dependency('libcurl', version : '>=7.85')  # MASTER.SCP updater
 
 # WDSP subset (FIR designer + resampler) — declares wdsp_dep. VENDOR.md there
 # records provenance and the subset rationale.
@@ -53,8 +50,6 @@ engine_sources = [
   'src/engine/ort_shim.c',     # ONNX Runtime C API behind dlopen (optional)
   'src/engine/decode_deepcw.c',# DeepCW neural CW backend (Conformer + CTC)
   'src/engine/cw_reader.c',    # neural over re-reader (TCN+CTC, pane-only)
-  'src/engine/pane_log.c',     # phase B: pane text + live over region (ops)
-  'src/engine/cw_words.c',     # role of a whole CW token (pane tints by it)
   'src/engine/tone_split.c',   # per-channel carrier splitter (multi-signal)
   'src/engine/station.c',      # M5: per-frequency station tracker
   'src/engine/callsign.c',     # M4: extraction + validation
@@ -162,16 +157,6 @@ skimmer_chan_test = executable('skimmer-chan-test',
 )
 test('channelizer', skimmer_chan_test, timeout : 120)
 
-# M8: offline gate — spectrum tap orientation (+f ABOVE centre) at every
-# rate, bin/row bookkeeping, byte dynamic range, pipeline enable/TX-hold.
-skimmer_spectrum_test = executable('skimmer-spectrum-test',
-  ['src/spectrum_test.c', 'src/app/wf_compose.c'],   # composer is GLib-only
-  include_directories : include_directories('src'),
-  dependencies : engine_deps,
-  link_with : engine_lib,
-)
-test('spectrum', skimmer_spectrum_test, timeout : 120)
-
 # M3: offline gate — CW backend on synthetic keying (speeds, SNR, jitter,
 # QSB, speed change, squelch-on-noise, channelizer integration).
 skimmer_cw_test = executable('skimmer-cw-test',
@@ -271,17 +256,6 @@ skimmer_dup_test = executable('skimmer-dup-test',
 )
 test('dup-lookup', skimmer_dup_test, timeout : 60)
 
-# Decode pane gate: SkimPaneLog op semantics — the ONE applier the app's
-# decode pane is built on (the neural reader that once fed it richer ops
-# is gone; the units keep the applier honest).
-skimmer_pane_test = executable('skimmer-pane-test',
-  ['src/pane_test.c'],
-  include_directories : include_directories('src'),
-  dependencies : engine_deps,
-  link_with : engine_lib,
-)
-test('decode-pane', skimmer_pane_test, timeout : 120)
-
 # M5: offline gate — station tracker units, spot policy units, and the WHOLE
 # pipeline over a real WebSocket against a mock TCI server (spots come back).
 skimmer_spot_test = executable('skimmer-spot-test',
@@ -317,7 +291,7 @@ test('golden', find_program('tests/golden/run.sh'),
 # and the loaded dictionary must survive each), the persisted rate limits,
 # and the app handle (main loop never blocked, teardown never waits).
 skimmer_scp_test = executable('skimmer-scp-test',
-  ['src/scp_test.c', 'src/app/scp_update.c'],      # updater is GTK-free
+  ['src/scp_test.c', 'src/headless/scp_update.c'],      # MASTER.SCP updater
   include_directories : [include_directories('src'), engine_inc],
   dependencies : engine_deps + [curl_dep],
   link_with : engine_lib,
@@ -327,25 +301,9 @@ test('scp-update', skimmer_scp_test, timeout : 180)
 # Multi-band skimmer without a GUI: one HPSDR P1 receiver (Red Pitaya) with
 # up to 8 RX, one pipeline per band, one telnet feed, console + web status.
 executable('skimmer-headless',
-  ['src/headless_main.c', 'src/app/scp_update.c',    # updater is GTK-free
+  ['src/headless_main.c', 'src/headless/scp_update.c',    # MASTER.SCP updater
    weights_res],
   include_directories : [include_directories('src'), engine_inc],
   dependencies : engine_deps + [curl_dep],
   link_with : engine_lib,
 )
-
-# --- Application ------------------------------------------------------------
-if gtk_dep.found() and adw_dep.found()
-executable('skimmer-for-linux',
-  ['src/app/main.c', 'src/app/wf_compose.c', 'src/app/wf_view.c',
-   'src/app/scp_update.c'],
-  include_directories : engine_inc,
-  dependencies : [gtk_dep, adw_dep, glib_dep, gio_dep, curl_dep],
-  link_with : engine_lib,
-  install : true,
-  c_args : ['-DSKIMMER_DATADIR="@0@"'.format(
-    get_option('prefix') / get_option('datadir') / 'skimmer-for-linux')],
-)
-
-subdir('data')   # .desktop + icon + AppStream metainfo (install only)
-endif

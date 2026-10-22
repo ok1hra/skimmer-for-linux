@@ -62,7 +62,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "app/wf_compose.h"                     /* floor-tracker constants (dump) */
 #include "engine/pipeline.h"
 #include "engine/rbn_feed.h"
 
@@ -101,38 +100,6 @@ static double meta_get(const char *path, const char *key) {
     g_free(body);
   }
   return v;
-}
-
-static void spectrum_cb(const guint8 *row, guint nbins, double center_hz,
-                        double bin_hz, gpointer user) {
-  (void)user;
-  static guint rows;
-  static double t_per_row;
-  /* The view's floor tracker replayed on the rows (wf_compose.h constants):
-   * what the colour map would hang off, and how far a run of rows drags it. */
-  static double trk;
-  static guint  trk_min = 255;
-  if (!t_per_row) { t_per_row = 1.0 / (bin_hz * nbins) * (nbins / 4.0); }
-  guint pk = 0;
-  guint hist[256] = { 0 };
-  for (guint i = 0; i < nbins; i++) {
-    if (row[i] > row[pk]) { pk = i; }
-    hist[row[i]]++;
-  }
-  guint cum = 0, fl = 0;
-  const guint target = nbins * SKIM_WF_FLOOR_PCT / 100;
-  for (guint b = 0; b < 256; b++) { cum += hist[b]; if (cum >= target) { fl = b; break; } }
-  trk = rows ? trk + SKIM_WF_FLOOR_SMOOTH * ((double)fl - trk) : (double)fl;
-  trk_min = MIN(trk_min, fl);
-  rows++;
-  const guint per_sec = (guint)(1.0 / t_per_row + 0.5);
-  if (rows % MAX(per_sec, 1u)) { return; }
-  fprintf(stderr, "spectrum: row %6u peak %.1f kHz (byte %u, floor %u, +%.1f dB)"
-          " tracked floor %.1f dBFS, lowest row floor %.0f dBFS\n",
-          rows, (center_hz + ((double)pk - nbins / 2.0) * bin_hz) / 1000.0,
-          row[pk], fl, (double)row[pk] - fl,
-          trk - SKIM_WF_DB_OFFSET, (double)trk_min - SKIM_WF_DB_OFFSET);
-  trk_min = 255;
 }
 
 /* ---- input: cf32 or WAV (file or stdin) -------------------------------- */
@@ -498,13 +465,6 @@ int main(int argc, char **argv) {
   skim_pipeline_set_station_cb(p, station_cb, NULL);
   skim_pipeline_set_station_gone_cb(p, gone_cb, NULL);
   if (g_spots) { skim_pipeline_set_feed_cb(p, feed_cb, NULL); }
-  /* SKIM_SPECTRUM_DUMP=1: run the M8 spectrum tap too and print the
-   * strongest bin's ABSOLUTE frequency about once a second — the real-air
-   * orientation check (a known station must land on its own kHz). */
-  if (g_getenv("SKIM_SPECTRUM_DUMP")) {
-    skim_pipeline_set_spectrum_cb(p, spectrum_cb, NULL);
-    skim_pipeline_set_spectrum_enabled(p, TRUE);
-  }
 
   GError *err = NULL;
   if (!skim_pipeline_start_offline(p, &err)) {

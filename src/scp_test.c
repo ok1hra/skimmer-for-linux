@@ -22,7 +22,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "app/scp_update.h"
+#include "headless/scp_update.h"
 #include "engine/callsign.h"
 
 static int fails, checks;

@@ -54,7 +54,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "app/scp_update.h"
+#include "headless/scp_update.h"
 #include "engine/callsign.h"
 #include "engine/hpsdr_p1.h"
 #include "engine/pipeline.h"
