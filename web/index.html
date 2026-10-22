@@ -80,8 +80,9 @@
           <label>Source <select name="radio.type">
             <option value="hpsdr-p1">Red Pitaya (HPSDR P1)</option>
             <option value="mock">mock — synthetic CW, no radio</option></select></label>
-          <label class="wide">Hosts <input name="radio.host" placeholder="192.168.1.21@3.81, 192.168.1.71">
-            <small>tried in order, the first idle one is used; host@ppm = that radio's clock correction</small></label>
+          <label class="wide">Hosts <input name="radio.host" placeholder="auto">
+            <small>auto = the first idle Red Pitaya on the LAN (<code>skimmer-headless --find-radios</code> lists them);
+            or addresses tried in order, address@ppm = that radio's clock correction</small></label>
           <label>Rate <select name="radio.rate" data-default="96000">
             <option value="48000">48 kHz</option><option value="96000">96 kHz</option>
             <option value="192000">192 kHz</option></select></label>

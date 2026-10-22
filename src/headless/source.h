@@ -67,6 +67,11 @@ static inline void skim_iq_source_free(SkimIqSource *s) { if (s) { s->vt->free(s
 
 /* The implementations (source_hpsdr_p1.c, source_mock.c). */
 SkimIqSource *skim_iq_source_hpsdr_p1_new(const SkimHdConfig *cfg, gboolean take_over);
+
+/* The Red Pitayas on the LAN (a 1 s broadcast discovery — what host=auto
+ * tries): SkimHpsdrFound, sorted by address; empty when none answered.
+ * SKIM_HPSDR_DISCOVER=addr[:port] aims it elsewhere (a gate's fake radio). */
+GArray *skim_iq_source_hpsdr_discover(void);
 SkimIqSource *skim_iq_source_mock_new(const SkimHdConfig *cfg);
 
 G_END_DECLS

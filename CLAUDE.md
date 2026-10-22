@@ -115,7 +115,9 @@ here; what was done and why is in git.
   RF-inverted and ingest conjugates — `docs/HPSDR-P1.md`). `skimmer-headless`
   runs up to 8 receivers (one pipeline per band and mode — CW, and RTTY
   beside it on the same IQ where `[bands]` says `rtty`; one telnet feed,
-  console + web status). RTTY spots skip the learned gate (a CW model).
+  console + web status). `[radio] host=auto` (the default) takes the
+  first idle Red Pitaya a broadcast discovery finds; `--find-radios` lists
+  them. RTTY spots skip the learned gate (a CW model).
   The RTTY pipeline publishes the pairs it copies (`rtty_pairs.c`); with
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:

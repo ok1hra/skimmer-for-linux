@@ -53,18 +53,20 @@ streaming from unless told to (`--take-over`).
 ## Install
 
 The release is one file, an AppImage for x86_64 Linux with glibc 2.36 or
-newer — tested on Debian 12 and 13. It brings its
-libraries and the ONNX Runtime for DeepCW; the DeepCW model is fetched on
-request ([DeepCW](#deepcw)).
+newer — tested on Debian 12 and 13 — attached to each
+[GitHub release](https://github.com/ok1hra/skimmer-for-linux/releases). It
+brings its libraries and the ONNX Runtime for DeepCW; the DeepCW model is
+fetched on request ([DeepCW](#deepcw)).
 
 ```sh
 chmod +x skimmer-headless-*-x86_64.AppImage
-./skimmer-headless-*-x86_64.AppImage --check-config   # writes nothing, shows the defaults
-./skimmer-headless-*-x86_64.AppImage                  # first run writes the config
-./skimmer-headless-*-x86_64.AppImage --install-service
+./skimmer-headless-*-x86_64.AppImage --find-radios      # the Red Pitayas on the LAN
+./skimmer-headless-*-x86_64.AppImage                    # first run writes the config and starts
+./skimmer-headless-*-x86_64.AppImage --install-service  # optional: run it as a service
 ```
 
-Without FUSE (`libfuse2`), set `APPIMAGE_EXTRACT_AND_RUN=1`. Run
+Then [First start](#first-start): your call, the clock correction. Without
+FUSE (no `/dev/fuse` or `fusermount`), set `APPIMAGE_EXTRACT_AND_RUN=1`. Run
 `--install-service` again after moving the file.
 
 ## Build
@@ -90,20 +92,62 @@ gate replays recorded real air through the whole engine and needs inputs
 that are not in git; without them it reports SKIP
 ([`tests/golden/README.md`](tests/golden/README.md)).
 
+### Making a release
+
+1. Set the version in `meson.build` (`version : 'X.Y.Z'`) and commit.
+2. `packaging/appimage/build.sh` — the AppImage in a Debian 12 container
+   (podman), every gate run there first (the golden one where its inputs
+   are); `packaging/appimage/smoke.sh dist/*.AppImage --container --fetch`.
+3. Tag and push: `git tag -a vX.Y.Z -m "release: vX.Y.Z"`,
+   `git push origin main vX.Y.Z`.
+4. `gh release create vX.Y.Z --verify-tag --title "Skimmer for Linux X.Y.Z"
+   --notes-file NOTES.md dist/skimmer-headless-X.Y.Z-x86_64.AppImage`.
+   CI (`.github/workflows/build.yml`) builds and smoke-tests the AppImage on
+   the tag as well and attaches its own build to the release.
+
 ## Run
 
 ```sh
-./build/skimmer-headless [--config FILE] [--take-over] [--status-every S]
-                         [--http-port N] [--feed-gate FILE]
-                         [--feed-gate-mode off|shadow|on]
-                         [--check-config] [--list-switches]
-                         [--fetch-deepcw-model]
-                         [--install-service] [--uninstall-service]
+skimmer-headless [--config FILE] [--take-over] [--status-every S]
+                 [--http-port N] [--feed-gate FILE]
+                 [--feed-gate-mode off|shadow|on]
+                 [--check-config] [--find-radios] [--list-switches]
+                 [--fetch-deepcw-model]
+                 [--install-service] [--uninstall-service]
 ```
 
+(`skimmer-headless` = the AppImage, or `./build/skimmer-headless` from a build.)
+
+### First start
+
+1. **Find the radio.** `skimmer-headless --find-radios` lists the Red
+   Pitayas on the LAN (they answer an HPSDR discovery broadcast) with their
+   addresses, and whether another client streams from them.
+2. **Run it once.** The first start writes
+   `~/.config/skimmer-for-linux/headless.ini`, commented line by line, with
+   the radios found on the LAN noted in it, and starts:
+   - `host=auto` takes the first idle Red Pitaya on the LAN. To pin one, put
+     its address there; a list is tried in order (`host=192.168.1.21,auto`).
+     A radio on another subnet is not reached by a broadcast — name it.
+   - eight bands (160, 80, 40, 30, 20, 17, 15, 10 m), CW and RTTY on each —
+     a Red Pitaya has eight receivers; 12 m is in the file, commented out.
+3. **Set your call** in `[feed] call=` — the telnet feed stays off until it
+   is set — on the web page (`http://<host>:8073/`, Settings) or in the file.
+4. **Correct the clock.** A Red Pitaya's clock is off by a few ppm and every
+   spot lands `f × ppm` low (3.8 ppm = 53 Hz on 14 MHz; the Reverse Beacon
+   Network wants less than 100 Hz). Run a while with `clock_ppm=0`, compare
+   your spots with the RBN's spots of the same stations
+   ([reversebeacon.net](https://www.reversebeacon.net)): yours `D` Hz low at
+   `F` kHz on average gives `clock_ppm = D / F × 1000`. With a known carrier
+   instead: `(true − shown) / true × 10⁶`. Several radios: `host=ADDRESS@ppm`
+   gives each its own.
+
 `--check-config` reads and checks the config and the feed gate, prints what
-would run and exits — no radio is touched. A config that does not parse
-stops the start with exit 2 and names the bad line.
+would run and exits — no radio is touched, nothing is written. A config that
+does not parse stops the start with exit 2 and names the bad line.
+
+Point a logger or a cluster client at `telnet <host> 7300`. Ctrl+C stops the
+skimmer cleanly and frees the radio.
 
 ### As a service
 
@@ -147,55 +191,15 @@ names no engine. It needs two things this program does not contain:
   in `~/.local/share/skimmer-for-linux/models/deepcw/`, with its licence and
   a NOTICE beside it. A file that does not match is refused and nothing is
   written.
-- **ONNX Runtime** 1.21 or newer — Debian 13: `apt install libonnxruntime1.21`.
-  This build runs inference on the CPU. For a GPU, point `SKIM_ORT_LIB` at a
-  system ONNX Runtime with CUDA and set `SKIM_DEEPCW_DEVICE=cuda`.
+- **ONNX Runtime** 1.21 or newer. The AppImage brings it (CPU); a build
+  from source needs it installed (Debian 13: `apt install libonnxruntime1.21`).
+  For a GPU, point `SKIM_ORT_LIB` at a system ONNX Runtime with CUDA and set
+  `SKIM_DEEPCW_DEVICE=cuda`.
 
 Without either one, a DeepCW band still starts but runs v2. The log, the
 web page (in red) and `--check-config` say why, and a restart picks DeepCW
 up once both are in place. DeepCW uses far more CPU than v2: about 3 % of a
 core for every channel it is decoding.
-
-The first run writes `~/.config/skimmer-for-linux/headless.ini` with defaults.
-Here is an example for seven bands at 96 kHz:
-
-```ini
-[radio]
-# one radio, or a list tried in order: the first idle one is used;
-# host@ppm gives that radio its own sampling-clock correction
-host=192.168.1.21@3.81,192.168.1.71
-# 48000 / 96000 / 192000, one rate for all receivers
-rate=96000
-
-[bands]
-# name=centre Hz [modes], in receiver order (RX1 first), at most 8;
-# modes: cw (default), cw:v2, cw:deepcw, rtty — e.g. 40m=7045500 cw,rtty
-160m=1845500
-80m=3545500
-40m=7045500 cw,rtty
-30m=10145500
-20m=14045500 cw,rtty
-17m=18113500
-15m=21045500
-
-[decode]
-# v2 (classical) or deepcw (needs ONNX Runtime + the model: --fetch-deepcw-model)
-engine=v2
-log=false
-
-[feed]
-# telnet spot feed, validated CQ spots only; port 0 = off
-call=YOURCALL
-port=7300
-
-[status]
-# console table every N s (0 = off); web page port (0 = off)
-console_s=10
-http_port=8073
-```
-
-Point a logger or a cluster client at `telnet <host> 7300`. Ctrl+C stops the
-skimmer cleanly and frees the radio.
 
 ## The web page
 

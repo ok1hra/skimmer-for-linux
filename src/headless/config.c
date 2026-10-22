@@ -6,22 +6,35 @@
 #include <stdio.h>
 #include <string.h>
 
+/* The default config. Its %s is the radios a broadcast discovery found when
+ * it was written (comment lines, or "" — skim_hd_config_write_default). */
 static const char DEFAULT_CONFIG[] =
-  "# skimmer-headless — one Red Pitaya, one pipeline per band.\n"
-  "# Bands are receivers in order (RX1 first), at most 8, all at one rate.\n"
-  "# 7 x 96 kHz is ~35 Mb/s of UDP: use a wired link.\n"
+  "# skimmer-headless — a Red Pitaya (sdr_receiver_hpsdr): one receiver per band,\n"
+  "# every band decoded in CW and RTTY, the spots on a telnet feed.\n"
+  "# Status and these settings on the web page: http://<this machine>:8073/\n"
+  "# 8 bands x 96 kHz is ~40 Mb/s of UDP from the radio: use a wired link.\n"
   "\n[radio]\n# hpsdr-p1: a Red Pitaya running sdr_receiver_hpsdr\ntype=hpsdr-p1\n"
-  "# one radio, or a list tried in order: the first idle one is used;\n"
-  "# host@ppm gives that radio its own clock_ppm (192.168.1.21@3.81,192.168.1.71)\n"
-  "host=192.168.1.21\nrate=96000\n"
-  "# sampling-clock error: (true - shown) / true * 1e6, measured with 0 here;\n"
-  "# for the radios without @ppm\n"
+  "# host=auto takes the first idle Red Pitaya on this LAN. To pin one, give its\n"
+  "# address — `skimmer-headless --find-radios` lists the radios on the LAN.\n"
+  "# A list is tried in order, auto may end it: host=192.168.1.21,auto\n"
+  "%s"
+  "host=auto\nrate=96000\n"
+  "# Clock correction. A Red Pitaya's clock is off by a few ppm, and every spot\n"
+  "# then lands f x ppm low (3.8 ppm = 53 Hz on 14 MHz; the RBN wants < 100 Hz).\n"
+  "# Measure it with 0 here: compare your spots with the Reverse Beacon\n"
+  "# Network's spots of the same stations (www.reversebeacon.net). Yours D Hz\n"
+  "# low at F kHz on average: clock_ppm = D / F * 1000 (53 Hz at 14045 kHz =\n"
+  "# 3.77). Or a known carrier: (true - shown) / true * 1e6. clock_ppm is for\n"
+  "# every radio; host=ADDRESS@ppm gives one radio its own.\n"
   "clock_ppm=0\n"
   "\n[bands]\n"
-  "# name=centre Hz [modes]; with 96 kHz each band spans centre +-48 kHz;\n"
-  "# modes: cw (default), cw:v2, cw:deepcw, rtty — e.g. 20m=14045500 cw,rtty\n"
-  "160m=1840000\n80m=3540000\n40m=7040000\n30m=10125000\n20m=14040000\n"
-  "15m=21040000\n"
+  "# name=centre Hz [modes], in receiver order (RX1 first). At 96 kHz a band\n"
+  "# spans its centre +-48 kHz. modes: cw, rtty (cw:deepcw = the neural CW\n"
+  "# decoder). At most 8 — the Red Pitaya has 8 receivers: to have 12 m,\n"
+  "# put the # in front of another band.\n"
+  "160m=1845500 cw,rtty\n80m=3545500 cw,rtty\n40m=7045500 cw,rtty\n"
+  "30m=10125000 cw,rtty\n20m=14045500 cw,rtty\n17m=18113500 cw,rtty\n"
+  "15m=21045500 cw,rtty\n10m=28045500 cw,rtty\n#12m=24915500 cw,rtty\n"
   "\n[decode]\n# v2 (classical) or deepcw (needs ONNX Runtime + the model:\n"
   "# skimmer-headless --fetch-deepcw-model); without them a band runs v2\n"
   "engine=v2\n# per-band raw decode logs in ~/.local/share/skimmer-for-linux/headless\n"
@@ -29,7 +42,8 @@ static const char DEFAULT_CONFIG[] =
   "# on a band that decodes RTTY too, keep its CW decoders off the RTTY stations\n"
   "# it copies (an FSK tone reads as junk CW); off until measured live\n"
   "#suppress_cw_on_rtty=false\n"
-  "\n[feed]\n# telnet spot feed (validated CQ spots only); port 0 = off\n"
+  "\n[feed]\n# telnet spot feed (validated CQ spots only); port 0 = off.\n"
+  "# call = YOUR callsign: the feed stays OFF until it is set.\n"
   "call=\nport=7300\n"
   "# a call is spotted once it scored min_score, was read min_hearings times\n"
   "# (or MASTER.SCP knows it) and stayed settle_s seconds in the station table;\n"
@@ -66,11 +80,14 @@ static const char DEFAULT_CONFIG[] =
   "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
   "bands=\nminutes=10\ndir=/var/tmp/skimmer-iq\nstart_utc=\n";
 
-gboolean skim_hd_config_write_default(const char *path, GError **error) {
+gboolean skim_hd_config_write_default(const char *path, const char *radios, GError **error) {
   char *dir = g_path_get_dirname(path);
   g_mkdir_with_parents(dir, 0755);
   g_free(dir);
-  return g_file_set_contents(path, DEFAULT_CONFIG, -1, error);
+  char *text = g_strdup_printf(DEFAULT_CONFIG, radios ? radios : "");
+  const gboolean ok = g_file_set_contents(path, text, -1, error);
+  g_free(text);
+  return ok;
 }
 
 void skim_hd_config_clear(SkimHdConfig *cfg) {
@@ -195,7 +212,8 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   g_free(type);
   h->ppm = g_key_file_has_key(kf, "radio", "clock_ppm", NULL)
                ? g_key_file_get_double(kf, "radio", "clock_ppm", NULL) : 0;
-  /* host[@ppm], …: each radio has its own sampling clock */
+  /* host[@ppm], …: each radio has its own sampling clock; "auto" = every
+   * radio a broadcast discovery finds (none given = auto) */
   char *hv = g_key_file_get_string(kf, "radio", "host", NULL);
   GPtrArray *hl = g_ptr_array_new_with_free_func(g_free);
   GArray *pl = g_array_new(FALSE, FALSE, sizeof(double));
@@ -214,13 +232,22 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
       }
       *at = '\0';
     }
-    g_ptr_array_add(hl, g_strdup(*q));
+    if (g_ascii_strcasecmp(*q, SKIM_HD_HOST_AUTO) == 0) {
+      if (at) {
+        ok = bad(error, path, "[radio] host \"auto@…\": auto takes clock_ppm; "
+                 "give a radio its own as ADDRESS@ppm");
+        break;
+      }
+      g_ptr_array_add(hl, g_strdup(SKIM_HD_HOST_AUTO));
+    } else {
+      g_ptr_array_add(hl, g_strdup(*q));
+    }
     g_array_append_val(pl, ppm);
   }
   g_strfreev(parts);
   g_free(hv);
   if (ok && hl->len == 0) {
-    g_ptr_array_add(hl, g_strdup("192.168.1.21"));
+    g_ptr_array_add(hl, g_strdup(SKIM_HD_HOST_AUTO));
     g_array_append_val(pl, h->ppm);
   }
   g_ptr_array_add(hl, NULL);
