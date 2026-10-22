@@ -5,5 +5,6 @@
     <file>index.html</file>
     <file>app.css</file>
     <file>app.js</file>
+    <file>charts.js</file>
   </gresource>
 </gresources>

@@ -50,6 +50,7 @@
 #include "headless/record.h"
 #include "headless/scp_update.h"
 #include "headless/source.h"
+#include "headless/stats.h"
 #include "headless/switches.h"
 #include "headless/web.h"
 #include "engine/callsign.h"
@@ -88,6 +89,11 @@ typedef struct {
   guint64       frames_prev;   /* main loop: for kS/s                         */
   double        ksps;
   Rec          *rec;           /* [record]: this band's IQ tap, or NULL       */
+  /* the minute's history (stats.h): under lock, from the engine thread */
+  guint         appeared;      /* stations new in the table this minute       */
+  GArray       *snr;           /* SNR of the minute's feed lines (float)      */
+  /* main loop: the cumulative counters at the last minute's end */
+  guint64       spots_prev, folded_prev, below_prev;
 } Band;
 
 typedef struct {
@@ -121,6 +127,11 @@ typedef struct {
   gint64          cpu_prev_us;
   double          cpu_pct;
   guint           ticks;
+
+  SkimStats *stats;            /* the 7-day history (stats.h)                 */
+  gint64    minute;            /* the unix minute being collected             */
+  guint64   min_frames_prev, min_lost_prev;
+  guint     minutes;           /* minutes recorded since start                */
 
   GMutex   snap_lock;          /* the web page's copy of the status           */
   char    *snap_json;
@@ -208,8 +219,18 @@ static void station_cb(const SkimStation *st, gpointer user) {
   if (!copy) {
     copy = g_new0(SkimStation, 1);
     g_hash_table_insert(b->stations, g_strdup(st->call), copy);
+    b->appeared++;
   }
   *copy = *st;
+  g_mutex_unlock(&b->lock);
+}
+
+/* Every line the feed puts out (engine thread): its SNR for the minute. */
+static void feed_cb(const SkimStation *st, gpointer user) {
+  Band *b = user;
+  const float v = (float)st->snr_db;
+  g_mutex_lock(&b->lock);
+  g_array_append_val(b->snr, v);
   g_mutex_unlock(&b->lock);
 }
 
@@ -435,6 +456,73 @@ static void status_build(Hd *h, gboolean print) {
   g_string_free(con, TRUE);
 }
 
+/* ---- history (headless/stats.h) ------------------------------------------------- */
+
+static gint float_cmp(gconstpointer a, gconstpointer b) {
+  const float x = *(const float *)a, y = *(const float *)b;
+  return x < y ? -1 : x > y;
+}
+
+/* Close the minute h->minute: what each band did in it, and the machine. */
+static void stats_minute(Hd *h) {
+  SkimStatsMinute m;
+  memset(&m, 0, sizeof(m));
+  for (guint b = 0; b < SKIM_STATS_BANDS; b++) {
+    for (guint k = 0; k < SKIM_STATS_MODES; k++) {
+      for (guint j = 0; j < SKIM_SM_N; j++) { m.band[b][k][j] = NAN; }
+    }
+  }
+  for (guint i = 0; i < h->nb && i < SKIM_STATS_BANDS; i++) {
+    Band *b = &h->band[i];
+    BandStat bs;
+    band_stat(b, &bs);
+    guint64 folded = 0, gspots = 0, below = 0;
+    skim_pipeline_rbn_fold(b->p, NULL, &folded);
+    skim_pipeline_feed_gate_stats(b->p, NULL, &gspots, &below);
+    float *v = m.band[i][0];
+    v[SKIM_SM_SPOTS] = (float)(bs.spots - b->spots_prev);
+    v[SKIM_SM_FOLDED] = (float)(folded - b->folded_prev);
+    v[SKIM_SM_GATE_BELOW] = (float)(below - b->below_prev);
+    v[SKIM_SM_ACTIVE] = (float)bs.active;
+    b->spots_prev = bs.spots;
+    b->folded_prev = folded;
+    b->below_prev = below;
+    g_mutex_lock(&b->lock);
+    v[SKIM_SM_STATIONS] = (float)b->appeared;
+    b->appeared = 0;
+    if (b->snr->len) {
+      g_array_sort(b->snr, float_cmp);
+      v[SKIM_SM_SNR] = g_array_index(b->snr, float, b->snr->len / 2);
+      g_array_set_size(b->snr, 0);
+    }
+    g_mutex_unlock(&b->lock);
+  }
+  const SkimIqSourceStatus *src = &h->src_st;
+  const guint64 frames = h->nb ? skim_pipeline_frames(h->band[0].p) : 0;
+  const guint64 df = frames - h->min_frames_prev, dl = src->lost_frames - h->min_lost_prev;
+  m.glob[SKIM_SG_CPU] = (float)h->cpu_pct;
+  m.glob[SKIM_SG_LOST] = df + dl && src->lost_frames >= h->min_lost_prev
+                             ? (float)(100.0 * (double)dl / (double)(df + dl)) : 0;
+  m.glob[SKIM_SG_CLIENTS] = h->feed ? (float)skim_rbn_feed_clients(h->feed) : 0;
+  m.glob[SKIM_SG_STREAMING] = src->streaming ? 1 : 0;
+  m.glob[SKIM_SG_RADIO] = 0;
+  for (guint i = 0; src->streaming && h->cfg.hosts[i]; i++) {
+    if (strcmp(h->cfg.hosts[i], src->host) == 0) { m.glob[SKIM_SG_RADIO] = (float)(i + 1); }
+  }
+  h->min_frames_prev = frames;
+  h->min_lost_prev = src->lost_frames;
+  /* the first minute after a start is partial and its deltas start from
+   * zero — not a record */
+  if (h->minutes++) { skim_stats_put(h->stats, h->minute, &m); }
+  if (h->minutes % 5 == 0) {
+    GError *err = NULL;
+    if (!skim_stats_save(h->stats, &err)) {
+      g_warning("stats: %s", err->message);
+      g_clear_error(&err);
+    }
+  }
+}
+
 /* 1 Hz: link supervision, rates, status. */
 static gboolean tick(gpointer data) {
   Hd *h = data;
@@ -465,6 +553,12 @@ static gboolean tick(gpointer data) {
   h->cpu_prev = cpu;
   h->cpu_prev_us = now;
 
+  const gint64 minute = g_get_real_time() / (60 * G_USEC_PER_SEC);
+  if (minute != h->minute) {
+    if (h->minute) { stats_minute(h); }
+    h->minute = minute;
+  }
+
   h->ticks++;
   const gboolean print = h->console_s > 0 && h->ticks % (guint)h->console_s == 0;
   status_build(h, print);
@@ -480,6 +574,16 @@ static char *web_status(GHashTable *q, guint *st, const char **type, gpointer us
   char *body = g_strdup(h->snap_json ? h->snap_json : "{}");
   g_mutex_unlock(&h->snap_lock);
   return body;
+}
+
+static char *web_stats(GHashTable *q, guint *st, const char **type, gpointer user) {
+  (void)st; (void)type;
+  Hd *h = user;
+  const char *hv = q ? g_hash_table_lookup(q, "hours") : NULL;
+  const char *sv = q ? g_hash_table_lookup(q, "step") : NULL;
+  return skim_stats_json(h->stats, g_get_real_time() / (60 * G_USEC_PER_SEC),
+                         hv ? (guint)g_ascii_strtoull(hv, NULL, 10) : 24,
+                         sv ? (guint)g_ascii_strtoull(sv, NULL, 10) : 0);
 }
 
 static char *web_log(GHashTable *q, guint *st, const char **type, gpointer user) {
@@ -675,6 +779,8 @@ int main(int argc, char **argv) {
     skim_pipeline_set_text_cb(b->p, text_cb, b);
     skim_pipeline_set_station_cb(b->p, station_cb, b);
     skim_pipeline_set_station_gone_cb(b->p, gone_cb, b);
+    skim_pipeline_set_feed_cb(b->p, feed_cb, b);
+    b->snr = g_array_new(FALSE, FALSE, sizeof(float));
     skim_pipeline_set_state_cb(b->p, state_cb, b);
     if (!skim_pipeline_start(b->p, &err)) {
       g_printerr("pipeline %s: %s\n", b->name, err->message);
@@ -732,10 +838,18 @@ int main(int argc, char **argv) {
               "(0 = off)", fs, fh, fset, ffr, ffo);
   }
 
+  const char *names[SKIM_HD_MAX_BANDS];
+  for (guint i = 0; i < h->nb; i++) { names[i] = h->band[i].name; }
+  char *stats_path = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux",
+                                      "stats.bin", NULL);
+  h->stats = skim_stats_open(stats_path, names, h->nb);
+  g_message("stats: %s (7 days, a record a minute)", stats_path);
+  g_free(stats_path);
+
   SkimHdWeb *web = NULL;
   if (h->http_port > 0) {
     const SkimHdWebHooks hooks = {
-      .status = web_status, .log = web_log, .user = h,
+      .status = web_status, .stats = web_stats, .log = web_log, .user = h,
     };
     web = skim_hd_web_new((guint16)h->http_port, (const char *const *)c->settings_from,
                           &hooks, &err);
@@ -769,6 +883,7 @@ int main(int argc, char **argv) {
     skim_pipeline_free(h->band[i].p);
     skim_rec_free(h->band[i].rec);
   }
+  g_clear_pointer(&h->stats, skim_stats_free);  /* saves                       */
   g_clear_pointer(&h->feed, skim_rbn_feed_free);
   g_clear_pointer(&h->scp, skim_scp_updater_free);
   g_message("stopped");

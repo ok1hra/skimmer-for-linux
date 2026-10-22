@@ -80,6 +80,9 @@ page=$(curl -s "http://127.0.0.1:$HTTP/")
 [[ $page == *"<title>Skimmer for Linux</title>"* ]]; check "web: the page" $?
 [[ $(curl -s -o /dev/null -w '%{http_code} %{content_type}' "http://127.0.0.1:$HTTP/app.js") == "200 text/javascript"* ]]
 check "web: app.js" $?
+stj=$(curl -s "http://127.0.0.1:$HTTP/stats.json?hours=6")
+[[ $(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['bands'], d['n'], d['step_min'], d['rtty'], len(d['cw']['spots']['20m']), sorted(d['global']))" "$stj" 2>&1) == "['20m', '40m'] 360 1 None 360 ['clients', 'cpu', 'lost', 'radio', 'streaming']" ]]
+check "web: stats.json (6 h, both bands, the global series)" $?
 [[ $(curl -s "http://127.0.0.1:$HTTP/api/log") == '[{"t":'*'"text":"skimmer-headless '* ]]; check "web: the log" $?
 [[ $(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$HTTP/../headless.ini") == 404 ]]
 check "web: no path out of the page" $?

@@ -89,6 +89,95 @@ tabs.status = {
   async refresh() { renderStatus(await getJSON('status.json')); },
 };
 
+// ---- statistics ------------------------------------------------------------------
+const stats = { hours: 24, mode: 'cw', data: null, at: 0 };
+function sum(a) { return a.reduce((x, v) => x + (v || 0), 0); }
+function mean(a) { const v = a.filter((x) => x != null); return v.length ? sum(v) / v.length : null; }
+
+function renderStats() {
+  const d = stats.data;
+  if (!d) return;
+  const m = d[stats.mode] || d.cw;
+  const t = Array.from({ length: d.n }, (_, i) => d.t0 + i * d.step_min * 60);
+  const stepH = d.step_min / 60;
+  const label = (i) => {
+    const a = new Date(t[i] * 1000), b = new Date((t[i] + d.step_min * 60) * 1000);
+    const f = (x) => `${String(x.getUTCHours()).padStart(2, '0')}:${String(x.getUTCMinutes()).padStart(2, '0')}`;
+    return `${a.getUTCDate()}.${a.getUTCMonth() + 1}. ${f(a)}–${f(b)} UTC`;
+  };
+  const x = { t, spanH: stats.hours, label };
+  $('#mode').hidden = !d.rtty;
+  $('#stats-note').textContent = `${d.step_min}-minute buckets · times in UTC`;
+
+  // colour follows the band (config order), never its rank
+  const series = d.bands.map((b, i) => ({
+    name: b, color: Charts.seriesColor(i),
+    values: m.spots[b].map((v) => v == null ? null : v / stepH),   // per hour
+  }));
+  $('#legend-spots').replaceChildren(...series.map((s) => {
+    const sp = document.createElement('span'); const i = document.createElement('i');
+    i.style.background = s.color; sp.append(i, document.createTextNode(s.name)); return sp;
+  }));
+  const loading = (id, on) => $(id).classList.toggle('loading', on);
+  Charts.stacked($('#chart-spots'), x, series, (v) => fmt(v, v < 10 && v % 1 ? 1 : 0));
+  Charts.heat($('#chart-active'), x, d.bands.map((b) => ({ name: b, values: m.active[b] })), (v) => fmt(v, 1));
+  Charts.line($('#chart-cpu'), x, d.global.cpu, Charts.seriesColor(0), (v) => `${fmt(v)} %`, 'CPU, % of a core');
+  Charts.line($('#chart-lost'), x, d.global.lost, Charts.seriesColor(1), (v) => `${fmt(v, 3)} %`, 'lost, worst minute');
+  ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-lost'].forEach((id) => loading(id, false));
+
+  const totSpots = d.bands.reduce((a, b) => a + sum(m.spots[b]), 0);
+  const streamed = mean(d.global.streaming);
+  $('#stats-tiles').innerHTML = [
+    tile('spots', fmt(totSpots), `in ${stats.hours} h`),
+    tile('stations appeared', fmt(d.bands.reduce((a, b) => a + sum(m.stations[b]), 0))),
+    tile('folded', fmt(d.bands.reduce((a, b) => a + sum(m.folded[b]), 0)), 'twins held back'),
+    tile('gate below', fmt(d.bands.reduce((a, b) => a + sum(m.gate_below[b]), 0)), 'learned gate'),
+    tile('radio streamed', streamed == null ? '–' : fmt(100 * streamed),
+         streamed == null ? 'no data' : '% of the recorded time'),
+  ].join('');
+
+  const head = '<tr><th>band</th><th>spots</th><th>spots / h</th><th>stations appeared</th><th>active (mean)</th>' +
+    '<th>folded</th><th>gate below</th><th>SNR (mean of medians)</th></tr>';
+  const hrs = (d.n * d.step_min) / 60;
+  $('#stats-table').innerHTML = head + d.bands.map((b) => {
+    const sp = sum(m.spots[b]);
+    return `<tr><td>${esc(b)}</td><td>${fmt(sp)}</td><td>${fmt(sp / hrs, 1)}</td><td>${fmt(sum(m.stations[b]))}</td>` +
+      `<td>${fmt(mean(m.active[b]), 1)}</td><td>${fmt(sum(m.folded[b]))}</td><td>${fmt(sum(m.gate_below[b]))}</td>` +
+      `<td>${mean(m.snr[b]) == null ? '–' : `${fmt(mean(m.snr[b]))} dB`}</td></tr>`;
+  }).join('');
+}
+
+tabs.stats = {
+  enter() { this.refresh(true); },
+  async refresh(force) {
+    // history moves by the minute: refetch at most every 30 s
+    if (!force && Date.now() - stats.at < 30000) return;
+    ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-lost'].forEach((id) => $(id).classList.add('loading'));
+    stats.data = await getJSON(`stats.json?hours=${stats.hours}`);
+    stats.at = Date.now();
+    renderStats();
+  },
+};
+for (const b of document.querySelectorAll('#range button')) {
+  b.addEventListener('click', () => {
+    stats.hours = Number(b.dataset.h);
+    for (const o of document.querySelectorAll('#range button')) o.classList.toggle('on', o === b);
+    tabs.stats.refresh(true);
+  });
+}
+for (const b of document.querySelectorAll('#mode button')) {
+  b.addEventListener('click', () => {
+    stats.mode = b.dataset.m;
+    for (const o of document.querySelectorAll('#mode button')) o.classList.toggle('on', o === b);
+    renderStats();
+  });
+}
+let resizeT = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(() => { if (tab === 'stats') renderStats(); }, 150);
+});
+
 // ---- log -------------------------------------------------------------------------
 tabs.log = {
   enter() { this.refresh(); },

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Skimmer for Linux</title>
 <link rel="stylesheet" href="app.css">
+<script src="charts.js" defer></script>
 </head>
 <body>
 <header>
@@ -35,7 +36,35 @@
   </section>
 
   <section id="tab-stats" hidden>
-    <p class="mut">Statistics arrive with the next update.</p>
+    <div class="filters">
+      <div class="seg" id="range">
+        <button data-h="6">6 h</button><button data-h="24" class="on">24 h</button>
+        <button data-h="72">3 days</button><button data-h="168">7 days</button>
+      </div>
+      <div class="seg" id="mode" hidden>
+        <button data-m="cw" class="on">CW</button><button data-m="rtty">RTTY</button>
+      </div>
+      <span class="mut" id="stats-note"></span>
+    </div>
+    <div id="stats-tiles" class="tiles"></div>
+    <div class="chart-card">
+      <h2>Spots per hour, by band</h2>
+      <div class="legend" id="legend-spots"></div>
+      <div class="chart" id="chart-spots"></div>
+    </div>
+    <div class="chart-card">
+      <h2>Active decoders, by band</h2>
+      <p class="sub mut">decoders reading running text, averaged over each bucket — darker = busier</p>
+      <div class="chart" id="chart-active"></div>
+    </div>
+    <div class="pair">
+      <div class="chart-card"><h2>CPU</h2><p class="sub mut">% of one core</p><div class="chart" id="chart-cpu"></div></div>
+      <div class="chart-card"><h2>IQ lost on the wire</h2><p class="sub mut">% of frames, worst minute in each bucket</p><div class="chart" id="chart-lost"></div></div>
+    </div>
+    <details class="more" open>
+      <summary>Table: totals over the range</summary>
+      <div class="wrap"><table id="stats-table" class="grid"></table></div>
+    </details>
   </section>
 
   <section id="tab-settings" hidden>

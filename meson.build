@@ -278,6 +278,14 @@ skimmer_config_test = executable('skimmer-config-test',
 )
 test('config', skimmer_config_test, timeout : 30)
 
+# The 7-day history: buckets, reopen with re-ordered bands, a foreign file.
+skimmer_stats_test = executable('skimmer-stats-test',
+  ['src/stats_test.c', 'src/headless/stats.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+)
+test('stats', skimmer_stats_test, timeout : 30)
+
 # Golden gate: real-air IQ + decode-tap slices through the whole engine with
 # no SKIM_* switches — every output byte-identical to tests/golden/
 # expected.sha256. Inputs live outside git (tests/golden/README.md); without
@@ -310,6 +318,7 @@ headless_sources = files(
   'src/headless/source.c',          # IQ sources: the interface
   'src/headless/source_hpsdr_p1.c', # … a Red Pitaya (HPSDR P1)
   'src/headless/source_mock.c',     # … synthetic CW (the headless gate)
+  'src/headless/stats.c',           # the 7-day per-minute history
   'src/headless/switches.c',        # the SKIM_* switches a start runs with
   'src/headless/web.c',             # the web page (libsoup 3)
 )
