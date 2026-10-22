@@ -195,6 +195,55 @@ gboolean skim_hpsdr_discover(const char *host, guint16 port, guint timeout_ms,
   return ok;
 }
 
+static gint found_cmp(gconstpointer a, gconstpointer b) {
+  const guint32 x = ntohl(inet_addr(((const SkimHpsdrFound *)a)->host));
+  const guint32 y = ntohl(inet_addr(((const SkimHpsdrFound *)b)->host));
+  return x < y ? -1 : x > y;
+}
+
+GArray *skim_hpsdr_discover_all(const char *bcast, guint16 port, guint timeout_ms,
+                                GError **error) {
+  struct sockaddr_in dst;
+  if (!resolve(bcast ? bcast : "255.255.255.255", port, &dst, error)) { return NULL; }
+  int fd = open_socket(error);
+  if (fd < 0) { return NULL; }
+  int on = 1;
+  setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+  GArray *out = g_array_new(FALSE, TRUE, sizeof(SkimHpsdrFound));
+  guint8 req[63] = { 0xEF, 0xFE, 0x02 };
+  if (sendto(fd, req, sizeof(req), 0, (const struct sockaddr *)&dst, sizeof(dst)) < 0) {
+    g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED,
+                "discovery broadcast to %s: %s", bcast ? bcast : "255.255.255.255",
+                g_strerror(errno));
+    close(fd);
+    g_array_unref(out);
+    return NULL;
+  }
+  const gint64 end = g_get_monotonic_time() + (gint64)timeout_ms * 1000;
+  for (;;) {
+    const gint64 left = end - g_get_monotonic_time();
+    if (left <= 0) { break; }
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    if (poll(&pfd, 1, (int)((left + 999) / 1000)) <= 0) { continue; }
+    guint8 buf[PKT_BYTES];
+    struct sockaddr_in from;
+    socklen_t flen = sizeof(from);
+    const gssize n = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr *)&from, &flen);
+    SkimHpsdrFound f;
+    memset(&f, 0, sizeof(f));
+    if (n <= 0 || !parse_discovery(buf, n, &f.info)) { continue; }
+    inet_ntop(AF_INET, &from.sin_addr, f.host, sizeof(f.host));
+    gboolean seen = FALSE;                       /* one reply per radio       */
+    for (guint i = 0; i < out->len && !seen; i++) {
+      seen = strcmp(g_array_index(out, SkimHpsdrFound, i).host, f.host) == 0;
+    }
+    if (!seen) { g_array_append_val(out, f); }
+  }
+  close(fd);
+  g_array_sort(out, found_cmp);
+  return out;
+}
+
 /* ---- EP2 control ------------------------------------------------------------ */
 
 /* C0 address of receiver rx's frequency (0-based): RX1..RX7 sit at
