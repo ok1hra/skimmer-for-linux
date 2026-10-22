@@ -10,6 +10,66 @@ aiming for the performance of the legendary CW Skimmer Server by VE3NEA — TNX!
 It currently uses a conventional decoder, with no neural networks, to keep the
 hardware requirements low.*
 
+## Quick start guide
+
+**What you need**
+
+- **A Red Pitaya** running Pavel Demin's `sdr_receiver_hpsdr`
+  ([red-pitaya-notes](https://github.com/pavel-demin/red-pitaya-notes)). It
+  is the only supported radio.
+- **A wired network** to it. Automatic discovery works only in the same
+  subnet.
+- **An x86_64 Linux machine** with glibc 2.36 or newer. Debian 12 and 13 are
+  tested.
+
+**Steps**
+
+1. Download `skimmer-headless-*-x86_64.AppImage` from the
+   [latest release](https://github.com/ok1hra/skimmer-for-linux/releases/latest).
+2. `chmod +x skimmer-headless-*-x86_64.AppImage`, then
+   `./skimmer-headless-*-x86_64.AppImage --find-radios`. It should list your
+   Red Pitaya as idle.
+3. `./skimmer-headless-*-x86_64.AppImage` — the first run writes
+   `~/.config/skimmer-for-linux/headless.ini` and starts skimming eight bands
+   (160–10 m), CW and RTTY.
+4. Open `http://localhost:8073/` → **Settings** and set your call. The telnet
+   feed stays off without it. Then click *Save and restart*.
+5. Point a logger or cluster client at `telnet localhost 7300`.
+6. After a while, correct the Red Pitaya's clock (`clock_ppm`). See
+   [First start](#first-start).
+7. Optional: run it as a service
+   (`--install-service`, [As a service](#as-a-service)).
+
+**Limits — hardware (Red Pitaya)**
+
+- **One Red Pitaya, up to 8 bands**, one receiver per band. All bands share
+  one sample rate, which is also the width each band covers around its centre:
+  48, 96 (default) or 192 kHz.
+- **One client at a time.** The skimmer takes only an idle Red Pitaya and
+  takes a busy one only with `--take-over`. If another program (Quisk, CW
+  Skimmer Server) takes the radio over, the stream is lost and the skimmer
+  exits with code 3; the service restarts it after a minute.
+- **The antenna input** (IN1/IN2) of each receiver is chosen on the Red
+  Pitaya, on the `sdr_receiver_hpsdr` command line. The skimmer cannot set it.
+- **The clock is off by a few ppm** and must be corrected in the config.
+  Uncorrected, 4 ppm puts 10 m spots ~110 Hz off, more than the RBN accepts.
+- **Network:** 8 bands at 96 kHz are about 40 Mb/s of UDP, at 192 kHz about
+  77 Mb/s. Over Wi-Fi, 192 kHz lost about 30 % of the packets.
+
+**Limits — software**
+
+- **The AppImage is x86_64 only** (glibc ≥ 2.36, FUSE or
+  `APPIMAGE_EXTRACT_AND_RUN=1`). Other architectures, such as a Raspberry
+  Pi, can only build from source, untested.
+- **No GUI.** It has a web page and a console table. By default, settings can
+  be changed only from the machine itself (`[web] settings_from`); from
+  elsewhere, use an SSH tunnel.
+- **Modes: CW and RTTY** (45.45 Bd, 170 Hz) only — no PSK and no other RTTY
+  speeds.
+- **CPU:** six 96 kHz CW bands used 70–85 % of one core on an i5-10210U.
+  RTTY adds about 7.5 % of a core per band. The optional DeepCW decoder needs
+  far more (about 3 % of a core per decoding channel).
+
 > **This is a fork.** It is maintained by Dan, OK1HRA, from
 > [OK1BR/skimmer-for-linux](https://github.com/OK1BR/skimmer-for-linux).
 > Skimmer for Linux is the work of Richard Fakenberg, OK1BR; the fork has
