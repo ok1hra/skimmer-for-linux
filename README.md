@@ -50,15 +50,30 @@ streaming from unless told to (`--take-over`).
   IQ recordings (`[record]`), and `skimmer-compare/`, which scores the feed
   against another skimmer with the Reverse Beacon Network as the referee.
 
-An AppImage and a systemd user service are being built.
+## Install
+
+The release is one file, an AppImage for x86_64 Linux with glibc 2.36 or
+newer — tested on Debian 12 and 13. It brings its
+libraries and the ONNX Runtime for DeepCW; the DeepCW model is fetched on
+request ([DeepCW](#deepcw)).
+
+```sh
+chmod +x skimmer-headless-*-x86_64.AppImage
+./skimmer-headless-*-x86_64.AppImage --check-config   # writes nothing, shows the defaults
+./skimmer-headless-*-x86_64.AppImage                  # first run writes the config
+./skimmer-headless-*-x86_64.AppImage --install-service
+```
+
+Without FUSE (`libfuse2`), set `APPIMAGE_EXTRACT_AND_RUN=1`. Run
+`--install-service` again after moving the file.
 
 ## Build
 
-Requirements: GLib/GIO, libwebsockets, libcurl ≥ 7.85, FFTW (single and
-double precision), `meson` and `ninja`. On Debian 13:
+Requirements: GLib/GIO ≥ 2.74, libsoup 3, libwebsockets, libcurl ≥ 7.85,
+FFTW (single and double precision), `meson` and `ninja`. On Debian 12/13:
 
 ```sh
-sudo apt install meson ninja-build libglib2.0-dev libwebsockets-dev \
+sudo apt install meson ninja-build libglib2.0-dev libsoup-3.0-dev libwebsockets-dev \
                  libfftw3-dev libcurl4-openssl-dev
 git clone https://github.com/ok1hra/skimmer-for-linux.git
 cd skimmer-for-linux
@@ -67,7 +82,10 @@ meson compile -C build
 meson test -C build            # offline gates, no radio needed
 ```
 
-The build produces `build/skimmer-headless` and the tools below. The `golden`
+The build produces `build/skimmer-headless` and the tools below.
+`packaging/appimage/build.sh` builds the AppImage in a Debian 12 container
+(podman) and runs every gate there first; `packaging/appimage/smoke.sh`
+checks the result, here or in a clean Debian 12 (`--container`). The `golden`
 gate replays recorded real air through the whole engine and needs inputs
 that are not in git; without them it reports SKIP
 ([`tests/golden/README.md`](tests/golden/README.md)).

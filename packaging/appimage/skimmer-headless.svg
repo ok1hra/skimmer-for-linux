@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect width="256" height="256" rx="48" fill="#0b62c4"/>
+  <!-- a band of keyed carriers: dits and dahs on three channels -->
+  <g fill="#ffffff">
+    <rect x="40" y="70" width="28" height="18" rx="9"/>
+    <rect x="80" y="70" width="76" height="18" rx="9"/>
+    <rect x="168" y="70" width="28" height="18" rx="9"/>
+    <rect x="40" y="119" width="76" height="18" rx="9"/>
+    <rect x="128" y="119" width="28" height="18" rx="9"/>
+    <rect x="168" y="119" width="48" height="18" rx="9" opacity="0.55"/>
+    <rect x="40" y="168" width="28" height="18" rx="9"/>
+    <rect x="80" y="168" width="28" height="18" rx="9"/>
+    <rect x="120" y="168" width="76" height="18" rx="9"/>
+  </g>
+</svg>

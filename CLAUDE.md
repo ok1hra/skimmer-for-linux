@@ -155,15 +155,14 @@ here; what was done and why is in git.
 
 ## Releasing
 
-Tag FIRST, then take the tarball's sha256 from the published tag — the
-checksum cannot exist before it. `gh release create --verify-tag
---notes-file` runs right after the tag push, so CI attaches its artifacts to
-the curated release instead of an empty one. Then `packaging/PKGBUILD`
-(`pkgver`, `_pkgtag`, sha256) → `makepkg --printsrcinfo` → commit and push to
-`ssh://aur@aur.archlinux.org/skimmer-for-linux.git` (key `~/.ssh/aur_ed25519`);
-this repo's PKGBUILD is the single source, the AUR clone is a copy. Release
-titles carry no epithet: "Skimmer for Linux 0.4.1", tag message
-"release: v0.4.1".
+One artifact: the AppImage (`packaging/appimage/`; deb, rpm and the AUR
+package went with the GUI, 2026-10-22). Tag first; `gh release create
+--verify-tag --notes-file` right after the tag push, so CI (build.yml) builds
+the AppImage in debian:12, smoke-tests it in a clean debian:12 and attaches
+it to the curated release instead of an empty one. Release titles carry no
+epithet: "Skimmer for Linux 0.7.0", tag message "release: v0.7.0". A new
+pinned download (linuxdeploy, ONNX Runtime) = new URL + sha256 in
+`packaging/appimage/build.sh`.
 
 ## Layout
 

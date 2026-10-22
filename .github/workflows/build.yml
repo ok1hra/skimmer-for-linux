@@ -1,11 +1,14 @@
 # CI — runs at RELEASE time only (no CI on every commit; the local gates
-# cover development): build + all offline engine gates on v* tags, external
-# pull requests and manual dispatch. The golden gate SKIPs here — its real-air
-# inputs live on hra2 (tests/golden/README.md).
+# cover development): on v* tags, external pull requests and manual
+# dispatch. The golden gate SKIPs here — its real-air inputs live on hra2
+# (tests/golden/README.md); the AppImage built for a release on hra2 runs
+# it in its container (packaging/appimage/build.sh).
 #
-# skimmer-for-linux is headless since the GUI was removed; the AppImage job
-# (Debian 12 base) comes with packaging/appimage — the GTK AppImage, .deb and
-# .rpm jobs went with the GUI.
+#   gates     build + every offline gate on the runner
+#   appimage  the AppImage in debian:12 (its gates again, there), smoke-
+#             tested in a clean debian:12 — with the DeepCW model fetched
+#             from upstream and loaded by the bundled ONNX Runtime — and,
+#             on a tag, attached to the release
 name: build
 
 on:
@@ -17,7 +20,7 @@ on:
 env:
   DEBIAN_FRONTEND: noninteractive
   APT_DEPS: >-
-    meson ninja-build libglib2.0-dev libwebsockets-dev libfftw3-dev
+    meson ninja-build libglib2.0-dev libsoup-3.0-dev libwebsockets-dev libfftw3-dev
     libcurl4-openssl-dev
 
 jobs:
@@ -35,3 +38,29 @@ jobs:
           meson compile -C build
       - name: Offline gates
         run: meson test -C build --print-errorlogs
+
+  appimage:
+    needs: gates
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write          # attach to the release
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build (debian:12, podman)
+        run: packaging/appimage/build.sh dist
+      - name: Smoke test in a clean debian:12
+        run: packaging/appimage/smoke.sh dist/*.AppImage --container --fetch
+      - name: Smoke test on the runner
+        run: packaging/appimage/smoke.sh dist/*.AppImage
+      - uses: actions/upload-artifact@v6
+        with:
+          name: appimage
+          path: dist/*.AppImage
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # the release is created by hand right after the tag push
+          for _ in $(seq 60); do gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && break; sleep 10; done
+          gh release upload "$GITHUB_REF_NAME" dist/*.AppImage --clobber
