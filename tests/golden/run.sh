@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Golden gate — the CW decoder and the RBN feed must not move by one byte.
+# Golden gate — the CW and RTTY decoders and the RBN feed must not move by
+# one byte.
 #
 #   run.sh <skimmer-replay> <skimmer-tap-replay>            check
 #   run.sh <skimmer-replay> <skimmer-tap-replay> --update   new reference
 #
-# Inputs live OUTSIDE git (1.9 GB) in $SKIM_GOLDEN_DIR (default
+# Inputs live OUTSIDE git (2.4 GB) in $SKIM_GOLDEN_DIR (default
 # /var/tmp/skimmer-iq/golden): 10-minute 96 kHz IQ slices of real air
 # (hd-*.cf32 recordings from skimmer-headless [record]), 1 h decode-tap
 # slices of all 7 bands, a frozen MASTER.SCP and the learned feed gate.
@@ -34,25 +35,33 @@ mkdir -p "$OUT/cfg/skimmer-for-linux"
 cp "$G/scp/master.scp" "$OUT/cfg/skimmer-for-linux/"
 run() { env -i HOME="$OUT" PATH=/usr/bin:/bin XDG_CONFIG_HOME="$OUT/cfg" "$@"; }
 
-IQ=(g20m-day g20m-eve g30m-day g40m-night)
-BANDS=(160m 80m 40m 30m 20m 17m 15m)
+# <output dir>:<slice>:<mode> — CW on every slice; RTTY on the contest
+# slice (g40m-rtty, JARTS) and on a 20 m evening with an RTTY net (text, no
+# spots); CW on the contest slice too: what CW makes of a band full of FSK
+IQ=(g20m-day:g20m-day:cw g20m-eve:g20m-eve:cw g30m-day:g30m-day:cw
+    g40m-night:g40m-night:cw g40m-rtty:g40m-rtty:cw
+    rtty-g40m-rtty:g40m-rtty:rtty rtty-g20m-eve:g20m-eve:rtty)
+BANDS=(160m 80m 40m 30m 20m 17m 15m 40m-rtty)
 
-# IQ → channelizer → CW v2 → extractor → station table → feed (stderr feed:)
-for s in "${IQ[@]}"; do
-  mkdir -p "$OUT/$s"
-  ln -s "$G/$s.cf32" "$G/$s.cf32.meta" "$OUT/$s/"
-  ( run SKIM_REPLAY_FEED=new "$REPLAY" "$OUT/$s/$s.cf32" \
-      > "$OUT/$s/out.raw" 2> "$OUT/$s/feed.txt"
+# IQ → channelizer → CW v2 / RTTY → extractor → station table → feed
+# (stderr feed:)
+for job in "${IQ[@]}"; do
+  IFS=: read -r d s mode <<< "$job"
+  mkdir -p "$OUT/$d"
+  ln -s "$G/$s.cf32" "$G/$s.cf32.meta" "$OUT/$d/"
+  ( run SKIM_MODE=$mode SKIM_REPLAY_FEED=new "$REPLAY" "$OUT/$d/$s.cf32" \
+      > "$OUT/$d/out.raw" 2> "$OUT/$d/feed.txt"
     # paths and wall time are the only run-dependent bytes
-    sed -e "s#$OUT/$s/##g" -e 's/ in [0-9.]* s wall ([0-9.]*x)//' \
-      "$OUT/$s/out.raw" > "$OUT/$s/out.txt"
-    mv "$OUT/$s/$s.cf32.decodes.log" "$OUT/$s/decodes.log" ) &
+    sed -e "s#$OUT/$d/##g" -e 's/ in [0-9.]* s wall ([0-9.]*x)//' \
+      "$OUT/$d/out.raw" > "$OUT/$d/out.txt"
+    mv "$OUT/$d/$s.cf32.decodes.log" "$OUT/$d/decodes.log" ) &
 done
-# decode tap → extractor → station table → feed policy + learned gate (shadow)
+# decode tap → extractor → station table → feed policy + learned gate (shadow;
+# an RTTY tap — engine=rtty in its header — replays without it)
 for b in "${BANDS[@]}"; do
   mkdir -p "$OUT/tap-$b"
   ( run "$TAPREPLAY" --scp "$G/scp/master.scp" --gate-ini "$G/feed-gate-20261006.ini" \
-      --band "$b" --rows "$OUT/tap-$b/rows.jsonl" --tap-out "$OUT/tap-$b/tap-out.log" \
+      --band "${b%-rtty}" --rows "$OUT/tap-$b/rows.jsonl" --tap-out "$OUT/tap-$b/tap-out.log" \
       "$G/tap-$b.log" > "$OUT/tap-$b/out.txt" 2>&1
     cmp -s "$OUT/tap-$b/tap-out.log" "$G/tap-$b.log" \
       && echo faithful > "$OUT/tap-$b/faithful.txt" \
@@ -62,7 +71,7 @@ done
 wait
 
 files=()
-for s in "${IQ[@]}"; do files+=("$s/out.txt" "$s/feed.txt" "$s/decodes.log"); done
+for job in "${IQ[@]}"; do d=${job%%:*}; files+=("$d/out.txt" "$d/feed.txt" "$d/decodes.log"); done
 for b in "${BANDS[@]}"; do files+=("tap-$b/out.txt" "tap-$b/rows.jsonl" "tap-$b/faithful.txt"); done
 (cd "$OUT" && sha256sum "${files[@]}") > "$OUT/got.sha256"
 
