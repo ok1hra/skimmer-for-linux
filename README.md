@@ -72,7 +72,12 @@ that are not in git; without them it reports SKIP
 ./build/skimmer-headless [--config FILE] [--take-over] [--status-every S]
                          [--http-port N] [--feed-gate FILE]
                          [--feed-gate-mode off|shadow|on]
+                         [--check-config] [--list-switches]
 ```
+
+`--check-config` reads and checks the config and the feed gate, prints what
+would run and exits — no radio is touched. A config that does not parse
+stops the start with exit 2 and names the bad line.
 
 The first run writes `~/.config/skimmer-for-linux/headless.ini` with defaults.
 Here is an example for seven bands at 96 kHz:
@@ -86,7 +91,8 @@ host=192.168.1.21@3.81,192.168.1.71
 rate=96000
 
 [bands]
-# name=centre Hz, in receiver order (RX1 first), at most 8
+# name=centre Hz [modes], in receiver order (RX1 first), at most 8;
+# modes: cw (default), cw:v2, cw:deepcw, rtty (RTTY is not decoded yet)
 160m=1845500
 80m=3545500
 40m=7045500
@@ -115,7 +121,8 @@ Point a logger or a cluster client at `telnet <host> 7300`. Open
 `http://<host>:8073/` for the status page. Ctrl+C stops the skimmer cleanly
 and frees the radio.
 
-When every listed radio is busy, or none answers within 30 s, the skimmer
+`[radio] type=mock` replaces the radio with synthetic CW on every band (the
+headless gate uses it). When every listed radio is busy, or none answers within 30 s, the skimmer
 says which and exits with code 3 — also when the stream is lost later; run it
 under a supervisor that restarts it. Seven receivers at 96 kHz are about
 35 Mb/s of UDP, so **use a wired link**. Over Wi-Fi, 192 kHz lost about
@@ -170,6 +177,10 @@ It needs bash, curl and Python 3, standard library only.
 | `~/.local/share/skimmer-for-linux/models/deepcw/` | DeepCW model, if installed |
 
 ## Environment variables
+
+`--list-switches` prints every `SKIM_*` switch the engine reads. The ones set
+at start are logged and listed in `/status.json` (`switches`); a `SKIM_*`
+name the engine does not read is warned about.
 
 | Variable | Effect |
 | --- | --- |

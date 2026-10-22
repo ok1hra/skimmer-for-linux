@@ -112,8 +112,11 @@ here; what was done and why is in git.
   runs up to 8 receivers (one pipeline per band, one telnet feed, console +
   web status). The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 15 gates** (DeepCW skips without the model, golden skips
-  without its inputs in `/var/tmp/skimmer-iq/golden`). It does NOT relink
+- **`meson test` = 18 gates** (DeepCW skips without the model, golden skips
+  without its inputs in `/var/tmp/skimmer-iq/golden`). `headless-mock` runs
+  the whole skimmer-headless on `[radio] type=mock` (no radio).
+- **GLib 2.74 is the floor** (Debian 12, the AppImage's base):
+  `GLIB_VERSION_MAX_ALLOWED` makes newer API a compile error. It does NOT relink
   every binary — `ninja -C builddir` first.
 - **The learned feed gate** is built in (`weights/feed-gate.ini`, GResource)
   and runs in shadow; `--feed-gate FILE` / `--feed-gate-mode off|shadow|on`
@@ -157,8 +160,10 @@ src/engine/   headless, GLib-only:
   station      per-frequency station tracker
   callsign     extraction + validation (RBN-grade)
   spot_out     TCI SPOT feed + RBN telnet feed
-src/headless/ the product layer: scp_update (GLib + libcurl: MASTER.SCP
-              background updater)
+src/headless/ the product layer: config (headless.ini, one parser), source
+              (IQ source interface) + source_hpsdr_p1 / source_mock, record
+              ([record] IQ to disk), switches (SKIM_* visibility), scp_update
+              (MASTER.SCP background updater)
 src/headless_main.c  skimmer-headless: multi-band, no GUI (HPSDR P1 → N pipelines)
 weights/      learned weights built into skimmer-headless (feed-gate.ini)
 tests/golden/ the golden gate: real-air replay, byte for byte

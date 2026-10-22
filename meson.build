@@ -9,6 +9,11 @@ project('skimmer-for-linux', 'c',
 )
 
 add_project_arguments('-D_GNU_SOURCE', language : 'c')
+# GLib 2.74 is the floor (Debian 12 — the AppImage's base): newer API is a
+# compile error, not a crash on the target.
+add_project_arguments('-DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_74',
+                      '-DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_74',
+                      '-Werror=deprecated-declarations', language : 'c')
 add_project_arguments('-DSKIMMER_VERSION="@0@"'.format(meson.project_version()),
                       language : 'c')
 
@@ -18,8 +23,8 @@ add_project_arguments('-DSKIMMER_VERSION="@0@"'.format(meson.project_version()),
 # transport, fftw3f the channelizer FFT (+ the vendored WDSP resampler).
 cc        = meson.get_compiler('c')
 gnome     = import('gnome')  # GResource: the built-in weights
-glib_dep  = dependency('glib-2.0')            # headless engine
-gio_dep   = dependency('gio-2.0')             # M6: RBN telnet server sockets
+glib_dep  = dependency('glib-2.0', version : '>=2.74')  # headless engine
+gio_dep   = dependency('gio-2.0', version : '>=2.74')   # sockets, GResource
 m_dep     = cc.find_library('m', required : false)
 lws_dep   = dependency('libwebsockets')       # M1: TCI client transport
 fftw3f_dep  = dependency('fftw3f')            # M2: channelizer FFT (float)
@@ -264,6 +269,14 @@ skimmer_rbn_test = executable('skimmer-rbn-test',
 )
 test('rbn-feed', skimmer_rbn_test, timeout : 120)
 
+# headless.ini parsing: defaults, band modes, host@ppm, refusals with reasons.
+skimmer_config_test = executable('skimmer-config-test',
+  ['src/config_test.c', 'src/headless/config.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+)
+test('config', skimmer_config_test, timeout : 30)
+
 # Golden gate: real-air IQ + decode-tap slices through the whole engine with
 # no SKIM_* switches — every output byte-identical to tests/golden/
 # expected.sha256. Inputs live outside git (tests/golden/README.md); without
@@ -287,10 +300,29 @@ test('scp-update', skimmer_scp_test, timeout : 180)
 
 # Multi-band skimmer without a GUI: one HPSDR P1 receiver (Red Pitaya) with
 # up to 8 RX, one pipeline per band, one telnet feed, console + web status.
-executable('skimmer-headless',
-  ['src/headless_main.c', 'src/headless/scp_update.c',    # MASTER.SCP updater
-   weights_res],
+# The product layer (src/headless/): config, IQ sources, recording, switches.
+headless_sources = files(
+  'src/headless/config.c',          # headless.ini, parsed and checked
+  'src/headless/record.c',          # [record]: a band's IQ to disk
+  'src/headless/scp_update.c',      # MASTER.SCP updater
+  'src/headless/source.c',          # IQ sources: the interface
+  'src/headless/source_hpsdr_p1.c', # … a Red Pitaya (HPSDR P1)
+  'src/headless/source_mock.c',     # … synthetic CW (the headless gate)
+  'src/headless/switches.c',        # the SKIM_* switches a start runs with
+)
+
+skimmer_headless = executable('skimmer-headless',
+  ['src/headless_main.c', headless_sources, weights_res],
   include_directories : [include_directories('src'), engine_inc],
   dependencies : engine_deps + [curl_dep],
   link_with : engine_lib,
 )
+
+# Headless gate: the whole skimmer-headless on the mock source (no radio) —
+# config, two bands, telnet spot, /status.json, SIGTERM, a refused config.
+test('headless-mock', find_program('tests/headless-mock.sh'),
+  args : [skimmer_headless], timeout : 120)
+
+# The known SKIM_* switches (src/headless/switches.c) = the ones the sources read.
+test('switches', find_program('tests/switches.sh'),
+  args : [skimmer_headless, meson.project_source_root()], timeout : 30)
