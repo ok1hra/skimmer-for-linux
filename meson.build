@@ -117,7 +117,7 @@ executable('skimmer-hpsdr-probe',
 
 # M3 A/B harness: offline decode of a probe-recorded cf32 sample through the
 # full pipeline — decoder versions diff on the same off-air corpus.
-executable('skimmer-replay',
+skimmer_replay = executable('skimmer-replay',
   ['src/replay_main.c'],
   include_directories : include_directories('src'),
   dependencies : engine_deps,
@@ -126,7 +126,7 @@ executable('skimmer-replay',
 
 # Feed-gate learning: replay a decode tap (headless [feed] tap=) through the
 # extractor → station table → RBN gate, offline, on the tap's own clock.
-executable('skimmer-tap-replay',
+skimmer_tap_replay = executable('skimmer-tap-replay',
   ['src/tap_replay_main.c'],
   include_directories : include_directories('src'),
   dependencies : engine_deps,
@@ -294,6 +294,15 @@ skimmer_rbn_test = executable('skimmer-rbn-test',
   link_with : engine_lib,
 )
 test('rbn-feed', skimmer_rbn_test, timeout : 120)
+
+# Golden gate: real-air IQ + decode-tap slices through the whole engine with
+# no SKIM_* switches — every output byte-identical to tests/golden/
+# expected.sha256. Inputs live outside git (tests/golden/README.md); without
+# them the gate SKIPs.
+test('golden', find_program('tests/golden/run.sh'),
+  args : [skimmer_replay, skimmer_tap_replay],
+  timeout : 900,
+)
 
 # gh#15: offline gate — the MASTER.SCP updater against a mock HTTP server:
 # the good path, every way a server or a download can be wrong (the old file
