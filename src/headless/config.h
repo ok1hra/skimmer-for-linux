@@ -12,7 +12,8 @@
  *   [bands]  <name>=<centre Hz> [modes], in receiver order (RX1 first);
  *            modes a comma list of cw, cw:v2, cw:deepcw, rtty — none = cw
  *            with [decode] engine
- *   [decode] engine=v2|deepcw (the bands that name none), log=true|false
+ *   [decode] engine=v2|deepcw (the bands that name none), log=true|false,
+ *            suppress_cw_on_rtty (default false: rtty_pairs.h)
  *   [feed]   call, port (0 = off), min_score, min_hearings, settle_s,
  *            settle_nodict_s, fresh_s, fold_s, learn, gate, gate_mode,
  *            rtty (RTTY spots on the feed too; default true)
@@ -63,6 +64,7 @@ typedef struct {
   /* [decode] */
   SkimCwEngine     engine;            /* default for bands that name none    */
   gboolean         decode_log;
+  gboolean         suppress_cw_on_rtty; /* CW off the RTTY pairs copied     */
   /* [feed] — 0 = the pipeline's default, < 0 = off, as SkimPipelineConfig */
   char            *feed_call;
   int              feed_port;

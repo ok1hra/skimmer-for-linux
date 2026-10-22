@@ -37,7 +37,9 @@ streaming from unless told to (`--take-over`).
   (`20m=14045500 cw,rtty`): a second pipeline on the same IQ, 250 Hz
   channels, its spots on the same feed as `RTTY … 45 BPS` (`[feed]
   rtty=false` keeps them off it). It costs about 7.5 % of one core per band
-  at 96 kHz.
+  at 96 kHz. `[decode] suppress_cw_on_rtty=true` keeps the band's CW
+  decoders off the RTTY stations it copies (an FSK tone reads as junk CW);
+  off until measured live.
 - **The RBN feed** sends only validated CQ calls that were read twice (or are
   in MASTER.SCP), settled in the station table, and were read lately. A
   **learned feed gate** (a logistic model over what the pipeline knew when it

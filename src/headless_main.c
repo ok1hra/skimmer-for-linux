@@ -108,6 +108,7 @@ typedef struct {
   double        centre_hz;
   char          label[96];
   Dec           dec[M_N];
+  SkimRttyPairs *pairs;        /* CW and RTTY: the pairs RTTY copies (or NULL) */
   guint64       frames_prev;   /* main loop: for kS/s                         */
   double        ksps;
   Rec          *rec;           /* [record]: this band's IQ tap, or NULL       */
@@ -464,11 +465,12 @@ static void status_build(Hd *h, gboolean print) {
       "\"settle_nodict_s\":%.1f,"
       "\"fresh_s\":%.1f,\"fold_s\":%.1f,\"folded\":%" G_GUINT64_FORMAT "},"
       "\"feed_gate\":%s,\"switches\":%s,"
-      "\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
+      "\"suppress_cw_on_rtty\":%s,\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
       h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_nd, pol_fresh,
       pol_fold, folded, jgate, h->switches_json,
+      h->cfg.suppress_cw_on_rtty ? "true" : "false",
       h->feed ? h->cfg.feed_port : 0, h->cfg.feed_rtty ? "true" : "false", fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
@@ -493,17 +495,21 @@ static void status_build(Hd *h, gboolean print) {
     /* The band's CW at the top level (what skimmer-compare and older pages
      * read; zeros when the band decodes RTTY only), its RTTY in "rtty". */
     char *jname = skim_json_str(b->name);
+    /* rtty_suppressed: CW decodes dropped on an RTTY pair (0 while off) */
     g_string_append_printf(json, "%s{\"band\":\"%s\",\"centre_hz\":%.0f,\"ksps\":%.1f,"
-                           "\"cw\":%s,",
+                           "\"cw\":%s,\"rtty_suppressed\":%" G_GUINT64_FORMAT ",",
                            i ? "," : "", jname, b->centre_hz, b->ksps,
-                           b->dec[M_CW].p ? "true" : "false");
+                           b->dec[M_CW].p ? "true" : "false",
+                           b->dec[M_CW].p ? skim_pipeline_rtty_suppressed(b->dec[M_CW].p) : 0);
     g_free(jname);
     dec_json(json, &b->dec[M_CW], now);
     g_string_append(json, ",\"rtty\":");
     if (b->dec[M_RTTY].p) {
       g_string_append_c(json, '{');
       dec_json(json, &b->dec[M_RTTY], now);
-      g_string_append_c(json, '}');
+      /* the pairs it copies now (published for the band's CW) */
+      g_string_append_printf(json, ",\"pairs\":%u}",
+                             b->pairs ? skim_rtty_pairs_count(b->pairs, now) : 0);
     } else {
       g_string_append(json, "null");
     }
@@ -930,6 +936,8 @@ static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const c
     .feed_gate = rtty ? NULL : h->gate,
     .feed_gate_on = gate_on(h),
     .band = b->name,
+    /* RTTY publishes what it copies; CW stays off it only when told to */
+    .rtty_pairs = rtty || c->suppress_cw_on_rtty ? b->pairs : NULL,
   };
   d->p = skim_pipeline_new(&pc);
   g_free(dlog);
@@ -1085,6 +1093,7 @@ int main(int argc, char **argv) {
     g_strlcpy(b->name, cb->name, sizeof(b->name));
     b->centre_hz = cb->centre_hz;
     g_snprintf(b->label, sizeof(b->label), "RX%u %s", i + 1, b->name);
+    if (cb->cw && cb->rtty) { b->pairs = skim_rtty_pairs_new(); }
     for (guint k = 0; k < M_N; k++) {
       if (k == M_CW ? !cb->cw : !cb->rtty) { continue; }
       if (!dec_start(h, b, k, cb, logdir, day, c->feed_learn ? learndir : NULL, start,
@@ -1136,6 +1145,9 @@ int main(int argc, char **argv) {
               b->dec[M_CW].p ? skim_pipeline_cw_engine_name(b->dec[M_CW].p) : "",
               b->dec[M_RTTY].p ? " + RTTY" : "",
               b->dec[M_RTTY].p && h->feed && !c->feed_rtty ? " (not on the feed)" : "");
+    if (b->pairs && c->suppress_cw_on_rtty) {
+      g_message("decode: %s CW stays off the RTTY stations RTTY copies", b->name);
+    }
   }
   SkimPipeline *fp = feed_pipeline(h);
   if (fp) {
@@ -1194,6 +1206,7 @@ int main(int argc, char **argv) {
   g_clear_pointer(&h->src, skim_iq_source_free);
   for (guint i = 0; i < h->nb; i++) {
     for (guint k = 0; k < M_N; k++) { skim_pipeline_free(h->band[i].dec[k].p); }
+    g_clear_pointer(&h->band[i].pairs, skim_rtty_pairs_unref);
     skim_rec_free(h->band[i].rec);
   }
   g_clear_pointer(&h->stats, skim_stats_free);  /* saves                       */

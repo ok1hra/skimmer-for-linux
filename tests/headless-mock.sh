@@ -30,6 +30,8 @@ rate=96000
 [bands]
 20m=14045500
 40m=7045500 cw:v2,rtty
+[decode]
+suppress_cw_on_rtty=true
 [feed]
 call=TEST
 port=$FEED
@@ -79,6 +81,8 @@ py() { python3 -c "import json,sys; d=json.loads(sys.argv[1]); print($1)" "$json
 check "status: both bands, each with its engine" $?
 [[ $(py 'd["bands"][0]["rtty"], d["bands"][1]["rtty"]["engine"], d["bands"][1]["rtty"]["spots"] > 0, d["feed_rtty"]') == "None rtty True True" ]]
 check "status: RTTY on 40m only, with its spots" $?
+[[ $(py 'd["suppress_cw_on_rtty"], d["bands"][1]["rtty_suppressed"] > 0, d["bands"][0]["rtty_suppressed"]') == "True True 0" ]]
+check "status: 40m CW kept off the mock's RTTY (decodes dropped), 20m untouched" $?
 [[ $(py 'd["feed_gate"]["id"]') == builtin:feed-gate.ini#* && $(py 'd["feed_gate"]["mode"]') == shadow ]]
 check "status: the built-in gate in shadow" $?
 [[ $(py 'd["switches"]["SKIM_SCP_URL"]') == http://127.0.0.1:9/ ]]
@@ -95,7 +99,8 @@ check "web: stats.json (6 h, both bands, the global series)" $?
 [[ $(curl -s "http://127.0.0.1:$HTTP/api/log") == '[{"t":'*'"text":"skimmer-headless '* ]]; check "web: the log" $?
 [[ $(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$HTTP/../headless.ini") == 404 ]]
 check "web: no path out of the page" $?
-grep -q "decode: 40m CW, engine cw-v2 + RTTY$" "$T/log" && grep -q "decode: 20m CW, engine cw-v2$" "$T/log"
+grep -q "decode: 40m CW, engine cw-v2 + RTTY$" "$T/log" && grep -q "decode: 20m CW, engine cw-v2$" "$T/log" &&
+  grep -q "decode: 40m CW stays off the RTTY stations RTTY copies" "$T/log"
 check "log: what each band decodes" $?
 grep -q "switch: SKIM_SCP_URL=http://127.0.0.1:9/ (system)" "$T/log"
 check "log: the switch with its kind" $?

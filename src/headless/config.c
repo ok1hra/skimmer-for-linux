@@ -25,6 +25,9 @@ static const char DEFAULT_CONFIG[] =
   "\n[decode]\n# v2 (classical) or deepcw (needs ONNX Runtime + model)\n"
   "engine=v2\n# per-band raw decode logs in ~/.local/share/skimmer-for-linux/headless\n"
   "log=false\n"
+  "# on a band that decodes RTTY too, keep its CW decoders off the RTTY stations\n"
+  "# it copies (an FSK tone reads as junk CW); off until measured live\n"
+  "#suppress_cw_on_rtty=false\n"
   "\n[feed]\n# telnet spot feed (validated CQ spots only); port 0 = off\n"
   "call=\nport=7300\n"
   "# a call is spotted once it scored min_score, was read min_hearings times\n"
@@ -92,6 +95,20 @@ static gboolean bad(GError **error, const char *path, const char *fmt, ...) {
   g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "%s: %s", path, msg);
   g_free(msg);
   return FALSE;
+}
+
+/* A boolean key: dflt when absent, an error when it is no boolean. */
+static gboolean opt_bool(GKeyFile *kf, const char *group, const char *key, gboolean dflt,
+                         gboolean *out, const char *path, GError **error) {
+  *out = dflt;
+  if (!g_key_file_has_key(kf, group, key, NULL)) { return TRUE; }
+  GError *e = NULL;
+  *out = g_key_file_get_boolean(kf, group, key, &e);
+  if (e) {
+    g_clear_error(&e);
+    return bad(error, path, "[%s] %s: true or false", group, key);
+  }
+  return TRUE;
 }
 
 static gboolean engine_of(const char *s, SkimCwEngine *out) {
@@ -230,6 +247,10 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   g_free(eng);
   h->decode_log = g_key_file_has_key(kf, "decode", "log", NULL) &&
                   g_key_file_get_boolean(kf, "decode", "log", NULL);
+  if (!opt_bool(kf, "decode", "suppress_cw_on_rtty", FALSE, &h->suppress_cw_on_rtty, path,
+                error)) {
+    return FALSE;
+  }
 
   h->feed_call = g_key_file_get_string(kf, "feed", "call", NULL);
   if (h->feed_call) { g_strstrip(h->feed_call); }
@@ -245,15 +266,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   h->feed_fold_s = opt_secs(kf, "fold_s");                   /* 0 = off      */
   h->feed_learn = g_key_file_has_key(kf, "feed", "learn", NULL) &&
                   g_key_file_get_boolean(kf, "feed", "learn", NULL);
-  h->feed_rtty = TRUE;
-  if (g_key_file_has_key(kf, "feed", "rtty", NULL)) {
-    GError *e = NULL;
-    h->feed_rtty = g_key_file_get_boolean(kf, "feed", "rtty", &e);
-    if (e) {
-      g_clear_error(&e);
-      return bad(error, path, "[feed] rtty: true or false");
-    }
-  }
+  if (!opt_bool(kf, "feed", "rtty", TRUE, &h->feed_rtty, path, error)) { return FALSE; }
   char *gate = g_key_file_get_string(kf, "feed", "gate", NULL);
   if (gate && g_strstrip(gate)[0]) {
     char *dir = g_path_get_dirname(path);          /* relative: next to the ini */
@@ -382,7 +395,7 @@ gboolean skim_hd_config_load(SkimHdConfig *cfg, const char *path, GError **error
 const char *const SKIM_HD_EDITABLE[] = {
   "radio.type", "radio.host", "radio.rate", "radio.clock_ppm",
   "bands",
-  "decode.engine", "decode.log",
+  "decode.engine", "decode.log", "decode.suppress_cw_on_rtty",
   "feed.call", "feed.port", "feed.rtty",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",

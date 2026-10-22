@@ -84,6 +84,12 @@ function renderStatus(d) {
     `<dt>feed policy</dt><dd>score ≥ ${fmt(p.min_score, 2)}, read ${p.min_hearings}×, settle ${fmt(p.settle_s)} s ` +
     `(unknown calls ${fmt(p.settle_nodict_s)} s), fresh ${fmt(p.fresh_s)} s, fold ${fmt(p.fold_s)} s — ${fmt(p.folded)} folded` +
     `${d.bands.some((b) => b.rtty) ? `; RTTY ${d.feed_rtty ? 'on the feed too' : 'kept off the feed'}` : ''}</dd>` +
+    (d.bands.some((b) => b.rtty && b.cw !== false)
+      ? `<dt>CW on RTTY</dt><dd>${d.suppress_cw_on_rtty
+        ? `kept off the RTTY stations copied now (${fmt(d.bands.reduce((a, b) => a + (b.rtty ? b.rtty.pairs : 0), 0))}) — ` +
+          `${fmt(d.bands.reduce((a, b) => a + (b.rtty_suppressed || 0), 0))} CW decodes dropped`
+        : `decoded as anywhere else (${fmt(d.bands.reduce((a, b) => a + (b.rtty ? b.rtty.pairs : 0), 0))} RTTY stations copied now)`}</dd>`
+      : '') +
     `<dt>learned gate</dt><dd>${g ? `${esc(g.id)} · ${esc(g.mode)} · threshold ${fmt(g.threshold, 2)} · ` +
       `${fmt(g.below)} of ${fmt(g.spots)} below · CW only` : 'off'}</dd>` +
     `<dt>switches</dt><dd>${sw.length ? sw.map(([k, v]) => `${esc(k)}=${esc(v)}`).join('<br>') : 'none'}</dd>` +

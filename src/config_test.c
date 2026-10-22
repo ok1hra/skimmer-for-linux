@@ -51,6 +51,7 @@ int main(void) {
     check("status 10 s / 8073, no recording",
           ok && c.console_s == 10 && c.http_port == 8073 && !c.rec_bands);
     check("RTTY spots go to the feed unless told otherwise", ok && c.feed_rtty);
+    check("CW is not kept off the RTTY pairs unless told to", ok && !c.suppress_cw_on_rtty);
     skim_hd_config_clear(&c);
     g_remove(path);
     char *sub = g_path_get_dirname(path);
@@ -122,6 +123,10 @@ int main(void) {
           parse(&c, "[bands]\n20m=14045500 cw,rtty\n[feed]\nrtty=false\n", NULL) &&
           !c.feed_rtty && c.band[0].rtty);
     skim_hd_config_clear(&c);
+    check("[decode] suppress_cw_on_rtty=true",
+          parse(&c, "[bands]\n20m=14045500 cw,rtty\n[decode]\nsuppress_cw_on_rtty=true\n", NULL) &&
+          c.suppress_cw_on_rtty);
+    skim_hd_config_clear(&c);
     check("type=mock is the synthetic source",
           parse(&c, "[radio]\ntype=mock\n[bands]\n20m=14045500\n", NULL) &&
           c.source == SKIM_HD_SOURCE_MOCK);
@@ -145,6 +150,9 @@ int main(void) {
       { "an unknown [decode] engine", "[decode]\nengine=v9\n[bands]\n20m=14045500\n", "v9" },
       { "[feed] rtty that is no boolean", "[bands]\n20m=14045500\n[feed]\nrtty=maybe\n",
         "rtty: true or false" },
+      { "[decode] suppress_cw_on_rtty that is no boolean",
+        "[bands]\n20m=14045500\n[decode]\nsuppress_cw_on_rtty=1x\n",
+        "[decode] suppress_cw_on_rtty: true or false" },
       { "not an ini", "[bands\n20m=1\n", "test.ini" },
     };
     for (guint i = 0; i < G_N_ELEMENTS(BAD); i++) {
