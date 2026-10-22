@@ -1,7 +1,8 @@
 /* ort_shim.h — ONNX Runtime through its C API, loaded at RUN time.
  *
  * The skimmer never links libonnxruntime: this shim dlopen()s it
- * (SKIM_ORT_LIB, else libonnxruntime.so.1, else libonnxruntime.so), asks
+ * (SKIM_ORT_LIB, else libonnxruntime.so.1, Debian's .so.1.21, then
+ * libonnxruntime.so), asks
  * OrtGetApiBase()->GetApi(ORT_API_VERSION) for the API table the vendored
  * header describes (vendor/onnxruntime, v1.21) and exposes the four things
  * a decode backend needs: open the runtime, load a model, run one float

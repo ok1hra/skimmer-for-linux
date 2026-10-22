@@ -84,12 +84,16 @@ static gboolean take_status(const OrtApi *api, OrtStatus *st, GError **error,
 }
 
 SkimOrt *skim_ort_open(const char *lib_override, GError **error) {
-  const char *cands[4];
+  const char *cands[5];
   guint n = 0;
   if (lib_override && lib_override[0]) { cands[n++] = lib_override; }
   const char *env = g_getenv("SKIM_ORT_LIB");
   if (env && env[0]) { cands[n++] = env; }
   cands[n++] = "libonnxruntime.so.1";
+  /* Debian and Ubuntu name the soname after the minor release
+   * (libonnxruntime1.21 ships only libonnxruntime.so.1.21) — the release
+   * the vendored header is, so its API is there for certain */
+  cands[n++] = "libonnxruntime.so.1.21";
   cands[n++] = "libonnxruntime.so";
 
   void *dl = NULL;
