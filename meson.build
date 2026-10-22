@@ -313,6 +313,7 @@ test('scp-update', skimmer_scp_test, timeout : 180)
 # The product layer (src/headless/): config, IQ sources, recording, switches.
 headless_sources = files(
   'src/headless/config.c',          # headless.ini, parsed and checked
+  'src/headless/deepcw_model.c',    # the DeepCW model: check, fetch
   'src/headless/logring.c',         # the last log lines (/api/log)
   'src/headless/record.c',          # [record]: a band's IQ to disk
   'src/headless/scp_update.c',      # MASTER.SCP updater

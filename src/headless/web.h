@@ -11,6 +11,7 @@
  *   POST /api/config            a new config (settings_from only)
  *   POST /api/restart           restart with the config on disk (settings_from)
  *   POST /api/rollback          the previous config back, restart (settings_from)
+ *   POST /api/deepcw            fetch the DeepCW model (settings_from)
  *
  * Every body comes from the owner's hooks — this module only routes, checks
  * who may change things and answers. A POST is refused (403) unless the
@@ -38,7 +39,7 @@ typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
 typedef struct {
   SkimHdWebGet  status, stats, log, config;
-  SkimHdWebPost config_post, restart, rollback;
+  SkimHdWebPost config_post, restart, rollback, deepcw;
   gpointer      user;
 } SkimHdWebHooks;
 

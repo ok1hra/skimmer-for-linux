@@ -49,6 +49,7 @@
 #include <unistd.h>
 
 #include "headless/config.h"
+#include "headless/deepcw_model.h"
 #include "headless/json.h"
 #include "headless/logring.h"
 #include "headless/record.h"
@@ -58,6 +59,7 @@
 #include "headless/switches.h"
 #include "headless/web.h"
 #include "engine/callsign.h"
+#include "engine/decode_deepcw.h"
 #include "engine/pipeline.h"
 #include "engine/rbn_feed.h"
 
@@ -160,6 +162,22 @@ typedef struct {
 
   GMutex   snap_lock;          /* the web page's copy of the status           */
   char    *snap_json;
+
+  /* DeepCW: the model on disk, why a band that asks for it runs v2, and a
+   * fetch the web page started (on its own thread, under dcw_lock) */
+  gboolean      dcw_wanted;    /* a band names deepcw                         */
+  char         *dcw_model;     /* where the engine looks for it               */
+  char         *dcw_base_url;  /* $SKIM_DEEPCW_URL, NULL = upstream           */
+  char         *dcw_ca;        /* TLS trust store (AppImage)                  */
+  char         *dcw_fallback;  /* why the bands asking for it run v2          */
+  GMutex        dcw_lock;
+  gboolean      dcw_model_ok;
+  char         *dcw_model_err;
+  const char   *dcw_state;     /* idle | running | done | failed              */
+  guint64       dcw_got, dcw_total;
+  char         *dcw_err;
+  GThread      *dcw_thread;
+  GCancellable *dcw_cancel;
 } Hd;
 
 /* ---- pipeline callbacks (engine threads) ----------------------------------------- */
@@ -387,6 +405,41 @@ static void dec_json(GString *json, Dec *d, gint64 now) {
   g_ptr_array_unref(rec);
 }
 
+static const char *engine_key(SkimCwEngine e) {
+  return e == SKIM_CW_ENGINE_DEEPCW ? "deepcw" : e == SKIM_CW_ENGINE_V1 ? "v1" : "v2";
+}
+
+static void json_opt_str(GString *o, const char *v) {
+  if (!v) {
+    g_string_append(o, "null");
+    return;
+  }
+  g_string_append_c(o, '"');
+  skim_json_append(o, v);
+  g_string_append_c(o, '"');
+}
+
+/* "deepcw": the model, the runtime, why a band asking for it runs v2, and
+ * the fetch the web page can start. */
+static void dcw_json(Hd *h, GString *o) {
+  g_mutex_lock(&h->dcw_lock);
+  g_string_append_printf(o, "{\"wanted\":%s,\"model\":", h->dcw_wanted ? "true" : "false");
+  json_opt_str(o, h->dcw_model);
+  g_string_append_printf(o, ",\"model_ok\":%s,\"model_error\":",
+                         h->dcw_model_ok ? "true" : "false");
+  json_opt_str(o, h->dcw_model_ok ? NULL : h->dcw_model_err);
+  g_string_append(o, ",\"runtime\":");
+  json_opt_str(o, skim_decode_deepcw_runtime_info());
+  g_string_append(o, ",\"fallback\":");
+  json_opt_str(o, h->dcw_fallback);
+  g_string_append_printf(o, ",\"commit\":\"%s\",\"fetch\":{\"state\":\"%s\",\"got\":%"
+                         G_GUINT64_FORMAT ",\"total\":%" G_GUINT64_FORMAT ",\"error\":",
+                         SKIM_DEEPCW_COMMIT, h->dcw_state, h->dcw_got, h->dcw_total);
+  json_opt_str(o, h->dcw_err);
+  g_string_append(o, "}}");
+  g_mutex_unlock(&h->dcw_lock);
+}
+
 static void status_build(Hd *h, gboolean print) {
   const gint64 now = g_get_monotonic_time();
   const SkimIqSourceStatus *src = &h->src_st;
@@ -496,10 +549,14 @@ static void status_build(Hd *h, gboolean print) {
      * read; zeros when the band decodes RTTY only), its RTTY in "rtty". */
     char *jname = skim_json_str(b->name);
     /* rtty_suppressed: CW decodes dropped on an RTTY pair (0 while off) */
+    /* engine_wanted: what the config asks for — "deepcw" beside an
+     * engine "cw-v2" is a band that fell back (the reason: "deepcw") */
     g_string_append_printf(json, "%s{\"band\":\"%s\",\"centre_hz\":%.0f,\"ksps\":%.1f,"
-                           "\"cw\":%s,\"rtty_suppressed\":%" G_GUINT64_FORMAT ",",
+                           "\"cw\":%s,\"engine_wanted\":\"%s\","
+                           "\"rtty_suppressed\":%" G_GUINT64_FORMAT ",",
                            i ? "," : "", jname, b->centre_hz, b->ksps,
                            b->dec[M_CW].p ? "true" : "false",
+                           b->dec[M_CW].p ? engine_key(h->cfg.band[i].cw_engine) : "",
                            b->dec[M_CW].p ? skim_pipeline_rtty_suppressed(b->dec[M_CW].p) : 0);
     g_free(jname);
     dec_json(json, &b->dec[M_CW], now);
@@ -515,7 +572,9 @@ static void status_build(Hd *h, gboolean print) {
     }
     g_string_append_c(json, '}');
   }
-  g_string_append(json, "]}");
+  g_string_append(json, "],\"deepcw\":");
+  dcw_json(h, json);
+  g_string_append_c(json, '}');
   g_free(clock);
 
   g_mutex_lock(&h->snap_lock);
@@ -697,10 +756,6 @@ static void json_kv(GString *o, const char *k, const char *v, gboolean comma) {
   g_string_append_c(o, '"');
 }
 
-static const char *engine_key(SkimCwEngine e) {
-  return e == SKIM_CW_ENGINE_DEEPCW ? "deepcw" : e == SKIM_CW_ENGINE_V1 ? "v1" : "v2";
-}
-
 /* GET /api/config: the file on disk (what a restart would run) — its
  * editable values, its bands, the rest read-only, the backups. */
 static char *web_config(GHashTable *q, gboolean may, guint *st, const char **type,
@@ -874,6 +929,109 @@ static char *web_rollback(GHashTable *form, guint *st, gpointer user) {
   return body;
 }
 
+/* ---- the DeepCW model, fetched on request ------------------------------------- */
+
+static void dcw_progress(guint64 got, guint64 total, gpointer user) {
+  Hd *h = user;
+  g_mutex_lock(&h->dcw_lock);
+  h->dcw_got = got;
+  h->dcw_total = total;
+  g_mutex_unlock(&h->dcw_lock);
+}
+
+static gpointer dcw_fetch_thread(gpointer user) {
+  Hd *h = user;
+  const SkimDeepcwFetch f = {
+    .model_path = h->dcw_model, .base_url = h->dcw_base_url, .ca_path = h->dcw_ca,
+    .cancel = h->dcw_cancel, .progress = dcw_progress, .user = h,
+  };
+  GError *err = NULL;
+  gboolean ok = skim_deepcw_model_fetch(&f, &err);
+  GError *cerr = NULL;
+  const gboolean model_ok = ok && skim_deepcw_model_check(h->dcw_model, &cerr);
+  g_mutex_lock(&h->dcw_lock);
+  h->dcw_state = model_ok ? "done" : "failed";
+  h->dcw_model_ok = model_ok;
+  g_clear_pointer(&h->dcw_err, g_free);
+  if (!model_ok) { h->dcw_err = g_strdup(err ? err->message : cerr->message); }
+  g_mutex_unlock(&h->dcw_lock);
+  if (model_ok) {
+    g_message("deepcw: model %s installed (commit %.7s)%s", h->dcw_model, SKIM_DEEPCW_COMMIT,
+              h->dcw_wanted ? " — a restart puts it to work" : "");
+  } else {
+    g_warning("deepcw: model fetch failed: %s", err ? err->message : cerr->message);
+  }
+  g_clear_error(&err);
+  g_clear_error(&cerr);
+  return NULL;
+}
+
+/* POST /api/deepcw: fetch the model (once at a time; a model already in
+ * place is not fetched again). The answer says what is going on. */
+static char *web_deepcw(GHashTable *form, guint *st, gpointer user) {
+  (void)form; (void)st;
+  Hd *h = user;
+  g_mutex_lock(&h->dcw_lock);
+  const gboolean start = !h->dcw_model_ok && g_strcmp0(h->dcw_state, "running") != 0;
+  if (start) {
+    h->dcw_state = "running";
+    h->dcw_got = h->dcw_total = 0;
+    g_clear_pointer(&h->dcw_err, g_free);
+  }
+  char *body = g_strdup_printf("{\"ok\":true,\"state\":\"%s\"}",
+                               h->dcw_model_ok ? "done" : h->dcw_state);
+  g_mutex_unlock(&h->dcw_lock);
+  if (start) {
+    g_message("deepcw: fetching the model (commit %.7s) into %s, asked for on the web page",
+              SKIM_DEEPCW_COMMIT, h->dcw_model);
+    if (h->dcw_thread) { g_thread_join(h->dcw_thread); }
+    h->dcw_thread = g_thread_new("deepcw-fetch", dcw_fetch_thread, h);
+  }
+  return body;
+}
+
+/* --fetch-deepcw-model: the same, in the foreground. */
+static void cli_progress(guint64 got, guint64 total, gpointer user) {
+  guint *last = user;
+  const guint pct = total ? (guint)(100 * got / total) : 0;
+  if (pct / 10 != *last / 10) {
+    g_printerr("  %3u %%  (%.1f of %.1f MB)\n", pct, got / 1e6, total / 1e6);
+    *last = pct;
+  }
+}
+
+static int fetch_model_cli(void) {
+  char *model = skim_decode_deepcw_model_path();
+  GError *err = NULL;
+  int rc = 0;
+  if (skim_deepcw_model_check(model, NULL)) {
+    printf("%s is the pinned DeepCW model (commit %.7s) — nothing to fetch\n", model,
+           SKIM_DEEPCW_COMMIT);
+  } else {
+    char *base = skim_deepcw_env_base_url();
+    char *ca = skim_scp_env_ca_path();
+    guint last = 0;
+    const SkimDeepcwFetch f = {
+      .model_path = model, .base_url = base, .ca_path = ca, .progress = cli_progress,
+      .user = &last,
+    };
+    g_printerr("DeepCW model by e04 (AGPL-3.0-only), commit %.7s of %s\n  into %s\n",
+               SKIM_DEEPCW_COMMIT, base ? base : SKIM_DEEPCW_UPSTREAM, model);
+    if (skim_deepcw_model_fetch(&f, &err)) {
+      printf("%s installed (sha256 %.8s…, LICENSE and NOTICE beside it)\n", model,
+             SKIM_DEEPCW_MODEL_SHA);
+    } else {
+      g_printerr("fetch failed: %s\n", err->message);
+      g_clear_error(&err);
+      rc = 1;
+    }
+    g_free(base);
+    g_free(ca);
+  }
+  g_free(model);
+  return rc;
+}
+
 static char *web_log(GHashTable *q, gboolean may, guint *st, const char **type,
                      gpointer user) {
   (void)q; (void)may; (void)st; (void)type; (void)user;
@@ -956,7 +1114,7 @@ int main(int argc, char **argv) {
   h->console_s = -1;
   h->http_port = -1;
   char *cfg = NULL;
-  gboolean list_switches = FALSE, check_config = FALSE;
+  gboolean list_switches = FALSE, check_config = FALSE, fetch_model = FALSE;
   GOptionEntry opts[] = {
     { "config", 'c', 0, G_OPTION_ARG_FILENAME, &cfg,
       "Config file (default ~/.config/skimmer-for-linux/headless.ini)", "FILE" },
@@ -976,6 +1134,10 @@ int main(int argc, char **argv) {
     { "check-config", 0, 0, G_OPTION_ARG_NONE, &check_config,
       "Read and check the config and the feed gate, print what would run, and "
       "exit (0 = fine, 2 = not) — no radio is touched", NULL },
+    { "fetch-deepcw-model", 0, 0, G_OPTION_ARG_NONE, &fetch_model,
+      "Fetch the DeepCW model (e04/deepcw-engine, AGPL-3.0-only, ~15 MB) at the "
+      "commit this version pins, check its sha256, install it where the "
+      "engine looks, and exit (0 = in place)", NULL },
     { "list-switches", 0, 0, G_OPTION_ARG_NONE, &list_switches,
       "Print the SKIM_* environment switches the engine reads, and exit", NULL },
     { NULL, 0, 0, 0, NULL, NULL, NULL },
@@ -1000,6 +1162,7 @@ int main(int argc, char **argv) {
     skim_switches_print_known();
     return 0;
   }
+  if (fetch_model) { return fetch_model_cli(); }
   h->cfg_path = cfg ? cfg : g_build_filename(g_get_user_config_dir(), "skimmer-for-linux",
                                              "headless.ini", NULL);
   if (!g_file_test(h->cfg_path, G_FILE_TEST_EXISTS) && !check_config) {
@@ -1036,9 +1199,38 @@ int main(int argc, char **argv) {
            c->feed_call && c->feed_call[0] ? c->feed_call : "(no call)", c->feed_port,
            c->feed_rtty ? "CW and RTTY" : "CW only",
            h->gate_id ? h->gate_id : "none", h->feed_gate_mode);
+    gboolean dcw = FALSE;
+    for (guint i = 0; i < c->nb; i++) {
+      dcw |= c->band[i].cw && c->band[i].cw_engine == SKIM_CW_ENGINE_DEEPCW;
+    }
+    if (dcw) {
+      /* the bands asking for DeepCW start anyway — on v2 when it is not here */
+      char *model = skim_decode_deepcw_model_path();
+      if (!skim_deepcw_model_check(model, &err)) {
+        printf("  deepcw NOT AVAILABLE, those bands run v2: %s\n", err->message);
+      } else if (!skim_decode_deepcw_available(&err)) {
+        printf("  deepcw NOT AVAILABLE, those bands run v2: %s\n", err->message);
+      } else {
+        printf("  deepcw %s, ONNX Runtime %s\n", model, skim_decode_deepcw_runtime_info());
+      }
+      g_clear_error(&err);
+      g_free(model);
+    }
     return 0;
   }
   g_mutex_init(&h->snap_lock);
+  g_mutex_init(&h->dcw_lock);
+  h->dcw_state = "idle";
+  h->dcw_model = skim_decode_deepcw_model_path();
+  h->dcw_base_url = skim_deepcw_env_base_url();
+  h->dcw_ca = skim_scp_env_ca_path();
+  h->dcw_cancel = g_cancellable_new();
+  {
+    GError *e = NULL;
+    h->dcw_model_ok = skim_deepcw_model_check(h->dcw_model, &e);
+    if (e) { h->dcw_model_err = g_strdup(e->message); }
+    g_clear_error(&e);
+  }
   h->t_start = g_get_monotonic_time();
   h->started_us = g_get_real_time();
   g_message("skimmer-headless %s — %s %s, %u band%s × %u kHz, config %s", SKIMMER_VERSION,
@@ -1149,6 +1341,26 @@ int main(int argc, char **argv) {
       g_message("decode: %s CW stays off the RTTY stations RTTY copies", b->name);
     }
   }
+  /* A band that asks for DeepCW and runs v2: why, for the log and the page
+   * (the pipeline has tried and cached the answer). */
+  for (guint i = 0; i < h->nb; i++) {
+    const Band *b = &h->band[i];
+    if (!b->dec[M_CW].p || c->band[i].cw_engine != SKIM_CW_ENGINE_DEEPCW) { continue; }
+    h->dcw_wanted = TRUE;
+    if (strcmp(skim_pipeline_cw_engine_name(b->dec[M_CW].p), "deepcw") != 0 && !h->dcw_fallback) {
+      GError *e = NULL;
+      if (!h->dcw_model_ok) {
+        h->dcw_fallback = g_strdup(h->dcw_model_err);
+      } else if (!skim_decode_deepcw_available(&e)) {
+        h->dcw_fallback = g_strdup(e->message);
+      } else {
+        h->dcw_fallback = g_strdup("the engine chose v2 (SKIM_CW_ENGINE?)");
+      }
+      g_clear_error(&e);
+      g_warning("decode: DeepCW asked for, not available (%s) — those bands run cw-v2",
+                h->dcw_fallback);
+    }
+  }
   SkimPipeline *fp = feed_pipeline(h);
   if (fp) {
     double fs, fset, ffr, ffo;
@@ -1174,6 +1386,7 @@ int main(int argc, char **argv) {
     const SkimHdWebHooks hooks = {
       .status = web_status, .stats = web_stats, .log = web_log, .config = web_config,
       .config_post = web_config_post, .restart = web_restart, .rollback = web_rollback,
+      .deepcw = web_deepcw,
       .user = h,
     };
     web = skim_hd_web_new((guint16)h->http_port, (const char *const *)c->settings_from,
@@ -1203,6 +1416,8 @@ int main(int argc, char **argv) {
   /* Teardown: the radio first (stop — only if the stream is still ours),
    * then the engines, then the feed they spot into. */
   g_clear_pointer(&web, skim_hd_web_free);
+  g_cancellable_cancel(h->dcw_cancel);         /* a fetch in flight stops      */
+  if (h->dcw_thread) { g_thread_join(h->dcw_thread); }
   g_clear_pointer(&h->src, skim_iq_source_free);
   for (guint i = 0; i < h->nb; i++) {
     for (guint k = 0; k < M_N; k++) { skim_pipeline_free(h->band[i].dec[k].p); }

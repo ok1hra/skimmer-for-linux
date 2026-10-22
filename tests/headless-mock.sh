@@ -5,7 +5,11 @@
 # that the config is read (band modes, per-band engine), the source streams,
 # both spots reach the telnet feed at the right frequency, /status.json says
 # so (with the built-in gate and the SKIM_* switches), SIGTERM stops it
-# cleanly, and a bad config stops the start with exit 2.
+# cleanly, and a bad config stops the start with exit 2. 20m asks for
+# DeepCW, which has no model here: it runs v2 and says why; the model
+# fetch (web and --fetch-deepcw-model) refuses a file that is not the
+# pinned one, and installs the real one from a local mirror when this
+# machine has it.
 #
 #   headless-mock.sh <skimmer-headless>
 set -uo pipefail
@@ -28,7 +32,7 @@ cat > "$T/headless.ini" <<EOF
 type=mock
 rate=96000
 [bands]
-20m=14045500
+20m=14045500 cw:deepcw
 40m=7045500 cw:v2,rtty
 [decode]
 suppress_cw_on_rtty=true
@@ -41,9 +45,28 @@ console_s=0
 http_port=$HTTP
 EOF
 
-# no network in the gate: the MASTER.SCP updater gets a dead URL
+# the pinned DeepCW model, if this machine has one: the mirror for the
+# fetch's good path (looked up before XDG_DATA_HOME moves)
+C=8e264d243bbd4467bd19f3f28292219405b47e0e
+REAL=${SKIM_DEEPCW_MODEL:-${XDG_DATA_HOME:-$HOME/.local/share}/skimmer-for-linux/models/deepcw/model.onnx}
+mkdir -p "$T/bad/$C" "$T/good/$C"
+have_model=
+if [[ -f $REAL && -f $REAL.json && -f $(dirname "$REAL")/LICENSE ]] &&
+   [[ $(sha256sum < "$REAL") == ef120799457bca042d4690944f0faf93268eb4654e7f50f28784ad63bdc1fe02* ]]; then
+  ln -s "$REAL" "$T/good/$C/model.onnx"; ln -s "$REAL.json" "$T/good/$C/model.onnx.json"
+  ln -s "$(dirname "$REAL")/LICENSE" "$T/good/$C/LICENSE"
+  have_model=1
+fi
+# the bad mirror: right names and sizes, wrong bytes
+head -c 946 /dev/zero > "$T/bad/$C/model.onnx.json"
+head -c 34523 /dev/zero > "$T/bad/$C/LICENSE"
+head -c 15139839 /dev/zero > "$T/bad/$C/model.onnx"
+
+# no network in the gate: the MASTER.SCP updater gets a dead URL, the
+# DeepCW fetch the bad mirror; no model where the engine looks
 export XDG_CONFIG_HOME=$T/cfg XDG_DATA_HOME=$T/data XDG_STATE_HOME=$T/state
-export SKIM_SCP_URL=http://127.0.0.1:9/
+export SKIM_SCP_URL=http://127.0.0.1:9/ SKIM_DEEPCW_URL=file://$T/bad
+unset SKIM_DEEPCW_MODEL SKIM_CW_ENGINE
 "$HL" --config "$T/headless.ini" > "$T/log" 2>&1 &
 PID=$!
 
@@ -77,8 +100,11 @@ json=$(curl -s "http://127.0.0.1:$HTTP/status.json" || true)
 py() { python3 -c "import json,sys; d=json.loads(sys.argv[1]); print($1)" "$json" 2>/dev/null; }
 [[ $(py 'd["streaming"]') == True ]]; check "status: streaming" $?
 [[ $(py 'd["radio"]') == *mock* ]]; check "status: the radio is the mock" $?
-[[ $(py '",".join(b["band"] + ":" + b["engine"] for b in d["bands"])') == "20m:cw-v2,40m:cw-v2" ]]
-check "status: both bands, each with its engine" $?
+[[ $(py '",".join(b["band"] + ":" + b["engine"] + ":" + b["engine_wanted"] for b in d["bands"])') == "20m:cw-v2:deepcw,40m:cw-v2:v2" ]]
+check "status: both bands, each with its engine (20m asks for DeepCW, runs v2)" $?
+[[ $(py 'd["deepcw"]["wanted"], d["deepcw"]["model_ok"], d["deepcw"]["fetch"]["state"], d["deepcw"]["runtime"]') == "True False idle None" &&
+   $(py 'd["deepcw"]["fallback"]') == "no model at $T/data/skimmer-for-linux/models/deepcw/model.onnx"* ]]
+check "status: DeepCW not available — no model, the reason given" $?
 [[ $(py 'd["bands"][0]["rtty"], d["bands"][1]["rtty"]["engine"], d["bands"][1]["rtty"]["spots"] > 0, d["feed_rtty"]') == "None rtty True True" ]]
 check "status: RTTY on 40m only, with its spots" $?
 [[ $(py 'd["suppress_cw_on_rtty"], d["bands"][1]["rtty_suppressed"] > 0, d["bands"][0]["rtty_suppressed"]') == "True True 0" ]]
@@ -104,6 +130,20 @@ grep -q "decode: 40m CW, engine cw-v2 + RTTY$" "$T/log" && grep -q "decode: 20m 
 check "log: what each band decodes" $?
 grep -q "switch: SKIM_SCP_URL=http://127.0.0.1:9/ (system)" "$T/log"
 check "log: the switch with its kind" $?
+grep -q "decode: DeepCW asked for, not available (no model at" "$T/log"
+check "log: DeepCW asked for, not available, why" $?
+
+# ---- the DeepCW model from the web page: the bad mirror is refused -------------------
+code=$(curl -s -o "$T/r.json" -w '%{http_code}' -H "Origin: http://evil.example" -X POST "http://127.0.0.1:$HTTP/api/deepcw")
+[[ $code == 403 ]]; check "web: a page from another origin may not fetch the model (403)" $?
+[[ $(curl -s -X POST "http://127.0.0.1:$HTTP/api/deepcw") == '{"ok":true,"state":"running"}' ]]
+check "web: the model fetch starts" $?
+for _ in $(seq 50); do                       # (the snapshot is 1 Hz)
+  st=$(curl -s "http://127.0.0.1:$HTTP/status.json" | python3 -c "import json,sys; f=json.load(sys.stdin)['deepcw']['fetch']; print(f['state'], f['error'])" 2>/dev/null)
+  [[ $st == running* || $st == idle* ]] || break; sleep 0.2
+done
+[[ $st == "failed model.onnx.json: sha256 "*"not installed" && ! -e $T/data/skimmer-for-linux/models ]]
+check "web: a file that is not the pinned one is refused, nothing installed ($st)" $?
 
 # ---- settings: read, refuse, save + restart, restore -----------------------------
 U=http://127.0.0.1:$HTTP
@@ -176,6 +216,26 @@ rc=0; "$HL" --check-config --config "$T/badbool.ini" > "$T/bad.log" 2>&1 || rc=$
 [[ $rc == 2 ]] && grep -q "rtty: true or false" "$T/bad.log"; check "[feed] rtty=maybe: exit 2" $?
 rc=0; "$HL" --check-config --config "$T/none.ini" > /dev/null 2>&1 || rc=$?
 [[ $rc == 2 && ! -e $T/none.ini ]]; check "--check-config on a missing file: exit 2, nothing written" $?
+printf '[bands]\n20m=14045500 cw:deepcw\n' > "$T/dcw.ini"
+out=$("$HL" --check-config --config "$T/dcw.ini" 2>&1); rc=$?
+[[ $rc == 0 && $out == *"deepcw NOT AVAILABLE, those bands run v2: no model at"* ]]
+check "--check-config: a DeepCW band without the model starts on v2, says why" $?
+
+# ---- --fetch-deepcw-model ------------------------------------------------------------
+M=$T/data/skimmer-for-linux/models/deepcw
+rc=0; "$HL" --fetch-deepcw-model > "$T/f.log" 2>&1 || rc=$?
+[[ $rc == 1 && ! -e $M ]] && grep -q "sha256 .*not installed" "$T/f.log"
+check "--fetch-deepcw-model: the bad mirror refused (exit 1), nothing installed" $?
+if [[ -n $have_model ]]; then
+  rc=0; SKIM_DEEPCW_URL=file://$T/good "$HL" --fetch-deepcw-model > "$T/f.log" 2>&1 || rc=$?
+  [[ $rc == 0 && $(sha256sum < "$M/model.onnx") == ef120799* && -f $M/model.onnx.json && -f $M/LICENSE ]] &&
+    grep -q "AGPL-3.0-only" "$M/NOTICE" && grep -q "$C" "$M/NOTICE"
+  check "--fetch-deepcw-model: the pinned model installed, LICENSE and NOTICE beside it" $?
+  "$HL" --fetch-deepcw-model | grep -q "nothing to fetch"
+  check "--fetch-deepcw-model: a model in place is not fetched again" $?
+else
+  echo "  skip --fetch-deepcw-model good path: no pinned model on this machine"
+fi
 
 if ((fails)); then
   echo "--- log"; cat "$T/log"

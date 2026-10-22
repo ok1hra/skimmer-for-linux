@@ -79,11 +79,34 @@ that are not in git; without them it reports SKIP
                          [--http-port N] [--feed-gate FILE]
                          [--feed-gate-mode off|shadow|on]
                          [--check-config] [--list-switches]
+                         [--fetch-deepcw-model]
 ```
 
 `--check-config` reads and checks the config and the feed gate, prints what
 would run and exits — no radio is touched. A config that does not parse
 stops the start with exit 2 and names the bad line.
+
+### DeepCW
+
+A band can decode CW with the neural DeepCW model instead of v2:
+`20m=14045500 cw:deepcw`, or `[decode] engine=deepcw` for every band that
+names no engine. It needs two things this program does not contain:
+
+- **The model** — by e04, AGPL-3.0-only, from
+  [e04/deepcw-engine](https://github.com/e04/deepcw-engine). The skimmer pins
+  one commit of it and checks the sha256 of every file it fetches.
+  `--fetch-deepcw-model` (or *Download* under Settings → Decoding) puts it
+  in `~/.local/share/skimmer-for-linux/models/deepcw/`, with its licence and
+  a NOTICE beside it. A file that does not match is refused and nothing is
+  written.
+- **ONNX Runtime** 1.21 or newer — Debian 13: `apt install libonnxruntime1.21`.
+  This build runs inference on the CPU. For a GPU, point `SKIM_ORT_LIB` at a
+  system ONNX Runtime with CUDA and set `SKIM_DEEPCW_DEVICE=cuda`.
+
+Without either one, a DeepCW band still starts but runs v2. The log, the
+web page (in red) and `--check-config` say why, and a restart picks DeepCW
+up once both are in place. DeepCW uses far more CPU than v2: about 3 % of a
+core for every channel it is decoding.
 
 The first run writes `~/.config/skimmer-for-linux/headless.ini` with defaults.
 Here is an example for seven bands at 96 kHz:
@@ -108,7 +131,7 @@ rate=96000
 15m=21045500
 
 [decode]
-# v2 (classical) or deepcw (needs ONNX Runtime + model)
+# v2 (classical) or deepcw (needs ONNX Runtime + the model: --fetch-deepcw-model)
 engine=v2
 log=false
 
@@ -134,10 +157,12 @@ and the `SKIM_*` switches), **Statistics** (seven days, one record a minute,
 kept across restarts in `~/.local/state/skimmer-for-linux/stats.bin`: spots
 per hour by band, active decoders, CPU, IQ loss, totals), **Settings** and
 **Log**. It needs no internet; the JSON behind it is `/status.json`,
-`/stats.json`, `/api/log` and `/api/config`.
+`/stats.json`, `/api/log` and `/api/config` (and `POST /api/deepcw`, the
+model fetch).
 
 **Settings** edits the radio, the bands (order, centre, CW engine, RTTY), the
-feed's call and port, the status ports and the IQ recording. *Save and
+feed's call and port, the status ports and the IQ recording, and fetches the
+DeepCW model. *Save and
 restart* checks the new config with the same parser the start uses — a bad
 value is refused and nothing is written — keeps the previous file as
 `headless.ini.bak-<UTC>` (the last 10; *Earlier configs* restores any of
@@ -204,7 +229,7 @@ It needs bash, curl and Python 3, standard library only.
 | `~/.config/skimmer-for-linux/headless.ini` | Settings |
 | `~/.config/skimmer-for-linux/master.scp` | Super Check Partial call list (`.state` records the update rate limits) |
 | `~/.local/share/skimmer-for-linux/headless/` | Decode logs (`[decode] log=true`), decode taps (`learn/`) |
-| `~/.local/share/skimmer-for-linux/models/deepcw/` | DeepCW model, if installed |
+| `~/.local/share/skimmer-for-linux/models/deepcw/` | DeepCW model (`--fetch-deepcw-model`), its LICENSE and NOTICE |
 
 ## Environment variables
 
@@ -218,7 +243,9 @@ name the engine does not read is warned about.
 | `SKIM_CW_ENGINE=v1\|v2\|deepcw` | Pick the CW engine for this run |
 | `SKIM_TONE_SPLIT=1` | Decode two stations in one channel separately — opt-in, awaiting its live validation |
 | `SKIM_TONE_FOCUS=1` | Narrow the channel filter onto a lone carrier (implies the splitter) — same status |
-| `SKIM_ORT_LIB=<path>` | ONNX Runtime library for DeepCW |
+| `SKIM_ORT_LIB=<path>` | ONNX Runtime library for DeepCW (e.g. a system one with CUDA) |
+| `SKIM_DEEPCW_DEVICE=cuda` | Run DeepCW on the GPU, when that library has CUDA |
+| `SKIM_DEEPCW_MODEL=<path>` | Take the DeepCW model from somewhere else |
 | `SKIM_SCP_URL=<url>` | Take the call list from somewhere else |
 
 The decoder and the feed have more `SKIM_*` switches for the live-air work;

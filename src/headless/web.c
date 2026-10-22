@@ -144,6 +144,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
     SkimHdWebPost hook = strcmp(path, "/api/config") == 0   ? k->config_post
                        : strcmp(path, "/api/restart") == 0  ? k->restart
                        : strcmp(path, "/api/rollback") == 0 ? k->rollback
+                       : strcmp(path, "/api/deepcw") == 0   ? k->deepcw
                                                             : NULL;
     if (!hook) {
       reply_error(msg, SOUP_STATUS_NOT_FOUND, "not found");

@@ -105,8 +105,11 @@ here; what was done and why is in git.
   with the GUI, and so did the engine's spectrum tap.
 - **CW backend: v2 is the default.** `SKIM_CW_V1=1` selects the classical v1.
   A third backend, DeepCW (neural, ONNX Runtime via `dlopen`, model outside
-  git), is chosen with `[decode] engine=deepcw`; without the runtime or the model
-  the pipeline falls back to v2.
+  git), is chosen per band (`cw:deepcw`) or with `[decode] engine=deepcw`;
+  without the runtime or the model the pipeline falls back to v2 and the
+  status says why. The model (AGPL) is never shipped: `--fetch-deepcw-model`
+  / the web page fetch e04/deepcw-engine at a pinned commit, sha256-checked
+  (`src/headless/deepcw_model.c` — a new model = a new pin there).
 - **IQ sources: TCI, or HPSDR Protocol 1 direct** (Red Pitaya
   `sdr_receiver_hpsdr`, 48/96/192 kHz, clock ppm correction; the wire is
   RF-inverted and ingest conjugates — `docs/HPSDR-P1.md`). `skimmer-headless`

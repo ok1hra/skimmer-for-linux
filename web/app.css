@@ -130,3 +130,7 @@ button:disabled { opacity: .5; cursor: default; }
   main { padding: 12px; }
   .tile .v { font-size: 17px; }
 }
+td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
+.dcw { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--ln); display: grid; gap: 4px; }
+.dcw .k { font-size: 12px; color: var(--mut); }
+.dcw progress { width: 100%; max-width: 280px; }

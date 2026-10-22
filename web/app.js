@@ -64,8 +64,13 @@ function renderStatus(d) {
   ].join('');
 
   const head = '<tr><th>band</th><th class="l">mode</th><th>centre kHz</th><th>engine</th><th>decoders</th><th>active</th><th>stations</th><th>spots</th><th>drops</th><th>kS/s</th></tr>';
+  // a band that asks for DeepCW and runs v2 (no model or no runtime) says so
+  const dc = d.deepcw || {};
+  const engineCell = (b) => b.mode === 'CW' && b.engine_wanted === 'deepcw' && b.engine !== 'deepcw'
+    ? `<td class="bad" title="DeepCW not available: ${esc(dc.fallback || '')}">${esc(b.engine)} · DeepCW not available</td>`
+    : `<td>${esc(b.engine || d.engine)}</td>`;
   $('#bands').innerHTML = head + modes.map((b) =>
-    `<tr><td>${esc(b.band)}</td><td class="l">${b.mode}</td><td>${fmt(b.centre_hz / 1000, 1)}</td><td>${esc(b.engine || d.engine)}</td>` +
+    `<tr><td>${esc(b.band)}</td><td class="l">${b.mode}</td><td>${fmt(b.centre_hz / 1000, 1)}</td>${engineCell(b)}` +
     `<td>${fmt(b.decoders)}</td><td>${fmt(b.active)}</td><td>${fmt(b.stations)}</td>` +
     `<td>${fmt(b.spots)}</td><td>${fmt(b.drops)}</td><td>${fmt(b.ksps)}</td></tr>`).join('');
 
@@ -95,6 +100,58 @@ function renderStatus(d) {
     `<dt>switches</dt><dd>${sw.length ? sw.map(([k, v]) => `${esc(k)}=${esc(v)}`).join('<br>') : 'none'}</dd>` +
     '</dl>';
   $('#updated').textContent = `updated ${d.time}`;
+
+  const fb = d.bands.filter((b) => b.cw !== false && b.engine_wanted === 'deepcw' && b.engine !== 'deepcw');
+  const warn = $('#dcw-warn');
+  warn.hidden = !fb.length;
+  if (fb.length) {
+    warn.innerHTML = `<b class="bad">DeepCW not available</b> — ${fb.map((b) => esc(b.band)).join(', ')} ` +
+      `${fb.length === 1 ? 'runs' : 'run'} the v2 decoder instead: ${esc(dc.fallback || '')}. ` +
+      (dc.model_ok ? 'The model is in place now — a restart puts it to work.'
+                   : 'The model can be fetched under Settings → Decoding.');
+  }
+  renderDcw(dc);
+}
+
+// The DeepCW model (Settings → Decoding): installed or not, the runtime,
+// a fetch with its progress, and the restart that puts a new model to work.
+function renderDcw(dc) {
+  const box = $('#dcw');
+  if (!box || !dc || dc.model === undefined) return;
+  const may = cfg.data && cfg.data.may_change;
+  const f = dc.fetch || {};
+  const short = (dc.commit || '').slice(0, 7);
+  let html = '<div class="k">DeepCW model</div>';
+  if (f.state === 'running') {
+    const pct = f.total ? Math.floor((100 * f.got) / f.total) : 0;
+    html += `<div>fetching… ${pct} % <span class="mut">(${fmt(f.got / 1e6, 1)} of ${fmt(f.total / 1e6, 1)} MB)</span></div>` +
+      `<progress max="100" value="${pct}"></progress>`;
+  } else if (dc.model_ok) {
+    html += `<div><span class="ok">installed</span> <span class="mut">· e04/deepcw-engine ${esc(short)} · AGPL-3.0</span></div>`;
+    if (dc.wanted && dc.fallback) {
+      html += `<div>the bands that ask for it still run v2 — <button type="button" class="small" id="dcw-restart"${may ? '' : ' disabled'}>Restart</button></div>`;
+    }
+  } else {
+    html += `<div><span class="${dc.wanted ? 'bad' : 'mut'}">not installed</span> ` +
+      `<button type="button" class="small" id="dcw-fetch"${may ? '' : ' disabled'}>Download (15 MB)</button></div>` +
+      `<small>by e04, AGPL-3.0, from <a href="https://github.com/e04/deepcw-engine" target="_blank" rel="noopener">github.com/e04/deepcw-engine</a> ` +
+      `at ${esc(short)}, checked against its sha256 · without it a band set to DeepCW runs v2</small>`;
+    if (f.state === 'failed') html += `<div class="bad">download failed: ${esc(f.error || '')}</div>`;
+  }
+  html += `<small class="mut">runtime: ${dc.runtime ? esc(dc.runtime) : (dc.wanted && dc.model_ok && dc.fallback ? esc(dc.fallback) : 'loaded when a band uses DeepCW')}</small>`;
+  if (box.dataset.html === html) return;          // no flicker, keep focus
+  box.dataset.html = html;
+  box.innerHTML = html;
+  const go = $('#dcw-fetch');
+  if (go) {
+    go.addEventListener('click', async () => {
+      go.disabled = true;
+      try { renderDcw({ ...dc, fetch: { state: 'running', got: 0, total: 0 } }); await post('api/deepcw', new URLSearchParams()); }
+      catch (err) { renderDcw({ ...dc, fetch: { state: 'failed', error: err.message } }); }
+    });
+  }
+  const rs = $('#dcw-restart');
+  if (rs) rs.addEventListener('click', () => $('#set-restart').click());
 }
 
 tabs.status = {
@@ -251,7 +308,7 @@ function fillSettings(d) {
     const inp = f.elements[k];
     if (!inp) continue;
     if (inp.type === 'checkbox') inp.checked = v === '' ? inp.dataset.default === 'true' : v === 'true' || v === '1';
-    else if (inp.tagName === 'SELECT') inp.value = v || inp.options[0].value;
+    else if (inp.tagName === 'SELECT') inp.value = v || inp.dataset.default || inp.options[0].value;
     else inp.value = v;
   }
   for (const inp of f.querySelectorAll('input, select, button')) inp.disabled = !d.may_change;
@@ -277,6 +334,7 @@ function fillSettings(d) {
     `<td><button type="button" class="small" data-restore="${esc(b.name)}"${d.may_change ? '' : ' disabled'}>Restore</button></td></tr>`).join('')
     : '<tr><td colspan="3" class="mut">none yet — every save keeps the previous file</td></tr>');
   $('#set-msg').textContent = '';
+  if (status) renderDcw(status.deepcw);
 }
 
 function formBody() {

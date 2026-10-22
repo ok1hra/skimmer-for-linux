@@ -126,8 +126,12 @@ Debian trixie and Fedora ship it (`libonnxruntime1.21`, `onnxruntime` 1.26), Arc
 the engine row says "not available" instead of failing. The model and its
 metadata are NOT in git: they resolve from
 `~/.local/share/skimmer-for-linux/models/deepcw/` with the AGPL notice beside
-them (the digest is recorded — sha256 `ef120799…fe02` — but no pin is enforced in
-code; bundling into AppImage/deb/rpm is a separate, open decision).
+them (the digest is recorded — sha256 `ef120799…fe02`). **Since 2026-10-22
+(headless product, F10) the pin is in code:** `src/headless/deepcw_model.c`
+fetches the files of e04/deepcw-engine at commit `8e264d2` on request
+(`--fetch-deepcw-model`, the web page's button), checks each one's sha256
+and installs them with the licence and a NOTICE. The model is never bundled
+(AGPL), only fetched on request.
 
 ## As built
 
