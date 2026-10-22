@@ -21,8 +21,8 @@ cc        = meson.get_compiler('c')
 gnome     = import('gnome')  # used in data/ for post-install icon/desktop DB refresh
 glib_dep  = dependency('glib-2.0')            # headless engine
 gio_dep   = dependency('gio-2.0')             # M6: RBN telnet server sockets
-gtk_dep   = dependency('gtk4')                # app front-end
-adw_dep   = dependency('libadwaita-1')        # app control surface
+gtk_dep   = dependency('gtk4', required : false)          # app front-end (optional: headless builds without it)
+adw_dep   = dependency('libadwaita-1', required : false)  # app control surface
 m_dep     = cc.find_library('m', required : false)
 lws_dep   = dependency('libwebsockets')       # M1: TCI client transport
 fftw3f_dep  = dependency('fftw3f')            # M2: channelizer FFT (float)
@@ -317,6 +317,7 @@ executable('skimmer-headless',
 )
 
 # --- Application ------------------------------------------------------------
+if gtk_dep.found() and adw_dep.found()
 executable('skimmer-for-linux',
   ['src/app/main.c', 'src/app/wf_compose.c', 'src/app/wf_view.c',
    'src/app/scp_update.c'],
@@ -329,3 +330,4 @@ executable('skimmer-for-linux',
 )
 
 subdir('data')   # .desktop + icon + AppStream metainfo (install only)
+endif
