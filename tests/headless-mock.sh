@@ -113,6 +113,7 @@ check "status: 40m CW kept off the mock's RTTY (decodes dropped), 20m untouched"
 check "status: the built-in gate in shadow" $?
 [[ $(py 'd["switches"]["SKIM_SCP_URL"]') == http://127.0.0.1:9/ ]]
 check "status: the SKIM_* switches of the start" $?
+[[ $(py 'd["supervisor"]') == None ]]; check "status: no supervisor" $?
 [[ $(py 'sum(b["spots"] for b in d["bands"]) > 0') == True ]]; check "status: spots counted" $?
 page=$(curl -s "http://127.0.0.1:$HTTP/")
 [[ $page == *"<title>Skimmer for Linux</title>"* ]]; check "web: the page" $?
@@ -189,15 +190,20 @@ grep -q "stopped" "$T/log"; check "log: stopped" $?
 
 # settings_from that does not hold this machine: read-only
 H2=$((HTTP + 1))
-printf '[radio]\ntype=mock\n[bands]\n20m=14045500\n[feed]\nport=0\n[status]\nconsole_s=0\nhttp_port=%s\n[web]\nsettings_from=10.0.0.0/8\n' "$H2" > "$T/ro.ini"
-"$HL" --config "$T/ro.ini" > "$T/ro.log" 2>&1 &
+printf '[radio]\ntype=mock\n[bands]\n20m=14045500\n[feed]\nport=0\n[status]\nconsole_s=1\nhttp_port=%s\n[web]\nsettings_from=10.0.0.0/8\n' "$H2" > "$T/ro.ini"
+# … and as the systemd unit runs it (INVOCATION_ID): no console table
+INVOCATION_ID=gate "$HL" --config "$T/ro.ini" > "$T/ro.log" 2>&1 &
 P2=$!
 for _ in $(seq 20); do curl -s -o /dev/null "http://127.0.0.1:$H2/status.json" && break; sleep 0.2; done
 code=$(curl -s -o "$T/r.json" -w '%{http_code}' -d 'feed.call=X' "http://127.0.0.1:$H2/api/config")
 may=$(curl -s "http://127.0.0.1:$H2/api/config" | python3 -c "import json,sys; print(json.load(sys.stdin)['may_change'])")
+sup=$(curl -s "http://127.0.0.1:$H2/status.json" | python3 -c "import json,sys; print(json.load(sys.stdin)['supervisor'])")
 kill -TERM $P2; wait $P2 2>/dev/null
 [[ $code == 403 && $may == False ]] && grep -q settings_from "$T/r.json"
 check "settings: an address outside settings_from reads only (403, may_change false)" $?
+[[ $sup == systemd ]] && grep -q "service: running under systemd .*console table off" "$T/ro.log" &&
+  ! grep -q "band  mode  centre kHz" "$T/ro.log"
+check "under systemd: supervisor \"systemd\", no console table" $?
 
 printf '[bands]\n20m=14045500 psk\n' > "$T/bad.ini"
 rc=0; "$HL" --config "$T/bad.ini" > "$T/bad.log" 2>&1 || rc=$?
@@ -236,6 +242,31 @@ if [[ -n $have_model ]]; then
 else
   echo "  skip --fetch-deepcw-model good path: no pinned model on this machine"
 fi
+
+# ---- --install-service / --uninstall-service (a fake systemctl logs its calls) -------
+mkdir -p "$T/bin"
+printf '#!/bin/sh\necho "$*" >> "%s/calls"\n' "$T" > "$T/bin/systemctl"
+chmod +x "$T/bin/systemctl"
+UNIT=$T/cfg/systemd/user/skimmer-headless.service
+out=$(PATH=$T/bin:$PATH "$HL" --install-service --config "$T/headless.ini"); rc=$?
+[[ $rc == 0 && -f $UNIT && -f $T/cfg/skimmer-for-linux/headless.env ]] &&
+  grep -qx "ExecStart=\"$(readlink -f "$HL")\" --config \"$T/headless.ini\"" "$UNIT" &&
+  grep -qx "EnvironmentFile=-$T/cfg/skimmer-for-linux/headless.env" "$UNIT" &&
+  grep -qx "Restart=on-failure" "$UNIT" && grep -qx "RestartSec=60" "$UNIT" &&
+  grep -qx "RestartPreventExitStatus=2" "$UNIT" && grep -qx "RestartForceExitStatus=75" "$UNIT" &&
+  [[ $(cat "$T/calls") == "--user daemon-reload" ]] &&
+  [[ $out == *"systemctl --user enable --now skimmer-headless"* ]]
+check "--install-service: the unit (this binary, the config, restart policy), headless.env, daemon-reload, nothing started" $?
+echo "SKIM_X=1" >> "$T/cfg/skimmer-for-linux/headless.env"
+out=$(PATH=$T/bin:$PATH "$HL" --install-service); rc=$?
+[[ $rc == 0 && $out == *updated* && $out == *"(kept)"* ]] && grep -q SKIM_X "$T/cfg/skimmer-for-linux/headless.env" &&
+  grep -qx "ExecStart=\"$(readlink -f "$HL")\"" "$UNIT"
+check "--install-service again: the unit updated (default config), headless.env kept" $?
+: > "$T/calls"
+out=$(PATH=$T/bin:$PATH "$HL" --uninstall-service); rc=$?
+[[ $rc == 0 && ! -e $UNIT && -f $T/cfg/skimmer-for-linux/headless.env ]] &&
+  [[ $(cat "$T/calls") == $'--user disable --now skimmer-headless\n--user daemon-reload' ]]
+check "--uninstall-service: stopped, disabled, removed; headless.env stays" $?
 
 if ((fails)); then
   echo "--- log"; cat "$T/log"

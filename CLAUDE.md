@@ -129,6 +129,12 @@ here; what was done and why is in git.
   `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
   backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
   POSTs only from `[web] settings_from`, no foreign Origin.
+- **Exit codes are the service contract:** 0 stopped, 2 bad config, 3 no
+  free radio / stream lost, 75 restart for a `SKIM_SUPERVISED=1`
+  supervisor. `--install-service` (`src/headless/service.c`) writes the
+  systemd user unit on them (RestartSec=60 for 3 and crashes, 2 stays
+  down); a web restart execs in place even under systemd, so it never
+  waits out RestartSec.
 - **GLib 2.74 is the floor** (Debian 12, the AppImage's base):
   `GLIB_VERSION_MAX_ALLOWED` makes newer API a compile error. It does NOT relink
   every binary — `ninja -C builddir` first.

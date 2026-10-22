@@ -317,6 +317,7 @@ headless_sources = files(
   'src/headless/logring.c',         # the last log lines (/api/log)
   'src/headless/record.c',          # [record]: a band's IQ to disk
   'src/headless/scp_update.c',      # MASTER.SCP updater
+  'src/headless/service.c',         # --install-service: the systemd user unit
   'src/headless/source.c',          # IQ sources: the interface
   'src/headless/source_hpsdr_p1.c', # … a Red Pitaya (HPSDR P1)
   'src/headless/source_mock.c',     # … synthetic CW (the headless gate)

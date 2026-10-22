@@ -80,11 +80,41 @@ that are not in git; without them it reports SKIP
                          [--feed-gate-mode off|shadow|on]
                          [--check-config] [--list-switches]
                          [--fetch-deepcw-model]
+                         [--install-service] [--uninstall-service]
 ```
 
 `--check-config` reads and checks the config and the feed gate, prints what
 would run and exits — no radio is touched. A config that does not parse
 stops the start with exit 2 and names the bad line.
+
+### As a service
+
+```sh
+./build/skimmer-headless --install-service        # [--config FILE] to run another config
+systemctl --user enable --now skimmer-headless
+journalctl --user -u skimmer-headless -f
+loginctl enable-linger $USER                      # once: keep running while logged out
+```
+
+`--install-service` writes `~/.config/systemd/user/skimmer-headless.service`
+for this program (an AppImage puts its own path there) and an empty
+`~/.config/skimmer-for-linux/headless.env` for `SKIM_*` variables. It starts
+nothing. `--uninstall-service` stops the service and removes the unit; the
+config and `headless.env` stay.
+
+The exit codes drive the service:
+
+| Exit | Meaning | The service |
+| --- | --- | --- |
+| 0 | stopped (SIGTERM, Ctrl+C) | stays stopped |
+| 2 | the config is wrong | stays stopped — fix it, then `systemctl --user restart skimmer-headless` |
+| 3 | no free radio, or the stream was lost | starts again after a minute |
+| 75 | restart, for a supervisor that sets `SKIM_SUPERVISED=1` | starts again |
+
+A crash also starts it again after a minute. A restart the web page asks
+for (after *Save*) re-executes the program in place without a minute's
+wait, under the service as well. Under the service the console table is
+off; the web page shows the same.
 
 ### DeepCW
 
@@ -178,8 +208,8 @@ supervisor that sets `SKIM_SUPERVISED=1` it exits with code 75 instead.
 
 `[radio] type=mock` replaces the radio with synthetic CW on every band (the
 headless gate uses it). When every listed radio is busy, or none answers within 30 s, the skimmer
-says which and exits with code 3 — also when the stream is lost later; run it
-under a supervisor that restarts it. Seven receivers at 96 kHz are about
+says which and exits with code 3 — also when the stream is lost later; the
+service (`--install-service`) starts it again a minute later. Seven receivers at 96 kHz are about
 35 Mb/s of UDP, so **use a wired link**. Over Wi-Fi, 192 kHz lost about
 30 % of the packets.
 

@@ -4,7 +4,8 @@
  *   skimmer-headless [--config FILE] [--take-over] [--status-every S]
  *                    [--http-port N] [--feed-gate FILE]
  *                    [--feed-gate-mode off|shadow|on] [--check-config]
- *                    [--list-switches]
+ *                    [--list-switches] [--fetch-deepcw-model]
+ *                    [--install-service] [--uninstall-service]
  *
  * An IQ source (headless/source.h — a Red Pitaya running sdr_receiver_hpsdr,
  * up to 8 receivers at once) feeds one engine pipeline per band and mode
@@ -35,6 +36,15 @@
  * or none free within its search time, also after a lost stream — the
  * skimmer exits with code 3 and its supervisor retries.
  *
+ * Exit codes: 0 stopped (SIGTERM / Ctrl+C), 2 the config is wrong, 3 no
+ * free radio / the stream was lost, 75 a restart for a supervisor
+ * (SKIM_SUPERVISED=1). --install-service writes a systemd user unit built
+ * on them (headless/service.h): 3 and crashes start again after a minute,
+ * 2 stays down. A restart the web page asks for re-executes the program in
+ * place (same PID — systemd sees nothing) unless SKIM_SUPERVISED=1 asks
+ * for exit 75. Under systemd the console table is off (the journal is no
+ * place for it; the web page and /status.json have it).
+ *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include <gio/gio.h>
@@ -54,6 +64,7 @@
 #include "headless/logring.h"
 #include "headless/record.h"
 #include "headless/scp_update.h"
+#include "headless/service.h"
 #include "headless/source.h"
 #include "headless/stats.h"
 #include "headless/switches.h"
@@ -440,6 +451,14 @@ static void dcw_json(Hd *h, GString *o) {
   g_mutex_unlock(&h->dcw_lock);
 }
 
+/* Who restarts this process: "systemd" (the user unit), "supervisor"
+ * (SKIM_SUPERVISED=1: exit 75 for a restart) or null (nobody). */
+static const char *supervisor_json(void) {
+  return g_strcmp0(g_getenv("SKIM_SUPERVISED"), "1") == 0 ? "\"supervisor\""
+         : skim_hd_service_under_systemd()                ? "\"systemd\""
+                                                          : "null";
+}
+
 static void status_build(Hd *h, gboolean print) {
   const gint64 now = g_get_monotonic_time();
   const SkimIqSourceStatus *src = &h->src_st;
@@ -517,12 +536,12 @@ static void status_build(Hd *h, gboolean print) {
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
       "\"settle_nodict_s\":%.1f,"
       "\"fresh_s\":%.1f,\"fold_s\":%.1f,\"folded\":%" G_GUINT64_FORMAT "},"
-      "\"feed_gate\":%s,\"switches\":%s,"
+      "\"feed_gate\":%s,\"switches\":%s,\"supervisor\":%s,"
       "\"suppress_cw_on_rtty\":%s,\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
       h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_nd, pol_fresh,
-      pol_fold, folded, jgate, h->switches_json,
+      pol_fold, folded, jgate, h->switches_json, supervisor_json(),
       h->cfg.suppress_cw_on_rtty ? "true" : "false",
       h->feed ? h->cfg.feed_port : 0, h->cfg.feed_rtty ? "true" : "false", fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
@@ -731,9 +750,10 @@ static gboolean quit_soon(gpointer user) {
   return G_SOURCE_REMOVE;
 }
 
-/* Restart once the answer is out: under a supervisor (SKIM_SUPERVISED=1,
- * the systemd unit sets it) exit EXIT_RESTART and let it start us again;
- * alone, main execs itself after the teardown. */
+/* Restart once the answer is out: under a supervisor that asks for it
+ * (SKIM_SUPERVISED=1) exit EXIT_RESTART and let it start us again;
+ * otherwise — alone, or as the systemd unit, whose RestartSec would keep
+ * the page waiting a minute — main execs itself after the teardown. */
 static void restart_soon(Hd *h, const char *why) {
   g_message("restart: %s", why);
   h->exit_code = EXIT_RESTART;
@@ -1115,6 +1135,7 @@ int main(int argc, char **argv) {
   h->http_port = -1;
   char *cfg = NULL;
   gboolean list_switches = FALSE, check_config = FALSE, fetch_model = FALSE;
+  gboolean install_service = FALSE, uninstall_service = FALSE;
   GOptionEntry opts[] = {
     { "config", 'c', 0, G_OPTION_ARG_FILENAME, &cfg,
       "Config file (default ~/.config/skimmer-for-linux/headless.ini)", "FILE" },
@@ -1138,6 +1159,11 @@ int main(int argc, char **argv) {
       "Fetch the DeepCW model (e04/deepcw-engine, AGPL-3.0-only, ~15 MB) at the "
       "commit this version pins, check its sha256, install it where the "
       "engine looks, and exit (0 = in place)", NULL },
+    { "install-service", 0, 0, G_OPTION_ARG_NONE, &install_service,
+      "Write a systemd user service that runs this program (with --config, "
+      "that config) and exit — it starts nothing; the next steps are printed", NULL },
+    { "uninstall-service", 0, 0, G_OPTION_ARG_NONE, &uninstall_service,
+      "Stop and remove that service and exit (the config stays)", NULL },
     { "list-switches", 0, 0, G_OPTION_ARG_NONE, &list_switches,
       "Print the SKIM_* environment switches the engine reads, and exit", NULL },
     { NULL, 0, 0, 0, NULL, NULL, NULL },
@@ -1163,6 +1189,20 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (fetch_model) { return fetch_model_cli(); }
+  if (install_service || uninstall_service) {
+    gboolean ok;
+    if (install_service) {
+      char *exe = skim_hd_service_exe();
+      char *conf = cfg ? g_canonicalize_filename(cfg, NULL) : NULL;
+      ok = skim_hd_service_install(exe, conf, &err);
+      g_free(conf);
+      g_free(exe);
+    } else {
+      ok = skim_hd_service_uninstall(&err);
+    }
+    if (!ok) { g_printerr("service: %s\n", err->message); }
+    return ok ? 0 : 1;
+  }
   h->cfg_path = cfg ? cfg : g_build_filename(g_get_user_config_dir(), "skimmer-for-linux",
                                              "headless.ini", NULL);
   if (!g_file_test(h->cfg_path, G_FILE_TEST_EXISTS) && !check_config) {
@@ -1177,7 +1217,9 @@ int main(int argc, char **argv) {
     g_printerr("config: %s\n", err->message);
     return EXIT_CONFIG;
   }
-  if (h->console_s < 0) { h->console_s = c->console_s >= 0 ? c->console_s : 10; }
+  if (h->console_s < 0) {
+    h->console_s = skim_hd_service_under_systemd() ? 0 : c->console_s >= 0 ? c->console_s : 10;
+  }
   if (h->http_port < 0) { h->http_port = c->http_port >= 0 ? c->http_port : 8073; }
   h->feed_gate = g_strdup(c->feed_gate);
   h->feed_gate_mode = g_strdup(c->feed_gate_mode);
@@ -1238,6 +1280,10 @@ int main(int argc, char **argv) {
             c->source == SKIM_HD_SOURCE_MOCK ? "(no radio)" : c->hosts_text, c->nb,
             c->nb == 1 ? "" : "s", c->rate / 1000, h->cfg_path);
   h->switches_json = skim_switches_scan();
+  if (skim_hd_service_under_systemd()) {
+    g_message("service: running under systemd — exit 3 retries after a minute, a "
+              "restart re-executes in place%s", h->console_s ? "" : "; console table off");
+  }
 
   /* Callsign dictionary: loaded once for every pipeline, kept current. */
   char *scp = g_build_filename(g_get_user_config_dir(), "skimmer-for-linux", "master.scp", NULL);
