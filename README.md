@@ -117,9 +117,33 @@ console_s=10
 http_port=8073
 ```
 
-Point a logger or a cluster client at `telnet <host> 7300`. Open
-`http://<host>:8073/` for the status page. Ctrl+C stops the skimmer cleanly
-and frees the radio.
+Point a logger or a cluster client at `telnet <host> 7300`. Ctrl+C stops the
+skimmer cleanly and frees the radio.
+
+## The web page
+
+`http://<host>:8073/` shows the skimmer: **Status** (radio, CPU, loss, the
+feed, every band with its newest stations, the feed policy, the learned gate
+and the `SKIM_*` switches), **Statistics** (seven days, one record a minute,
+kept across restarts in `~/.local/state/skimmer-for-linux/stats.bin`: spots
+per hour by band, active decoders, CPU, IQ loss, totals), **Settings** and
+**Log**. It needs no internet; the JSON behind it is `/status.json`,
+`/stats.json`, `/api/log` and `/api/config`.
+
+**Settings** edits the radio, the bands (order, centre, CW engine, RTTY), the
+feed's call and port, the status ports and the IQ recording. *Save and
+restart* checks the new config with the same parser the start uses — a bad
+value is refused and nothing is written — keeps the previous file as
+`headless.ini.bak-<UTC>` (the last 10; *Earlier configs* restores any of
+them) and restarts the skimmer. A start that does not get the radio
+streaming within a minute of a change offers the previous config back. The
+feed policy, the learned gate and `[web]` are not editable on the page.
+
+Only the addresses in `[web] settings_from` (default `127.0.0.1,::1`) may
+change settings; everyone else sees them read-only. From another machine
+use a tunnel: `ssh -L 8073:127.0.0.1:8073 <host>`, then
+`http://localhost:8073/`. A restart re-executes the skimmer; under a
+supervisor that sets `SKIM_SUPERVISED=1` it exits with code 75 instead.
 
 `[radio] type=mock` replaces the radio with synthetic CW on every band (the
 headless gate uses it). When every listed radio is busy, or none answers within 30 s, the skimmer

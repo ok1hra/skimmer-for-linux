@@ -89,14 +89,18 @@ static gboolean serve_static(SoupServerMessage *msg, const char *path) {
   return TRUE;
 }
 
-/* May this POST change the skimmer? The client's address must be in
- * settings_from, and a browser's Origin — when it sends one — this page. */
-static const char *post_refused(SkimHdWeb *w, SoupServerMessage *msg) {
+static gboolean client_allowed(SkimHdWeb *w, SoupServerMessage *msg) {
   GSocketAddress *sa = soup_server_message_get_remote_address(msg);
   GInetAddress *a = G_IS_INET_SOCKET_ADDRESS(sa)
                         ? g_inet_socket_address_get_address(G_INET_SOCKET_ADDRESS(sa))
                         : NULL;
-  if (!allowed(w->nets, a)) {
+  return allowed(w->nets, a);
+}
+
+/* May this POST change the skimmer? The client's address must be in
+ * settings_from, and a browser's Origin — when it sends one — this page. */
+static const char *post_refused(SkimHdWeb *w, SoupServerMessage *msg) {
+  if (!client_allowed(w, msg)) {
     return "settings are read-only from this address ([web] settings_from)";
   }
   SoupMessageHeaders *h = soup_server_message_get_request_headers(msg);
@@ -129,7 +133,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
     if (hook) {
       guint status = SOUP_STATUS_OK;
       const char *type = "application/json";
-      char *body = hook(query, &status, &type, k->user);
+      char *body = hook(query, client_allowed(w, msg), &status, &type, k->user);
       reply(msg, status, type, body);
       return;
     }
@@ -152,11 +156,14 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
     }
     SoupMessageBody *b = soup_server_message_get_request_body(msg);
     GBytes *bytes = soup_message_body_flatten(b);
-    gsize len = 0;
-    const char *data = g_bytes_get_data(bytes, &len);
-    guint status = SOUP_STATUS_OK;
-    char *body = hook(data ? data : "", len, &status, k->user);
+    char *text = g_strndup(g_bytes_get_data(bytes, NULL), g_bytes_get_size(bytes));
     g_bytes_unref(bytes);
+    GHashTable *form = text[0] ? soup_form_decode(text)
+                               : g_hash_table_new(g_str_hash, g_str_equal);
+    g_free(text);
+    guint status = SOUP_STATUS_OK;
+    char *body = hook(form, &status, k->user);
+    g_hash_table_unref(form);
     reply(msg, status, "application/json", body);
     return;
   }

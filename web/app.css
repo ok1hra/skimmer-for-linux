@@ -96,6 +96,34 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel);
 .tip .r { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
 .tip .r b { min-width: 3.5em; text-align: right; }
 .tip .r i { width: 10px; height: 2px; display: inline-block; }
+fieldset { border: 1px solid var(--ln); border-radius: 8px; background: var(--panel); margin: 0 0 12px;
+           padding: 8px 12px 12px; min-width: 0; }
+legend { font-weight: 600; padding: 0 4px; }
+.set-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0 12px; }
+.set-grid fieldset { margin-bottom: 12px; }
+#settings label { display: flex; flex-direction: column; gap: 2px; margin: 6px 0; font-size: 13px; color: var(--mut); }
+#settings label.check { flex-direction: row; align-items: center; gap: 6px; color: var(--fg); }
+#settings small { font-size: 11px; color: var(--mut); }
+input, select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--ln);
+                border-radius: 6px; padding: 4px 6px; min-width: 0; }
+input:disabled, select:disabled { opacity: .6; }
+input.bad { border-color: var(--bad); }
+.bands-edit input[type=text], .bands-edit input:not([type]) { width: 7em; }
+.bands-edit td { padding: 3px 6px; }
+button.small, .bands-edit button { font: inherit; font-size: 12px; border: 1px solid var(--ln); background: var(--panel);
+                                   color: var(--fg); border-radius: 6px; padding: 2px 8px; cursor: pointer; margin-top: 6px; }
+.bands-edit button { margin: 0 1px; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 16px; }
+.actions button { font: inherit; border: 1px solid var(--ln); background: var(--panel); color: var(--fg);
+                  border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+.actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+#overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center;
+           justify-content: center; z-index: 10; }
+#overlay > div { background: var(--panel); border: 1px solid var(--ln); border-radius: 10px; padding: 18px 22px;
+                 max-width: 90vw; }
+#overlay p { margin: 6px 0 0; }
+.warnbox code { font-family: var(--mono); font-size: 12px; }
 @media (max-width: 760px) { .pair { grid-template-columns: 1fr; } }
 @media (max-width: 600px) {
   main { padding: 12px; }

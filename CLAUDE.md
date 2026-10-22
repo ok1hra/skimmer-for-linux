@@ -112,9 +112,15 @@ here; what was done and why is in git.
   runs up to 8 receivers (one pipeline per band, one telnet feed, console +
   web status). The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 18 gates** (DeepCW skips without the model, golden skips
+- **`meson test` = 19 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).
+- **The web page** (libsoup 3, `src/headless/web.c`, static files in `web/`
+  built in as a GResource, plain JS/SVG — no libraries, it must work
+  offline): status, 7-day statistics (`stats.c`), settings (one parser:
+  `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
+  backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
+  POSTs only from `[web] settings_from`, no foreign Origin.
 - **GLib 2.74 is the floor** (Debian 12, the AppImage's base):
   `GLIB_VERSION_MAX_ALLOWED` makes newer API a compile error. It does NOT relink
   every binary — `ninja -C builddir` first.
@@ -162,8 +168,10 @@ src/engine/   headless, GLib-only:
   spot_out     TCI SPOT feed + RBN telnet feed
 src/headless/ the product layer: config (headless.ini, one parser), source
               (IQ source interface) + source_hpsdr_p1 / source_mock, record
-              ([record] IQ to disk), switches (SKIM_* visibility), scp_update
+              ([record] IQ to disk), switches (SKIM_* visibility), stats
+              (7-day history), web (libsoup server), logring, scp_update
               (MASTER.SCP background updater)
+web/          the web page (HTML, CSS, JS — built in as a GResource)
 src/headless_main.c  skimmer-headless: multi-band, no GUI (HPSDR P1 → N pipelines)
 weights/      learned weights built into skimmer-headless (feed-gate.ini)
 tests/golden/ the golden gate: real-air replay, byte for byte

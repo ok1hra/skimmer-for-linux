@@ -42,6 +42,8 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
+#include <glib/gstdio.h>
 #include <unistd.h>
 
 #include "headless/config.h"
@@ -77,6 +79,7 @@ static double act_now(const Act *a, gint64 now) {
 
 #define EXIT_CONFIG      2
 #define EXIT_NO_RADIO    3
+#define EXIT_RESTART     75            /* the settings page asked for one     */
 
 typedef struct {
   char          name[16];
@@ -110,6 +113,8 @@ typedef struct {
   SkimFeedGate *gate;          /* loaded once, shared by the pipelines        */
   char    *gate_id;            /* builtin:… / file:…, #sha8                   */
   char    *switches_json;      /* the SKIM_* switches set at start            */
+  char   **argv;               /* as started, for a restart without a supervisor */
+  gint64   started_us;         /* real time of this start: tells starts apart */
 
   Band     band[SKIM_HD_MAX_BANDS];
   guint    nb;
@@ -388,7 +393,7 @@ static void status_build(Hd *h, gboolean print) {
       : g_strdup("null");
   g_free(jgid);
   g_string_append_printf(json,
-      "{\"version\":\"%s\",\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
+      "{\"version\":\"%s\",\"started_us\":%" G_GINT64_FORMAT ",\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
       "\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
@@ -397,7 +402,7 @@ static void status_build(Hd *h, gboolean print) {
       "\"feed_gate\":%s,\"switches\":%s,"
       "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
-      SKIMMER_VERSION, clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
+      SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
       h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_nd, pol_fresh,
       pol_fold, folded, jgate, h->switches_json,
       h->feed ? h->cfg.feed_port : 0, fclients, flines,
@@ -567,8 +572,9 @@ static gboolean tick(gpointer data) {
 
 /* ---- web page (headless/web.h) --------------------------------------------------- */
 
-static char *web_status(GHashTable *q, guint *st, const char **type, gpointer user) {
-  (void)q; (void)st; (void)type;
+static char *web_status(GHashTable *q, gboolean may, guint *st, const char **type,
+                        gpointer user) {
+  (void)q; (void)may; (void)st; (void)type;
   Hd *h = user;
   g_mutex_lock(&h->snap_lock);
   char *body = g_strdup(h->snap_json ? h->snap_json : "{}");
@@ -576,8 +582,9 @@ static char *web_status(GHashTable *q, guint *st, const char **type, gpointer us
   return body;
 }
 
-static char *web_stats(GHashTable *q, guint *st, const char **type, gpointer user) {
-  (void)st; (void)type;
+static char *web_stats(GHashTable *q, gboolean may, guint *st, const char **type,
+                       gpointer user) {
+  (void)may; (void)st; (void)type;
   Hd *h = user;
   const char *hv = q ? g_hash_table_lookup(q, "hours") : NULL;
   const char *sv = q ? g_hash_table_lookup(q, "step") : NULL;
@@ -586,8 +593,218 @@ static char *web_stats(GHashTable *q, guint *st, const char **type, gpointer use
                          sv ? (guint)g_ascii_strtoull(sv, NULL, 10) : 0);
 }
 
-static char *web_log(GHashTable *q, guint *st, const char **type, gpointer user) {
-  (void)q; (void)st; (void)type; (void)user;
+/* ---- settings (POST from settings_from only — web.c checks) ---------------------- */
+
+static gboolean quit_soon(gpointer user) {
+  g_main_loop_quit(((Hd *)user)->loop);
+  return G_SOURCE_REMOVE;
+}
+
+/* Restart once the answer is out: under a supervisor (SKIM_SUPERVISED=1,
+ * the systemd unit sets it) exit EXIT_RESTART and let it start us again;
+ * alone, main execs itself after the teardown. */
+static void restart_soon(Hd *h, const char *why) {
+  g_message("restart: %s", why);
+  h->exit_code = EXIT_RESTART;
+  g_timeout_add(400, quit_soon, h);
+}
+
+static char *json_error(guint *st, guint code, const char *msg) {
+  *st = code;
+  char *e = skim_json_str(msg);
+  char *body = g_strdup_printf("{\"error\":\"%s\"}", e);
+  g_free(e);
+  return body;
+}
+
+static void json_kv(GString *o, const char *k, const char *v, gboolean comma) {
+  g_string_append_printf(o, "%s\"", comma ? "," : "");
+  skim_json_append(o, k);
+  g_string_append(o, "\":\"");
+  skim_json_append(o, v);
+  g_string_append_c(o, '"');
+}
+
+static const char *engine_key(SkimCwEngine e) {
+  return e == SKIM_CW_ENGINE_DEEPCW ? "deepcw" : e == SKIM_CW_ENGINE_V1 ? "v1" : "v2";
+}
+
+/* GET /api/config: the file on disk (what a restart would run) — its
+ * editable values, its bands, the rest read-only, the backups. */
+static char *web_config(GHashTable *q, gboolean may, guint *st, const char **type,
+                        gpointer user) {
+  (void)q; (void)type;
+  Hd *h = user;
+  char *text = NULL;
+  gsize len = 0;
+  GError *err = NULL;
+  if (!g_file_get_contents(h->cfg_path, &text, &len, &err)) {
+    char *b = json_error(st, 500, err->message);
+    g_error_free(err);
+    return b;
+  }
+  GString *o = g_string_new("{");
+  json_kv(o, "path", h->cfg_path, FALSE);
+  g_string_append_printf(o, ",\"may_change\":%s,\"settings_from\":[", may ? "true" : "false");
+  for (guint i = 0; h->cfg.settings_from[i]; i++) {
+    g_string_append_printf(o, "%s\"", i ? "," : "");
+    skim_json_append(o, h->cfg.settings_from[i]);
+    g_string_append_c(o, '"');
+  }
+  g_string_append(o, "],\"values\":{");
+  GKeyFile *kf = g_key_file_new();
+  g_key_file_load_from_data(kf, text, len, G_KEY_FILE_NONE, NULL);
+  gboolean first = TRUE;
+  for (const char *const *k = SKIM_HD_EDITABLE; *k; k++) {
+    if (strcmp(*k, "bands") == 0) { continue; }
+    char *group = g_strndup(*k, (gsize)(strchr(*k, '.') - *k));
+    char *v = g_key_file_get_value(kf, group, strchr(*k, '.') + 1, NULL);
+    json_kv(o, *k, v ? g_strstrip(v) : "", !first);
+    first = FALSE;
+    g_free(v);
+    g_free(group);
+  }
+  g_string_append(o, "},\"readonly\":{");
+  first = TRUE;
+  static const char *const RO_GROUPS[] = { "feed", "decode", "web", "radio", "status", NULL };
+  for (const char *const *g = RO_GROUPS; *g; g++) {
+    gsize n = 0;
+    char **keys = g_key_file_get_keys(kf, *g, &n, NULL);
+    for (gsize i = 0; keys && i < n; i++) {
+      char *full = g_strconcat(*g, ".", keys[i], NULL);
+      gboolean ed = FALSE;
+      for (const char *const *k = SKIM_HD_EDITABLE; *k && !ed; k++) { ed = strcmp(*k, full) == 0; }
+      if (!ed) {
+        char *v = g_key_file_get_value(kf, *g, keys[i], NULL);
+        json_kv(o, full, v ? g_strstrip(v) : "", !first);
+        first = FALSE;
+        g_free(v);
+      }
+      g_free(full);
+    }
+    g_strfreev(keys);
+  }
+  g_string_append_c(o, '}');
+  g_key_file_free(kf);
+  SkimHdConfig c;
+  if (skim_hd_config_parse(&c, text, len, h->cfg_path, &err)) {
+    g_string_append(o, ",\"file_error\":null,\"bands\":[");
+    for (guint i = 0; i < c.nb; i++) {
+      g_string_append_printf(o, "%s{", i ? "," : "");
+      json_kv(o, "name", c.band[i].name, FALSE);
+      g_string_append_printf(o, ",\"centre_hz\":%.0f,\"cw\":%s,\"engine\":\"%s\",\"rtty\":%s}",
+                             c.band[i].centre_hz, c.band[i].cw ? "true" : "false",
+                             engine_key(c.band[i].cw_engine), c.band[i].rtty ? "true" : "false");
+    }
+    g_string_append_c(o, ']');
+    skim_hd_config_clear(&c);
+  } else {
+    g_string_append(o, ",\"bands\":[],\"file_error\":\"");
+    skim_json_append(o, err->message);
+    g_string_append_c(o, '"');
+    g_clear_error(&err);
+  }
+  g_string_append(o, ",\"backups\":[");
+  char **baks = skim_hd_config_backups(h->cfg_path);
+  char *dir = g_path_get_dirname(h->cfg_path);
+  for (guint i = 0; baks[i]; i++) {
+    char *p = g_build_filename(dir, baks[i], NULL);
+    GStatBuf sb;
+    const gint64 mt = g_stat(p, &sb) == 0 ? (gint64)sb.st_mtime : 0;
+    g_string_append_printf(o, "%s{", i ? "," : "");
+    json_kv(o, "name", baks[i], FALSE);
+    g_string_append_printf(o, ",\"time\":%" G_GINT64_FORMAT "}", mt);
+    g_free(p);
+  }
+  g_free(dir);
+  g_strfreev(baks);
+  g_string_append(o, "],");
+  json_kv(o, "ini", text, FALSE);
+  g_string_append_printf(o, ",\"started\":%" G_GINT64_FORMAT "}",
+                         (g_get_real_time() - (g_get_monotonic_time() - h->t_start)) /
+                             G_USEC_PER_SEC);
+  g_free(text);
+  return g_string_free(o, FALSE);
+}
+
+/* POST /api/config: the form applied to the file, checked by the start's
+ * own parser, saved (the old file backed up), and a restart. */
+static char *web_config_post(GHashTable *form, guint *st, gpointer user) {
+  Hd *h = user;
+  char *text = NULL;
+  gsize len = 0;
+  GError *err = NULL;
+  char *body = NULL, *out = NULL, *bak = NULL;
+  SkimHdConfig c;
+  if (!g_file_get_contents(h->cfg_path, &text, &len, &err) ||
+      !(out = skim_hd_config_apply_form(text, len, form, &err))) {
+    body = json_error(st, 400, err->message);
+  } else if (!skim_hd_config_parse(&c, out, strlen(out), h->cfg_path, &err)) {
+    body = json_error(st, 400, err->message);         /* nothing written     */
+  } else {
+    skim_hd_config_clear(&c);
+    if (strcmp(out, text) == 0) {
+      body = g_strdup("{\"ok\":true,\"changed\":false}");
+    } else if (!skim_hd_config_save(h->cfg_path, out, &bak, &err)) {
+      body = json_error(st, 500, err->message);
+    } else {
+      g_message("config: %s saved from the web page (previous: %s)", h->cfg_path, bak);
+      GString *o = g_string_new("{\"ok\":true,\"changed\":true");
+      json_kv(o, "backup", bak, TRUE);
+      g_string_append(o, ",\"restart\":true}");
+      body = g_string_free(o, FALSE);
+      restart_soon(h, "the config changed");
+    }
+  }
+  g_clear_error(&err);
+  g_free(bak);
+  g_free(out);
+  g_free(text);
+  return body;
+}
+
+static char *web_restart(GHashTable *form, guint *st, gpointer user) {
+  (void)form; (void)st;
+  restart_soon(user, "asked for on the web page");
+  return g_strdup("{\"ok\":true,\"restart\":true}");
+}
+
+/* POST /api/rollback name=<backup>: that backup back as the config. */
+static char *web_rollback(GHashTable *form, guint *st, gpointer user) {
+  Hd *h = user;
+  const char *name = g_hash_table_lookup(form, "name");
+  GError *err = NULL;
+  if (!name) { return json_error(st, 400, "which backup? (name=)"); }
+  char *dir = g_path_get_dirname(h->cfg_path);
+  char *p = g_build_filename(dir, name, NULL);
+  g_free(dir);
+  char *text = NULL;
+  gsize len = 0;
+  SkimHdConfig c;
+  char *body;
+  /* a backup that would not start is not restored */
+  if (strchr(name, '/') || !g_file_get_contents(p, &text, &len, &err) ||
+      !skim_hd_config_parse(&c, text, len, h->cfg_path, &err)) {
+    body = json_error(st, 400, err ? err->message : "no such backup");
+  } else {
+    skim_hd_config_clear(&c);
+    if (!skim_hd_config_restore(h->cfg_path, name, &err)) {
+      body = json_error(st, 400, err->message);
+    } else {
+      g_message("config: %s restored from %s on the web page", h->cfg_path, name);
+      body = g_strdup("{\"ok\":true,\"restart\":true}");
+      restart_soon(h, "a backup of the config was restored");
+    }
+  }
+  g_clear_error(&err);
+  g_free(text);
+  g_free(p);
+  return body;
+}
+
+static char *web_log(GHashTable *q, gboolean may, guint *st, const char **type,
+                     gpointer user) {
+  (void)q; (void)may; (void)st; (void)type; (void)user;
   return skim_log_ring_json();
 }
 
@@ -635,6 +852,14 @@ int main(int argc, char **argv) {
       "Print the SKIM_* environment switches the engine reads, and exit", NULL },
     { NULL, 0, 0, 0, NULL, NULL, NULL },
   };
+  /* for a restart without a supervisor: the command line as given, less
+   * --take-over (one-shot: the first start only) */
+  GPtrArray *av = g_ptr_array_new();
+  for (int i = 0; i < argc; i++) {
+    if (strcmp(argv[i], "--take-over") != 0) { g_ptr_array_add(av, g_strdup(argv[i])); }
+  }
+  g_ptr_array_add(av, NULL);
+  h->argv = (char **)g_ptr_array_free(av, FALSE);
   GOptionContext *oc = g_option_context_new("— multi-band CW skimmer on a Red Pitaya, no GUI");
   g_option_context_add_main_entries(oc, opts, NULL);
   GError *err = NULL;
@@ -686,6 +911,7 @@ int main(int argc, char **argv) {
   }
   g_mutex_init(&h->snap_lock);
   h->t_start = g_get_monotonic_time();
+  h->started_us = g_get_real_time();
   g_message("skimmer-headless %s — %s %s, %u band%s × %u kHz, config %s", SKIMMER_VERSION,
             c->source == SKIM_HD_SOURCE_MOCK ? "mock source" : "HPSDR P1",
             c->source == SKIM_HD_SOURCE_MOCK ? "(no radio)" : c->hosts_text, c->nb,
@@ -849,7 +1075,9 @@ int main(int argc, char **argv) {
   SkimHdWeb *web = NULL;
   if (h->http_port > 0) {
     const SkimHdWebHooks hooks = {
-      .status = web_status, .stats = web_stats, .log = web_log, .user = h,
+      .status = web_status, .stats = web_stats, .log = web_log, .config = web_config,
+      .config_post = web_config_post, .restart = web_restart, .rollback = web_rollback,
+      .user = h,
     };
     web = skim_hd_web_new((guint16)h->http_port, (const char *const *)c->settings_from,
                           &hooks, &err);
@@ -886,6 +1114,12 @@ int main(int argc, char **argv) {
   g_clear_pointer(&h->stats, skim_stats_free);  /* saves                       */
   g_clear_pointer(&h->feed, skim_rbn_feed_free);
   g_clear_pointer(&h->scp, skim_scp_updater_free);
+  if (h->exit_code == EXIT_RESTART && g_strcmp0(g_getenv("SKIM_SUPERVISED"), "1") != 0) {
+    g_message("restart: starting again");
+    fflush(stdout);
+    execv("/proc/self/exe", h->argv);
+    g_printerr("restart: exec failed: %s — exiting %d\n", g_strerror(errno), EXIT_RESTART);
+  }
   g_message("stopped");
   return h->exit_code;
 }

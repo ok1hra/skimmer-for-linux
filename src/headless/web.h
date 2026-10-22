@@ -29,11 +29,12 @@ G_BEGIN_DECLS
 typedef struct _SkimHdWeb SkimHdWeb;
 
 /* A hook answers with a body and an HTTP status; *type is the content type
- * (static string; default application/json). */
-typedef char *(*SkimHdWebGet)(GHashTable *query, guint *status, const char **type,
-                              gpointer user);
-typedef char *(*SkimHdWebPost)(const char *body, gsize len, guint *status,
-                               gpointer user);
+ * (static string; default application/json). may_change: the client may
+ * POST (its address is in settings_from). A POST hook gets the form fields
+ * of an application/x-www-form-urlencoded body (empty table for none). */
+typedef char *(*SkimHdWebGet)(GHashTable *query, gboolean may_change, guint *status,
+                              const char **type, gpointer user);
+typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
 typedef struct {
   SkimHdWebGet  status, stats, log, config;

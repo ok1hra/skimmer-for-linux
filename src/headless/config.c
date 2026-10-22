@@ -2,6 +2,7 @@
 #include "config.h"
 
 #include <gio/gio.h>
+#include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -360,6 +361,169 @@ gboolean skim_hd_config_load(SkimHdConfig *cfg, const char *path, GError **error
     return FALSE;
   }
   const gboolean ok = skim_hd_config_parse(cfg, text, len, path, error);
+  g_free(text);
+  return ok;
+}
+
+/* ---- editing ------------------------------------------------------------------- */
+
+const char *const SKIM_HD_EDITABLE[] = {
+  "radio.type", "radio.host", "radio.rate", "radio.clock_ppm",
+  "bands",
+  "decode.engine", "decode.log",
+  "feed.call", "feed.port",
+  "status.console_s", "status.http_port",
+  "record.bands", "record.minutes", "record.dir", "record.start_utc",
+  NULL,
+};
+
+static gboolean editable(const char *key) {
+  for (const char *const *k = SKIM_HD_EDITABLE; *k; k++) {
+    if (strcmp(*k, key) == 0) { return TRUE; }
+  }
+  return FALSE;
+}
+
+char *skim_hd_config_apply_form(const char *text, gsize len, GHashTable *form,
+                                GError **error) {
+  GKeyFile *kf = g_key_file_new();
+  if (!g_key_file_load_from_data(kf, text, len,
+                                 G_KEY_FILE_KEEP_COMMENTS, error)) {
+    g_key_file_free(kf);
+    return NULL;
+  }
+  GHashTableIter it;
+  gpointer kp, vp;
+  gboolean ok = TRUE;
+  g_hash_table_iter_init(&it, form);
+  while (ok && g_hash_table_iter_next(&it, &kp, &vp)) {
+    const char *key = kp, *val = vp;
+    if (!editable(key)) {
+      g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                  "\"%s\" is not a setting the page may change", key);
+      ok = FALSE;
+    } else if (strcmp(key, "bands") == 0) {
+      /* the whole group, in receiver order */
+      gsize n = 0;
+      char **old = g_key_file_get_keys(kf, "bands", &n, NULL);
+      for (gsize i = 0; old && i < n; i++) { g_key_file_remove_key(kf, "bands", old[i], NULL); }
+      g_strfreev(old);
+      char **lines = g_strsplit_set(val, "\r\n", -1);
+      for (char **l = lines; *l && ok; l++) {
+        char *line = g_strstrip(*l);
+        if (!*line) { continue; }
+        char *eq = strchr(line, '=');
+        if (!eq || eq == line) {
+          g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                      "band \"%s\": name=centre Hz [modes]", line);
+          ok = FALSE;
+          break;
+        }
+        *eq = '\0';
+        g_key_file_set_value(kf, "bands", g_strstrip(line), g_strstrip(eq + 1));
+      }
+      g_strfreev(lines);
+    } else if (strpbrk(val, "\r\n")) {
+      g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                  "%s: one line only", key);
+      ok = FALSE;
+    } else {
+      char *group = g_strndup(key, (gsize)(strchr(key, '.') - key));
+      g_key_file_set_value(kf, group, strchr(key, '.') + 1, val);
+      g_free(group);
+    }
+  }
+  char *out = ok ? g_key_file_to_data(kf, NULL, NULL) : NULL;
+  g_key_file_free(kf);
+  return out;
+}
+
+static gint newest_first(gconstpointer a, gconstpointer b) {
+  return strcmp(*(const char *const *)b, *(const char *const *)a);
+}
+
+char **skim_hd_config_backups(const char *path) {
+  char *dir = g_path_get_dirname(path), *base = g_path_get_basename(path);
+  char *prefix = g_strconcat(base, ".bak-", NULL);
+  GPtrArray *list = g_ptr_array_new();
+  GDir *d = g_dir_open(dir, 0, NULL);
+  for (const char *e; d && (e = g_dir_read_name(d));) {
+    if (g_str_has_prefix(e, prefix)) { g_ptr_array_add(list, g_strdup(e)); }
+  }
+  if (d) { g_dir_close(d); }
+  g_ptr_array_sort(list, newest_first);      /* the UTC stamp sorts as text */
+  g_ptr_array_add(list, NULL);
+  g_free(prefix);
+  g_free(base);
+  g_free(dir);
+  return (char **)g_ptr_array_free(list, FALSE);
+}
+
+/* Copy the current file to <path>.bak-<UTC>; drop the oldest past the cap. */
+static char *backup_now(const char *path, GError **error) {
+  char *cur = NULL;
+  gsize len = 0;
+  if (!g_file_get_contents(path, &cur, &len, error)) { return NULL; }
+  GDateTime *t = g_date_time_new_now_utc();
+  char *stamp = g_date_time_format(t, "%Y%m%d-%H%M%SZ");
+  g_date_time_unref(t);
+  char *bak = g_strdup_printf("%s.bak-%s", path, stamp);
+  for (guint k = 2; g_file_test(bak, G_FILE_TEST_EXISTS); k++) {   /* same second */
+    g_free(bak);
+    bak = g_strdup_printf("%s.bak-%s-%u", path, stamp, k);
+  }
+  g_free(stamp);
+  const gboolean ok = g_file_set_contents(bak, cur, (gssize)len, error);
+  g_free(cur);
+  if (!ok) {
+    g_free(bak);
+    return NULL;
+  }
+  char **all = skim_hd_config_backups(path);
+  char *dir = g_path_get_dirname(path);
+  const guint nall = g_strv_length(all);
+  for (guint i = SKIM_HD_BACKUPS; i < nall; i++) {
+    char *old = g_build_filename(dir, all[i], NULL);
+    g_remove(old);
+    g_free(old);
+  }
+  g_free(dir);
+  g_strfreev(all);
+  char *name = g_path_get_basename(bak);
+  g_free(bak);
+  return name;
+}
+
+gboolean skim_hd_config_save(const char *path, const char *text, char **backup,
+                             GError **error) {
+  char *bak = backup_now(path, error);
+  if (!bak) { return FALSE; }
+  if (!g_file_set_contents(path, text, -1, error)) {          /* atomic rename */
+    g_free(bak);
+    return FALSE;
+  }
+  if (backup) { *backup = bak; } else { g_free(bak); }
+  return TRUE;
+}
+
+gboolean skim_hd_config_restore(const char *path, const char *backup, GError **error) {
+  char *base = g_path_get_basename(path);
+  char *prefix = g_strconcat(base, ".bak-", NULL);
+  const gboolean named_ok = g_str_has_prefix(backup, prefix) && !strchr(backup, '/');
+  g_free(prefix);
+  g_free(base);
+  if (!named_ok) {
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "\"%s\" is no backup of %s",
+                backup, path);
+    return FALSE;
+  }
+  char *dir = g_path_get_dirname(path);
+  char *src = g_build_filename(dir, backup, NULL);
+  g_free(dir);
+  char *text = NULL;
+  gboolean ok = g_file_get_contents(src, &text, NULL, error);
+  g_free(src);
+  if (ok) { ok = skim_hd_config_save(path, text, NULL, error); }
   g_free(text);
   return ok;
 }

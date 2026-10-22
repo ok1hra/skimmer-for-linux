@@ -43,8 +43,8 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   { "SKIM_FEED_CONFIRM", B }, { "SKIM_GATE_DICT_MIN", B }, { "SKIM_GATE_NEAR", B },
   { "SKIM_GATE_NEAR_DICT", B }, { "SKIM_GATE_NEAR_TTL", B },
   { "SKIM_GATE_SETTLE_NODICT", B }, { "SKIM_FEED_TRACE", D }, { "SKIM_GATE_NEAR_DEBUG", D },
-  /* MASTER.SCP */
-  { "SKIM_SCP_URL", S },
+  /* MASTER.SCP; the supervisor */
+  { "SKIM_SCP_URL", S }, { "SKIM_SUPERVISED", S },
 };
 
 #undef B

@@ -102,6 +102,32 @@ gboolean skim_hd_config_load(SkimHdConfig *cfg, const char *path, GError **error
 
 void skim_hd_config_clear(SkimHdConfig *cfg);
 
+/* ---- editing (the settings page) ---------------------------------------------- */
+
+/* The keys a settings form may set, "group.key" (bands: one "name=centre
+ * [modes]" per line, the whole [bands] group in receiver order). Everything
+ * else in the file — comments, the feed policy, the gate, [web] — stays. */
+extern const char *const SKIM_HD_EDITABLE[];
+
+/* The ini text with form's fields applied (a field not in the form keeps
+ * its value). NULL + error on a key that is not editable or a value with a
+ * line break. The result is NOT checked — skim_hd_config_parse() it. */
+char *skim_hd_config_apply_form(const char *text, gsize len, GHashTable *form,
+                                GError **error);
+
+/* Write text as the config at path, the current file first copied to
+ * <path>.bak-<UTC> (*backup: its name); at most SKIM_HD_BACKUPS kept. */
+#define SKIM_HD_BACKUPS 10
+gboolean skim_hd_config_save(const char *path, const char *text, char **backup,
+                             GError **error);
+
+/* The backups of path, newest first (basenames; free with g_strfreev). */
+char **skim_hd_config_backups(const char *path);
+
+/* Put backup (a basename from skim_hd_config_backups) back as the config;
+ * the current file becomes a backup itself, so a restore can be undone. */
+gboolean skim_hd_config_restore(const char *path, const char *backup, GError **error);
+
 /* "cw", "cw:deepcw,rtty", … — the band's modes as the ini writes them. */
 char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt);
 

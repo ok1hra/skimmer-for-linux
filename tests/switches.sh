@@ -9,7 +9,7 @@ set -euo pipefail
 
 HL=$1 ROOT=$2
 known=$("$HL" --list-switches | awk '{print $1}' | sort -u)
-read=$(grep -rhoE '"SKIM_[A-Z0-9_]+"' "$ROOT/src/engine" "$ROOT/src/headless" \
+read=$(grep -rhoE '"SKIM_[A-Z0-9_]+"' "$ROOT/src/engine" "$ROOT/src/headless" "$ROOT/src/headless_main.c" \
          --include='*.c' --exclude=switches.c | tr -d '"' | sort -u)
 missing=$(comm -13 <(echo "$known") <(echo "$read"))
 stale=$(comm -23 <(echo "$known") <(echo "$read"))

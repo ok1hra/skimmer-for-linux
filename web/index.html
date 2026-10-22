@@ -22,8 +22,10 @@
   </nav>
 </header>
 
+<div id="overlay" hidden><div><b id="overlay-text">Restarting…</b><p class="mut" id="overlay-sub"></p></div></div>
 <main>
   <section id="tab-status">
+    <div id="rollback" class="warnbox" hidden></div>
     <div id="tiles" class="tiles"></div>
     <div class="wrap"><table id="bands" class="grid"></table></div>
     <p class="mut note">decoders = channel decoders in the band · active = decoding running
@@ -68,7 +70,78 @@
   </section>
 
   <section id="tab-settings" hidden>
-    <p class="mut">Settings arrive with the next update.</p>
+    <div id="set-lock" class="warnbox" hidden></div>
+    <div id="set-error" class="warnbox" hidden></div>
+    <form id="settings" autocomplete="off">
+      <div class="set-grid">
+        <fieldset>
+          <legend>Radio</legend>
+          <label>Source <select name="radio.type">
+            <option value="hpsdr-p1">Red Pitaya (HPSDR P1)</option>
+            <option value="mock">mock — synthetic CW, no radio</option></select></label>
+          <label class="wide">Hosts <input name="radio.host" placeholder="192.168.1.21@3.81, 192.168.1.71">
+            <small>tried in order, the first idle one is used; host@ppm = that radio's clock correction</small></label>
+          <label>Rate <select name="radio.rate">
+            <option value="48000">48 kHz</option><option value="96000">96 kHz</option>
+            <option value="192000">192 kHz</option></select></label>
+          <label>Clock ppm <input name="radio.clock_ppm" inputmode="decimal" placeholder="0">
+            <small>for the hosts without @ppm</small></label>
+        </fieldset>
+        <fieldset>
+          <legend>Decoding</legend>
+          <label>CW engine <select name="decode.engine">
+            <option value="v2">v2 (classical)</option><option value="deepcw">DeepCW (neural)</option></select>
+            <small>for the bands that do not name one</small></label>
+          <label class="check"><input type="checkbox" name="decode.log"> raw decode logs per band</label>
+        </fieldset>
+        <fieldset>
+          <legend>Telnet feed</legend>
+          <label>Call <input name="feed.call" placeholder="YOURCALL"></label>
+          <label>Port <input name="feed.port" inputmode="numeric" placeholder="7300">
+            <small>0 = off</small></label>
+        </fieldset>
+        <fieldset>
+          <legend>Status</legend>
+          <label>Console every <input name="status.console_s" inputmode="numeric" placeholder="10">
+            <small>seconds, 0 = quiet</small></label>
+          <label>Web port <input name="status.http_port" inputmode="numeric" placeholder="8073">
+            <small>this page moves with it</small></label>
+        </fieldset>
+      </div>
+      <fieldset>
+        <legend>Bands <span class="mut" id="band-count"></span></legend>
+        <div class="wrap"><table class="grid bands-edit">
+          <thead><tr><th>RX</th><th>name</th><th>centre kHz</th><th>CW</th><th>engine</th><th>RTTY</th><th></th></tr></thead>
+          <tbody id="band-rows"></tbody>
+        </table></div>
+        <button type="button" id="band-add" class="small">Add band</button>
+        <small class="mut">one receiver per band, in this order; with 96 kHz a band spans its centre ± 48 kHz</small>
+      </fieldset>
+      <fieldset>
+        <legend>Recording raw IQ</legend>
+        <div class="set-grid">
+          <label>Bands <input name="record.bands" placeholder="20m, 40m"><small>empty = off</small></label>
+          <label>Minutes <input name="record.minutes" inputmode="decimal" placeholder="10"></label>
+          <label>Directory <input name="record.dir" placeholder="/var/tmp/skimmer-iq"></label>
+          <label>Start (UTC) <input name="record.start_utc" placeholder="HH:MM"><small>empty = at once</small></label>
+        </div>
+      </fieldset>
+      <div class="actions">
+        <button type="submit" id="set-save" class="primary">Save and restart</button>
+        <button type="button" id="set-reset">Discard changes</button>
+        <button type="button" id="set-restart">Restart</button>
+        <span id="set-msg" class="mut"></span>
+      </div>
+    </form>
+    <details class="more">
+      <summary>Not editable here — set in the config file or by a start switch</summary>
+      <dl class="kv" id="set-ro"></dl>
+      <p class="mut note" id="set-path"></p>
+    </details>
+    <details class="more">
+      <summary>Earlier configs</summary>
+      <div class="wrap"><table class="grid" id="set-baks"></table></div>
+    </details>
   </section>
 
   <section id="tab-log" hidden>

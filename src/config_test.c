@@ -152,6 +152,88 @@ int main(void) {
     }
   }
 
+  printf("== the settings page: edit, save, back up, restore\n");
+  {
+    char *dir = g_dir_make_tmp("skim-edit-XXXXXX", NULL);
+    char *path = g_build_filename(dir, "headless.ini", NULL);
+    static const char INI[] =
+        "# my skimmer\n[radio]\nhost=192.168.1.21\nrate=96000\n"
+        "[bands]\n160m=1845500\n40m=7045500\n"
+        "[feed]\ncall=OK1HRA\nport=7302\n# tuned live\nmin_score=0.90\ngate=g.ini\n"
+        "[web]\nsettings_from=127.0.0.1\n";
+    g_file_set_contents(path, INI, -1, NULL);
+    GHashTable *f = g_hash_table_new(g_str_hash, g_str_equal);
+    g_hash_table_insert(f, "radio.host", "192.168.1.21@3.81, 192.168.1.71");
+    g_hash_table_insert(f, "bands", "20m=14045500 cw,rtty\r\n\n40m = 7045500\n");
+    g_hash_table_insert(f, "feed.port", "7300");
+    GError *err = NULL;
+    char *out = skim_hd_config_apply_form(INI, strlen(INI), f, &err);
+    SkimHdConfig c;
+    const gboolean ok = out && skim_hd_config_parse(&c, out, strlen(out), path, &err);
+    check("the form applied parses", ok);
+    if (!ok) { printf("       (%s)\n", err ? err->message : "?"); }
+    check("hosts, port and the new band list (20m with RTTY, then 40m) taken",
+          ok && g_strv_length(c.hosts) == 2 && c.feed_port == 7300 && c.nb == 2 &&
+          strcmp(c.band[0].name, "20m") == 0 && c.band[0].rtty &&
+          strcmp(c.band[1].name, "40m") == 0);
+    check("what the form does not touch stays: call, policy, gate, settings_from, comments",
+          ok && strcmp(c.feed_call, "OK1HRA") == 0 && c.feed_min_score == 0.90 &&
+          g_str_has_suffix(c.feed_gate, "/g.ini") && strcmp(c.settings_from[0], "127.0.0.1") == 0 &&
+          strstr(out, "# my skimmer") && strstr(out, "# tuned live"));
+    skim_hd_config_clear(&c);
+    g_clear_error(&err);
+
+    GHashTable *bad = g_hash_table_new(g_str_hash, g_str_equal);
+    g_hash_table_insert(bad, "web.settings_from", "0.0.0.0/0");
+    char *no = skim_hd_config_apply_form(INI, strlen(INI), bad, &err);
+    check("refused: a key the page may not change (web.settings_from)",
+          !no && err && strstr(err->message, "web.settings_from"));
+    g_clear_error(&err);
+    g_hash_table_remove_all(bad);
+    g_hash_table_insert(bad, "feed.call", "OK1HRA\nport=1");
+    no = skim_hd_config_apply_form(INI, strlen(INI), bad, &err);
+    check("refused: a value with a line break (no key smuggled in)", !no && err);
+    g_clear_error(&err);
+    g_hash_table_unref(bad);
+
+    char *bak = NULL;
+    check("saved, the old file backed up", skim_hd_config_save(path, out, &bak, &err) && bak &&
+          g_str_has_prefix(bak, "headless.ini.bak-"));
+    char *now = NULL;
+    g_file_get_contents(path, &now, NULL, NULL);
+    check("the config is the new text", now && strcmp(now, out) == 0);
+    g_free(now);
+    char **list = skim_hd_config_backups(path);
+    check("one backup listed", g_strv_length(list) == 1 && strcmp(list[0], bak) == 0);
+    check("restore refuses a name that is no backup",
+          !skim_hd_config_restore(path, "../../etc/passwd", &err) && err);
+    g_clear_error(&err);
+    check("restore puts the backup back", skim_hd_config_restore(path, bak, &err));
+    g_file_get_contents(path, &now, NULL, NULL);
+    check("… the old text is the config again", now && strcmp(now, INI) == 0);
+    g_free(now);
+    g_strfreev(list);
+    list = skim_hd_config_backups(path);
+    check("… and the replaced one is a backup itself (two now)", g_strv_length(list) == 2);
+    g_strfreev(list);
+    for (int i = 0; i < 14; i++) { skim_hd_config_save(path, INI, NULL, NULL); }
+    list = skim_hd_config_backups(path);
+    check("at most 10 backups kept", g_strv_length(list) == SKIM_HD_BACKUPS);
+    for (char **x = list; *x; x++) {
+      char *p = g_build_filename(dir, *x, NULL);
+      g_remove(p);
+      g_free(p);
+    }
+    g_strfreev(list);
+    g_free(bak);
+    g_free(out);
+    g_hash_table_unref(f);
+    g_remove(path);
+    g_rmdir(dir);
+    g_free(path);
+    g_free(dir);
+  }
+
   printf("\n%s (%d of %d checks failed)\n", fails ? "FAIL" : "PASS", fails, checks);
   return fails ? 1 : 0;
 }
