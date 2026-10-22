@@ -1,5 +1,7 @@
 # Skimmer for Linux — headless multi-band skimmer
 
+<img src="docs/cw-skimmer.jpg" alt="Skimmer for Linux" width="100%">
+
 > **This is a fork.** It is maintained by Dan, OK1HRA, from
 > [OK1BR/skimmer-for-linux](https://github.com/OK1BR/skimmer-for-linux).
 > Skimmer for Linux is the work of Richard Fakenberg, OK1BR. The fork has
