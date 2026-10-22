@@ -22,10 +22,10 @@ def load_local(path):
         return []
     rate = cp.getint("radio", "rate", fallback=96000)
     out = []
-    for name, centre in cp.items("bands"):
-        try:
-            c = int(centre) / 1000.0
-        except ValueError:
+    for name, value in cp.items("bands"):
+        try:                       # "14045500" or "14045500 cw,rtty" (v0.7.0)
+            c = int(value.split()[0]) / 1000.0
+        except (ValueError, IndexError):
             continue
         out.append((name, c - rate / 2000.0, c + rate / 2000.0))
     return sorted(out, key=lambda w: w[1])
