@@ -70,6 +70,8 @@ hardware requirements low.*
   RTTY adds about 7.5 % of a core per band. The optional DeepCW decoder needs
   far more (about 3 % of a core per decoding channel).
 
+----
+
 > **This is a fork.** It is maintained by Dan, OK1HRA, from
 > [OK1BR/skimmer-for-linux](https://github.com/OK1BR/skimmer-for-linux).
 > Skimmer for Linux is the work of Richard Fakenberg, OK1BR; the fork has
