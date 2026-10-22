@@ -186,7 +186,6 @@ struct _SkimPipeline {
   SkimStationTable *stations;
   SkimSpotOut      *spots;
   SkimSpotOut      *rbn_spots;                 /* RBN policy → cfg.rbn feed  */
-  SkimDupQuery     *dupq;                      /* logbook dup verdicts       */
   double            rbn_min;
   guint             rbn_hearings;              /* feed gate: copies read     */
   gint64            rbn_settle_us;             /* feed hold-back; 0 = none   */
@@ -434,7 +433,6 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
   p->hits     = g_array_new(FALSE, FALSE, sizeof(Hit));
   /* Logbook dup lookup — pipeline-lifetime like the RBN memo: the verdict
    * cache rides out reconnects. Harmless when no logbook listens. */
-  p->dupq     = skim_dup_query_new();
   if (p->cfg.rbn) {
     /* Lives for the pipeline's whole life (not per-connection like the TCI
      * sink): the dedup memo rides out reconnects, no re-spot burst. */
@@ -558,7 +556,6 @@ void skim_pipeline_free(SkimPipeline *p) {
     }
     g_clear_pointer(&p->chdump, g_free);
   }
-  g_clear_pointer(&p->dupq, skim_dup_query_free);
   g_clear_pointer(&p->glog, skim_gatelog_close);
   g_clear_pointer(&p->fgate, skim_feed_gate_free);
   g_clear_pointer(&p->fgtrack, skim_feed_gate_track_free);
@@ -1602,14 +1599,6 @@ static gpointer engine_thread(gpointer data) {
     }
     rbn_settle_tick(p, now);
     tap_clock(p);
-    /* Logbook verdict flips (answers AND unsolicited "just logged him"
-     * pushes) repaint the live label at once — the operator must not wait
-     * out the 180 s re-announce to see a station turn gray. */
-    char dup_call[24];
-    SkimDupVerdict dup_v;
-    while (skim_dup_query_take_change(p->dupq, dup_call, &dup_v)) {
-      if (p->spots) { skim_spot_out_recolour(p->spots, dup_call, dup_v); }
-    }
   }
   return NULL;
 }
@@ -1657,7 +1646,6 @@ gboolean skim_pipeline_start(SkimPipeline *p, GError **error) {
   }
   p->spots = skim_spot_out_new(p->tci);        /* NULL: telnet/RBN sinks only */
   skim_spot_out_set_clock(p->spots, pipe_clock_cb, p);
-  skim_spot_out_set_dup_query(p->spots, p->dupq);
   if (p->dlog_path) {
     p->dlog = fopen(p->dlog_path, "a");
     if (p->dlog) {
@@ -1836,13 +1824,6 @@ void skim_pipeline_tune(SkimPipeline *p, double freq_hz) {
 void skim_pipeline_spot_clicked(SkimPipeline *p, const char *call,
                                 double freq_hz) {
   if (p->tci) { skim_tci_client_spot_clicked(p->tci, call, freq_hz); }
-}
-
-SkimDupVerdict skim_pipeline_dup_verdict(SkimPipeline *p, const char *call,
-                                         double freq_hz) {
-  /* wait 0: the GTK thread must never stall on the socket — a miss fires
-   * the request and the answer colours the next highlight pass. */
-  return skim_dup_query_lookup(p->dupq, call, freq_hz, pipe_mode_str(p), 0);
 }
 
 void skim_pipeline_set_spot_cq_only(SkimPipeline *p, gboolean cq_only) {

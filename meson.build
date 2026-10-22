@@ -54,7 +54,6 @@ engine_sources = [
   'src/engine/station.c',      # M5: per-frequency station tracker
   'src/engine/callsign.c',     # M4: extraction + validation
   'src/engine/spot_out.c',     # M5/M6: spot policy — dedup, rate, sinks
-  'src/engine/dup_query.c',    # logbook dup lookup (UDP 2238) → spot colour
   'src/engine/rbn_feed.c',     # M6: RBN telnet server (CW Skimmer dialect)
   'src/engine/pipeline.c',     # M5: the engine assembled end to end
   'src/engine/gatelog.c',      # feed-gate learning logs (decode tap + rows)
@@ -243,17 +242,6 @@ skimmer_feed_fold_test = executable('skimmer-feed-fold-test',
   link_with : engine_lib,
 )
 test('feed-fold', skimmer_feed_fold_test, timeout : 60)
-
-# Logbook dup lookup gate: mock log-for-linux UDP responder — verdict
-# round-trips (newline answers), silence→UNKNOWN, TTL cache, re-ask
-# suppression, and the shared verdict→colour rule.
-skimmer_dup_test = executable('skimmer-dup-test',
-  ['src/dup_test.c'],
-  include_directories : include_directories('src'),
-  dependencies : engine_deps,
-  link_with : engine_lib,
-)
-test('dup-lookup', skimmer_dup_test, timeout : 60)
 
 # M5: offline gate — station tracker units, spot policy units, and the WHOLE
 # pipeline over a real WebSocket against a mock TCI server (spots come back).

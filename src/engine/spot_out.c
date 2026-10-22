@@ -48,7 +48,6 @@ struct _SkimSpotOut {
   SkimNowFn now_fn;                            /* NULL → monotonic           */
   gpointer  now_user;
 
-  SkimDupQuery *dupq;                          /* not owned; NULL = no tint  */
 };
 
 static gint64 so_now(const SkimSpotOut *s) {
@@ -73,10 +72,6 @@ void skim_spot_out_free(SkimSpotOut *s) {
     return;
   g_hash_table_destroy(s->memo);
   g_free(s);
-}
-
-void skim_spot_out_set_dup_query(SkimSpotOut *s, SkimDupQuery *q) {
-  s->dupq = q;
 }
 
 void skim_spot_out_set_policy(SkimSpotOut *s, guint respot_s,
@@ -154,35 +149,11 @@ gboolean skim_spot_out_emit(SkimSpotOut *s, const char *call, const char *mode,
   if (s->tci) {
     char text[48];
     g_snprintf(text, sizeof(text), "%.0f dB", snr_db);
-    const SkimDupVerdict v = s->dupq
-        ? skim_dup_query_lookup(s->dupq, call, freq_hz, mode, 5)
-        : SKIM_DUP_UNKNOWN;
-    skim_tci_client_spot(s->tci, call, mode, out_hz,
-                         skim_spot_argb_for_dup(v), text);
+    skim_tci_client_spot(s->tci, call, mode, out_hz, SKIM_SPOT_ARGB, text);
   }
   if (s->sink) { s->sink(call, mode, out_hz, snr_db, speed, s->sink_user); }
   s->emitted++;
   return TRUE;
-}
-
-void skim_spot_out_recolour(SkimSpotOut *s, const char *call,
-                            SkimDupVerdict verdict) {
-  if (!s->tci || !call || !call[0])
-    return;
-  SpotMemo *m = g_hash_table_lookup(s->memo, call);
-  /* Only a label that is plausibly still on the panadapter (the radio keeps
-   * spots ~10 min) — repainting a long-gone station would re-plant it. */
-  if (!m || so_now(s) - m->at > 10 * 60 * (gint64)G_USEC_PER_SEC)
-    return;
-  /* Resend the STORED reported value — re-quantising from the raw memo
-   * here would undo the emit-side hysteresis on every repaint. */
-  const double out_hz = m->out_hz;
-  char text[48];
-  g_snprintf(text, sizeof(text), "%.0f dB", m->snr_db);
-  /* A refresh of an existing label, not a new spot: no dedup-memo touch, no
-   * token — the regular re-announce schedule stays as it was. */
-  skim_tci_client_spot(s->tci, call, m->mode, out_hz,
-                       skim_spot_argb_for_dup(verdict), text);
 }
 
 void skim_spot_out_delete(SkimSpotOut *s, const char *call) {

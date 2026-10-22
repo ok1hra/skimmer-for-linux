@@ -112,7 +112,7 @@ here; what was done and why is in git.
   runs up to 8 receivers (one pipeline per band, one telnet feed, console +
   web status). The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 16 gates** (DeepCW skips without the model, golden skips
+- **`meson test` = 15 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`). It does NOT relink
   every binary — `ninja -C builddir` first.
 - **The learned feed gate** is built in (`weights/feed-gate.ini`, GResource)

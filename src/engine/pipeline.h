@@ -13,7 +13,6 @@
 
 #include <glib.h>
 #include "decode.h"
-#include "dup_query.h"
 #include "feed_gate.h"
 #include "rbn_feed.h"
 #include "station.h"
@@ -25,7 +24,7 @@ G_BEGIN_DECLS
  * decode backend, the bank geometry (CW: 125 Hz channels; RTTY: 250 Hz
  * spacing with a wide ±225 Hz passband so both FSK tones of a station
  * anywhere between channel centres stay in one channel) and the mode string
- * on stations/spots/dup queries. */
+ * on stations and spots. */
 typedef enum {
   SKIM_PIPELINE_MODE_CW = 0,
   SKIM_PIPELINE_MODE_RTTY,
@@ -239,12 +238,6 @@ void   skim_pipeline_tune(SkimPipeline *p, double freq_hz);
  * user action only; a no-op while disconnected. */
 void   skim_pipeline_spot_clicked(SkimPipeline *p, const char *call,
                                   double freq_hz);
-
-/* The logbook's cached dup verdict for call (UNKNOWN when the logbook is
- * closed or has not answered yet). Never blocks — safe from the GTK thread;
- * the app tints the decode-pane highlight with it. */
-SkimDupVerdict skim_pipeline_dup_verdict(SkimPipeline *p, const char *call,
-                                         double freq_hz);
 
 /* Spot policy: when TRUE, only stations heard CALLING (CQ/TEST/QRZ context)
  * reach the spot sinks — S&P answers stay off the panadapter/RBN. The
