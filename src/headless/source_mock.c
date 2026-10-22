@@ -1,9 +1,12 @@
-/* source_mock.c — synthetic CW on every band, in real time ([radio]
- * type=mock). Not a radio: the headless gate runs the whole skimmer with it —
- * config, pipelines, feed, status — on a machine with no Red Pitaya.
+/* source_mock.c — synthetic CW (and RTTY) on every band, in real time
+ * ([radio] type=mock). Not a radio: the headless gate runs the whole
+ * skimmer with it — config, pipelines, feed, status — on a machine with no
+ * Red Pitaya.
  *
  * Each band carries one keyed tone MOCK_OFFSET_HZ above its centre: "CQ CQ
- * DE OK1MCK OK1MCK K" at MOCK_WPM, a pause, again — over a little noise.
+ * DE OK1MCK OK1MCK K" at MOCK_WPM, a pause, again — over a little noise. A
+ * band that decodes RTTY also gets "CQ CQ DE OK1RTY OK1RTY K" in 45.45 Bd
+ * FSK, 170 Hz shift, MOCK_RTTY_OFFSET_HZ from its centre (mark high).
  * Blocks leave at the wall-clock pace of the configured rate, so the feed's
  * settle timers (monotonic clock) see the same time as on air.
  *
@@ -22,6 +25,11 @@
 #define MOCK_AMP       0.05f
 #define MOCK_NOISE     0.004
 #define MOCK_BLOCK     1024             /* frames per block                  */
+#define MOCK_RTTY_CALL "OK1RTY"
+#define MOCK_RTTY_TEXT "CQ CQ DE " MOCK_RTTY_CALL " " MOCK_RTTY_CALL " K"
+#define MOCK_RTTY_OFFSET_HZ (-10000.0)
+#define MOCK_BAUD      45.45
+#define MOCK_SHIFT_HZ  170.0
 
 typedef struct {
   SkimIqSource  base;
@@ -30,6 +38,8 @@ typedef struct {
   gint          blocks;                 /* blocks sent (atomic)              */
   float        *env;                    /* one keyed message + pause         */
   guint         env_n;
+  float        *fsk;                    /* RTTY: one message + pause, IQ     */
+  guint         fsk_n;                  /* frames                            */
   char          state[160];
 } Mock;
 
@@ -79,6 +89,77 @@ static float *keyed(double rate, guint *n_out) {
   return out;
 }
 
+/* ITA2 letters (the figure shift only for digits) — mirrors decode_rtty.c */
+static const char ITA2_LTRS[32] = {
+  0,   'E', '\n', 'A', ' ', 'S', 'I', 'U', 0,   'D', 'R', 'J', 'N', 'F', 'C', 'K',
+  'T', 'Z', 'L',  'W', 'H', 'Y', 'P', 'Q', 'O', 'B', 'G', 0,   'M', 'X', 'V', 0,
+};
+static const char ITA2_FIGS[32] = {
+  0,   '3', '\n', '-', ' ', 0,   '8', '7', 0,   '$', '4', '\'', ',', '!', ':', '(',
+  '5', '"', ')',  '2', '#', '6', '0', '1', '9', '?', '&', 0,   '.', '/', ';', 0,
+};
+#define ITA2_FIGS_CODE 0x1B
+#define ITA2_LTRS_CODE 0x1F
+
+/* One character: start (space), 5 bits LSB first, 1.5 stop bits (mark). */
+static void fsk_code(GArray *bits, guint code) {
+  const gint8 start = 0, stop = 1;
+  g_array_append_val(bits, start);
+  for (guint k = 0; k < 5; k++) {
+    const gint8 b = (gint8)((code >> k) & 1u);
+    g_array_append_val(bits, b);
+  }
+  g_array_append_val(bits, stop);            /* 1.5: a half bit more, below  */
+  const gint8 half = 2;
+  g_array_append_val(bits, half);
+}
+
+/* The message in 45.45 Bd FSK as complex baseband at the offset: LTRS
+ * diddles first (the idle an op keys; both tones, so the pair finder locks),
+ * then the text, then MOCK_PAUSE_S of nothing. Continuous phase. */
+static float *fsk_iq(double rate, guint *n_out) {
+  GArray *bits = g_array_new(FALSE, FALSE, sizeof(gint8));
+  for (guint i = 0; i < 8; i++) { fsk_code(bits, ITA2_LTRS_CODE); }
+  gboolean figs = FALSE;
+  for (const char *c = MOCK_RTTY_TEXT; *c; c++) {
+    for (guint k = 1; k < 32; k++) {
+      const gboolean in_l = ITA2_LTRS[k] == *c, in_f = !in_l && ITA2_FIGS[k] == *c;
+      if (!in_l && !in_f) { continue; }
+      if (in_f && !figs) { fsk_code(bits, ITA2_FIGS_CODE); figs = TRUE; }
+      if (in_l && figs && *c != ' ') { fsk_code(bits, ITA2_LTRS_CODE); figs = FALSE; }
+      fsk_code(bits, k);
+      if (*c == ' ') { figs = FALSE; }            /* unshift on space         */
+      break;
+    }
+  }
+  for (guint i = 0; i < 3; i++) { fsk_code(bits, ITA2_LTRS_CODE); }
+  const double spb = rate / MOCK_BAUD;
+  GArray *iq = g_array_new(FALSE, FALSE, sizeof(float));
+  double phase = 0, t = 0;
+  guint n = 0;
+  gint8 last = 1;
+  for (guint i = 0; i < bits->len; i++) {
+    gint8 b = g_array_index(bits, gint8, i);
+    double len = spb;
+    if (b == 2) { b = last; len = spb / 2; }       /* the half stop bit        */
+    last = b;
+    const double f = MOCK_RTTY_OFFSET_HZ + (b ? 0.5 : -0.5) * MOCK_SHIFT_HZ;
+    const double dphi = 2.0 * G_PI * f / rate;
+    for (t += len; n < (guint)t; n++) {
+      const float re = (float)(MOCK_AMP * cos(phase)), im = (float)(MOCK_AMP * sin(phase));
+      g_array_append_val(iq, re);
+      g_array_append_val(iq, im);
+      phase = fmod(phase + dphi, 2.0 * G_PI);
+    }
+  }
+  const guint pause = (guint)(MOCK_PAUSE_S * rate);
+  const float zero = 0;
+  for (guint i = 0; i < 2 * pause; i++) { g_array_append_val(iq, zero); }
+  g_array_free(bits, TRUE);
+  *n_out = iq->len / 2;
+  return (float *)g_array_free(iq, FALSE);
+}
+
 static double gauss(GRand *r) {
   const double u = g_rand_double_range(r, 1e-12, 1.0), v = g_rand_double(r);
   return sqrt(-2.0 * log(u)) * cos(2.0 * G_PI * v);
@@ -92,7 +173,7 @@ static gpointer run(gpointer data) {
   float *iq = g_new(float, 2 * MOCK_BLOCK);
   double phase[SKIM_HD_MAX_BANDS] = { 0 };
   const double dphi = 2.0 * G_PI * MOCK_OFFSET_HZ / rate;
-  guint pos = 0;
+  guint pos = 0, fpos = 0;
   const gint64 t0 = g_get_monotonic_time();
   guint64 sent = 0;
   while (!g_atomic_int_get(&m->stop)) {
@@ -105,9 +186,18 @@ static gpointer run(gpointer data) {
         phase[b] = fmod(phase[b] + dphi, 2.0 * G_PI);
         if (++p == m->env_n) { p = 0; }
       }
+      if (c->band[b].rtty) {
+        guint q = fpos;
+        for (guint i = 0; i < MOCK_BLOCK; i++) {
+          iq[2 * i] += m->fsk[2 * q];
+          iq[2 * i + 1] += m->fsk[2 * q + 1];
+          if (++q == m->fsk_n) { q = 0; }
+        }
+      }
       m->base.iq_cb(b, iq, MOCK_BLOCK, rate, c->band[b].centre_hz, m->base.iq_user);
     }
     pos = (guint)(((guint64)pos + MOCK_BLOCK) % m->env_n);
+    fpos = (guint)(((guint64)fpos + MOCK_BLOCK) % m->fsk_n);
     sent += MOCK_BLOCK;
     g_atomic_int_inc(&m->blocks);
     const gint64 due = t0 + (gint64)((double)sent / rate * G_USEC_PER_SEC);
@@ -121,9 +211,12 @@ static gpointer run(gpointer data) {
 
 static void mock_start(SkimIqSource *s) {
   Mock *m = (Mock *)s;
+  gboolean rtty = FALSE;
+  for (guint b = 0; b < s->cfg->nb; b++) { rtty |= s->cfg->band[b].rtty; }
   g_snprintf(m->state, sizeof(m->state),
-             "streaming — mock: %u band%s of synthetic CW (%s, %.0f wpm)",
-             s->cfg->nb, s->cfg->nb == 1 ? "" : "s", MOCK_CALL, MOCK_WPM);
+             "streaming — mock: %u band%s of synthetic CW (%s, %.0f wpm)%s",
+             s->cfg->nb, s->cfg->nb == 1 ? "" : "s", MOCK_CALL, MOCK_WPM,
+             rtty ? " + RTTY (" MOCK_RTTY_CALL ")" : "");
   g_message("radio: %s", m->state);
   m->th = g_thread_new("mock-iq", run, m);
 }
@@ -146,6 +239,7 @@ static void mock_free(SkimIqSource *s) {
     g_thread_join(m->th);
   }
   g_free(m->env);
+  g_free(m->fsk);
   g_free(m);
 }
 
@@ -155,5 +249,6 @@ SkimIqSource *skim_iq_source_mock_new(const SkimHdConfig *cfg) {
   Mock *m = g_new0(Mock, 1);
   m->base.vt = &MOCK_VT;
   m->env = keyed(cfg->rate, &m->env_n);
+  m->fsk = fsk_iq(cfg->rate, &m->fsk_n);
   return &m->base;
 }

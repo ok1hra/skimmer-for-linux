@@ -33,6 +33,11 @@ streaming from unless told to (`--take-over`).
   Server (v0.6.0): IQ recorded beside live decoding was replayed and scored on
   the same antenna, and the winners became the defaults. Method, numbers and
   what was rejected: [`docs/LIVE-AIR.md`](docs/LIVE-AIR.md).
+- **RTTY** (45.45 Bd, 170 Hz shift) beside CW on the bands that ask for it
+  (`20m=14045500 cw,rtty`): a second pipeline on the same IQ, 250 Hz
+  channels, its spots on the same feed as `RTTY … 45 BPS` (`[feed]
+  rtty=false` keeps them off it). It costs about 7.5 % of one core per band
+  at 96 kHz.
 - **The RBN feed** sends only validated CQ calls that were read twice (or are
   in MASTER.SCP), settled in the station table, and were read lately. A
   **learned feed gate** (a logistic model over what the pipeline knew when it
@@ -43,8 +48,7 @@ streaming from unless told to (`--take-over`).
   IQ recordings (`[record]`), and `skimmer-compare/`, which scores the feed
   against another skimmer with the Reverse Beacon Network as the referee.
 
-RTTY decoding, a web page with settings and statistics, and an AppImage are
-being built.
+An AppImage and a systemd user service are being built.
 
 ## Build
 
@@ -92,12 +96,12 @@ rate=96000
 
 [bands]
 # name=centre Hz [modes], in receiver order (RX1 first), at most 8;
-# modes: cw (default), cw:v2, cw:deepcw, rtty (RTTY is not decoded yet)
+# modes: cw (default), cw:v2, cw:deepcw, rtty — e.g. 40m=7045500 cw,rtty
 160m=1845500
 80m=3545500
-40m=7045500
+40m=7045500 cw,rtty
 30m=10145500
-20m=14045500
+20m=14045500 cw,rtty
 17m=18113500
 15m=21045500
 

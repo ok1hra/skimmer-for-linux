@@ -50,6 +50,7 @@ int main(void) {
           c.feed_min_score == 0 && c.feed_fresh_s == 0 && !c.feed_gate && !c.feed_gate_mode);
     check("status 10 s / 8073, no recording",
           ok && c.console_s == 10 && c.http_port == 8073 && !c.rec_bands);
+    check("RTTY spots go to the feed unless told otherwise", ok && c.feed_rtty);
     skim_hd_config_clear(&c);
     g_remove(path);
     char *sub = g_path_get_dirname(path);
@@ -115,6 +116,11 @@ int main(void) {
     check("record: both bands, minutes 0 → 10, the default dir",
           ok && g_strv_length(c.rec_bands) == 2 && strcmp(c.rec_bands[1], "40m") == 0 &&
           c.rec_minutes == 10 && strcmp(c.rec_dir, "/var/tmp/skimmer-iq") == 0);
+    check("no rtty= in [feed]: RTTY on the feed", ok && c.feed_rtty);
+    skim_hd_config_clear(&c);
+    check("[feed] rtty=false keeps the feed CW only",
+          parse(&c, "[bands]\n20m=14045500 cw,rtty\n[feed]\nrtty=false\n", NULL) &&
+          !c.feed_rtty && c.band[0].rtty);
     skim_hd_config_clear(&c);
     check("type=mock is the synthetic source",
           parse(&c, "[radio]\ntype=mock\n[bands]\n20m=14045500\n", NULL) &&
@@ -137,6 +143,8 @@ int main(void) {
         "192.168.1.21@x" },
       { "an unknown radio type", "[radio]\ntype=soapy\n[bands]\n20m=14045500\n", "soapy" },
       { "an unknown [decode] engine", "[decode]\nengine=v9\n[bands]\n20m=14045500\n", "v9" },
+      { "[feed] rtty that is no boolean", "[bands]\n20m=14045500\n[feed]\nrtty=maybe\n",
+        "rtty: true or false" },
       { "not an ini", "[bands\n20m=1\n", "test.ini" },
     };
     for (guint i = 0; i < G_N_ELEMENTS(BAD); i++) {

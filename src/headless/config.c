@@ -45,6 +45,9 @@ static const char DEFAULT_CONFIG[] =
   "# band a decode tap in ~/.local/share/skimmer-for-linux/headless/learn —\n"
   "# skimmer-tap-replay turns it into the gate's rows (~80 MB/day/band raw)\n"
   "#learn=false\n"
+  "# the bands that decode RTTY spot it here too (\"45 BPS\"); false keeps the\n"
+  "# feed CW only and the RTTY spots on the web page\n"
+  "#rtty=true\n"
   "# the learned feed gate (skimmer-compare gate/learn.py) is built in; gate=FILE\n"
   "# runs another model (it must name every feature). gate_mode: shadow scores\n"
   "# every spot and only reports, on holds back the ones below its threshold,\n"
@@ -242,6 +245,15 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   h->feed_fold_s = opt_secs(kf, "fold_s");                   /* 0 = off      */
   h->feed_learn = g_key_file_has_key(kf, "feed", "learn", NULL) &&
                   g_key_file_get_boolean(kf, "feed", "learn", NULL);
+  h->feed_rtty = TRUE;
+  if (g_key_file_has_key(kf, "feed", "rtty", NULL)) {
+    GError *e = NULL;
+    h->feed_rtty = g_key_file_get_boolean(kf, "feed", "rtty", &e);
+    if (e) {
+      g_clear_error(&e);
+      return bad(error, path, "[feed] rtty: true or false");
+    }
+  }
   char *gate = g_key_file_get_string(kf, "feed", "gate", NULL);
   if (gate && g_strstrip(gate)[0]) {
     char *dir = g_path_get_dirname(path);          /* relative: next to the ini */
@@ -371,7 +383,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "radio.type", "radio.host", "radio.rate", "radio.clock_ppm",
   "bands",
   "decode.engine", "decode.log",
-  "feed.call", "feed.port",
+  "feed.call", "feed.port", "feed.rtty",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
   NULL,

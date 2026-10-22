@@ -27,7 +27,8 @@ and still has its TCI client.
   offline gate binary. The product layer is `src/headless/` +
   `src/headless_main.c`.
 - **The golden gate** (`meson test golden`, `tests/golden/`) replays recorded
-  real air through the whole engine with no `SKIM_*` switches. A refactor must
+  real air (CW, and RTTY from the JARTS contest) through the whole engine with
+  no `SKIM_*` switches. A refactor must
   leave it byte-identical; a deliberate behaviour change regenerates the
   reference (`--update`) in its own commit and says why.
 - **The channelizer is complex/phase-preserving and mode-agnostic** from the
@@ -109,8 +110,9 @@ here; what was done and why is in git.
 - **IQ sources: TCI, or HPSDR Protocol 1 direct** (Red Pitaya
   `sdr_receiver_hpsdr`, 48/96/192 kHz, clock ppm correction; the wire is
   RF-inverted and ingest conjugates — `docs/HPSDR-P1.md`). `skimmer-headless`
-  runs up to 8 receivers (one pipeline per band, one telnet feed, console +
-  web status). The FFTW planner is not thread-safe:
+  runs up to 8 receivers (one pipeline per band and mode — CW, and RTTY
+  beside it on the same IQ where `[bands]` says `rtty`; one telnet feed,
+  console + web status). RTTY spots skip the learned gate (a CW model). The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
 - **`meson test` = 19 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`). `headless-mock` runs

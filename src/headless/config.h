@@ -14,7 +14,8 @@
  *            with [decode] engine
  *   [decode] engine=v2|deepcw (the bands that name none), log=true|false
  *   [feed]   call, port (0 = off), min_score, min_hearings, settle_s,
- *            settle_nodict_s, fresh_s, fold_s, learn, gate, gate_mode
+ *            settle_nodict_s, fresh_s, fold_s, learn, gate, gate_mode,
+ *            rtty (RTTY spots on the feed too; default true)
  *   [status] console_s (0 = quiet), http_port (0 = no web page)
  *   [web]    settings_from — the addresses / networks that may change the
  *            settings from the web page (a.b.c.d, a.b.c.d/n, ::1), default
@@ -72,6 +73,7 @@ typedef struct {
   double           feed_fresh_s;
   double           feed_fold_s;
   gboolean         feed_learn;
+  gboolean         feed_rtty;         /* RTTY spots go to the feed too       */
   char            *feed_gate;         /* absolute path; NULL = built in      */
   char            *feed_gate_mode;    /* as written; NULL = not set          */
   /* [status] — -1 = not in the file */

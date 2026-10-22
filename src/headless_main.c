@@ -7,9 +7,11 @@
  *                    [--list-switches]
  *
  * An IQ source (headless/source.h — a Red Pitaya running sdr_receiver_hpsdr,
- * up to 8 receivers at once) feeds one engine pipeline per band
- * (SOURCE_EXTERNAL). Every pipeline's validated CQ spots go to ONE shared
- * telnet feed (cluster dialect — the CW Skimmer Server model). Status: a
+ * up to 8 receivers at once) feeds one engine pipeline per band and mode
+ * (SOURCE_EXTERNAL): CW, and RTTY beside it on the same IQ where the band
+ * asks for it ([bands] 20m=14045500 cw,rtty). Every pipeline's validated CQ
+ * spots go to ONE shared telnet feed (cluster dialect — the CW Skimmer
+ * Server model); [feed] rtty=false keeps RTTY off it. Status: a
  * table on stdout every few seconds and a small web page (+ /status.json).
  *
  * Config: ~/.config/skimmer-for-linux/headless.ini by default, written with
@@ -81,23 +83,40 @@ static double act_now(const Act *a, gint64 now) {
 #define EXIT_NO_RADIO    3
 #define EXIT_RESTART     75            /* the settings page asked for one     */
 
+/* The modes a band decodes, each its own pipeline on the band's IQ; the
+ * index is the stats mode (stats.h). */
+enum { M_CW = 0, M_RTTY = 1, M_N = SKIM_STATS_MODES };
+static const char *const MODE_KEY[M_N] = { "cw", "rtty" };
+
 typedef struct {
-  char          name[16];
-  double        centre_hz;
-  char          label[96];
-  SkimPipeline *p;
+  const char   *band;          /* the band's name                             */
+  guint         mode;          /* M_CW / M_RTTY                               */
+  double        bin_hz;        /* channel spacing: the active-decoder key     */
+  SkimPipeline *p;             /* NULL = the band does not decode this mode   */
   GMutex        lock;          /* engine-thread callbacks ↔ main loop         */
-  GHashTable   *active;        /* channel key → last text µs (gint64 *)       */
+  GHashTable   *active;        /* channel key → Act                           */
   GHashTable   *stations;      /* call → SkimStation copy                     */
-  guint64       frames_prev;   /* main loop: for kS/s                         */
-  double        ksps;
-  Rec          *rec;           /* [record]: this band's IQ tap, or NULL       */
   /* the minute's history (stats.h): under lock, from the engine thread */
   guint         appeared;      /* stations new in the table this minute       */
   GArray       *snr;           /* SNR of the minute's feed lines (float)      */
   /* main loop: the cumulative counters at the last minute's end */
   guint64       spots_prev, folded_prev, below_prev;
+} Dec;
+
+typedef struct {
+  char          name[16];
+  double        centre_hz;
+  char          label[96];
+  Dec           dec[M_N];
+  guint64       frames_prev;   /* main loop: for kS/s                         */
+  double        ksps;
+  Rec          *rec;           /* [record]: this band's IQ tap, or NULL       */
 } Band;
+
+/* A pipeline of the band — every one of them sees the same IQ. */
+static SkimPipeline *band_p(const Band *b) {
+  return b->dec[M_CW].p ? b->dec[M_CW].p : b->dec[M_RTTY].p;
+}
 
 typedef struct {
   SkimHdConfig cfg;
@@ -197,14 +216,14 @@ static gboolean gate_load(Hd *h, GError **error) {
 }
 
 static void text_cb(double freq_hz, const char *text, gpointer user) {
-  Band *b = user;
+  Dec *b = user;
   guint chars = 0;
   for (const char *c = text; *c; c++) {
     if (g_ascii_isalnum(*c) || *c == '/' || *c == '?') { chars++; }
   }
   if (!chars) { return; }
   const gint64 now = g_get_monotonic_time();
-  const gpointer key = GINT_TO_POINTER((gint)(freq_hz / 125.0 + 0.5));
+  const gpointer key = GINT_TO_POINTER((gint)(freq_hz / b->bin_hz + 0.5));
   g_mutex_lock(&b->lock);
   Act *a = g_hash_table_lookup(b->active, key);
   if (!a) {
@@ -218,7 +237,7 @@ static void text_cb(double freq_hz, const char *text, gpointer user) {
 }
 
 static void station_cb(const SkimStation *st, gpointer user) {
-  Band *b = user;
+  Dec *b = user;
   g_mutex_lock(&b->lock);
   SkimStation *copy = g_hash_table_lookup(b->stations, st->call);
   if (!copy) {
@@ -232,7 +251,7 @@ static void station_cb(const SkimStation *st, gpointer user) {
 
 /* Every line the feed puts out (engine thread): its SNR for the minute. */
 static void feed_cb(const SkimStation *st, gpointer user) {
-  Band *b = user;
+  Dec *b = user;
   const float v = (float)st->snr_db;
   g_mutex_lock(&b->lock);
   g_array_append_val(b->snr, v);
@@ -240,16 +259,16 @@ static void feed_cb(const SkimStation *st, gpointer user) {
 }
 
 static void gone_cb(const SkimStation *st, gpointer user) {
-  Band *b = user;
+  Dec *b = user;
   g_mutex_lock(&b->lock);
   g_hash_table_remove(b->stations, st->call);
   g_mutex_unlock(&b->lock);
 }
 
 static void state_cb(gboolean connected, const char *detail, gpointer user) {
-  Band *b = user;
+  Dec *b = user;
   if (connected && detail && strstr(detail, "channels")) {
-    g_message("%s: %s", b->name, detail);      /* the bank got sized          */
+    g_message("%s %s: %s", b->band, MODE_KEY[b->mode], detail);  /* bank sized */
   }
 }
 
@@ -258,7 +277,9 @@ static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double cent
                      gpointer user) {
   Band *b = &((Hd *)user)->band[i];
   if (b->rec) { skim_rec_push(b->rec, iq, n, rate, centre); }
-  skim_pipeline_push(b->p, iq, n, rate, centre);
+  for (guint k = 0; k < M_N; k++) {
+    if (b->dec[k].p) { skim_pipeline_push(b->dec[k].p, iq, n, rate, centre); }
+  }
 }
 
 /* ---- status ---------------------------------------------------------------------- */
@@ -284,7 +305,9 @@ typedef struct {
   guint64 spots, drops;
 } BandStat;
 
-static void band_stat(Band *b, BandStat *s) {
+static void band_stat(Dec *b, BandStat *s) {
+  memset(s, 0, sizeof(*s));
+  if (!b->p) { return; }
   const gint64 now = g_get_monotonic_time();
   s->channels = skim_pipeline_channels(b->p);
   s->spots = skim_pipeline_rbn_spots(b->p);
@@ -312,7 +335,7 @@ static gint station_newest_first(gconstpointer a, gconstpointer b) {
 }
 
 /* The band's stations newest first (copies; caller frees the array). */
-static GPtrArray *band_recent(Band *b, guint max) {
+static GPtrArray *band_recent(Dec *b, guint max) {
   GPtrArray *all = g_ptr_array_new_with_free_func(g_free);
   g_mutex_lock(&b->lock);
   GHashTableIter it;
@@ -327,11 +350,47 @@ static GPtrArray *band_recent(Band *b, guint max) {
   return all;
 }
 
+/* The pipeline the feed policy is read from: any that feeds (one policy
+ * for all). */
+static SkimPipeline *feed_pipeline(const Hd *h) {
+  if (!h->feed) { return NULL; }
+  for (guint i = 0; i < h->nb; i++) {
+    if (h->band[i].dec[M_CW].p) { return h->band[i].dec[M_CW].p; }
+  }
+  return h->cfg.feed_rtty && h->nb ? h->band[0].dec[M_RTTY].p : NULL;
+}
+
+/* One mode of a band as JSON fields (no braces): what decodes it, its
+ * counters and its newest stations. A mode not decoded gives zeros. */
+static void dec_json(GString *json, Dec *d, gint64 now) {
+  BandStat s;
+  band_stat(d, &s);
+  g_string_append_printf(json,
+      "\"engine\":\"%s\",\"decoders\":%u,\"active\":%u,\"stations\":%u,"
+      "\"spots\":%" G_GUINT64_FORMAT ",\"drops\":%" G_GUINT64_FORMAT ",\"recent\":[",
+      d->p ? skim_pipeline_cw_engine_name(d->p) : "", s.channels, s.active, s.stations,
+      s.spots, s.drops);
+  GPtrArray *rec = d->p ? band_recent(d, RECENT_STATIONS) : g_ptr_array_new();
+  for (guint k = 0; k < rec->len; k++) {
+    const SkimStation *st = rec->pdata[k];
+    char *jcall = skim_json_str(st->call);
+    /* wpm: the CW speed, or the RTTY baud rate */
+    g_string_append_printf(json,
+        "%s{\"call\":\"%s\",\"freq_hz\":%.0f,\"wpm\":%.0f,\"snr_db\":%.0f,"
+        "\"cq\":%s,\"age_s\":%" G_GINT64_FORMAT "}",
+        k ? "," : "", jcall, st->freq_hz, st->speed, st->snr_db,
+        st->cq ? "true" : "false", (now - st->last_heard) / G_USEC_PER_SEC);
+    g_free(jcall);
+  }
+  g_string_append_c(json, ']');
+  g_ptr_array_unref(rec);
+}
+
 static void status_build(Hd *h, gboolean print) {
   const gint64 now = g_get_monotonic_time();
   const SkimIqSourceStatus *src = &h->src_st;
   const guint64 lost = src->lost_frames;
-  guint64 frames0 = h->nb ? skim_pipeline_frames(h->band[0].p) : 0;
+  guint64 frames0 = h->nb ? skim_pipeline_frames(band_p(&h->band[0])) : 0;
   const double lost_pct = frames0 ? 100.0 * (double)lost / (double)frames0 : 0;
   const guint fclients = h->feed ? skim_rbn_feed_clients(h->feed) : 0;
   const guint64 flines = h->feed ? skim_rbn_feed_lines(h->feed) : 0;
@@ -346,7 +405,7 @@ static void status_build(Hd *h, gboolean print) {
   g_string_append_printf(con,
       "── %s · %s · lost %.2f %% · %.0f pkt/s · CPU %.0f %% · feed :%d %u client%s, "
       "%" G_GUINT64_FORMAT " lines · dict %u · up %" G_GINT64_FORMAT ":%02d\n"
-      "   band     centre kHz   span kHz        decoders  active  stations  spots  drops  kS/s\n",
+      "   band  mode  centre kHz   span kHz        decoders  active  stations  spots  drops  kS/s\n",
       clock, src->state, lost_pct, h->pps, h->cpu_pct, h->feed ? h->cfg.feed_port : 0,
       fclients, fclients == 1 ? "" : "s", flines, (guint)skim_callsign_dict_size(),
       up_s / 3600, (int)(up_s / 60 % 60));
@@ -356,22 +415,27 @@ static void status_build(Hd *h, gboolean print) {
   char *jhost = skim_json_str(src->host);
   /* the decoder that actually runs (deepcw falls back to cw-v2 without its
    * runtime or model) — a feed comparison needs to know which one spotted */
-  const char *engine = h->nb && h->band[0].p ? skim_pipeline_cw_engine_name(h->band[0].p) : "";
+  const char *engine = "";
+  for (guint i = 0; i < h->nb && !engine[0]; i++) {
+    if (h->band[i].dec[M_CW].p) { engine = skim_pipeline_cw_engine_name(h->band[i].dec[M_CW].p); }
+  }
   /* the feed policy that let the spots out — a comparison before and after
    * a policy change must be able to tell the two apart */
   double pol_score = 0, pol_settle = 0, pol_fresh = 0, pol_fold = 0, pol_nd = 0;
   guint pol_hear = 0;
   guint64 folded = 0;
-  if (h->feed && h->nb && h->band[0].p) {
-    skim_pipeline_rbn_policy(h->band[0].p, &pol_score, &pol_hear, &pol_settle,
-                             &pol_fresh);
-    skim_pipeline_rbn_fold(h->band[0].p, &pol_fold, NULL);
+  SkimPipeline *fp = feed_pipeline(h);
+  if (fp) {
+    skim_pipeline_rbn_policy(fp, &pol_score, &pol_hear, &pol_settle, &pol_fresh);
+    skim_pipeline_rbn_fold(fp, &pol_fold, NULL);
     for (guint i = 0; i < h->nb; i++) {
-      guint64 n = 0;
-      if (h->band[i].p) { skim_pipeline_rbn_fold(h->band[i].p, NULL, &n); }
-      folded += n;
+      for (guint k = 0; k < M_N; k++) {
+        guint64 n = 0;
+        if (h->band[i].dec[k].p) { skim_pipeline_rbn_fold(h->band[i].dec[k].p, NULL, &n); }
+        folded += n;
+      }
     }
-    pol_nd = skim_pipeline_rbn_settle_nodict(h->band[0].p);
+    pol_nd = skim_pipeline_rbn_settle_nodict(fp);
   }
   /* the learned gate: what it held back (on) or would have (shadow) */
   const char *fg_id = NULL;
@@ -379,8 +443,8 @@ static void status_build(Hd *h, gboolean print) {
   guint64 fg_spots = 0, fg_below = 0;
   for (guint i = 0; i < h->nb; i++) {
     guint64 n = 0, k = 0;
-    const char *id = h->band[i].p ? skim_pipeline_feed_gate_stats(h->band[i].p, &fg_thr,
-                                                                  &n, &k) : NULL;
+    SkimPipeline *cw = h->band[i].dec[M_CW].p;          /* RTTY has no gate */
+    const char *id = cw ? skim_pipeline_feed_gate_stats(cw, &fg_thr, &n, &k) : NULL;
     if (id) { fg_id = id; }
     fg_spots += n;
     fg_below += k;
@@ -400,12 +464,12 @@ static void status_build(Hd *h, gboolean print) {
       "\"settle_nodict_s\":%.1f,"
       "\"fresh_s\":%.1f,\"fold_s\":%.1f,\"folded\":%" G_GUINT64_FORMAT "},"
       "\"feed_gate\":%s,\"switches\":%s,"
-      "\"feed_port\":%d,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
+      "\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
       h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_nd, pol_fresh,
       pol_fold, folded, jgate, h->switches_json,
-      h->feed ? h->cfg.feed_port : 0, fclients, flines,
+      h->feed ? h->cfg.feed_port : 0, h->cfg.feed_rtty ? "true" : "false", fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
   g_free(jgate);
@@ -413,38 +477,37 @@ static void status_build(Hd *h, gboolean print) {
 
   for (guint i = 0; i < h->nb; i++) {
     Band *b = &h->band[i];
-    BandStat s;
-    band_stat(b, &s);
     const double lo = (b->centre_hz - h->cfg.rate / 2.0) / 1000.0;
     const double hi = (b->centre_hz + h->cfg.rate / 2.0) / 1000.0;
-    g_string_append_printf(con,
-        "   %-6s %11.1f   %8.0f–%-8.0f %6u  %6u  %8u  %5" G_GUINT64_FORMAT
-        "  %5" G_GUINT64_FORMAT "  %4.0f\n",
-        b->name, b->centre_hz / 1000.0, lo, hi, s.channels, s.active, s.stations,
-        s.spots, s.drops, b->ksps);
-    char *jname = skim_json_str(b->name);
-    g_string_append_printf(json,
-        "%s{\"band\":\"%s\",\"centre_hz\":%.0f,\"engine\":\"%s\",\"decoders\":%u,\"active\":%u,"
-        "\"stations\":%u,\"spots\":%" G_GUINT64_FORMAT ",\"drops\":%" G_GUINT64_FORMAT
-        ",\"ksps\":%.1f,\"recent\":[",
-        i ? "," : "", jname, b->centre_hz, skim_pipeline_cw_engine_name(b->p),
-        s.channels, s.active, s.stations,
-        s.spots, s.drops, b->ksps);
-    g_free(jname);
-
-    GPtrArray *rec = band_recent(b, RECENT_STATIONS);
-    for (guint k = 0; k < rec->len; k++) {
-      const SkimStation *st = rec->pdata[k];
-      char *jcall = skim_json_str(st->call);
-      g_string_append_printf(json,
-          "%s{\"call\":\"%s\",\"freq_hz\":%.0f,\"wpm\":%.0f,\"snr_db\":%.0f,"
-          "\"cq\":%s,\"age_s\":%" G_GINT64_FORMAT "}",
-          k ? "," : "", jcall, st->freq_hz, st->speed, st->snr_db,
-          st->cq ? "true" : "false", (now - st->last_heard) / G_USEC_PER_SEC);
-      g_free(jcall);
+    for (guint k = 0; k < M_N; k++) {
+      Dec *d = &b->dec[k];
+      if (!d->p) { continue; }
+      BandStat s;
+      band_stat(d, &s);
+      g_string_append_printf(con,
+          "   %-5s %-4s %11.1f   %8.0f–%-8.0f %6u  %6u  %8u  %5" G_GUINT64_FORMAT
+          "  %5" G_GUINT64_FORMAT "  %4.0f\n",
+          b->name, MODE_KEY[k], b->centre_hz / 1000.0, lo, hi, s.channels, s.active,
+          s.stations, s.spots, s.drops, b->ksps);
     }
-    g_string_append(json, "]}");
-    g_ptr_array_unref(rec);
+    /* The band's CW at the top level (what skimmer-compare and older pages
+     * read; zeros when the band decodes RTTY only), its RTTY in "rtty". */
+    char *jname = skim_json_str(b->name);
+    g_string_append_printf(json, "%s{\"band\":\"%s\",\"centre_hz\":%.0f,\"ksps\":%.1f,"
+                           "\"cw\":%s,",
+                           i ? "," : "", jname, b->centre_hz, b->ksps,
+                           b->dec[M_CW].p ? "true" : "false");
+    g_free(jname);
+    dec_json(json, &b->dec[M_CW], now);
+    g_string_append(json, ",\"rtty\":");
+    if (b->dec[M_RTTY].p) {
+      g_string_append_c(json, '{');
+      dec_json(json, &b->dec[M_RTTY], now);
+      g_string_append_c(json, '}');
+    } else {
+      g_string_append(json, "null");
+    }
+    g_string_append_c(json, '}');
   }
   g_string_append(json, "]}");
   g_free(clock);
@@ -478,32 +541,35 @@ static void stats_minute(Hd *h) {
     }
   }
   for (guint i = 0; i < h->nb && i < SKIM_STATS_BANDS; i++) {
-    Band *b = &h->band[i];
-    BandStat bs;
-    band_stat(b, &bs);
-    guint64 folded = 0, gspots = 0, below = 0;
-    skim_pipeline_rbn_fold(b->p, NULL, &folded);
-    skim_pipeline_feed_gate_stats(b->p, NULL, &gspots, &below);
-    float *v = m.band[i][0];
-    v[SKIM_SM_SPOTS] = (float)(bs.spots - b->spots_prev);
-    v[SKIM_SM_FOLDED] = (float)(folded - b->folded_prev);
-    v[SKIM_SM_GATE_BELOW] = (float)(below - b->below_prev);
-    v[SKIM_SM_ACTIVE] = (float)bs.active;
-    b->spots_prev = bs.spots;
-    b->folded_prev = folded;
-    b->below_prev = below;
-    g_mutex_lock(&b->lock);
-    v[SKIM_SM_STATIONS] = (float)b->appeared;
-    b->appeared = 0;
-    if (b->snr->len) {
-      g_array_sort(b->snr, float_cmp);
-      v[SKIM_SM_SNR] = g_array_index(b->snr, float, b->snr->len / 2);
-      g_array_set_size(b->snr, 0);
+    for (guint k = 0; k < M_N; k++) {
+      Dec *b = &h->band[i].dec[k];
+      if (!b->p) { continue; }                 /* stays NaN: not decoded      */
+      BandStat bs;
+      band_stat(b, &bs);
+      guint64 folded = 0, gspots = 0, below = 0;
+      skim_pipeline_rbn_fold(b->p, NULL, &folded);
+      skim_pipeline_feed_gate_stats(b->p, NULL, &gspots, &below);
+      float *v = m.band[i][k];
+      v[SKIM_SM_SPOTS] = (float)(bs.spots - b->spots_prev);
+      v[SKIM_SM_FOLDED] = (float)(folded - b->folded_prev);
+      v[SKIM_SM_GATE_BELOW] = (float)(below - b->below_prev);
+      v[SKIM_SM_ACTIVE] = (float)bs.active;
+      b->spots_prev = bs.spots;
+      b->folded_prev = folded;
+      b->below_prev = below;
+      g_mutex_lock(&b->lock);
+      v[SKIM_SM_STATIONS] = (float)b->appeared;
+      b->appeared = 0;
+      if (b->snr->len) {
+        g_array_sort(b->snr, float_cmp);
+        v[SKIM_SM_SNR] = g_array_index(b->snr, float, b->snr->len / 2);
+        g_array_set_size(b->snr, 0);
+      }
+      g_mutex_unlock(&b->lock);
     }
-    g_mutex_unlock(&b->lock);
   }
   const SkimIqSourceStatus *src = &h->src_st;
-  const guint64 frames = h->nb ? skim_pipeline_frames(h->band[0].p) : 0;
+  const guint64 frames = h->nb ? skim_pipeline_frames(band_p(&h->band[0])) : 0;
   const guint64 df = frames - h->min_frames_prev, dl = src->lost_frames - h->min_lost_prev;
   m.glob[SKIM_SG_CPU] = (float)h->cpu_pct;
   m.glob[SKIM_SG_LOST] = df + dl && src->lost_frames >= h->min_lost_prev
@@ -544,7 +610,7 @@ static gboolean tick(gpointer data) {
                ? (double)(pk - h->packets_prev) : 0;
   h->packets_prev = pk;
   for (guint i = 0; i < h->nb; i++) {
-    const guint64 fr = skim_pipeline_frames(h->band[i].p);
+    const guint64 fr = skim_pipeline_frames(band_p(&h->band[i]));
     h->band[i].ksps = h->band[i].frames_prev ? (fr - h->band[i].frames_prev) / 1000.0 : 0;
     h->band[i].frames_prev = fr;
   }
@@ -822,6 +888,60 @@ static gboolean on_signal(gpointer user) {
   return G_SOURCE_REMOVE;
 }
 
+/* Start one mode of a band: its pipeline on the band's IQ, its logs (the
+ * CW ones keep their old names, RTTY's carry "-rtty"). learndir NULL = no
+ * tap. RTTY spots the feed only with [feed] rtty, and never through the
+ * learned gate — its model knows CW. */
+static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const char *logdir,
+                          const char *day, const char *learndir, const char *start,
+                          GError **error) {
+  const SkimHdConfig *c = &h->cfg;
+  Dec *d = &b->dec[k];
+  const gboolean rtty = k == M_RTTY;
+  const char *sfx = rtty ? "-rtty" : "";
+  d->band = b->name;
+  d->mode = k;
+  d->bin_hz = rtty ? 250.0 : 125.0;
+  g_mutex_init(&d->lock);
+  d->active = g_hash_table_new_full(NULL, NULL, NULL, g_free);
+  d->stations = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+  d->snr = g_array_new(FALSE, FALSE, sizeof(float));
+  char *dlog = c->decode_log ? g_strdup_printf("%s/decodes-%s%s-%s.log", logdir, b->name,
+                                               sfx, day)
+                             : NULL;
+  char *tap = learndir ? g_strdup_printf("%s/tap-%s%s-%s.log", learndir, b->name, sfx, start)
+                       : NULL;
+  SkimPipelineConfig pc = {
+    .source = SKIM_PIPELINE_SOURCE_EXTERNAL,
+    .host = b->label,
+    .iq_rate = c->rate,
+    .center_hz = b->centre_hz,
+    .mode = rtty ? SKIM_PIPELINE_MODE_RTTY : SKIM_PIPELINE_MODE_CW,
+    .cw_engine = cb->cw_engine,
+    .decode_log_path = dlog,
+    .rbn = rtty && !c->feed_rtty ? NULL : h->feed,
+    .rbn_min_score = c->feed_min_score,
+    .rbn_min_hearings = c->feed_min_hearings,
+    .rbn_settle_s = c->feed_settle_s,
+    .rbn_settle_nodict_s = c->feed_settle_nodict_s,
+    .rbn_fresh_s = c->feed_fresh_s,
+    .rbn_fold_s = c->feed_fold_s,
+    .tap_path = tap,
+    .feed_gate = rtty ? NULL : h->gate,
+    .feed_gate_on = gate_on(h),
+    .band = b->name,
+  };
+  d->p = skim_pipeline_new(&pc);
+  g_free(dlog);
+  g_free(tap);
+  skim_pipeline_set_text_cb(d->p, text_cb, d);
+  skim_pipeline_set_station_cb(d->p, station_cb, d);
+  skim_pipeline_set_station_gone_cb(d->p, gone_cb, d);
+  skim_pipeline_set_feed_cb(d->p, feed_cb, d);
+  skim_pipeline_set_state_cb(d->p, state_cb, d);
+  return skim_pipeline_start(d->p, error);
+}
+
 int main(int argc, char **argv) {
   skim_log_ring_install();
   Hd *h = g_new0(Hd, 1);
@@ -904,8 +1024,9 @@ int main(int argc, char **argv) {
              c->band[i].centre_hz / 1000.0, m);
       g_free(m);
     }
-    printf("  feed   %s port %d\n  gate   %s, %s\n",
+    printf("  feed   %s port %d, %s\n  gate   %s, %s (CW)\n",
            c->feed_call && c->feed_call[0] ? c->feed_call : "(no call)", c->feed_port,
+           c->feed_rtty ? "CW and RTTY" : "CW only",
            h->gate_id ? h->gate_id : "none", h->feed_gate_mode);
     return 0;
   }
@@ -963,54 +1084,14 @@ int main(int argc, char **argv) {
     const SkimHdBand *cb = &c->band[i];
     g_strlcpy(b->name, cb->name, sizeof(b->name));
     b->centre_hz = cb->centre_hz;
-    if (cb->rtty) {
-      g_warning("band %s: RTTY decoding is not in skimmer-headless yet — "
-                "decoding CW only", b->name);
-    }
-    if (!cb->cw) {
-      g_printerr("band %s: no CW — RTTY alone is not in skimmer-headless yet\n", b->name);
-      return EXIT_CONFIG;
-    }
-    g_mutex_init(&b->lock);
-    b->active = g_hash_table_new_full(NULL, NULL, NULL, g_free);
-    b->stations = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     g_snprintf(b->label, sizeof(b->label), "RX%u %s", i + 1, b->name);
-    char *dlog = c->decode_log ? g_strdup_printf("%s/decodes-%s-%s.log", logdir, b->name, day)
-                               : NULL;
-    char *tap = c->feed_learn ? g_strdup_printf("%s/tap-%s-%s.log", learndir, b->name, start)
-                              : NULL;
-    SkimPipelineConfig pc = {
-      .source = SKIM_PIPELINE_SOURCE_EXTERNAL,
-      .host = b->label,
-      .iq_rate = c->rate,
-      .center_hz = b->centre_hz,
-      .mode = SKIM_PIPELINE_MODE_CW,
-      .cw_engine = cb->cw_engine,
-      .decode_log_path = dlog,
-      .rbn = h->feed,
-      .rbn_min_score = c->feed_min_score,
-      .rbn_min_hearings = c->feed_min_hearings,
-      .rbn_settle_s = c->feed_settle_s,
-      .rbn_settle_nodict_s = c->feed_settle_nodict_s,
-      .rbn_fresh_s = c->feed_fresh_s,
-      .rbn_fold_s = c->feed_fold_s,
-      .tap_path = tap,
-      .feed_gate = h->gate,
-      .feed_gate_on = gate_on(h),
-      .band = b->name,
-    };
-    b->p = skim_pipeline_new(&pc);
-    g_free(dlog);
-    g_free(tap);
-    skim_pipeline_set_text_cb(b->p, text_cb, b);
-    skim_pipeline_set_station_cb(b->p, station_cb, b);
-    skim_pipeline_set_station_gone_cb(b->p, gone_cb, b);
-    skim_pipeline_set_feed_cb(b->p, feed_cb, b);
-    b->snr = g_array_new(FALSE, FALSE, sizeof(float));
-    skim_pipeline_set_state_cb(b->p, state_cb, b);
-    if (!skim_pipeline_start(b->p, &err)) {
-      g_printerr("pipeline %s: %s\n", b->name, err->message);
-      return 1;
+    for (guint k = 0; k < M_N; k++) {
+      if (k == M_CW ? !cb->cw : !cb->rtty) { continue; }
+      if (!dec_start(h, b, k, cb, logdir, day, c->feed_learn ? learndir : NULL, start,
+                     &err)) {
+        g_printerr("pipeline %s %s: %s\n", b->name, MODE_KEY[k], err->message);
+        return 1;
+      }
     }
   }
   if (c->feed_learn) { g_message("learn: decode tap in %s", learndir); }
@@ -1050,14 +1131,18 @@ int main(int argc, char **argv) {
     }
   }
   for (guint i = 0; i < h->nb; i++) {
-    g_message("decode: %s CW, engine %s", h->band[i].name,
-              skim_pipeline_cw_engine_name(h->band[i].p));
+    const Band *b = &h->band[i];
+    g_message("decode: %s%s%s%s%s", b->name, b->dec[M_CW].p ? " CW, engine " : "",
+              b->dec[M_CW].p ? skim_pipeline_cw_engine_name(b->dec[M_CW].p) : "",
+              b->dec[M_RTTY].p ? " + RTTY" : "",
+              b->dec[M_RTTY].p && h->feed && !c->feed_rtty ? " (not on the feed)" : "");
   }
-  if (h->feed) {
+  SkimPipeline *fp = feed_pipeline(h);
+  if (fp) {
     double fs, fset, ffr, ffo;
     guint fh;
-    skim_pipeline_rbn_policy(h->band[0].p, &fs, &fh, &fset, &ffr);
-    skim_pipeline_rbn_fold(h->band[0].p, &ffo, NULL);
+    skim_pipeline_rbn_policy(fp, &fs, &fh, &fset, &ffr);
+    skim_pipeline_rbn_fold(fp, &ffo, NULL);
     g_message("feed: spots a call at score >= %.2f, read %u times (or in "
               "MASTER.SCP), after %.0f s settled, last read <= %.0f s ago "
               "(0 = any), twins of a call sent <= %.0f s ago held back "
@@ -1108,7 +1193,7 @@ int main(int argc, char **argv) {
   g_clear_pointer(&web, skim_hd_web_free);
   g_clear_pointer(&h->src, skim_iq_source_free);
   for (guint i = 0; i < h->nb; i++) {
-    skim_pipeline_free(h->band[i].p);
+    for (guint k = 0; k < M_N; k++) { skim_pipeline_free(h->band[i].dec[k].p); }
     skim_rec_free(h->band[i].rec);
   }
   g_clear_pointer(&h->stats, skim_stats_free);  /* saves                       */

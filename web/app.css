@@ -53,6 +53,7 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel);
 .grid th, .grid td { padding: 5px 10px; border-bottom: 1px solid var(--ln); text-align: right;
                      white-space: nowrap; font-variant-numeric: tabular-nums; }
 .grid th:first-child, .grid td:first-child { text-align: left; }
+.grid th.l, .grid td.l { text-align: left; }
 .grid th { color: var(--mut); font-weight: 500; font-size: 12px; }
 .grid tr:last-child td { border-bottom: 0; }
 .note { font-size: 12px; margin: 6px 0 14px; }

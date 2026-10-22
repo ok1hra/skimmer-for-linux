@@ -47,7 +47,12 @@ function renderStatus(d) {
   const dot = $('#radio .dot');
   dot.className = `dot ${d.streaming ? 'ok' : 'bad'}`;
   $('#radio-text').textContent = d.radio;
-  const spots = d.bands.reduce((a, b) => a + b.spots, 0);
+  // a band's modes: its CW at the top level (when it decodes CW), its RTTY in .rtty
+  const modes = d.bands.flatMap((b) => [
+    ...(b.cw !== false ? [{ ...b, mode: 'CW' }] : []),
+    ...(b.rtty ? [{ ...b.rtty, band: b.band, centre_hz: b.centre_hz, ksps: b.ksps, mode: 'RTTY' }] : []),
+  ]);
+  const spots = modes.reduce((a, b) => a + b.spots, 0);
   $('#tiles').innerHTML = [
     tile('uptime', uptime(d.uptime_s)),
     tile('CPU', fmt(d.cpu_pct), '% of a core'),
@@ -58,28 +63,29 @@ function renderStatus(d) {
     tile('MASTER.SCP', fmt(d.dict_calls), 'calls'),
   ].join('');
 
-  const head = '<tr><th>band</th><th>centre kHz</th><th>engine</th><th>decoders</th><th>active</th><th>stations</th><th>spots</th><th>drops</th><th>kS/s</th></tr>';
-  $('#bands').innerHTML = head + d.bands.map((b) =>
-    `<tr><td>${esc(b.band)}</td><td>${fmt(b.centre_hz / 1000, 1)}</td><td>${esc(b.engine || d.engine)}</td>` +
+  const head = '<tr><th>band</th><th class="l">mode</th><th>centre kHz</th><th>engine</th><th>decoders</th><th>active</th><th>stations</th><th>spots</th><th>drops</th><th>kS/s</th></tr>';
+  $('#bands').innerHTML = head + modes.map((b) =>
+    `<tr><td>${esc(b.band)}</td><td class="l">${b.mode}</td><td>${fmt(b.centre_hz / 1000, 1)}</td><td>${esc(b.engine || d.engine)}</td>` +
     `<td>${fmt(b.decoders)}</td><td>${fmt(b.active)}</td><td>${fmt(b.stations)}</td>` +
     `<td>${fmt(b.spots)}</td><td>${fmt(b.drops)}</td><td>${fmt(b.ksps)}</td></tr>`).join('');
 
-  $('#recent').innerHTML = d.bands.map((b) => {
+  $('#recent').innerHTML = modes.map((b) => {
     const rows = b.recent.length ? b.recent.map((s) =>
       `<tr><td${s.cq ? ' class="cq"' : ''}>${esc(s.call)}</td><td>${fmt(s.freq_hz / 1000, 1)}</td>` +
       `<td>${fmt(s.wpm)}</td><td>${fmt(s.snr_db)}</td><td>${age(s.age_s)}</td></tr>`).join('')
       : '<tr><td colspan="5" class="mut">nothing yet</td></tr>';
-    return `<div class="card"><h2>${esc(b.band)} <span class="mut">· ${fmt(b.stations)} station${b.stations === 1 ? '' : 's'}</span></h2>` +
-      `<table><tr><th>call</th><th>kHz</th><th>wpm</th><th>dB</th><th>heard</th></tr>${rows}</table></div>`;
+    return `<div class="card"><h2>${esc(b.band)}${b.mode === 'RTTY' ? ' RTTY' : ''} <span class="mut">· ${fmt(b.stations)} station${b.stations === 1 ? '' : 's'}</span></h2>` +
+      `<table><tr><th>call</th><th>kHz</th><th>${b.mode === 'RTTY' ? 'Bd' : 'wpm'}</th><th>dB</th><th>heard</th></tr>${rows}</table></div>`;
   }).join('');
 
   const p = d.feed_policy, g = d.feed_gate;
   const sw = Object.entries(d.switches || {});
   $('#policy').innerHTML = '<dl class="kv">' +
     `<dt>feed policy</dt><dd>score ≥ ${fmt(p.min_score, 2)}, read ${p.min_hearings}×, settle ${fmt(p.settle_s)} s ` +
-    `(unknown calls ${fmt(p.settle_nodict_s)} s), fresh ${fmt(p.fresh_s)} s, fold ${fmt(p.fold_s)} s — ${fmt(p.folded)} folded</dd>` +
+    `(unknown calls ${fmt(p.settle_nodict_s)} s), fresh ${fmt(p.fresh_s)} s, fold ${fmt(p.fold_s)} s — ${fmt(p.folded)} folded` +
+    `${d.bands.some((b) => b.rtty) ? `; RTTY ${d.feed_rtty ? 'on the feed too' : 'kept off the feed'}` : ''}</dd>` +
     `<dt>learned gate</dt><dd>${g ? `${esc(g.id)} · ${esc(g.mode)} · threshold ${fmt(g.threshold, 2)} · ` +
-      `${fmt(g.below)} of ${fmt(g.spots)} below` : 'off'}</dd>` +
+      `${fmt(g.below)} of ${fmt(g.spots)} below · CW only` : 'off'}</dd>` +
     `<dt>switches</dt><dd>${sw.length ? sw.map(([k, v]) => `${esc(k)}=${esc(v)}`).join('<br>') : 'none'}</dd>` +
     '</dl>';
   $('#updated').textContent = `updated ${d.time}`;
@@ -238,7 +244,7 @@ function fillSettings(d) {
   for (const [k, v] of Object.entries(d.values)) {
     const inp = f.elements[k];
     if (!inp) continue;
-    if (inp.type === 'checkbox') inp.checked = v === 'true';
+    if (inp.type === 'checkbox') inp.checked = v === '' ? inp.dataset.default === 'true' : v === 'true' || v === '1';
     else if (inp.tagName === 'SELECT') inp.value = v || inp.options[0].value;
     else inp.value = v;
   }

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Headless gate — the whole skimmer-headless with no radio: [radio] type=mock
-# keys "CQ CQ DE OK1MCK OK1MCK K" on two bands in real time. The gate checks
+# keys "CQ CQ DE OK1MCK OK1MCK K" on two bands in real time, and sends "CQ CQ
+# DE OK1RTY OK1RTY K" in RTTY on the band that decodes RTTY. The gate checks
 # that the config is read (band modes, per-band engine), the source streams,
-# the spot reaches the telnet feed at the right frequency, /status.json says
+# both spots reach the telnet feed at the right frequency, /status.json says
 # so (with the built-in gate and the SKIM_* switches), SIGTERM stops it
 # cleanly, and a bad config stops the start with exit 2.
 #
@@ -44,26 +45,30 @@ export SKIM_SCP_URL=http://127.0.0.1:9/
 "$HL" --config "$T/headless.ini" > "$T/log" 2>&1 &
 PID=$!
 
-# the telnet feed: log in, wait for the mock's call (≤ 60 s: two readings,
+# the telnet feed: log in, wait for the mock's calls (≤ 90 s: two readings,
 # 8 s settle, one 8 s message per round)
-got=
+got= rgot=
 for _ in $(seq 50); do
   if { exec 3<>/dev/tcp/127.0.0.1/$FEED; } 2>/dev/null; then break; fi
   sleep 0.2
 done
 if { true >&3; } 2>/dev/null; then
   printf 'TEST\r\n' >&3
-  end=$((SECONDS + 60))
-  while ((SECONDS < end)); do
+  end=$((SECONDS + 90))
+  while ((SECONDS < end)) && [[ -z $got || -z $rgot ]]; do
     if IFS= read -r -t 5 line <&3; then
-      if [[ $line == *OK1MCK* ]]; then got=$line; break; fi
+      [[ $line == *OK1MCK* && -z $got ]] && got=$line
+      [[ $line == *OK1RTY* && -z $rgot ]] && rgot=$line
     fi
   done
   exec 3>&-
 fi
 echo "  feed: ${got:-nothing}"
+echo "  feed: ${rgot:-nothing}"
 [[ $got == "DX de TEST-#:"*OK1MCK*CW*CQ* ]]; check "the mock's CQ is spotted on the telnet feed" $?
 [[ $got == *" 14046.5 "* || $got == *" 7046.5 "* ]]; check "… at centre + 1 kHz" $?
+[[ $rgot == "DX de TEST-#:"*" 7035.5 "*OK1RTY*RTTY*"45 BPS"*CQ* ]]
+check "the RTTY CQ is spotted too, 40m only, at centre - 10 kHz, 45 BPS" $?
 
 sleep 1.5                                    # the status snapshot is 1 Hz
 json=$(curl -s "http://127.0.0.1:$HTTP/status.json" || true)
@@ -72,6 +77,8 @@ py() { python3 -c "import json,sys; d=json.loads(sys.argv[1]); print($1)" "$json
 [[ $(py 'd["radio"]') == *mock* ]]; check "status: the radio is the mock" $?
 [[ $(py '",".join(b["band"] + ":" + b["engine"] for b in d["bands"])') == "20m:cw-v2,40m:cw-v2" ]]
 check "status: both bands, each with its engine" $?
+[[ $(py 'd["bands"][0]["rtty"], d["bands"][1]["rtty"]["engine"], d["bands"][1]["rtty"]["spots"] > 0, d["feed_rtty"]') == "None rtty True True" ]]
+check "status: RTTY on 40m only, with its spots" $?
 [[ $(py 'd["feed_gate"]["id"]') == builtin:feed-gate.ini#* && $(py 'd["feed_gate"]["mode"]') == shadow ]]
 check "status: the built-in gate in shadow" $?
 [[ $(py 'd["switches"]["SKIM_SCP_URL"]') == http://127.0.0.1:9/ ]]
@@ -82,13 +89,14 @@ page=$(curl -s "http://127.0.0.1:$HTTP/")
 [[ $(curl -s -o /dev/null -w '%{http_code} %{content_type}' "http://127.0.0.1:$HTTP/app.js") == "200 text/javascript"* ]]
 check "web: app.js" $?
 stj=$(curl -s "http://127.0.0.1:$HTTP/stats.json?hours=6")
-[[ $(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['bands'], d['n'], d['step_min'], d['rtty'], len(d['cw']['spots']['20m']), sorted(d['global']))" "$stj" 2>&1) == "['20m', '40m'] 360 1 None 360 ['clients', 'cpu', 'lost', 'radio', 'streaming']" ]]
+# (rtty: null until a minute with RTTY was recorded, and then never on 20m)
+[[ $(python3 -c "import json,sys; d=json.loads(sys.argv[1]); r=d['rtty']; print(d['bands'], d['n'], d['step_min'], r is None or all(v is None for v in r['spots']['20m']), len(d['cw']['spots']['20m']), sorted(d['global']))" "$stj" 2>&1) == "['20m', '40m'] 360 1 True 360 ['clients', 'cpu', 'lost', 'radio', 'streaming']" ]]
 check "web: stats.json (6 h, both bands, the global series)" $?
 [[ $(curl -s "http://127.0.0.1:$HTTP/api/log") == '[{"t":'*'"text":"skimmer-headless '* ]]; check "web: the log" $?
 [[ $(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$HTTP/../headless.ini") == 404 ]]
 check "web: no path out of the page" $?
-grep -q "band 40m: RTTY decoding is not in skimmer-headless yet" "$T/log"
-check "log: RTTY asked for but not there yet — said so" $?
+grep -q "decode: 40m CW, engine cw-v2 + RTTY$" "$T/log" && grep -q "decode: 20m CW, engine cw-v2$" "$T/log"
+check "log: what each band decodes" $?
 grep -q "switch: SKIM_SCP_URL=http://127.0.0.1:9/ (system)" "$T/log"
 check "log: the switch with its kind" $?
 
@@ -152,7 +160,15 @@ rc=0; "$HL" --config "$T/bad.ini" > "$T/bad.log" 2>&1 || rc=$?
 
 "$HL" --list-switches | grep -q "^SKIM_V2_EDGE behaviour$"; check "--list-switches" $?
 out=$("$HL" --check-config --config "$T/headless.ini" 2>&1); rc=$?
-[[ $rc == 0 && $out == *"RX2    40m   7045.5 kHz  cw,rtty"* ]]; check "--check-config: fine, the bands listed" $?
+[[ $rc == 0 && $out == *"RX2    40m   7045.5 kHz  cw,rtty"* && $out == *"CW and RTTY"* ]]
+check "--check-config: fine, the bands listed" $?
+printf '[bands]\n40m=7045500 rtty\n[feed]\nrtty=false\n' > "$T/cwonly.ini"
+out=$("$HL" --check-config --config "$T/cwonly.ini" 2>&1); rc=$?
+[[ $rc == 0 && $out == *"40m   7045.5 kHz  rtty"* && $out == *"CW only"* ]]
+check "--check-config: an RTTY-only band, [feed] rtty=false" $?
+printf '[bands]\n40m=7045500\n[feed]\nrtty=maybe\n' > "$T/badbool.ini"
+rc=0; "$HL" --check-config --config "$T/badbool.ini" > "$T/bad.log" 2>&1 || rc=$?
+[[ $rc == 2 ]] && grep -q "rtty: true or false" "$T/bad.log"; check "[feed] rtty=maybe: exit 2" $?
 rc=0; "$HL" --check-config --config "$T/none.ini" > /dev/null 2>&1 || rc=$?
 [[ $rc == 2 && ! -e $T/none.ini ]]; check "--check-config on a missing file: exit 2, nothing written" $?
 

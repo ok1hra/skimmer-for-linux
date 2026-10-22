@@ -28,7 +28,9 @@
  * → station table → RBN feed policy, the very code that ran live, so a gate
  * or a feature can change and be recomputed over every night recorded so
  * far. A "# skimmer tap" header starts a fresh pipeline: headless was
- * restarted there, with empty extractors and an empty station table.
+ * restarted there, with empty extractors and an empty station table. A
+ * header with engine=rtty (an RTTY decoder's tap) replays in RTTY mode —
+ * its spots say RTTY — and without the learned gate (a CW model).
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -74,10 +76,10 @@ static void run_end(Run *r) {
   r->p = NULL;
 }
 
-static gboolean run_begin(Run *r, const Opts *o, guint nslot) {
+static gboolean run_begin(Run *r, const Opts *o, guint nslot, gboolean rtty) {
   run_end(r);
   SkimPipelineConfig cfg = {
-    .mode             = SKIM_PIPELINE_MODE_CW,
+    .mode             = rtty ? SKIM_PIPELINE_MODE_RTTY : SKIM_PIPELINE_MODE_CW,
     .dict_path        = g_file_test(o->scp, G_FILE_TEST_EXISTS) ? o->scp : NULL,
     .rbn              = r->feed,
     .rbn_min_score    = o->min_score,
@@ -88,7 +90,7 @@ static gboolean run_begin(Run *r, const Opts *o, guint nslot) {
     .rbn_fold_s       = o->fold_s,
     .tap_path         = o->tap_out,
     .gatelog_path     = o->rows,
-    .feed_gate_path   = o->gate_ini,
+    .feed_gate_path   = rtty ? NULL : o->gate_ini,   /* the model knows CW */
     .band             = o->band,
     .rbn_any_caller   = g_spots != NULL,
   };
@@ -152,7 +154,7 @@ static void replay_file(Run *r, const Opts *o, const char *path) {
     }
     if (g_str_has_prefix(line, "# skimmer tap v1")) {
       const char *ns = strstr(line, "nslot=");
-      if (!run_begin(r, o, ns ? (guint)atoi(ns + 6) : 0))
+      if (!run_begin(r, o, ns ? (guint)atoi(ns + 6) : 0, strstr(line, " engine=rtty ") != NULL))
         break;
       continue;
     }
