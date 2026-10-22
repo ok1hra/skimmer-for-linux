@@ -44,7 +44,7 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   { "SKIM_GATE_NEAR_DICT", B }, { "SKIM_GATE_NEAR_TTL", B },
   { "SKIM_GATE_SETTLE_NODICT", B }, { "SKIM_FEED_TRACE", D }, { "SKIM_GATE_NEAR_DEBUG", D },
   /* MASTER.SCP; the supervisor */
-  { "SKIM_SCP_URL", S }, { "SKIM_DEEPCW_URL", S }, { "SKIM_SUPERVISED", S },
+  { "SKIM_SCP_URL", S }, { "SKIM_DEEPCW_URL", S }, { "SKIM_HPSDR_DISCOVER", S }, { "SKIM_SUPERVISED", S },
 };
 
 #undef B

@@ -7,7 +7,7 @@
  * answers 2 + streaming, EP2 control is taken from ANY sender, a start
  * redirects the stream to whoever sent it, a stop from anyone ends it — and
  * drives skim_hpsdr_client against it:
- *   - discovery: name / RX count / idle→busy flag,
+ *   - discovery: name / RX count / idle→busy flag, and the broadcast form,
  *   - EP2 bytes: rate code, ONE receiver, the RX1 frequency word with the
  *     clock correction applied (center / (1 + ppm·1e-6)),
  *   - ORIENTATION: the mock sends a +12 kHz tone RF-INVERTED, the way the
@@ -273,6 +273,18 @@ int main(void) {
   CHECK(ok && strcmp(info.name, "R_PITAYA") == 0 && info.nrx == 8 && !info.busy,
         "idle R_PITAYA, 8 RX (got %s \"%s\" %u %s)", ok ? "reply" : "none",
         ok ? info.name : "", ok ? info.nrx : 0, ok && info.busy ? "busy" : "idle");
+  g_clear_error(&err);
+  /* the broadcast form, aimed at the mock: every radio that answers, once */
+  GArray *found = skim_hpsdr_discover_all("127.0.0.1", m_port, 300, &err);
+  CHECK(found && found->len == 1 &&
+            strcmp(g_array_index(found, SkimHpsdrFound, 0).host, "127.0.0.1") == 0 &&
+            strcmp(g_array_index(found, SkimHpsdrFound, 0).info.name, "R_PITAYA") == 0,
+        "discover_all: the mock at 127.0.0.1, R_PITAYA (%u found)", found ? found->len : 0);
+  if (found) { g_array_unref(found); }
+  g_clear_error(&err);
+  found = skim_hpsdr_discover_all("127.0.0.1", (guint16)(m_port + 1), 200, &err);
+  CHECK(found && found->len == 0, "discover_all: nobody there → an empty list");
+  if (found) { g_array_unref(found); }
   g_clear_error(&err);
 
   printf("argument / reachability errors:\n");

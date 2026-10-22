@@ -5,7 +5,9 @@
  * The radio is never taken from another client unless take_over is given
  * (one-shot: for the first start only — it then takes the first busy radio
  * of the list). The source streams from the first IDLE radio of [radio]
- * host, at start and again whenever the stream is lost. When every radio
+ * host, at start and again whenever the stream is lost. "auto" in the list
+ * stands for every radio a broadcast discovery finds (in address order) that
+ * the list does not name; they run at clock_ppm. When every radio
  * answers busy, or none is free within RADIO_SEARCH_S, it gives up — waiting
  * on a busy radio once left the skimmer silent for 15 h unnoticed
  * (2026-10-07: CW Skimmer Server took .21 when its own radio dropped out).
@@ -40,7 +42,7 @@ typedef struct {
   gint64           search_since_us;    /* 0 = not searching                  */
   volatile gint    closed;             /* set by the client's thread         */
   guint            ticks;
-  const char      *host;               /* the radio streaming now (or first) */
+  char             host[64];           /* the radio streaming now (or first) */
   double           ppm_now;
   char             state[160];
   Rx               rx[SKIM_HD_MAX_BANDS];
@@ -66,12 +68,9 @@ static void rx_iq_cb(const float *iq, guint n, double rate, double centre, gpoin
 
 static void closed_cb(gpointer user) { g_atomic_int_set(&((P1 *)user)->closed, 1); }
 
-/* Start streaming from hosts[i] at its clock_ppm; FALSE (state set) when the
- * start fails. */
-static gboolean start_on(P1 *p, guint i, gboolean took) {
+/* Start streaming from host at ppm; FALSE (state set) when the start fails. */
+static gboolean start_on(P1 *p, const char *host, double ppm, gboolean took) {
   const SkimHdConfig *c = p->base.cfg;
-  const char *host = c->hosts[i];
-  const double ppm = c->host_ppm[i];
   GError *err = NULL;
   double centres[SKIM_HD_MAX_BANDS];
   p->take_over = FALSE;                         /* one-shot: the first start   */
@@ -88,7 +87,7 @@ static gboolean start_on(P1 *p, guint i, gboolean took) {
     g_clear_pointer(&p->rp, skim_hpsdr_client_free);
     return FALSE;
   }
-  p->host = host;
+  g_strlcpy(p->host, host, sizeof(p->host));
   p->ppm_now = ppm;
   p->streaming = TRUE;
   p->search_since_us = 0;
@@ -98,6 +97,66 @@ static gboolean start_on(P1 *p, guint i, gboolean took) {
   return TRUE;
 }
 
+/* Where the broadcast of host=auto goes: SKIM_HPSDR_DISCOVER=addr[:port]
+ * (a gate's fake radio), else the LAN of the default route. */
+GArray *skim_iq_source_hpsdr_discover(void) {
+  const char *env = g_getenv("SKIM_HPSDR_DISCOVER");
+  char *addr = NULL;
+  guint16 port = SKIM_HPSDR_DEFAULT_PORT;
+  if (env && env[0]) {
+    addr = g_strdup(env);
+    char *colon = strrchr(addr, ':');
+    if (colon) {
+      port = (guint16)g_ascii_strtoull(colon + 1, NULL, 10);
+      *colon = '\0';
+    }
+  }
+  GError *err = NULL;
+  GArray *found = skim_hpsdr_discover_all(addr, port, 1000, &err);
+  if (!found) {
+    g_warning("radio: discovery broadcast: %s", err->message);
+    g_clear_error(&err);
+    found = g_array_new(FALSE, TRUE, sizeof(SkimHpsdrFound));
+  }
+  g_free(addr);
+  return found;
+}
+
+static gboolean listed(const SkimHdConfig *c, const char *host) {
+  for (guint i = 0; c->hosts[i]; i++) {
+    if (strcmp(c->hosts[i], host) == 0) { return TRUE; }
+  }
+  return FALSE;
+}
+
+typedef struct {
+  GString *why;
+  char     first_busy[64];
+  double   busy_ppm;
+  gboolean all_answered;
+} Round;
+
+/* One radio of the round: TRUE when it is streaming now. */
+static gboolean try_one(P1 *p, Round *r, const char *host, double ppm, const SkimHpsdrInfo *info) {
+  if (r->why->len) { g_string_append(r->why, ", "); }
+  if (!info) {
+    g_string_append_printf(r->why, "%s no reply", host);
+    r->all_answered = FALSE;
+  } else if (info->busy) {
+    g_string_append_printf(r->why, "%s busy", host);
+    if (!r->first_busy[0]) {
+      g_strlcpy(r->first_busy, host, sizeof(r->first_busy));
+      r->busy_ppm = ppm;
+    }
+  } else if (start_on(p, host, ppm, FALSE)) {
+    return TRUE;
+  } else {
+    g_string_append_printf(r->why, "%s start failed", host);
+    r->all_answered = FALSE;                      /* may work on the next round  */
+  }
+  return FALSE;
+}
+
 /* One search round over [radio] host: the first idle radio wins. None idle —
  * every one busy, or the rest silent past RADIO_SEARCH_S — gives up. */
 static void try_start(P1 *p) {
@@ -105,43 +164,47 @@ static void try_start(P1 *p) {
   const gint64 now = g_get_monotonic_time();
   if (!p->search_since_us) { p->search_since_us = now; }
   const gboolean take = p->take_over;
-  GString *why = g_string_new(NULL);
-  int first_busy = -1;
-  gboolean all_answered = TRUE;
-  for (guint i = 0; c->hosts[i]; i++) {
-    const char *hp = c->hosts[i];
+  Round r = { g_string_new(NULL), "", 0, TRUE };
+  gboolean on = FALSE;
+  for (guint i = 0; c->hosts[i] && !on; i++) {
+    if (strcmp(c->hosts[i], SKIM_HD_HOST_AUTO) == 0) {
+      GArray *found = skim_iq_source_hpsdr_discover();
+      guint tried = 0;
+      for (guint k = 0; k < found->len && !on; k++) {
+        const SkimHpsdrFound *f = &g_array_index(found, SkimHpsdrFound, k);
+        if (listed(c, f->host)) { continue; }   /* tried (or to be) by name   */
+        tried++;
+        on = try_one(p, &r, f->host, c->host_ppm[i], &f->info);
+      }
+      if (!tried && !on) {
+        if (r.why->len) { g_string_append(r.why, ", "); }
+        g_string_append(r.why, "auto: no Red Pitaya answered on the LAN");
+        r.all_answered = FALSE;
+      }
+      g_array_unref(found);
+      continue;
+    }
     SkimHpsdrInfo info;
     GError *err = NULL;
-    if (why->len) { g_string_append(why, ", "); }
-    if (!skim_hpsdr_discover(hp, SKIM_HPSDR_DEFAULT_PORT, 1000, &info, &err)) {
-      g_string_append_printf(why, "%s no reply", hp);
-      g_clear_error(&err);
-      all_answered = FALSE;
-    } else if (info.busy) {
-      g_string_append_printf(why, "%s busy", hp);
-      if (first_busy < 0) { first_busy = (int)i; }
-    } else if (start_on(p, i, FALSE)) {
-      g_string_free(why, TRUE);
-      return;
-    } else {
-      g_string_append_printf(why, "%s start failed", hp);
-      all_answered = FALSE;                     /* may work on the next round  */
-    }
+    const gboolean ans = skim_hpsdr_discover(c->hosts[i], SKIM_HPSDR_DEFAULT_PORT, 1000, &info, &err);
+    g_clear_error(&err);
+    on = try_one(p, &r, c->hosts[i], c->host_ppm[i], ans ? &info : NULL);
   }
-  if (take && first_busy >= 0 && start_on(p, (guint)first_busy, TRUE)) {
-    g_string_free(why, TRUE);
+  if (!on && take && r.first_busy[0]) { on = start_on(p, r.first_busy, r.busy_ppm, TRUE); }
+  if (on) {
+    g_string_free(r.why, TRUE);
     return;
   }
-  if (all_answered || now - p->search_since_us >= RADIO_SEARCH_S * G_USEC_PER_SEC) {
-    p1_state(p, "no free radio (%s) — stopping", why->str);
-    g_printerr("skimmer-headless: no free radio (%s)%s\n", why->str,
-               first_busy >= 0 ? " — another client streams from it; "
+  if (r.all_answered || now - p->search_since_us >= RADIO_SEARCH_S * G_USEC_PER_SEC) {
+    p1_state(p, "no free radio (%s) — stopping", r.why->str);
+    g_printerr("skimmer-headless: no free radio (%s)%s\n", r.why->str,
+               r.first_busy[0] ? " — another client streams from it; "
                                  "--take-over grabs the first busy one" : "");
     p->gave_up = TRUE;
   } else {
-    p1_state(p, "searching for a free radio… (%s)", why->str);
+    p1_state(p, "searching for a free radio… (%s)", r.why->str);
   }
-  g_string_free(why, TRUE);
+  g_string_free(r.why, TRUE);
 }
 
 static void drop(P1 *p) {
@@ -189,7 +252,7 @@ SkimIqSource *skim_iq_source_hpsdr_p1_new(const SkimHdConfig *cfg, gboolean take
   P1 *p = g_new0(P1, 1);
   p->base.vt = &P1_VT;
   p->take_over = take_over;
-  p->host = cfg->hosts[0];
+  g_strlcpy(p->host, cfg->hosts[0], sizeof(p->host));
   p->ppm_now = cfg->host_ppm[0];
   for (guint b = 0; b < SKIM_HD_MAX_BANDS; b++) {
     p->rx[b].s = &p->base;

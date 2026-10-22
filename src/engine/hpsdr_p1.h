@@ -48,6 +48,20 @@ typedef struct {
 gboolean skim_hpsdr_discover(const char *host, guint16 port, guint timeout_ms,
                              SkimHpsdrInfo *out, GError **error);
 
+/* A radio that answered a broadcast discovery. */
+typedef struct {
+  char          host[16];        /* its IPv4 address, dotted                  */
+  SkimHpsdrInfo info;
+} SkimHpsdrFound;
+
+/* Broadcast discovery: one request to bcast:port (NULL = 255.255.255.255 —
+ * the LAN of the default route), every reply collected for timeout_ms.
+ * Returns the radios sorted by address (empty when none answered), NULL +
+ * error only when the socket fails. Read-only: discovery never starts,
+ * stops or configures a radio. */
+GArray *skim_hpsdr_discover_all(const char *bcast, guint16 port, guint timeout_ms,
+                                GError **error);
+
 typedef struct _SkimHpsdrClient SkimHpsdrClient;
 
 /* Same shape as SkimTciIqCb: nframes interleaved I/Q pairs in TRUE spectrum

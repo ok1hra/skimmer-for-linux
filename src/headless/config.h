@@ -6,7 +6,8 @@
  *
  *   [radio]  type    hpsdr-p1 (default) | mock (synthetic CW, for the gates)
  *            host    one radio or a list (comma separated, tried in order),
- *                    each optionally host@ppm: that radio's own clock error
+ *                    each optionally host@ppm: that radio's own clock error;
+ *                    auto (or none) = the radios a broadcast discovery finds
  *            rate    48000 / 96000 / 192000 — one rate for all receivers
  *            clock_ppm  for the radios without @ppm
  *   [bands]  <name>=<centre Hz> [modes], in receiver order (RX1 first);
@@ -34,6 +35,7 @@
 G_BEGIN_DECLS
 
 #define SKIM_HD_MAX_BANDS 8           /* sdr_receiver_hpsdr's receiver count */
+#define SKIM_HD_HOST_AUTO "auto"      /* [radio] host: what a broadcast finds */
 
 typedef enum {
   SKIM_HD_SOURCE_HPSDR_P1 = 0,
@@ -90,8 +92,9 @@ typedef struct {
   gint64           rec_at_us;         /* real time to start, 0 = at once     */
 } SkimHdConfig;
 
-/* Write the commented default ini to path (its directory is created). */
-gboolean skim_hd_config_write_default(const char *path, GError **error);
+/* Write the commented default ini to path (its directory is created).
+ * radios: comment lines naming the radios found on the LAN, or NULL. */
+gboolean skim_hd_config_write_default(const char *path, const char *radios, GError **error);
 
 /* Parse an ini held in memory; path names it in messages and anchors its
  * relative paths. FALSE + error (and cfg cleared) on a bad host, a band that

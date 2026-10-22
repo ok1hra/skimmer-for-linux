@@ -5,7 +5,7 @@
  *                    [--http-port N] [--feed-gate FILE]
  *                    [--feed-gate-mode off|shadow|on] [--check-config]
  *                    [--list-switches] [--fetch-deepcw-model]
- *                    [--install-service] [--uninstall-service]
+ *                    [--install-service] [--uninstall-service] [--find-radios]
  *
  * An IQ source (headless/source.h — a Red Pitaya running sdr_receiver_hpsdr,
  * up to 8 receivers at once) feeds one engine pipeline per band and mode
@@ -66,6 +66,7 @@
 #include "headless/scp_update.h"
 #include "headless/service.h"
 #include "headless/source.h"
+#include "engine/hpsdr_p1.h"
 #include "headless/stats.h"
 #include "headless/switches.h"
 #include "headless/web.h"
@@ -1010,6 +1011,42 @@ static char *web_deepcw(GHashTable *form, guint *st, gpointer user) {
   return body;
 }
 
+/* ---- the radios on the LAN ------------------------------------------------------ */
+
+/* One line per radio a broadcast finds, each starting with prefix; "" when
+ * none answered. */
+static char *radios_lines(const char *prefix) {
+  GArray *found = skim_iq_source_hpsdr_discover();
+  GString *o = g_string_new(NULL);
+  for (guint i = 0; i < found->len; i++) {
+    const SkimHpsdrFound *f = &g_array_index(found, SkimHpsdrFound, i);
+    const guint8 *m = f->info.mac;
+    g_string_append_printf(o, "%s%-15s  %s, %u RX, %s, mac %02x:%02x:%02x:%02x:%02x:%02x\n",
+                           prefix, f->host, f->info.name[0] ? f->info.name : "HPSDR",
+                           f->info.nrx, f->info.busy ? "busy (another client streams from it)" : "idle",
+                           m[0], m[1], m[2], m[3], m[4], m[5]);
+  }
+  g_array_unref(found);
+  return g_string_free(o, FALSE);
+}
+
+/* --find-radios */
+static int find_radios_cli(void) {
+  char *l = radios_lines("  ");
+  if (l[0]) {
+    printf("Red Pitayas (HPSDR P1) on this LAN:\n%s"
+           "[radio] host=auto takes the first idle one; to pin one, put its address\n"
+           "there (host=ADDRESS, or ADDRESS@ppm with its clock correction).\n", l);
+  } else {
+    printf("No Red Pitaya answered a discovery broadcast (UDP port %u) within 1 s.\n"
+           "Is it on, on this LAN, and running sdr_receiver_hpsdr? A radio on another\n"
+           "subnet is not reached by a broadcast: name it in [radio] host=ADDRESS.\n",
+           SKIM_HPSDR_DEFAULT_PORT);
+  }
+  g_free(l);
+  return 0;
+}
+
 /* --fetch-deepcw-model: the same, in the foreground. */
 static void cli_progress(guint64 got, guint64 total, gpointer user) {
   guint *last = user;
@@ -1135,7 +1172,7 @@ int main(int argc, char **argv) {
   h->http_port = -1;
   char *cfg = NULL;
   gboolean list_switches = FALSE, check_config = FALSE, fetch_model = FALSE;
-  gboolean install_service = FALSE, uninstall_service = FALSE;
+  gboolean install_service = FALSE, uninstall_service = FALSE, find_radios = FALSE;
   GOptionEntry opts[] = {
     { "config", 'c', 0, G_OPTION_ARG_FILENAME, &cfg,
       "Config file (default ~/.config/skimmer-for-linux/headless.ini)", "FILE" },
@@ -1159,6 +1196,9 @@ int main(int argc, char **argv) {
       "Fetch the DeepCW model (e04/deepcw-engine, AGPL-3.0-only, ~15 MB) at the "
       "commit this version pins, check its sha256, install it where the "
       "engine looks, and exit (0 = in place)", NULL },
+    { "find-radios", 0, 0, G_OPTION_ARG_NONE, &find_radios,
+      "List the Red Pitayas on this LAN (address, receivers, idle or busy) and exit",
+      NULL },
     { "install-service", 0, 0, G_OPTION_ARG_NONE, &install_service,
       "Write a systemd user service that runs this program (with --config, "
       "that config) and exit — it starts nothing; the next steps are printed", NULL },
@@ -1189,6 +1229,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (fetch_model) { return fetch_model_cli(); }
+  if (find_radios) { return find_radios_cli(); }
   if (install_service || uninstall_service) {
     gboolean ok;
     if (install_service) {
@@ -1206,7 +1247,14 @@ int main(int argc, char **argv) {
   h->cfg_path = cfg ? cfg : g_build_filename(g_get_user_config_dir(), "skimmer-for-linux",
                                              "headless.ini", NULL);
   if (!g_file_test(h->cfg_path, G_FILE_TEST_EXISTS) && !check_config) {
-    if (!skim_hd_config_write_default(h->cfg_path, &err)) {
+    /* the radios on the LAN go into it as a comment: where the addresses are */
+    char *l = radios_lines("#   ");
+    char *note = l[0] ? g_strdup_printf("# On this LAN when this file was written:\n%s", l)
+                      : g_strdup("# (no Red Pitaya answered on this LAN when this file was written)\n");
+    g_free(l);
+    const gboolean wrote = skim_hd_config_write_default(h->cfg_path, note, &err);
+    g_free(note);
+    if (!wrote) {
       g_printerr("config: %s\n", err->message);
       return EXIT_CONFIG;
     }

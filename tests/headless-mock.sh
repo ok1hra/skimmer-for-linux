@@ -268,6 +268,38 @@ out=$(PATH=$T/bin:$PATH "$HL" --uninstall-service); rc=$?
   [[ $(cat "$T/calls") == $'--user disable --now skimmer-headless\n--user daemon-reload' ]]
 check "--uninstall-service: stopped, disabled, removed; headless.env stays" $?
 
+# ---- the radios on the LAN: a fake Red Pitaya that answers discovery "busy" -------
+python3 - "$T/fakerp.port" <<'PY' &
+import socket, sys, time
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind(("127.0.0.1", 0))
+open(sys.argv[1], "w").write(str(s.getsockname()[1]))
+s.settimeout(0.5)
+end = time.time() + 60
+while time.time() < end:
+    try:
+        d, a = s.recvfrom(2048)
+    except socket.timeout:
+        continue
+    if d[:3] == b"\xef\xfe\x02":
+        s.sendto(b"\xef\xfe\x03" + bytes([0, 0x11, 0x22, 0x33, 0x44, 0x55, 30, 6]) + b"R_PITAYA" + bytes([8]) + bytes(40), a)
+PY
+FAKE=$!
+for _ in $(seq 50); do [[ -s $T/fakerp.port ]] && break; sleep 0.1; done
+export SKIM_HPSDR_DISCOVER=127.0.0.1:$(cat "$T/fakerp.port")
+out=$("$HL" --find-radios 2>&1)
+[[ $out == *"127.0.0.1"*"R_PITAYA, 8 RX, busy"*"host=auto"* ]]; check "--find-radios: the radio, its address, busy" $?
+# a first start with no config: the default written (the radio noted in it), host=auto
+# finds the radio busy → exit 3
+mkdir -p "$T/fresh"
+rc=0; XDG_CONFIG_HOME=$T/fresh timeout 20 "$HL" --http-port 0 --status-every 0 > "$T/fresh.log" 2>&1 || rc=$?
+F=$T/fresh/skimmer-for-linux/headless.ini
+[[ $rc == 3 && -f $F ]] && grep -q "^#   127.0.0.1 .*R_PITAYA, 8 RX, busy" "$F" && grep -qx "host=auto" "$F" &&
+  grep -q "no free radio (127.0.0.1 busy)" "$T/fresh.log"
+check "first start: default ini (radio noted, host=auto), the busy radio found → exit 3" $?
+kill $FAKE 2>/dev/null; wait $FAKE 2>/dev/null
+unset SKIM_HPSDR_DISCOVER
+
 if ((fails)); then
   echo "--- log"; cat "$T/log"
   echo "FAIL ($fails)"; exit 1

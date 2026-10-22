@@ -33,18 +33,26 @@ int main(void) {
     char *dir = g_dir_make_tmp("skim-config-XXXXXX", NULL);
     char *path = g_build_filename(dir, "sub", "headless.ini", NULL);
     GError *err = NULL;
-    check("written (directory created)", skim_hd_config_write_default(path, &err));
+    check("written (directory created)", skim_hd_config_write_default(path, "#   192.0.2.7  R_PITAYA, 8 RX, idle\n", &err));
     SkimHdConfig c;
     const gboolean ok = skim_hd_config_load(&c, path, &err);
     check("parses", ok);
     if (!ok) { printf("       (%s)\n", err->message); }
-    check("a Red Pitaya at 96 kHz, one host",
+    check("a Red Pitaya at 96 kHz, found on the LAN (host=auto)",
           ok && c.source == SKIM_HD_SOURCE_HPSDR_P1 && c.rate == 96000 &&
-          g_strv_length(c.hosts) == 1 && strcmp(c.hosts[0], "192.168.1.21") == 0);
-    check("six bands, CW v2, no RTTY",
-          ok && c.nb == 6 && c.band[0].cw && !c.band[0].rtty &&
+          g_strv_length(c.hosts) == 1 && strcmp(c.hosts[0], "auto") == 0);
+    check("eight bands (160 … 10 m), CW v2 and RTTY on each",
+          ok && c.nb == 8 && c.band[0].cw && c.band[0].rtty && c.band[7].rtty &&
           c.band[0].cw_engine == SKIM_CW_ENGINE_V2 && strcmp(c.band[2].name, "40m") == 0 &&
-          c.band[2].centre_hz == 7040000);
+          c.band[2].centre_hz == 7045500 && strcmp(c.band[7].name, "10m") == 0);
+    {
+      char *text = NULL;
+      g_file_get_contents(path, &text, NULL, NULL);
+      check("the radios found on the LAN noted in it, and how to find them",
+            text && strstr(text, "#   192.0.2.7  R_PITAYA") && strstr(text, "--find-radios") &&
+            strstr(text, "clock_ppm = D / F * 1000"));
+      g_free(text);
+    }
     check("feed on 7300 with no call, the policy left to the pipeline",
           ok && c.feed_port == 7300 && c.feed_call && !c.feed_call[0] &&
           c.feed_min_score == 0 && c.feed_fresh_s == 0 && !c.feed_gate && !c.feed_gate_mode);
@@ -107,6 +115,22 @@ int main(void) {
           c.host_ppm[0] == 3.81 && c.host_ppm[1] == -1.5 &&
           strcmp(c.hosts_text, "192.168.1.21, 192.168.1.71") == 0);
     check("rate 192 kHz", ok && c.rate == 192000);
+    {
+      SkimHdConfig a;
+      static const char T[] = "[radio]\nhost=192.168.1.21@3.81, AUTO\nclock_ppm=1\n[bands]\n20m=14045500\n";
+      GError *e = NULL;
+      const gboolean aok = skim_hd_config_parse(&a, T, strlen(T), "/tmp/a.ini", &e);
+      check("a named radio, then auto (at clock_ppm)",
+            aok && g_strv_length(a.hosts) == 2 && strcmp(a.hosts[1], "auto") == 0 &&
+            a.host_ppm[1] == 1.0);
+      if (aok) { skim_hd_config_clear(&a); }
+      g_clear_error(&e);
+      static const char N[] = "[bands]\n20m=14045500\n";
+      const gboolean nok = skim_hd_config_parse(&a, N, strlen(N), "/tmp/n.ini", &e);
+      check("no host = auto", nok && strcmp(a.hosts[0], "auto") == 0);
+      if (nok) { skim_hd_config_clear(&a); }
+      g_clear_error(&e);
+    }
     check("call trimmed, port, score", ok && strcmp(c.feed_call, "OK1HRA") == 0 &&
           c.feed_port == 7302 && c.feed_min_score == 0.9);
     check("settle_s=0 in the file = off (-1), fresh_s kept",
@@ -146,6 +170,7 @@ int main(void) {
       { "a rate the radio has not", "[radio]\nrate=44100\n[bands]\n20m=14045500\n", "44100" },
       { "a bad host@ppm", "[radio]\nhost=192.168.1.21@x\n[bands]\n20m=14045500\n",
         "192.168.1.21@x" },
+      { "auto with a ppm", "[radio]\nhost=auto@3\n[bands]\n20m=14045500\n", "auto@" },
       { "an unknown radio type", "[radio]\ntype=soapy\n[bands]\n20m=14045500\n", "soapy" },
       { "an unknown [decode] engine", "[decode]\nengine=v9\n[bands]\n20m=14045500\n", "v9" },
       { "[feed] rtty that is no boolean", "[bands]\n20m=14045500\n[feed]\nrtty=maybe\n",
