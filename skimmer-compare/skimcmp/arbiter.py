@@ -20,8 +20,8 @@ class RbnIndex:
         self.spotters, self.sid = [], {}
         self.t = {b: array("q") for b, _, _ in bands}
         self.f = {b: array("f") for b, _, _ in bands}
-        self.c = {b: array("l") for b, _, _ in bands}
-        self.s = {b: array("l") for b, _, _ in bands}
+        self.c = {b: array("i") for b, _, _ in bands}
+        self.s = {b: array("i") for b, _, _ in bands}
         self.snr = {b: array("h") for b, _, _ in bands}
         self.by_call = {}                        # (band, cid) → array of positions
         self.n = 0
@@ -66,7 +66,7 @@ class RbnIndex:
         key = (band, ci)
         a = self.by_call.get(key)
         if a is None:
-            a = self.by_call[key] = array("l")
+            a = self.by_call[key] = array("i")
         a.append(pos)
         self.n += 1
         self.last_t = sp.t

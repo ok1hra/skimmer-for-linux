@@ -30,6 +30,7 @@ SPOT_RE = re.compile(
     r"(-?\d+)\s+dB\s+(\d+)\s+(WPM|BPS)\b\s*(.*?)\s*\d{4}Z\s*$")
 
 STALE_S = 180          # a live session whose events log is this quiet has died
+CHUNK = 8 << 20        # bytes a Tail reads at a time
 
 _day = {}
 
@@ -81,21 +82,27 @@ class Tail:
         self.path, self.off, self.part = path, 0, b""
 
     def read(self):
+        """The complete lines appended since the last read, in batches of
+        at most CHUNK bytes: a 568 MB RBN log read in one piece held ~3 GB."""
         try:
             size = os.path.getsize(self.path)
         except OSError:
-            return []
+            return
         if size < self.off:
             raise Truncated(self.path)
         if size == self.off:
-            return []
+            return
         with open(self.path, "rb") as fh:
             fh.seek(self.off)
-            data = fh.read(size - self.off)
-        self.off += len(data)
-        lines = (self.part + data).split(b"\n")
-        self.part = lines.pop()
-        return [l.decode("utf-8", "replace").rstrip("\r") for l in lines]
+            while self.off < size:
+                data = fh.read(min(CHUNK, size - self.off))
+                if not data:
+                    return
+                self.off += len(data)
+                lines = (self.part + data).split(b"\n")
+                self.part = lines.pop()
+                if lines:
+                    yield [l.decode("utf-8", "replace").rstrip("\r") for l in lines]
 
 
 class Session:
@@ -242,8 +249,7 @@ class Store:
                 tail = s.tails.get(kind)
                 if tail is None:
                     continue
-                lines = tail.read()
-                if lines:
+                for lines in tail.read():
                     changed = True
                     for line in lines:
                         self._ingest(s, kind, line)
