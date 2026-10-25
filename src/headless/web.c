@@ -124,6 +124,12 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
   const gboolean post = strcmp(method, "POST") == 0;
   const SkimHdWebHooks *k = &w->hooks;
 
+  /* libsoup 3.2 (Debian 12, the AppImage's) never closes a kept-alive
+   * connection the client has hung up: each one stayed in CLOSE-WAIT until
+   * the 1024 fds ran out (~60 h of status polls). Close after every reply. */
+  soup_message_headers_replace(soup_server_message_get_response_headers(msg),
+                               "Connection", "close");
+
   if (get) {
     SkimHdWebGet hook = strcmp(path, "/status.json") == 0 ? k->status
                       : strcmp(path, "/stats.json") == 0  ? k->stats
