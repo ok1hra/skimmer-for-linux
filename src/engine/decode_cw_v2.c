@@ -30,6 +30,7 @@
 
 #include "callsign.h"
 #include "cw_reader.h"
+#include "oracle.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -2011,6 +2012,25 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
   out->pane_own     = FALSE;
   st->pane_own_call = FALSE;
 
+  /* Measurement only (oracle.h, SKIM_ORACLE): where R heard a station on
+   * this channel, hold the gate open / take R's clock / take the measured
+   * carrier. Off (modes 0) nothing below changes. */
+  const guint om = skim_oracle_modes();
+  SkimOracleHit oh = { 0 };
+  const gboolean ohit =
+      om && skim_oracle_at(st->freq_hz, 0.25 * st->rate,
+                           skim_oracle_time(st->pre_head / st->rate), &oh);
+  const gboolean o_gate  = ohit && (om & SKIM_ORACLE_GATE);
+  const gboolean o_gsoft = ohit && (om & SKIM_ORACLE_GSOFT);
+  const gboolean o_clock = ohit && (om & SKIM_ORACLE_CLOCK);
+  const gboolean o_freq  = ohit && (om & SKIM_ORACLE_FREQ);
+  const double   o_dit   = o_clock ? 1.2 * st->rate / oh.wpm : 0.0;
+  if (o_freq) { st->foff_hz = oh.carrier_hz - st->freq_hz; }
+  if (o_clock && st->dit > 0) {
+    const double ub = st->esp > 0 ? 0.5 * (st->dit + st->esp) : st->dit;
+    if (fabs(ub / o_dit - 1.0) > 0.25) { st->dit = st->esp = o_dit; }
+  }
+
   /* Clock-lost watchdog: a run of committed dahs with not one dit means the
    * dit clock sits a class too fast and the labeling went SELF-CONSISTENT —
    * slow dits read as dahs at ratio ~3, elem_err stays low, the EMA never
@@ -2125,6 +2145,13 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
       st->keying = st->p_high > 0.15;
     } else if (st->p_high < 0.07) {
       st->keying = FALSE;
+    }
+    if (o_gate) {
+      st->gate_open = TRUE;
+      st->keying = TRUE;
+    } else if (o_gsoft) {
+      st->gate_open = st->env_hi > 2.0 * st->env_lo + 1e-6;
+      st->keying = st->keying || st->p_high > 0.07;
     }
 
     /* Dead air by v2's own judgment (the pause predicate below, hoisted):
@@ -2258,7 +2285,7 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
         st->active || st->carrier
             ? st->mu_s + 0.55 * (st->mu_m - st->mu_s)
             : st->env_lo + 0.55 * (st->env_hi - st->env_lo);
-    if (m > mid_now && mag > st->env_lo * 3.0) {
+    if (!o_freq && m > mid_now && mag > st->env_lo * 3.0) {
       const double dr = (double)i * st->prev_i + (double)q * st->prev_q;
       const double di = (double)q * st->prev_i - (double)i * st->prev_q;
       if (dr != 0.0 || di != 0.0) {
@@ -2269,6 +2296,11 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
     st->prev_i = i;
     st->prev_q = q;
 
+    if (o_clock && !st->active && !st->carrier) {
+      st->dit = st->esp = o_dit;               /* R's clock, no bootstrap    */
+      lattice_start(st);
+      if (preroll_replay(st, out, &pos)) { continue; }
+    }
     if (!st->active && !st->carrier) {
       /* Bootstrap: v1's Schmitt + first-marks clustering learns the dit. */
       const double span = st->env_hi - st->env_lo;

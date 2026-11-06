@@ -66,6 +66,7 @@ engine_sources = [
   'src/engine/gatelog.c',      # feed-gate learning logs (decode tap + rows)
   'src/engine/feed_gate.c',    # the learned feed gate (shadow mode)
   'src/engine/feed_fold.c',    # RBN feed: busted twins of a sent call
+  'src/engine/oracle.c',       # measurement only: R's stations → v2 (SKIM_ORACLE)
 ]
 engine_deps = [glib_dep, gio_dep, lws_dep, wdsp_dep, fftw3f_dep, m_dep, dl_dep]
 

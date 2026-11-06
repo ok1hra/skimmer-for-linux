@@ -27,6 +27,7 @@
 #include "decode_deepcw.h"
 #include "decode_rtty.h"
 #include "feed_fold.h"
+#include "oracle.h"
 #include "feed_gate.h"
 #include "gatelog.h"
 #include "hpsdr_p1.h"
@@ -1010,6 +1011,14 @@ static void bank_build(SkimPipeline *p, double rate) {
 static gboolean ghost_suppressed(SkimPipeline *p, const double *lvl, guint c,
                                  guint slot, double eff_off) {
   const SkimDecodeBackend *cw = pipe_backend(p);
+  /* Measurement only (oracle.h): R heard a station in this channel. */
+  if (G_UNLIKELY(skim_oracle_modes() & SKIM_ORACLE_GHOST)) {
+    SkimOracleHit oh;
+    if (skim_oracle_at(p->center_hz + skim_channelizer_offset_hz(p->bank, c),
+                       0.5 * p->cfg.chan_bw_hz,
+                       skim_oracle_time(p->stream_us / 1e6), &oh))
+      return FALSE;
+  }
   const gint M = (gint)p->nchan;
   const gint k = (c <= p->nchan / 2) ? (gint)c : (gint)c - M;
   const double mine = lvl[SL(c, slot)];

@@ -149,15 +149,20 @@ pak noc v skimmer-compare. Měřit vždy **recall slabých binů a busty zvláš
    - *oracle clock*: `dit` z WPM, které hlásí R → podíl chyb způsobených bootstrapem,
    - *oracle frekvence*: přesné `foff` → podíl AFC.
    Výsledek říká, kam patří kroky 1–3 a kolik dB lze čekat. Bez něj se ladí naslepo.
+   **Hotovo 2026-11-06, výsledek v §7** (gate stojí čtení pod 10 dB, clock a AFC ne).
 
 0.2 **Metrika slabých signálů**: L of R v binech R-SNR < 5 / 5–10 / 10–15 dB, plus CER značky
    (editační vzdálenost dekódovaného tokenu od R-značky v okně spotu), ne jen binární recall.
+   **Hotovo jako `skimmer-compare/read-vs-feed.py`** (spot / čteno / blízko / nic po binech, CQ zvlášť), §7.
 
 0.3 **Semi-syntetická sada** (klíčové pro slabé signály): z nahrávek vyber silné stanice (R-SNR ≥ 25 dB, R i L shodně),
    vyřízni jejich kanál, přičti kalibrovaný šum tak, aby SNR500 bylo −8 … +10 dB (SNR_2500 −15 … +3 dB, Es/N0_dot +5.8 … +23.8 dB při 25 WPM), a přehraj přes celý pipeline.
    Reálný rukopis, reálný únik a QRM, známá pravda, řízené SNR. Tím se odstraní rozpor bench vs. live.
 
 ### Krok 1 — Měkká detekce místo tvrdého gate (odhad +2–4 dB)
+> Oracle (§7): pod 10 dB gate stojí ~10 bodů přečtených CQ značek, do feedu z nich ale projdou 0–2 body.
+> Má smysl až spolu s krokem 6 (nebo 3/5), sám ne.
+
 1.1 **Detektor nosné integrací**: na raw kanálu (nebo pásmově) Welchův periodogram s 1–3 s integrací,
     CFAR proti mediánu, sledování keyingu přes modulaci výkonu v binu. Integrace přes sekundy zachytí
     keyed nosnou o 5–10 dB slabší než okamžitá obálka. Lze vyjít z detekce v `tone_split.c`
@@ -177,7 +182,7 @@ pak noc v skimmer-compare. Měřit vždy **recall slabých binů a busty zvláš
     Silné signály zůstanou na 45 Hz, protože dřívější zkušenost (F5IN, N8RYH → T8RYH) ukázala slévání ditů.
     Hystereze stejná jako u `edge_now`.
 2.2 Nahradit 3-tap MA klouzavým součtem ~0.5 T_dot (integrate-and-dump charakter) nebo raised-cos oknem.
-2.3 **AFC pro úzký filtr**: `foff` z interpolovaného vrcholu integrovaného spektra (krok 1.1), ne jen
+2.3 (Oracle §7: přesná nosná nic nemění — odloženo.) **AFC pro úzký filtr**: `foff` z interpolovaného vrcholu integrovaného spektra (krok 1.1), ne jen
     z fázového sklonu na „solid“ vzorcích (`:2238`). Ten při slabém signálu nedostane skoro žádné vzorky.
     Bez toho by úzký filtr signál ztrácel.
 2.4 Ověřit dvojí cestou: semi-syntetika (0.3) i replay. Akceptace: zlepšení v binu R-SNR < 10 dB bez nárůstu bustů
@@ -195,6 +200,8 @@ pak noc v skimmer-compare. Měřit vždy **recall slabých binů a busty zvláš
     s okamžitým náběhem. Zachovat rychlé sledování QSB (0.35 s).
 
 ### Krok 4 — Měkký odhad rychlosti (odhad +1–2 dB v hlavě overu, méně „mis-clock“ úseků)
+> Oracle (§7): dit z WPM od R je horší než vlastní hodiny v2. Odloženo.
+
 4.1 Bootstrap z **autokorelace / spektra narrow obálky** přes 2–4 s místo Schmittových běhů
     (první vrchol autokorelace ≈ T_dot, resp. základní frekvence klíčování ve spektru obálky). Funguje i tam, kde jednotlivé běhy nejsou čitelné.
 4.2 **Paralelní hypotézy rychlosti**: 3 mřížky (dit ×0.8, ×1, ×1.25) běží současně a po N značkách vyhrává
@@ -257,8 +264,73 @@ Obecná pravidla:
 - U každé změny reportovat L of R po R-SNR binech, bust %, CPU na pásmo a falešné řádky na čistém šumu.
 - Každé tvrzení v dB doložit měřením a uvést, na čem bylo naměřeno (semi-syntetika / replay / live).
 
-**Očekávané pořadí přínosu**: krok 6 (opakování) a krok 1 (gate) dávají největší zisk pro skimmer.
-Kroky 2 a 3 dávají smysl až za krokem 1. Krok 7 je nejrizikovější.
+**Očekávané pořadí přínosu** (přepsáno po kroku 0, viz §7): nad 10 dB je největší rezerva v převodu
+přečtené značky na spot (krok 6 a extraktor/feed), pod 10 dB ve čtení samotném (kroky 3 a 5) a v gate
+(krok 1), který ale sám nic nepřinese, dokud jedno čtení navíc neprojde do feedu. Kroky 2.3 (AFC)
+a 4 (rychlost) oracle nepotvrdil, jsou na konci. Krok 7 je nejrizikovější.
+
+---
+
+## 7. Výsledek kroku 0.1 a 0.2 (2026-11-06)
+
+**Metoda.** Nahrávky 1 a 2 (`hd-*-20261015-210146Z`, `hd-*-20261016-124545Z`, 30/20/40 m, 14 h každá),
+celý replay přes `skimmer-replay` → `skimmer-tap-replay` (živá politika) → `tap-score.py`, R = session
+20261013-183853. Oracle je jen měřicí kód za `SKIM_ORACLE=<soubor>` + `SKIM_ORACLE_MODE` (`src/engine/oracle.h`,
+bez nich golden gate byte-identický). Pravdu staví `skimmer-compare/oracle-truth.py`: každý R spot je interval
+[t − 30 s, t + 5 s] a nosná se dohledá v IQ (1 Hz periodogram přes 30 s, vrchol v ±55 Hz od R, protože R hlásí
+jen 0.1 kHz). Nosné s prominencí < 6 dB se vynechají: 20 m 12–17 % spotů (hustý provoz), 30 m 11–14 %, 40 m 3 %.
+Varianty: *gate* (gate a keying-duty vynuceně otevřené v okně R), *gatesoft* (v okně jen poloviční prahy,
+2.0× a 0.07, gate se v mezerách zavírá), *clock* (dit z WPM od R místo bootstrapu, reset při odchylce > 25 %),
+*freq* (`foff` = změřená nosná, bez sledování), *ghost* (silnější soused kanál nepotlačí).
+Biny jsou na škále R (R-SNR ≈ SNR500, tj. R-SNR 10 dB ≈ SNR_2500 3 dB; měření ve větvi snr-shadow dává
+R ≈ SNR_2500 + 8 dB).
+
+**Feed (tap-score), recall / bust % / L of R po binech R-SNR:**
+
+| varianta | rec 1 recall | bust | < 10 | 10–15 | 15–20 | 20–25 | rec 2 recall | bust | < 10 | 10–15 | 15–20 | 20–25 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| base | 62.9 | 3.3 | 26.4 | 51.7 | 56.6 | 73.3 | 68.0 | 5.8 | 34.3 | 56.4 | 65.9 | 80.3 |
+| gate | 62.9 | 3.7 | 29.8 | 52.5 | 57.6 | 72.2 | 67.4 | 4.8 | 34.3 | 55.3 | 64.6 | 78.6 |
+| gatesoft | 63.0 | 4.4 | 28.9 | 53.4 | 57.6 | 70.0 | 67.4 | 5.2 | 35.5 | 55.9 | 64.6 | 78.6 |
+| clock | 58.8 | 2.3 | 19.8 | 46.6 | 48.5 | 68.9 | 65.0 | 6.1 | 30.8 | 51.3 | 63.8 | 76.9 |
+| freq | 62.4 | 3.3 | 26.4 | 50.8 | 56.6 | 71.9 | 68.1 | 5.7 | 34.9 | 54.9 | 67.1 | 79.5 |
+| ghost | 63.0 | 3.5 | 26.4 | 51.7 | 56.6 | 73.3 | 68.4 | 5.5 | 34.3 | 57.1 | 65.9 | 81.2 |
+
+Base sedí s dřívějšími běhy na týchž nahrávkách (rec 1 62.7 / 26.4, rec 2 67.8 / 33.7), měření je tedy
+srovnatelné s `LIVE-AIR.md`.
+
+**Čtení vs. feed (`skimmer-compare/read-vs-feed.py`, krok 0.2).** Jen stanice, které R viděl volat CQ
+(L do feedu jiné nedává), všechna tři pásma. *spot* = L ji poslal do feedu; *čteno* = značka je v textu
+dekodéru u nosné v okně R, ale do feedu nešla; *blízko* = token 1–2 editace od značky; *nic* = nic podobného.
+
+| R-SNR | n (rec 1 / 2) | base spot / čteno / blízko / nic | gatesoft spot / čteno / blízko / nic |
+|---|---|---|---|
+| < 10 | 133 / 178 | 28.5 / 18.0 / 10.5 / 42.9 · 29.8 / 16.3 / 10.6 / 43.2 | 28.6 / 31.6 / 9.0 / 30.9 · 31.5 / 25.9 / 8.4 / 34.3 |
+| 10–15 | 137 / 232 | 48.9 / 22.6 / 4.4 / 24.1 · 57.7 / 22.4 / 5.6 / 14.2 | 52.5 / 22.6 / 5.9 / 19.0 · 58.2 / 25.0 / 3.4 / 13.4 |
+| 15–20 | 142 / 223 | 56.3 / 26.1 / 5.6 / 12.0 · 64.1 / 19.7 / 6.7 / 9.4 | 57.7 / 24.0 / 7.1 / 11.3 · 62.8 / 20.6 / 6.3 / 10.3 |
+| 20+ | 327 / 439 | 67.6 / 18.0 / 3.7 / 10.7 · 75.4 / 13.2 / 3.2 / 8.2 | 66.3 / 19.8 / 3.7 / 10.0 · 72.4 / 16.4 / 3.2 / 8.0 |
+
+(procenta, rec 1 · rec 2)
+
+**Závěry.**
+1. **Nad 10 dB L značku přečte, ale nespotuje.** 13–26 % CQ stanic má značku přesně v textu a do feedu nejde,
+   „nic“ je jen 8–24 %. To je práce pro extraktor, feed a krok 6, ne pro DSP.
+2. **Pod 10 dB je ztráta ve čtení:** ~43 % CQ stanic nemá v textu nic podobného značce. Gate tu stojí čtení:
+   s oracle gate klesne „nic“ o 9–12 bodů a „čteno“ stejně stoupne. Spotů ale přibude 0–2 body, protože
+   jedno čtení navíc feed nepustí. Krok 1 sám nestačí; má smysl spolu s krokem 6 nebo s lepším čtením (3, 5).
+   Odhad +2–4 dB pro krok 1 data nepotvrzují.
+3. **Hodiny (krok 4) nejsou úzké místo.** Dit z WPM od R je horší ve všech binech (recall −3 až −4, „nic“
+   +2 až +14 bodů): vlastní bootstrap + EMA v2 jsou lepší hodiny než WPM, které hlásí R.
+4. **AFC (krok 2.3) nejsou úzké místo.** Změřená nosná místo sledované nemění nic; v2 si nosnou stanic,
+   které R slyší, odhaduje správně.
+5. **Ghost** (krok 7.2): +0.1 až +0.4 recallu. Pro stanice vedle silného souseda to není hlavní ztráta.
+6. Busty se s oracle gate mění oběma směry (rec 1 +0.4 až +1.1, rec 2 −0.6 až −1.0) — vynucený gate čte šum
+   v pauzách mezi overy, gatesoft méně.
+
+**Výhrady.** Okno R je jen 35 s kolem spotu (R spotuje stanici zhruba jednou za 10 min), oracle tedy pomáhá
+jen v něm. Oracle *gate* nese i šum z pauz. Na 20 m může freq oracle vzít nosnou silnějšího souseda
+v ±55 Hz. Clock oracle bere WPM od R za pravdu; jiná definice WPM u R by ho poškodila (to, že v2 hlásí
+stejné WPM jako R u čitelných stanic, ukázal pilot).
 
 ---
 
