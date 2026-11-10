@@ -52,6 +52,8 @@ typedef struct {
                          * window (callsign.h): a caller, not calling — it
                          * clears cq for the record's life, whatever a ghost
                          * channel without the report keeps saying */
+  gint64  pos_us;       /* when a fresh read last confirmed freq_hz
+                         * (SKIM_ST_REPOS, station.c) */
 } SkimStation;
 
 typedef struct _SkimStationTable SkimStationTable;

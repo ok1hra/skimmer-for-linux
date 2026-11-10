@@ -55,6 +55,19 @@ void skim_station_table_set_gone_cb(SkimStationTable *t, SkimStationGoneFunc cb,
 
 /* SKIM_ST_DEBUG=1 traces evictions/folds/QSY — the table mutations that a
  * final-state dump cannot explain (a phantom takeover chain leaves no trace). */
+/* SKIM_ST_REPOS (seconds, default 0 = off): see skim_station_table_report.
+ * A fresh read within REPOS_NEAR_HZ of the record confirms its position. */
+#define REPOS_NEAR_HZ 100.0
+static gint64 repos_us(void) {
+  static gint64 v = -1;
+  if (G_UNLIKELY(v < 0)) {
+    const char *e = g_getenv("SKIM_ST_REPOS");
+    v = e && e[0] ? (gint64)(g_ascii_strtod(e, NULL) * G_USEC_PER_SEC) : 0;
+    if (v < 0) { v = 0; }
+  }
+  return v;
+}
+
 static gboolean st_debug(void) {
   static gsize once = 0;
   if (g_once_init_enter(&once)) {
@@ -220,6 +233,37 @@ const SkimStation *skim_station_table_report(SkimStationTable *t,
   for (GSList *l = list; l; l = l->next) {
     SkimStation *e = l->data;
     if (fabs(e->freq_hz - st->freq_hz) <= SKIM_STATION_SAMECALL_HZ) {
+      /* SKIM_ST_REPOS=<s>: a position no fresh read confirmed for that long
+       * yields to a confident fresh read elsewhere at once — the strongest
+       * report ever seen otherwise pins a station that moved a few hundred
+       * Hz (S&P answer, then CQ on its own frequency) to the old place, and
+       * the feed spots it there (WEAK-SIGNAL-PLAN §8: 2–6 % of the spots
+       * sat over 200 Hz from the decodes). Ghosts of a live signal do not
+       * move it: its own channel keeps confirming the position. */
+      const gboolean fresh = st->heard_us >= st->last_heard;
+      const double   d     = fabs(e->freq_hz - st->freq_hz);
+      if (fresh && d <= REPOS_NEAR_HZ) { e->pos_us = st->last_heard; }
+      const gint64 rp = repos_us();
+      if (rp > 0 && fresh && d > REPOS_NEAR_HZ &&
+          st->score >= SKIM_STATION_QSY_SCORE &&
+          st->last_heard - e->pos_us > rp) {
+        if (st_debug()) {
+          g_printerr("station: REPOS %s %.0f -> %.0f Hz\n", e->call,
+                     e->freq_hz, st->freq_hz);
+        }
+        e->freq_hz    = st->freq_hz;
+        e->snr_db     = st->snr_db;
+        e->speed      = st->speed;
+        e->pos_us     = st->last_heard;
+        e->score      = MAX(e->score, st->score);
+        e->hearings   = MAX(e->hearings, st->hearings);
+        e->heard_us   = MAX(e->heard_us, st->heard_us);
+        e->cq         = st->cq;                /* new place, new context     */
+        e->addressed  = st->addressed;
+        e->last_heard = st->last_heard;
+        e->reports++;
+        return e;
+      }
       /* Merge: the stronger report positions the station — as an EMA, not a
        * replacement: single estimates scatter ±10-20 Hz around the carrier,
        * averaging converges onto it (stations sit on round frequencies;
@@ -252,6 +296,7 @@ const SkimStation *skim_station_table_report(SkimStationTable *t,
       e->freq_hz    = st->freq_hz;
       e->snr_db     = st->snr_db;
       e->speed      = st->speed;
+      e->pos_us     = st->last_heard;
       e->score      = MAX(e->score, st->score);
       e->hearings   = MAX(e->hearings, st->hearings);
       e->heard_us   = MAX(e->heard_us, st->heard_us);
@@ -264,6 +309,7 @@ const SkimStation *skim_station_table_report(SkimStationTable *t,
   }
   SkimStation *e = g_memdup2(st, sizeof(*st));
   e->reports = 1;
+  e->pos_us  = st->last_heard;
   if (list) {
     list = g_slist_append(list, e);           /* head unchanged, no reinsert */
   } else {

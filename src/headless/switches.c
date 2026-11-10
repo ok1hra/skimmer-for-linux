@@ -14,7 +14,7 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   /* callsign extraction */
   { "SKIM_CALL_DESPACE", B }, { "SKIM_CALL_EXCH", B }, { "SKIM_CALL_FUSED", B },
   { "SKIM_CALL_GLUE", B }, { "SKIM_CALL_TU", B }, { "SKIM_CALL_TU_STRICT", B },
-  { "SKIM_DESPACE_DEBUG", D },
+  { "SKIM_CALL_CQWORDS", B }, { "SKIM_DESPACE_DEBUG", D },
   /* CW engines */
   { "SKIM_CW_ENGINE", B }, { "SKIM_CW_V1", B }, { "SKIM_CW_READER", B },
   { "SKIM_CW_READER_RAW", B }, { "SKIM_CW_DEBUG", D }, { "SKIM_CW_DUMP_RUNS", D },
@@ -37,12 +37,16 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   /* RTTY, channels, the tone splitter */
   { "SKIM_TONE_FOCUS", B }, { "SKIM_TONE_SPLIT", B }, { "SKIM_TS_RATIO", B },
   { "SKIM_TS_DEBUG", D }, { "SKIM_RTTY_DEBUG", D }, { "SKIM_FLOCK_DEBUG", D },
+  { "SKIM_ST_REPOS", B },
   { "SKIM_ST_DEBUG", D }, { "SKIM_DLOG_LANE", D }, { "SKIM_DUMP_DIR", D },
   { "SKIM_DUMP_CHAN", D },
   /* the RBN feed */
   { "SKIM_FEED_CONFIRM", B }, { "SKIM_GATE_DICT_MIN", B }, { "SKIM_GATE_NEAR", B },
   { "SKIM_GATE_NEAR_DICT", B }, { "SKIM_GATE_NEAR_TTL", B },
   { "SKIM_GATE_SETTLE_NODICT", B }, { "SKIM_FEED_TRACE", D }, { "SKIM_GATE_NEAR_DEBUG", D },
+  /* measurement only: the decoder oracles (docs/WEAK-SIGNAL-PLAN.md) */
+  { "SKIM_ORACLE", D }, { "SKIM_ORACLE_MODE", D }, { "SKIM_ORACLE_MINPROM", D },
+  { "SKIM_REPLAY_FROM", D },
   /* MASTER.SCP; the supervisor */
   { "SKIM_SCP_URL", S }, { "SKIM_DEEPCW_URL", S }, { "SKIM_HPSDR_DISCOVER", S }, { "SKIM_SUPERVISED", S },
 };

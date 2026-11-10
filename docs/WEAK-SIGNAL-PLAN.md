@@ -300,23 +300,24 @@ Base sedí s dřívějšími běhy na týchž nahrávkách (rec 1 62.7 / 26.4, r
 srovnatelné s `LIVE-AIR.md`.
 
 **Čtení vs. feed (`skimmer-compare/read-vs-feed.py`, krok 0.2).** Jen stanice, které R viděl volat CQ
-(L do feedu jiné nedává), všechna tři pásma. *spot* = L ji poslal do feedu; *čteno* = značka je v textu
+(L do feedu jiné nedává), všechna tři pásma. *spot* = L ji poslal do feedu (do ±1.5 kHz, tolerance compare
+`df_khz`; první verze měřila ±200 Hz a „čteno“ o 1–3 body nadsazovala); *čteno* = značka je v textu
 dekodéru u nosné v okně R, ale do feedu nešla; *blízko* = token 1–2 editace od značky; *nic* = nic podobného.
 
 | R-SNR | n (rec 1 / 2) | base spot / čteno / blízko / nic | gatesoft spot / čteno / blízko / nic |
 |---|---|---|---|
-| < 10 | 133 / 178 | 28.5 / 18.0 / 10.5 / 42.9 · 29.8 / 16.3 / 10.6 / 43.2 | 28.6 / 31.6 / 9.0 / 30.9 · 31.5 / 25.9 / 8.4 / 34.3 |
-| 10–15 | 137 / 232 | 48.9 / 22.6 / 4.4 / 24.1 · 57.7 / 22.4 / 5.6 / 14.2 | 52.5 / 22.6 / 5.9 / 19.0 · 58.2 / 25.0 / 3.4 / 13.4 |
-| 15–20 | 142 / 223 | 56.3 / 26.1 / 5.6 / 12.0 · 64.1 / 19.7 / 6.7 / 9.4 | 57.7 / 24.0 / 7.1 / 11.3 · 62.8 / 20.6 / 6.3 / 10.3 |
-| 20+ | 327 / 439 | 67.6 / 18.0 / 3.7 / 10.7 · 75.4 / 13.2 / 3.2 / 8.2 | 66.3 / 19.8 / 3.7 / 10.0 · 72.4 / 16.4 / 3.2 / 8.0 |
+| < 10 | 133 / 178 | 30.1 / 18.0 / 10.5 / 41.4 · 30.3 / 15.7 / 10.7 / 43.3 | 29.3 / 31.6 / 9.0 / 30.1 · 32.0 / 25.3 / 8.4 / 34.3 |
+| 10–15 | 137 / 232 | 49.6 / 22.6 / 4.4 / 23.4 · 59.9 / 20.7 / 5.6 / 13.8 | 53.3 / 22.6 / 5.8 / 18.2 · 60.3 / 23.3 / 3.4 / 12.9 |
+| 15–20 | 142 / 223 | 57.0 / 25.4 / 5.6 / 12.0 · 66.4 / 18.4 / 6.3 / 9.0 | 58.5 / 23.2 / 7.0 / 11.3 · 64.6 / 19.3 / 6.3 / 9.9 |
+| 20+ | 327 / 439 | 69.4 / 16.2 / 3.7 / 10.7 · 78.1 / 11.2 / 3.2 / 7.5 | 68.2 / 18.0 / 3.7 / 10.1 · 75.4 / 13.9 / 3.2 / 7.5 |
 
 (procenta, rec 1 · rec 2)
 
 **Závěry.**
-1. **Nad 10 dB L značku přečte, ale nespotuje.** 13–26 % CQ stanic má značku přesně v textu a do feedu nejde,
-   „nic“ je jen 8–24 %. To je práce pro extraktor, feed a krok 6, ne pro DSP.
+1. **Nad 10 dB L značku přečte, ale nespotuje.** 11–25 % CQ stanic má značku přesně v textu a do feedu nejde,
+   „nic“ je jen 7–23 %. To je práce pro extraktor, feed a krok 6, ne pro DSP (rozpad v §8).
 2. **Pod 10 dB je ztráta ve čtení:** ~43 % CQ stanic nemá v textu nic podobného značce. Gate tu stojí čtení:
-   s oracle gate klesne „nic“ o 9–12 bodů a „čteno“ stejně stoupne. Spotů ale přibude 0–2 body, protože
+   s oracle gate klesne „nic“ o 9–11 bodů a „čteno“ stejně stoupne. Spotů se změní −1 až +2 body, protože
    jedno čtení navíc feed nepustí. Krok 1 sám nestačí; má smysl spolu s krokem 6 nebo s lepším čtením (3, 5).
    Odhad +2–4 dB pro krok 1 data nepotvrzují.
 3. **Hodiny (krok 4) nejsou úzké místo.** Dit z WPM od R je horší ve všech binech (recall −3 až −4, „nic“
@@ -333,6 +334,56 @@ v ±55 Hz. Clock oracle bere WPM od R za pravdu; jiná definice WPM u R by ho po
 stejné WPM jako R u čitelných stanic, ukázal pilot).
 
 ---
+
+## 8. Kde se ztratí přečtená značka, a opravy za dekodérem (2026-11-10)
+
+**Metoda.** `read-vs-feed.py --why` rozdělí každou CQ stanici R, kterou L přečetl a nespotoval, podle místa,
+kde ji cesta za dekodérem ztratila: `c` řádky tap-replaye (kandidát extraktoru, záznam stanice, verdikt hand
+gate) a události feedu (hold, drop, fold, send, spot). Nahrávky 1 a 2, 30/20/40 m, base, 310 případů.
+
+| kde se ztratí | n | % | z toho R-SNR < 10 / ≥ 10 |
+|---|---|---|---|
+| extraktor značku nenabídl: roztržená mezerami („DF 2 SJ“, „Y U 7 B“) | 51 | 16.5 | 7 / 44 |
+| — slepená s dalším textem („RN3QBGRN3QBG“, „IU7RQCK“) | 39 | 12.6 | 8 / 31 |
+| — samostatné slovo | 7 | 2.3 | 2 / 5 |
+| kandidát bez záznamu stanice | 25 | 8.1 | 6 / 19 |
+| stanice nevolá: CQ/TEST/QRZ v textu je, okno ho ke značce nedotáhne | 71 | 22.9 | 11 / 60 |
+| — v textu žádný volací marker (R ji má jako CQ, L ne: „N4RSS TESTING“) | 47 | 15.2 | 9 / 38 |
+| hand gate: score / jedno čtení / near-call | 9 / 16 / 19 | 14.2 | 6 / 38 |
+| feed: drop po holdu / fold / dedup spot_out | 1 / 0 / 3 | 1.3 | 1 / 3 |
+| spot vyšel, ale přes 1.5 kHz od R / jiné | 7 / 15 | 7.1 | 2 / 20 |
+
+**Závěry.**
+1. **Politika feedu skoro nic nestojí:** hold, fold, `min_score`, near-call dohromady 15 %. Knoflíky mezeru nezavřou.
+2. **69 % je čtení textu v extraktoru:** roztržené a slepené značky a CQ, které se ke značce nedostane přes
+   rozbitá slova mezi nimi. Plošné povolení (delší okno, šumová písmena okno nestárnou, slepené TEST) už bylo
+   zkoušeno a odmítnuto (`LIVE-AIR.md`, ~+1 recall za +0.6–1.3 bodu bustů). Textová heuristika je u konce;
+   roztrženou značku musí potvrdit zvuk — vynucené zarovnání (krok 5) a součet přes opakování (krok 6).
+3. **Frekvence spotu:** záznam stanice drží polohu nejsilnějšího čtení, jaké kdy bylo, a stejnou značku
+   slučuje v ±2.5 kHz (`SKIM_STATION_SAMECALL_HZ`, kvůli ghostům). Stanice, která se posune o pár set Hz
+   (odpověď S&P, pak CQ na své frekvenci), se spotuje na staré poloze: 2–6 % spotů nahrávek a 3–9 % živých
+   tapů leží přes 200 Hz od dekódů, 10.5 % spotů je přes 300 Hz od R. Compare je počítá jako chycené
+   (`df_khz` 1.5), uživatel RBN ale dostane špatnou frekvenci.
+
+**Opravy (opt-in, bez nich golden byte-identický).** Měřeno tap-replayem nahrávek 1 a 2 a 5 dní živých tapů
+(2026-10-25 15:40 – 10-30 17:44, 7 pásem, 11 176 stanic R, compare session 20261022-200129):
+
+| přepínač | rec 1 recall / busty | rec 2 recall / busty | živé tapy recall / busty | spoty > 300 Hz od R |
+|---|---|---|---|---|
+| — | 62.9 / 15 | 68.0 / 40 | 65.1 / 370 (4.6 %) | 10.5 % |
+| `SKIM_ST_REPOS=20` | 62.8 / 15 | 67.9 / 39 | 65.2 / 366 (4.6 %) | 8.8 % |
+| `SKIM_CALL_CQWORDS=1` | 63.3 / 16 | 68.5 / 40 | 65.5 / 377 (4.7 %) | — |
+| obojí | 63.2 / 16 | 68.3 / 39 | 65.5 / 374 (4.6 %) | — |
+
+- `SKIM_ST_REPOS=<s>` (`station.c`): poloha, kterou žádné čerstvé čtení (±100 Hz) nepotvrdilo déle než
+  `s` sekund, ustoupí jistému čerstvému čtení jinde hned, ne EMA krokem silnějšího. Ghosty živého signálu
+  ji nepohnou, jeho kanál polohu stále potvrzuje. 10 / 20 / 40 s vychází stejně. Čistá oprava kvality:
+  recall beze změny, busty o 1–4 méně, spotů daleko od R o šestinu méně.
+- `SKIM_CALL_CQWORDS=1` (`callsign.c`): DX/POTA/SOTA/WWFF/IOTA a kontinenty za CQ nestárnou volací okno,
+  slepené („CQPOTA“, „CQCQSOTA“) se odloupnou jako DX a TEST, v otevřeném okně je osamělé „D“ + „E“/„X“
+  roztržené DE/DX („CQ D X D E EA6ACA“). +0.4 recallu za +7 bustů na 5 dnech (přidané spoty ~10 % bustů).
+- Doporučení: REPOS zapnout jako výchozí (vlastní commit s `golden --update`); CQWORDS je malý obchod,
+  nechat opt-in do živé zkoušky.
 
 ## Zdroje
 - Repozitář: https://github.com/ok1hra/skimmer-for-linux (`src/engine/decode_cw_v2.c`, `pipeline.c`,

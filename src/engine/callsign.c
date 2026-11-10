@@ -546,6 +546,8 @@ struct _SkimCallsignExtractor {
   char     run_hit[CALL_MAX];                  /* its join counted on arrival */
   char     run_lead;                           /* lone E/T/K/R right before  */
   gboolean run_spelled;                        /* every piece one character  */
+  gboolean held_d, d_flush;                    /* SKIM_CALL_CQWORDS: a lone D
+                                                * waits for its E or X       */
   Cand     cand[MAX_CAND];
   guint    ncand;
 };
@@ -586,6 +588,7 @@ void skim_callsign_extractor_reset(SkimCallsignExtractor *x) {
   x->cq_broken  = FALSE;
   x->cq_pairs   = 0;
   x->cq_half    = FALSE;
+  x->held_d     = x->d_flush = FALSE;
   x->tu_win     = FALSE;
   x->tu_call[0] = '\0';
   g_string_set_size(x->over, 0);
@@ -716,6 +719,45 @@ static gboolean join_stop_word(const char *s) {
  * here, in the lexicon). Strict shape: nothing but "CQ" repeated, ≥2 times;
  * a cleanly keyed stream cannot produce it, so the normal CQ path is
  * untouched. */
+/* SKIM_CALL_CQWORDS=1 — the words that qualify a CQ ("CQ DX", "CQ POTA",
+ * "CQ SOTA DE …") do not age the calling window, glued on ("CQPOTA",
+ * "CQCQSOTA") they peel off like DX and TEST, and inside an open window a
+ * lone "D" followed by "E" or "X" is the torn DE / DX ("CQ D X D E
+ * EA6ACA" — four tokens closed the 3-token window before the call came).
+ * WEAK-SIGNAL-PLAN §8: of R's CQ stations L read and never saw calling,
+ * 60 % had a calling marker in the text the window did not reach. */
+static gboolean cqwords_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_CQWORDS");
+    on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  return on;
+}
+
+static gboolean cq_word(const char *s) {
+  static const char *W[] = { "DX", "POTA", "SOTA", "WWFF", "IOTA", "NA",
+                             "EU", "AS", "AF", "OC", "SA", "JA" };
+  for (guint i = 0; i < G_N_ELEMENTS(W); i++) {
+    if (strcmp(s, W[i]) == 0)
+      return TRUE;
+  }
+  return FALSE;
+}
+
+/* The glued qualifier at s: its length, 0 when none (DX and TEST are the
+ * old path's own). */
+static gsize cq_glued_word(const char *s) {
+  if (!cqwords_on())
+    return 0;
+  static const char *W[] = { "POTA", "SOTA", "WWFF", "IOTA" };
+  for (guint i = 0; i < G_N_ELEMENTS(W); i++) {
+    if (strncmp(s, W[i], 4) == 0)
+      return 4;
+  }
+  return 0;
+}
+
 static gboolean cq_run_token(const char *s) {
   gsize n = strlen(s);
   if (n < 4 || (n % 2) != 0)
@@ -747,6 +789,9 @@ static gsize cq_glued_head(const char *tok) {
       i += 2;
       word = TRUE;
     } else if (ncq && strncmp(tok + i, "TEST", 4) == 0) {
+      i += 4;
+      word = TRUE;
+    } else if (ncq && cq_glued_word(tok + i)) {
       i += 4;
       word = TRUE;
     } else {
@@ -906,6 +951,8 @@ static gsize fused_markers(const char *s, gboolean *cq, gboolean *de) {
       *cq = TRUE;
     } else if (i && strncmp(s + i, "DX", 2) == 0) {
       i += 2;                                  /* "CQDX", "DXDE"             */
+    } else if (*cq && cq_glued_word(s + i)) {
+      i += 4;                                  /* "CQPOTA", "CQSOTADE"       */
     } else if (strncmp(s + i, "DE", 2) == 0) {
       i += 2;
       *de = TRUE;
@@ -1031,6 +1078,26 @@ static gboolean glue_split(SkimCallsignExtractor *x, const char *tok) {
 }
 
 static void take_token(SkimCallsignExtractor *x, const char *tok) {
+  if (cqwords_on() && !x->d_flush) {
+    if (x->held_d) {
+      x->held_d = FALSE;
+      if (strcmp(tok, "E") == 0) {
+        take_token(x, "DE");
+        return;
+      }
+      if (strcmp(tok, "X") == 0) {
+        take_token(x, "DX");
+        return;
+      }
+      x->d_flush = TRUE;
+      take_token(x, "D");
+      x->d_flush = FALSE;
+    }
+    if (strcmp(tok, "D") == 0 && x->cq_recent <= CQ_WINDOW) {
+      x->held_d = TRUE;
+      return;
+    }
+  }
   if (strcmp(tok, "\xC2\xB7") == 0) {
     /* The decoder's over-break mark ("·") is metadata, not received text —
      * transparent for the two-token join: it must not eat a DE marker and
@@ -1144,6 +1211,12 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
         }
       }
     }
+    x->prev_tok[0] = '\0';
+    return;
+  }
+  if (cqwords_on() && x->cq_recent <= CQ_WINDOW && cq_word(tok)) {
+    run_close(x, 0);                           /* "CQ POTA": the window waits */
+    run_clear(x);
     x->prev_tok[0] = '\0';
     return;
   }
