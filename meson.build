@@ -58,6 +58,7 @@ engine_sources = [
   'src/engine/decode_deepcw.c',# DeepCW neural CW backend (Conformer + CTC)
   'src/engine/cw_reader.c',    # neural over re-reader (TCN+CTC, pane-only)
   'src/engine/tone_split.c',   # per-channel carrier splitter (multi-signal)
+  'src/engine/snr_meter.c',    # shadow SNR against the band floor
   'src/engine/station.c',      # M5: per-frequency station tracker
   'src/engine/callsign.c',     # M4: extraction + validation
   'src/engine/spot_out.c',     # M5/M6: spot policy — dedup, rate, sinks
@@ -211,6 +212,16 @@ skimmer_split_test = executable('skimmer-split-test',
   link_with : engine_lib,
 )
 test('tone-split', skimmer_split_test, timeout : 120)
+
+# Shadow SNR meter: a keyed carrier of known SNR_2500 in white noise
+# through the CW channelizer reads back — -10..+40 dB, off centre, busy band.
+skimmer_snr_test = executable('skimmer-snr-test',
+  ['src/snr_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('snr-meter', skimmer_snr_test, timeout : 120)
 
 # M4: offline gate — callsign validity (ITU allocation), labelled-corpus
 # precision/recall, fragment feeds, dictionary boost, noise fuzz.

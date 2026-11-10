@@ -227,6 +227,7 @@ const SkimStation *skim_station_table_report(SkimStationTable *t,
       if (st->snr_db >= e->snr_db) {
         e->freq_hz += 0.3 * (st->freq_hz - e->freq_hz);
         e->snr_db  = st->snr_db;
+        e->snr2_db = st->snr2_db;
         e->speed   = st->speed;
       }
       e->score      = MAX(e->score, st->score);
@@ -251,6 +252,7 @@ const SkimStation *skim_station_table_report(SkimStationTable *t,
       }
       e->freq_hz    = st->freq_hz;
       e->snr_db     = st->snr_db;
+      e->snr2_db    = st->snr2_db;
       e->speed      = st->speed;
       e->score      = MAX(e->score, st->score);
       e->hearings   = MAX(e->hearings, st->hearings);
