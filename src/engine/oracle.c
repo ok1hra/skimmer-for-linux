@@ -11,6 +11,7 @@
 
 typedef struct {
   double t0, t1, hz, wpm;
+  char   call[16];
 } Iv;
 
 static guint  g_modes;
@@ -37,6 +38,7 @@ static void load(void) {
     else if (!strcmp(*q, "freq")) { m |= SKIM_ORACLE_FREQ; }
     else if (!strcmp(*q, "ghost")) { m |= SKIM_ORACLE_GHOST; }
     else if (!strcmp(*q, "gatesoft")) { m |= SKIM_ORACLE_GSOFT; }
+    else if (!strcmp(*q, "combine")) { m |= SKIM_ORACLE_COMBINE; }
     else if (!strcmp(*q, "all")) {
       m |= SKIM_ORACLE_GATE | SKIM_ORACLE_CLOCK | SKIM_ORACLE_FREQ;
     } else if (strcmp(*q, "none")) {
@@ -66,6 +68,7 @@ static void load(void) {
       skipped++;
       continue;
     }
+    g_strlcpy(iv.call, call, sizeof(iv.call));
     g_array_append_val(a, iv);
     g_maxlen = MAX(g_maxlen, iv.t1 - iv.t0);
   }
@@ -112,6 +115,7 @@ gboolean skim_oracle_at(double chan_hz, double half_hz, double t_s,
       best = d;
       hit->carrier_hz = g_iv[i].hz;
       hit->wpm = g_iv[i].wpm;
+      g_strlcpy(hit->call, g_iv[i].call, sizeof(hit->call));
       got = TRUE;
     }
   }

@@ -270,6 +270,11 @@ typedef struct {
   guint64  wd_t1;                       /* end of its last mark               */
   guint64  wd_prev;                     /* end of the previous word's marks   */
   guint64  lat_t0;                      /* the lattice's seed: cum valid from */
+  guint64  oc_prev_t0;                  /* SKIM_ORACLE_MODE=combine: the word
+                                         * before the one in flight          */
+  char     oc_prev[16];
+  gboolean oc_loose;                    /* re-read spans: a character gap may
+                                         * be word-gap long (torn calls)     */
 
   /* --- estimates -------------------------------------------------------------- */
   double prev_i, prev_q;
@@ -1248,14 +1253,22 @@ static double rs_forced(Cw2State *st, guint64 A, guint N, const guint8 *seg,
     const double sign = (ty == SEG_DIT || ty == SEG_DAH) ? 1.0 : -1.0;
     int dlo, dhi;
     seg_window(st, ty, &dlo, &dhi);
+    const gboolean lz = st->oc_loose && ty == SEG_CSP;
+    if (lz) {
+      int wlo, whi;
+      seg_window(st, SEG_WSP, &wlo, &whi);
+      dhi = MAX(dhi, whi);
+    }
     for (guint t = 0; t <= N; t++) {
       float best = NEG_INF;
       for (int d = dlo; d <= dhi && (guint)d <= t; d++) {
         const float p = f[t - d];
         if (p <= NEG_INF)
           continue;
-        const float sc = p + (float)(sign * (RS_CUM(t) - RS_CUM(t - d)) +
-                                     dur_pen_memo(st, L, ty, d));
+        const double pen = lz ? MAX(dur_pen_memo(st, L, SEG_CSP, d),
+                                    dur_pen_memo(st, L, SEG_WSP, d))
+                              : dur_pen_memo(st, L, ty, d);
+        const float sc = p + (float)(sign * (RS_CUM(t) - RS_CUM(t - d)) + pen);
         if (sc > best) { best = sc; }
       }
       g[t] = best;
@@ -1297,12 +1310,20 @@ static double rs_free(Cw2State *st, guint64 A, guint N, float *lead,
         if (sc > bm) { bm = sc; }
       }
       seg_window(st, ST[k], &dlo, &dhi);
+      const gboolean lz = st->oc_loose && ST[k] == SEG_CSP;
+      if (lz) {
+        int wlo, whi;
+        seg_window(st, SEG_WSP, &wlo, &whi);
+        dhi = MAX(dhi, whi);
+      }
       for (int d = dlo; d <= dhi && (guint)d <= t; d++) {
         const float p = gm[t - d];
         if (p <= NEG_INF)
           continue;
-        const float sc = p + (float)(-(RS_CUM(t) - RS_CUM(t - d)) +
-                                     dur_pen_memo(st, L, ST[k], d));
+        const double pen = lz ? MAX(dur_pen_memo(st, L, SEG_CSP, d),
+                                    dur_pen_memo(st, L, SEG_WSP, d))
+                              : dur_pen_memo(st, L, ST[k], d);
+        const float sc = p + (float)(-(RS_CUM(t) - RS_CUM(t - d)) + pen);
         if (sc > bs) { bs = sc; }
       }
     }
@@ -1407,11 +1428,96 @@ static gboolean rs_reread(Cw2State *st, guint64 B, char *alt, gsize alt_size) {
   return take;
 }
 
+/* SKIM_ORACLE_MODE=combine (oracle.h) — measurement only. The word that just
+ * closed, and it with the word before (a torn call), laid against R's call
+ * and the dictionary's calls near it or near the word: one "ocomb:" line
+ * per span, scores relative to the free reading of the span. Character
+ * gaps may run word-gap long here (st->oc_loose) in the forced and the free
+ * reading alike. Decoding is untouched: the lattice memo is all it shares. */
+static void oc_span(Cw2State *st, const SkimOracleHit *oh, guint64 A,
+                    guint64 B, const char *word, int k) {
+  if (B <= A || B > st->t || st->t - A > W - 16 || A < st->lat_t0)
+    return;
+  const guint N = (guint)(B - A);
+  char cand[2 * RS_MAX_CAND][SKIM_CALLSIGN_NEAR_LEN];
+  guint nc = skim_callsign_dict_near(oh->call, cand, RS_MAX_CAND);
+  char flat[SKIM_CALLSIGN_NEAR_LEN];
+  guint fl = 0;
+  for (const char *c = word; *c && fl + 1 < sizeof(flat); c++) {
+    if (*c != '_') { flat[fl++] = *c; }
+  }
+  flat[fl] = '\0';
+  if (fl >= 2 && fl < SKIM_CALLSIGN_NEAR_LEN) {
+    nc += skim_callsign_dict_near(flat, cand + nc, RS_MAX_CAND);
+  }
+  float *buf = g_new(float, 3 * (N + 1));
+  st->oc_loose = TRUE;
+  const double sf = rs_free(st, A, N, buf, buf + N + 1, buf + 2 * (N + 1));
+  guint8 seg[RS_MAX_SEG];
+  guint K = rs_segments(oh->call, seg);
+  const double sc = K ? rs_forced(st, A, N, seg, K, buf, buf + N + 1) : NEG_INF;
+  K = rs_segments(flat, seg);
+  const double sr = K ? rs_forced(st, A, N, seg, K, buf, buf + N + 1) : NEG_INF;
+  double s2 = NEG_INF;
+  gint b2 = -1;
+  for (guint i = 0; i < nc; i++) {
+    if (strcmp(cand[i], oh->call) == 0)
+      continue;
+    gboolean dup = FALSE;
+    for (guint j = 0; j < i && !dup; j++) { dup = strcmp(cand[i], cand[j]) == 0; }
+    if (dup || !(K = rs_segments(cand[i], seg)))
+      continue;
+    const double x = rs_forced(st, A, N, seg, K, buf, buf + N + 1);
+    if (x > s2) {
+      s2 = x;
+      b2 = (gint)i;
+    }
+  }
+  st->oc_loose = FALSE;
+  g_free(buf);
+  g_printerr("ocomb: %.2f %.1f %s %s %d %u %.1f %.1f %.1f %s %.1f %.3f\n",
+             skim_oracle_time((double)B / st->rate), st->freq_hz, oh->call,
+             word, k, N, sf, sc > NEG_INF ? sc - sf : -999.0,
+             sr > NEG_INF ? sr - sf : -999.0, b2 >= 0 ? cand[b2] : "-",
+             s2 > NEG_INF ? s2 - sf : -999.0, sf / N);
+}
+
+static void oc_word(Cw2State *st, guint64 B) {
+  if (!(skim_oracle_modes() & SKIM_ORACLE_COMBINE) || !st->lat ||
+      st->dit <= 0 || st->wd_over || !st->wd_n)
+    return;
+  SkimOracleHit oh = { 0 };
+  if (!skim_oracle_at(st->freq_hz, 0.25 * st->rate,
+                      skim_oracle_time((double)B / st->rate), &oh) ||
+      !oh.call[0])
+    return;
+  pen_sync(st);
+  const guint64 lead = (guint64)(RS_LEAD_DITS * st->dit);
+  guint64 A = st->wd_t0 > lead ? st->wd_t0 - lead : 0;
+  A = MAX(A, MAX(st->wd_prev, st->lat_t0));
+  if (st->wd_n >= 2) { oc_span(st, &oh, A, B, st->wd, 1); }
+  if (st->oc_prev[0] && st->oc_prev_t0 >= st->lat_t0) {
+    char two[40];
+    g_snprintf(two, sizeof(two), "%s_%s", st->oc_prev, st->wd);
+    const guint64 A2 = st->oc_prev_t0 > lead ? st->oc_prev_t0 - lead : 0;
+    if (strlen(st->oc_prev) + st->wd_n < SKIM_CALLSIGN_NEAR_LEN) {
+      oc_span(st, &oh, MAX(A2, st->lat_t0), B, two, 2);
+    }
+  }
+}
+
 /* The word in flight is done (a word gap or the over break follows; its
  * evidence ends at B): re-read it, write the correction for the extractor,
  * start the next word. */
 static void word_close(Cw2State *st, SkimDecode *out, guint *pos, guint64 B) {
   if (st->wd_n) {
+    oc_word(st, B);
+    if (!st->wd_over && st->wd_n < sizeof(st->oc_prev)) {
+      g_strlcpy(st->oc_prev, st->wd, sizeof(st->oc_prev));
+      st->oc_prev_t0 = st->wd_t0;
+    } else {
+      st->oc_prev[0] = '\0';
+    }
     char alt[SKIM_CALLSIGN_NEAR_LEN];
     if (rs_reread(st, B, alt, sizeof(alt)) &&
         *pos + strlen(alt) + 3 < SKIM_DECODE_TEXT_MAX) {

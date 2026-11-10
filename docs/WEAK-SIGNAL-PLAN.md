@@ -385,6 +385,40 @@ gate) a události feedu (hold, drop, fold, send, spot). Nahrávky 1 a 2, 30/20/4
 - Doporučení: REPOS zapnout jako výchozí (vlastní commit s `golden --update`); CQWORDS je malý obchod,
   nechat opt-in do živé zkoušky.
 
+## 9. Soft-combining opakování: oracle před stavbou (krok 6, 2026-11-10)
+
+**Metoda.** `SKIM_ORACLE_MODE=combine` (`decode_cw_v2.c`, `oc_word`): u každého slova, které dekodér uzavře
+v intervalu R, se na LLR úsek slova (a slova s předchozím, kvůli roztrženým značkám) vynutí značka R
+a porovná s volným čtením úseku (`dC` ≤ 0) a s nejlepší slovníkovou značkou poblíž značky i slova
+(`dComp`) — totéž, co dělá re-read (`SKIM_V2_RESCORE`: fit 5, sep 3, ev 2). Dekódy zůstávají
+byte-identické. `combine-oracle.py` pak u každé CQ stanice R vezme nepřekrývající se úseky od nejlepšího
+(jen ty, které mohou být kopií značky: `dC` ≥ −15) a ptá se, kolik stanic projde s jedním, dvěma
+a třemi čteními. Nahrávky 1 a 2, 30/20/40 m, base a s oracle gatesoft (krok 1 + 6 dohromady).
+
+| CQ stanice R, třída v base | R-SNR | n | úsek v okně R base / gatesoft | projde 1 čtení base / gatesoft | 2–3 čtení přidají |
+|---|---|---|---|---|---|
+| miss | < 10 | 132 | 32 / 61 | 1 / 6 | 0 / 0 |
+| miss | ≥ 10 | 169 | 67 / 83 | 7 / 11 | 0 / 0 |
+| near | < 10 | 33 | 16 / 22 | 1 / 11 | 0 / 0 |
+| read | < 10 | 52 | 37 / 42 | 14 / 21 | 0 / 0 |
+| spot | vše | 1100 | 853 / 873 | 502 / 521 | 0 / 0 |
+
+Ani bez fitu (jen součet marginu proti sousedům, bez ochrany proti špatnému sousedovi) kombinace nic
+nepřidá: miss < 10 dB 1 → 1 (base) a 8 → 8 (gatesoft).
+
+**Závěry.**
+1. **Sčítat není co.** Pod 10 dB nemá 3/4 zmeškaných stanic v okně R žádné dekódované slovo (gate
+   zavřený); s měkkým gate polovina. Kde slovo je, značka R na něm sedí o medián 350–560 jednotek (podle pásma)
+   log-věrohodnosti hůř než volné čtení (práh re-readu −5) — slovo je jiný úsek, ne zašuměná kopie značky.
+2. **Druhá věrohodná kopie téže značky je vzácná** (~9 % intervalů R má dva nepřekrývající se úseky
+   s `dC` ≥ −15) a kde je, projde už první. Fit je průměr přes úseky brané od nejlepšího, takže další
+   čtení ho nezvednou; může pomoct jen marginu, a tam se neukázal ani jeden případ.
+3. **Odhad +3–5 dB z §5 krok 6 pro sčítání slovních úseků neplatí.** Měkký gate (krok 1) dá úseky, ale ty
+   projdou samy (miss+near < 10 dB 2 → 17 stanic), ne součtem.
+4. **Co zůstává otevřené:** úseky jsou segmentace dekodéru (k ≤ 2 slova). Sčítání, které na ní nezávisí —
+   klouzavé vynucené zarovnání celé značky na LLR prstenec přes opakování CQ — tento oracle neměří.
+   Je to krok 5 (vynucené zarovnání) rozšířený o součet, a měřit ho má až po kroku 5.
+
 ## Zdroje
 - Repozitář: https://github.com/ok1hra/skimmer-for-linux (`src/engine/decode_cw_v2.c`, `pipeline.c`,
   `channelizer.c`, `tone_split.c`, `docs/WEAK-SIGNAL.md`, `docs/LIVE-AIR.md`)

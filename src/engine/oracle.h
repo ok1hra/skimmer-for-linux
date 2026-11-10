@@ -13,6 +13,11 @@
  *   ghost  a stronger neighbour does not suppress that channel's decodes,
  *   gatesoft  the squelch and keying-duty bars are halved there (2.0×,
  *          0.07) instead of held open — the gate still shuts on the gaps.
+ *   combine  nothing changes; every word the decoder closes there is laid
+ *          against R's call and its dictionary neighbours (forced against
+ *          free reading, the re-read's own scores) and logged to stderr as
+ *          "ocomb:" lines — how far soft-combining the repeats (step 6)
+ *          could carry a station one reading does not.
  *
  * How much more of R's stations L reads with each is how much each stage
  * costs today. Unset, nothing changes: skim_oracle_modes() is 0.
@@ -34,11 +39,13 @@ enum {
   SKIM_ORACLE_FREQ  = 1 << 2,
   SKIM_ORACLE_GHOST = 1 << 3,
   SKIM_ORACLE_GSOFT = 1 << 4,
+  SKIM_ORACLE_COMBINE = 1 << 5,
 };
 
 typedef struct {
   double carrier_hz;   /* absolute                                          */
   double wpm;          /* R's                                               */
+  char   call[16];     /* R's                                               */
 } SkimOracleHit;
 
 /* The modes switched on (0 = oracle off). Loads the file on first call. */
