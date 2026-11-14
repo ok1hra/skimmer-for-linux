@@ -31,6 +31,7 @@
 #include "feed_gate.h"
 #include "gatelog.h"
 #include "hpsdr_p1.h"
+#include "snr_meter.h"
 #include "spot_out.h"
 #include "tci_client.h"
 #include "tone_split.h"
@@ -205,6 +206,7 @@ struct _SkimPipeline {
   GArray           *hits;                      /* Hit — one block's decodes  */
   double           *lvl;                       /* per-channel level snapshot */
   FreqLock         *flock;                     /* per-channel frequency lock */
+  SkimSnrMeter     *snr;                       /* shadow SNR (snr_meter.h)   */
   guint64           ghosts;                    /* decodes suppressed         */
 
   GAsyncQueue      *queue;                     /* IqBlock*                   */
@@ -389,6 +391,15 @@ static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
     g_printerr("feed: %-10s %10.1f kHz %3.0f dB %3.0f wpm t=%.1f\n", call,
                freq_hz / 1000.0, snr_db, speed, pipe_now_us(p) / 1e6);
   }
+  /* SKIM_SNR_TRACE=1: the shadow SNR (snr_meter.h) beside the one the
+   * line carries — what a comparison with CW Skimmer Server calibrates. */
+  if (g_getenv("SKIM_SNR_TRACE")) {
+    const SkimStation *st = skim_station_table_lookup(p->stations, call);
+    const double s2500 = st ? st->snr2_db : NAN;
+    g_printerr("snr: %-10s %10.1f kHz %3.0f dB snr2500 %5.1f esn0dot %5.1f "
+               "%3.0f wpm t=%.1f\n", call, freq_hz / 1000.0, snr_db, s2500,
+               skim_snr_esn0_dot(s2500, speed), speed, pipe_now_us(p) / 1e6);
+  }
   if (p->rbn_fold) {
     const SkimStation *st = skim_station_table_lookup(p->stations, call);
     skim_feed_fold_sent(p->rbn_fold, call, freq_hz, pipe_now_us(p),
@@ -534,6 +545,7 @@ static void bank_teardown(SkimPipeline *p) {
   g_free(p->sgen);
   g_free(p->lvl);
   g_free(p->flock);
+  g_clear_pointer(&p->snr, skim_snr_meter_free);
   p->dec = NULL;
   p->ext = NULL;
   p->split = NULL;
@@ -981,6 +993,11 @@ static void bank_build(SkimPipeline *p, double rate) {
   p->center_hz = 0;                            /* fresh states — no flush    */
   const SkimDecodeBackend *cw = pipe_backend(p);
   const double out_rate = skim_channelizer_out_rate(p->bank);
+  /* CW only: SNR_2500 means key-down power, which FSK has no spaces for */
+  p->snr = p->cfg.mode == SKIM_PIPELINE_MODE_CW
+               ? skim_snr_meter_new(p->nchan, out_rate,
+                                    SKIM_SNR_CW_ENBW * p->cfg.chan_bw_hz)
+               : NULL;
   for (guint c = 0; c < p->nchan; c++) {
     p->dec[SL(c, WIDE_LANE)] = cw->channel_new(out_rate);
     p->ext[SL(c, WIDE_LANE)] = skim_callsign_extractor_new();
@@ -1187,6 +1204,7 @@ static void take_text(SkimPipeline *p, guint ix, double sig_hz,
   st.freq_hz    = sig_hz;
   st.speed      = d->speed;
   st.snr_db     = d->snr_db;
+  st.snr2_db    = p->snr ? skim_snr_meter_db(p->snr, ix / NSLOT) : NAN;
   st.score      = score;
   st.hearings   = skim_callsign_extractor_hearings(p->ext[ix], call);
   st.heard_us   = skim_callsign_extractor_last_heard(p->ext[ix], call);
@@ -1502,6 +1520,11 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
     if (p->center_hz != 0) {
       const SkimDecodeBackend *cwf = pipe_backend(p);
       const double out_rate = skim_channelizer_out_rate(p->bank);
+      if (p->snr) {
+        skim_snr_meter_free(p->snr);
+        p->snr = skim_snr_meter_new(p->nchan, out_rate,
+                                    SKIM_SNR_CW_ENBW * p->cfg.chan_bw_hz);
+      }
       skim_gatelog_tap_reset(p->glog, pipe_now_us(p), pipe_wall_us(p), -1);
       for (guint c = 0; c < p->nchan; c++) {
         for (guint s = 0; s < NSLOT; s++) {
@@ -1556,6 +1579,7 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
       if (G_UNLIKELY(p->chdump) && p->chdump[c]) {
         fwrite(buf, 2 * sizeof(float), n, p->chdump[c]);
       }
+      skim_snr_meter_push(p->snr, c, buf, n);
       if (!sp) {
         const gboolean got = cw->process(p->dec[SL(c, WIDE_LANE)], buf, n, &d);
         char *aux = cw->take_aux_text

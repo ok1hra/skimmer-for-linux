@@ -38,6 +38,7 @@ typedef struct {
   double  freq_hz;
   double  speed;        /* WPM or baud */
   double  snr_db;
+  double  snr2_db;      /* shadow: snr_meter.h (NAN = none), rides with snr_db */
   double  score;        /* best callsign plausibility seen */
   gboolean cq;          /* heard CALLING (CQ/TEST/QRZ context) — owns the
                          * frequency; S&P answers report cq=FALSE */

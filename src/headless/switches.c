@@ -43,7 +43,8 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   /* the RBN feed */
   { "SKIM_FEED_CONFIRM", B }, { "SKIM_GATE_DICT_MIN", B }, { "SKIM_GATE_NEAR", B },
   { "SKIM_GATE_NEAR_DICT", B }, { "SKIM_GATE_NEAR_TTL", B },
-  { "SKIM_GATE_SETTLE_NODICT", B }, { "SKIM_FEED_TRACE", D }, { "SKIM_GATE_NEAR_DEBUG", D },
+  { "SKIM_GATE_SETTLE_NODICT", B }, { "SKIM_FEED_TRACE", D }, { "SKIM_SNR_TRACE", D },
+  { "SKIM_GATE_NEAR_DEBUG", D },
   /* measurement only: the decoder oracles (docs/WEAK-SIGNAL-PLAN.md) */
   { "SKIM_ORACLE", D }, { "SKIM_ORACLE_MODE", D }, { "SKIM_ORACLE_MINPROM", D },
   { "SKIM_ORACLE_KWS_DUMP", D },
