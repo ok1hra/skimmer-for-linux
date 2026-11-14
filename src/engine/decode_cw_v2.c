@@ -275,6 +275,8 @@ typedef struct {
   char     oc_prev[16];
   gboolean oc_loose;                    /* re-read spans: a character gap may
                                          * be word-gap long (torn calls)     */
+  float   *kws;                         /* SKIM_ORACLE_MODE=kws: envelope ring */
+  guint64  kws_n;                       /* samples written to it              */
 
   /* --- estimates -------------------------------------------------------------- */
   double prev_i, prev_q;
@@ -750,6 +752,7 @@ static void cw2_channel_free(gpointer state) {
     g_array_free(st->ops, TRUE);
   }
   g_free(st->pre);
+  g_free(st->kws);
   g_free(st->lat);
   g_free(st);
 }
@@ -1506,6 +1509,265 @@ static void oc_word(Cw2State *st, guint64 B) {
   }
 }
 
+
+/* SKIM_ORACLE_MODE=kws (oracle.h) — measurement only, plan step 5: is R's
+ * call in the audio at all, found without the decoder's words? Every
+ * KWS_HOP_S on the channel that owns one of R's stations, the last
+ * KWS_WIN_S of the soft path's envelope become llr on the window's own
+ * levels (the soft path's two views, levels from the window's quantiles,
+ * so the decoder's gate and trackers play no part), and the call is
+ * searched for anywhere in it: a free reading, a word gap, the call's exact
+ * elements, a word gap, a free reading — against the best free reading of the whole window. The
+ * clock is R's WPM at three scales, the best kept; character gaps inside
+ * the call may stretch to 8 dits (torn calls). The same search for the
+ * dictionary's calls near R's (what a wrong read would be) and for calls of
+ * R's other stations (what a false alarm would be) is the control. One
+ * "okws:" line per window; decoding is untouched. */
+#define KWS_WIN_S  6.0
+#define KWS_HOP_S  3.0
+#define KWS_NEAR   8
+#define KWS_DECOYS 6
+#define KWS_SKIP   (-1e29f)
+enum { KT_DIT, KT_DAH, KT_ESP, KT_CSP, KT_WSP, KT_CSPL, KT_N };
+
+typedef struct {
+  int    lo[KT_N], hi[KT_N];
+  float *pen[KT_N];                     /* pen[j][d], lo ≤ d ≤ hi             */
+  int    dlong;                         /* a silence longer than a word gap   */
+  float  pen_long;
+} KwsDur;
+
+static void kws_dur(KwsDur *k, double T, int N) {
+  static const double LO[KT_N] = { 0.6, 1.6, 0.7, 1.6, 4.0, 1.6 };
+  static const double HI[KT_N] = { 2.6, 5.0, 2.6, 5.5, 17.0, 8.0 };
+  static const double ID[KT_N] = { 1.0, 3.0, 1.0, 3.0, 7.0, 3.0 };
+  static const double AL[KT_N] = { 10.0, 10.0, 10.0, 6.0, 2.5, 6.0 };
+  for (int j = 0; j < KT_N; j++) {
+    k->lo[j] = MAX(2, (int)(LO[j] * T + 0.5));
+    k->hi[j] = MAX(k->lo[j], MIN((int)(HI[j] * T + 0.5), N));
+    k->pen[j] = g_new(float, k->hi[j] + 1);
+    for (int d = k->lo[j]; d <= k->hi[j]; d++) {
+      const double r = log(d / (ID[j] * T));
+      double p = -AL[j] * r * r - SEG_COST;
+      if (j == KT_CSPL) {
+        const double rw = log(d / (7.0 * T));
+        p = MAX(p, -2.5 * rw * rw - SEG_COST);
+      }
+      k->pen[j][d] = (float)p;
+    }
+  }
+  k->dlong = k->hi[KT_WSP] + 1;
+  k->pen_long = k->pen[KT_WSP][k->hi[KT_WSP]];
+}
+
+static void kws_dur_free(KwsDur *k) {
+  for (int j = 0; j < KT_N; j++) { g_free(k->pen[j]); }
+}
+
+/* The free reading of the llr with cumulative sums c[0..N]: silence, then
+ * marks and spaces, then silence; a silence longer than a word gap may sit
+ * inside too. P[t]: the best reading of (0, t] that a call may follow —
+ * ending in silence or a word gap (after a character gap, a call's tail
+ * would fit inside a longer call: K1HC in OK1HCG). Returns the best
+ * reading of the whole window. */
+static double kws_free(const double *c, int N, const KwsDur *k, float *P,
+                       float *gm, float *gse, float *gl, float *gsc) {
+  P[0] = 0.0f;
+  gm[0] = gse[0] = gl[0] = gsc[0] = NEG_INF;
+  double best = -(c[N] - c[0]);
+  for (int t = 1; t <= N; t++) {
+    float bm = NEG_INF;
+    for (int j = KT_DIT; j <= KT_DAH; j++) {
+      for (int d = k->lo[j]; d <= k->hi[j] && d <= t; d++) {
+        const float p = MAX(P[t - d], MAX(gse[t - d], gsc[t - d]));
+        if (p < KWS_SKIP)
+          continue;
+        const float sc = p + (float)(c[t] - c[t - d]) + k->pen[j][d];
+        if (sc > bm) { bm = sc; }
+      }
+    }
+    gm[t] = bm;
+    float be = NEG_INF, bc = NEG_INF, bb = NEG_INF;
+    for (int j = KT_ESP; j <= KT_WSP; j++) {
+      for (int d = k->lo[j]; d <= k->hi[j] && d <= t; d++) {
+        const float p = gm[t - d];
+        if (p < KWS_SKIP)
+          continue;
+        const float sc = p - (float)(c[t] - c[t - d]) + k->pen[j][d];
+        float *bx = j == KT_ESP ? &be : j == KT_CSP ? &bc : &bb;
+        if (sc > *bx) { *bx = sc; }
+      }
+    }
+    gse[t] = be;
+    gsc[t] = bc;
+    float lg = gl[t - 1] < KWS_SKIP ? NEG_INF
+                                    : gl[t - 1] - (float)(c[t] - c[t - 1]);
+    if (t >= k->dlong && gm[t - k->dlong] > KWS_SKIP) {
+      lg = MAX(lg, gm[t - k->dlong] - (float)(c[t] - c[t - k->dlong]) +
+                       k->pen_long);
+    }
+    gl[t] = lg;
+    P[t] = MAX(MAX((float)-(c[t] - c[0]), bb), lg);
+    if (bm > KWS_SKIP) { best = MAX(best, bm - (c[N] - c[t])); }
+  }
+  return best;
+}
+
+/* The call's elements between a free reading before (P) and after (S). */
+static double kws_call(const double *c, int N, const KwsDur *k,
+                       const guint8 *seg, guint K, const float *P,
+                       const float *S, float *f, float *g) {
+  memcpy(f, P, (N + 1) * sizeof(float));
+  for (guint q = 0; q < K; q++) {
+    const int j = seg[q] == SEG_CSP ? KT_CSPL : seg[q];
+    const double sign = (j == KT_DIT || j == KT_DAH) ? 1.0 : -1.0;
+    for (int t = 0; t <= N; t++) {
+      float best = NEG_INF;
+      for (int d = k->lo[j]; d <= k->hi[j] && d <= t; d++) {
+        const float p = f[t - d];
+        if (p < KWS_SKIP)
+          continue;
+        const float sc = p + (float)(sign * (c[t] - c[t - d])) + k->pen[j][d];
+        if (sc > best) { best = sc; }
+      }
+      g[t] = best;
+    }
+    float *x = f;
+    f = g;
+    g = x;
+  }
+  double best = NEG_INF;
+  for (int t = 0; t <= N; t++) {
+    if (f[t] > KWS_SKIP && S[t] > KWS_SKIP) { best = MAX(best, f[t] + S[t]); }
+  }
+  return best;
+}
+
+static int kws_fcmp(const void *a, const void *b) {
+  const float x = *(const float *)a, y = *(const float *)b;
+  return x < y ? -1 : x > y;
+}
+
+static void kws_eval(Cw2State *st, int N) {
+  const double t_s = skim_oracle_time((double)st->pre_head / st->rate);
+  SkimOracleHit oh = { 0 };
+  if (!skim_oracle_at(st->freq_hz, 0.25 * st->rate, t_s, &oh) ||
+      !oh.call[0] || oh.wpm <= 0)
+    return;
+  char calls[1 + KWS_NEAR + KWS_DECOYS][SKIM_CALLSIGN_NEAR_LEN];
+  guint nc = 0;
+  g_strlcpy(calls[nc++], oh.call, SKIM_CALLSIGN_NEAR_LEN);
+  char near[RS_MAX_CAND][SKIM_CALLSIGN_NEAR_LEN];
+  const guint nn = skim_callsign_dict_near(oh.call, near, RS_MAX_CAND);
+  for (guint i = 0; i < nn && nc < 1 + KWS_NEAR; i++) {
+    if (strcmp(near[i], oh.call)) { g_strlcpy(calls[nc++], near[i], SKIM_CALLSIGN_NEAR_LEN); }
+  }
+  const guint near_end = nc;
+  char dec[KWS_DECOYS][16];
+  const guint nd = skim_oracle_decoys(oh.call, (guint)t_s ^ (guint)st->freq_hz,
+                                      dec, KWS_DECOYS);
+  for (guint i = 0; i < nd; i++) { g_strlcpy(calls[nc++], dec[i], SKIM_CALLSIGN_NEAR_LEN); }
+
+  /* llr on the window's own levels: noise σ from the lower quartile
+   * (Rayleigh), the mark level at the 90th percentile. */
+  const guint mask = 2047;
+  float *e = g_new(float, N), *srt = g_new(float, N);
+  for (int i = 0; i < N; i++) {
+    e[i] = st->kws[(st->kws_n - (guint64)N + (guint64)i) & mask];
+  }
+  memcpy(srt, e, N * sizeof(float));
+  qsort(srt, N, sizeof(float), kws_fcmp);
+  const double sig = MAX(srt[N / 4] / 0.7585, 1e-12);
+  const double mu_s = 1.2533 * sig;
+  const double mu_m = MAX(srt[(9 * N) / 10], 1.5 * mu_s);
+  const double mid = 0.5 * (mu_m + mu_s);
+  double *c = g_new(double, N + 1), *cr = g_new(double, N + 1);
+  c[0] = 0.0;
+  for (int i = 0; i < N; i++) {
+    const double x = (e[i] - mid) / (mu_m - mu_s);
+    const double span = CLAMP(LLR_K * x, -LLR_MAX, LLR_MAX);
+    const double z = e[i] / (mu_s / 1.2533);
+    const double ray = z <= 1.0 ? -LLR_MAX
+                                : CLAMP(3.3 * (0.5 * z * z - log(z) - 2.89),
+                                        -LLR_MAX, LLR_MAX);
+    c[i + 1] = c[i] + 0.5 * span + 0.5 * ray;
+  }
+  for (int u = 0; u <= N; u++) { cr[u] = c[N] - c[N - u]; }
+  if (g_getenv("SKIM_ORACLE_KWS_DUMP")) {
+    GString *x = g_string_new(NULL);
+    for (int i = 0; i < N; i++) {
+      const double l = c[i + 1] - c[i];
+      g_string_append_c(x, l > 1.0 ? '#' : l > 0 ? '+' : l > -1.0 ? '-' : '.');
+    }
+    g_printerr("okwsx: %.2f %s\n", t_s, x->str);
+    g_string_free(x, TRUE);
+  }
+  g_free(e);
+  g_free(srt);
+
+  float *P = g_new(float, N + 1), *Pr = g_new(float, N + 1),
+        *S = g_new(float, N + 1), *a = g_new(float, N + 1),
+        *b = g_new(float, N + 1), *d3 = g_new(float, N + 1),
+        *d4 = g_new(float, N + 1);
+  static const double SC[3] = { 0.85, 1.0, 1.18 };
+  double dbest[1 + KWS_NEAR + KWS_DECOYS];
+  for (guint i = 0; i < nc; i++) { dbest[i] = -999.0; }
+  double F1 = 0.0;
+  int s1 = -1;
+  const double dit0 = 1.2 * st->rate / oh.wpm;
+  for (int si = 0; si < 3; si++) {
+    KwsDur k;
+    kws_dur(&k, dit0 * SC[si], N);
+    const double F = kws_free(c, N, &k, P, a, b, d3, d4);
+    kws_free(cr, N, &k, Pr, a, b, d3, d4);
+    for (int t = 0; t <= N; t++) { S[t] = Pr[N - t]; }
+    for (guint i = 0; i < nc; i++) {
+      guint8 seg[RS_MAX_SEG];
+      const guint K = rs_segments(calls[i], seg);
+      if (!K)
+        continue;
+      const double kw = kws_call(c, N, &k, seg, K, P, S, a, b);
+      if (kw > KWS_SKIP && kw - F > dbest[i]) {
+        dbest[i] = kw - F;
+        if (i == 0) { s1 = si; F1 = F; }
+      }
+    }
+    kws_dur_free(&k);
+  }
+  gint bn = -1;
+  for (guint i = 1; i < near_end; i++) {
+    if (bn < 0 || dbest[i] > dbest[bn]) { bn = (gint)i; }
+  }
+  GString *gs = g_string_new(NULL);
+  for (guint i = near_end; i < nc; i++) {
+    g_string_append_printf(gs, " %s:%.1f", calls[i], dbest[i]);
+  }
+  g_printerr("okws: %.2f %.1f %s %.0f %d %d %.1f %.3f %.2f %.1f %s %.1f |%s\n",
+             t_s, st->freq_hz, oh.call, oh.wpm, N, s1, F1, F1 / N,
+             20.0 * log10(mu_m / mu_s), dbest[0], bn >= 0 ? calls[bn] : "-",
+             bn >= 0 ? dbest[bn] : -999.0, gs->str);
+  g_string_free(gs, TRUE);
+  g_free(c);
+  g_free(cr);
+  g_free(P);
+  g_free(Pr);
+  g_free(S);
+  g_free(a);
+  g_free(b);
+  g_free(d3);
+  g_free(d4);
+}
+
+static void kws_push(Cw2State *st, float ms) {
+  const int N = (int)(KWS_WIN_S * st->rate);
+  const guint hop = (guint)(KWS_HOP_S * st->rate);
+  if (N + 1 > 2048 || !hop)
+    return;
+  if (!st->kws) { st->kws = g_new0(float, 2048); }
+  st->kws[st->kws_n++ & 2047] = ms;
+  if (st->kws_n >= (guint64)N && st->kws_n % hop == 0) { kws_eval(st, N); }
+}
+
 /* The word in flight is done (a word gap or the over break follows; its
  * evidence ends at B): re-read it, write the correction for the extractor,
  * start the next word. */
@@ -2230,6 +2492,7 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
                                  (float)MIN(st->ma_n, 3)
                            : m;
     st->pre[st->pre_head++ & (st->pre_size - 1)] = ms;
+    if (G_UNLIKELY(om & SKIM_ORACLE_KWS)) { kws_push(st, ms); }
 
     /* Level trackers + squelch + keying-duty — v1 verbatim. */
     if (st->env_hi < 0) { st->env_hi = st->env_lo = m; }

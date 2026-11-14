@@ -39,6 +39,7 @@ static void load(void) {
     else if (!strcmp(*q, "ghost")) { m |= SKIM_ORACLE_GHOST; }
     else if (!strcmp(*q, "gatesoft")) { m |= SKIM_ORACLE_GSOFT; }
     else if (!strcmp(*q, "combine")) { m |= SKIM_ORACLE_COMBINE; }
+    else if (!strcmp(*q, "kws")) { m |= SKIM_ORACLE_KWS; }
     else if (!strcmp(*q, "all")) {
       m |= SKIM_ORACLE_GATE | SKIM_ORACLE_CLOCK | SKIM_ORACLE_FREQ;
     } else if (strcmp(*q, "none")) {
@@ -120,4 +121,18 @@ gboolean skim_oracle_at(double chan_hz, double half_hz, double t_s,
     }
   }
   return got;
+}
+
+guint skim_oracle_decoys(const char *call, guint seed, char (*out)[16],
+                         guint max) {
+  guint n = 0;
+  guint32 h = seed * 2654435761u + 1u;
+  for (guint tries = 0; g_n && tries < 16 * max && n < max; tries++) {
+    h = h * 1664525u + 1013904223u;
+    const char *c = g_iv[(h >> 8) % g_n].call;
+    gboolean dup = !strcmp(c, call);
+    for (guint j = 0; j < n && !dup; j++) { dup = !strcmp(out[j], c); }
+    if (!dup) { g_strlcpy(out[n++], c, 16); }
+  }
+  return n;
 }

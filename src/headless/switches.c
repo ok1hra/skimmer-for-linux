@@ -46,6 +46,7 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   { "SKIM_GATE_SETTLE_NODICT", B }, { "SKIM_FEED_TRACE", D }, { "SKIM_GATE_NEAR_DEBUG", D },
   /* measurement only: the decoder oracles (docs/WEAK-SIGNAL-PLAN.md) */
   { "SKIM_ORACLE", D }, { "SKIM_ORACLE_MODE", D }, { "SKIM_ORACLE_MINPROM", D },
+  { "SKIM_ORACLE_KWS_DUMP", D },
   { "SKIM_REPLAY_FROM", D },
   /* MASTER.SCP; the supervisor */
   { "SKIM_SCP_URL", S }, { "SKIM_DEEPCW_URL", S }, { "SKIM_HPSDR_DISCOVER", S }, { "SKIM_SUPERVISED", S },

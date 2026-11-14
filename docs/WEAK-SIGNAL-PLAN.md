@@ -419,6 +419,47 @@ nepřidá: miss < 10 dB 1 → 1 (base) a 8 → 8 (gatesoft).
    klouzavé vynucené zarovnání celé značky na LLR prstenec přes opakování CQ — tento oracle neměří.
    Je to krok 5 (vynucené zarovnání) rozšířený o součet, a měřit ho má až po kroku 5.
 
+## 10. Je značka R ve zvuku? Hledání bez slov dekodéru (krok 5, oracle, 2026-11-14)
+
+**Metoda.** `SKIM_ORACLE_MODE=kws` (`decode_cw_v2.c`, `kws_eval`): každé 3 s na kanálu se stanicí R se
+posledních 6 s obálky měkké cesty převede na llr podle úrovní samotného okna (dolní kvartil = šum,
+90. percentil = značka; gate a trackery dekodéru v tom nehrají roli). Značka R se v okně hledá kdekoli:
+volné čtení, slovní mezera, přesné prvky značky (mezera mezi znaky smí být až 8 teček — roztržené
+značky), slovní mezera, volné čtení. Porovnává se s nejlepším volným čtením celého okna (`dC` ≤ 0).
+Hodiny jsou WPM R ve třech měřítkách (0.85/1/1.18), platí nejlepší. Stejně se hledají sousedé
+značky ve slovníku (co by byl bust) a značky jiných stanic R z téhož souboru (falešný poplach).
+Dekódy zůstávají byte-identické. Vyhodnocení `kws-oracle.py` bere u každé CQ stanice R nejlepší okno.
+Značka je **nalezena**, když `dC` ≥ θ a je o 3 lepší než každý soused (shoda se sousedem, který je
+podřetězcem, „G5V“ v „G5VZ“, se počítá jako nalezení). Nahrávky 1 a 2, 30/20/40 m, 1811 CQ stanic R.
+
+| třída v base | R-SNR < 10: n | nalezeno θ −5 | všechna SNR: n | nalezeno θ −5 |
+|---|---|---|---|---|
+| spot (kalibrace) | 94 | 48 | 1100 | 837 |
+| read (v textu, nespotováno) | 52 | 24 | 310 | 185 |
+| near (1–2 editace v textu) | 33 | 8 | 100 | 33 |
+| miss | 132 | 11 | 301 | 73 |
+
+Falešné poplachy: z 372 120 hledání cizích značek dosáhlo θ −5 jen 24 (64 ppm); θ −0.5 19. Ze
+24 jich 14 byla stanice, kterou R ve stejné době slyšel do 300 Hz (QSO protistanice, soused prosakující
+do kanálu) — skutečná přítomnost, ne šum. Skutečná míra falešných poplachů je tedy pod ~30 ppm na
+značku a okno. Soused ze slovníku byl stejně dobrý nebo lepší (nalezení zamítnuto, jinak by to byl bust) u 23 stanic.
+
+**Závěry.**
+1. **Rezerva existuje, a velká.** Ze 711 CQ stanic, které base nespotoval, najde hledání ve zvuku 291
+   (strop +16 bodů recallu na CQ stanicích); pod 10 dB 43 z 217 (+14 bodů z 311).
+2. **Většina je dostupná z textu:** read + near = 218 stanic (+12 bodů; pod 10 dB 32, +10 bodů). Kandidáta
+   tedy dává sám text dekodéru (slovo do 2 editací, spojení roztržených tokenů, podřetězec slepeného),
+   a zvuk ho potvrdí — tím se obchází textová heuristika extraktoru, kterou §8 označil za vyčerpanou.
+   Kandidátů je pak jednotky až desítky na okno, ne 40 000 SCP: falešné poplachy ~30 ppm × 24 ≈ 0.07 %
+   na okno.
+3. **Pro „miss“ (73) chybí kandidát:** text nedává nic do 2 editací. Kandidáty by musely přijít odjinud
+   (nedávno spotované značky na pásmu, vlastní historie) — samostatný krok, vyšší riziko.
+4. **Vlastní llr okna je slabší než dekodérova:** ze spotovaných stanic pod 10 dB najde kws jen polovinu
+   (48/94). Stavba má hledat na llr dekodéru (prstenec `cum`, jeho hodiny a fist), ne na úrovních okna;
+   zisk by pak měl být spíš vyšší.
+5. Oracle zná značku i čas (interval R). Na skutečné stavbě rozhodne, jak dobře se kandidáti z textu
+   generují a jak se nalezení ověří opakováním — to už je krok 5 sám, měřitelný tap-replayem a compare.
+
 ## Zdroje
 - Repozitář: https://github.com/ok1hra/skimmer-for-linux (`src/engine/decode_cw_v2.c`, `pipeline.c`,
   `channelizer.c`, `tone_split.c`, `docs/WEAK-SIGNAL.md`, `docs/LIVE-AIR.md`)

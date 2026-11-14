@@ -18,6 +18,11 @@
  *          free reading, the re-read's own scores) and logged to stderr as
  *          "ocomb:" lines — how far soft-combining the repeats (step 6)
  *          could carry a station one reading does not.
+ *   kws    nothing changes; every 3 s the channel's last 6 s of envelope
+ *          are searched for R's call (and, as the control, its dictionary
+ *          neighbours and the calls of R's other stations) by forced
+ *          alignment against a free reading, no word boundaries — "okws:"
+ *          lines: is the call in the audio at all (step 5).
  *
  * How much more of R's stations L reads with each is how much each stage
  * costs today. Unset, nothing changes: skim_oracle_modes() is 0.
@@ -40,6 +45,7 @@ enum {
   SKIM_ORACLE_GHOST = 1 << 3,
   SKIM_ORACLE_GSOFT = 1 << 4,
   SKIM_ORACLE_COMBINE = 1 << 5,
+  SKIM_ORACLE_KWS = 1 << 6,
 };
 
 typedef struct {
@@ -58,6 +64,11 @@ double   skim_oracle_time(double t_s);
  * chan_hz (the nearest one if several); FALSE when none. */
 gboolean skim_oracle_at(double chan_hz, double half_hz, double t_s,
                         SkimOracleHit *hit);
+
+/* Up to max calls of R's other stations (never `call`, no repeats), picked
+ * by seed — the false-alarm control of the kws mode. */
+guint    skim_oracle_decoys(const char *call, guint seed, char (*out)[16],
+                            guint max);
 
 G_END_DECLS
 
