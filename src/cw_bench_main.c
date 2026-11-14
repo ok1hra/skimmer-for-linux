@@ -27,8 +27,13 @@ int main(int argc, char **argv) {
     fprintf(stderr, "usage: skimmer-cw-bench FILE.cf32...\n");
     return 2;
   }
+  /* SKIM_CW_ENGINE=v1|v2|v3 (SKIM_CW_V1=1 still means v1); v3 is the default. */
+  const char *eng = g_getenv("SKIM_CW_ENGINE");
   const SkimDecodeBackend *b =
-      g_getenv("SKIM_CW_V1") ? skim_decode_cw() : skim_decode_cw_v2();
+      (eng && g_ascii_strcasecmp(eng, "v1") == 0) || (!eng && g_getenv("SKIM_CW_V1"))
+          ? skim_decode_cw()
+      : eng && g_ascii_strcasecmp(eng, "v2") == 0 ? skim_decode_cw_v2()
+                                                   : skim_decode_cw_v3();
   static float buf[2 * BLK];
   /* SKIM_BENCH_BLK: frames per process() call — a replay at 192 kHz hands
    * each channel 2-3 frames per call, not 64. */

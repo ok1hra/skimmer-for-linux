@@ -298,7 +298,8 @@ static void pipe_log_stamp(const SkimPipeline *p, const IqBlock *b,
   }
 }
 
-/* CW decoder pick: the soft-decision Viterbi v2 is the DEFAULT since
+/* CW decoder pick: v3 (decode_cw_v3.c, the weak-signal rebuild) is the
+ * DEFAULT on this branch; the soft-decision Viterbi v2 was the default since
  * 2026-08-04 (Richard's call after the 2026-08-01 contest session ran it
  * live all day). v1 stays in the tree as the classical fallback; DeepCW
  * (2026-09-12) is the neural engine behind the app's "CW engine" switch.
@@ -312,8 +313,9 @@ static SkimCwEngine cw_engine_pick(const SkimPipelineConfig *cfg) {
   if (env && env[0]) {
     if (g_ascii_strcasecmp(env, "v1") == 0)          { e = SKIM_CW_ENGINE_V1; }
     else if (g_ascii_strcasecmp(env, "v2") == 0)     { e = SKIM_CW_ENGINE_V2; }
+    else if (g_ascii_strcasecmp(env, "v3") == 0)     { e = SKIM_CW_ENGINE_V3; }
     else if (g_ascii_strcasecmp(env, "deepcw") == 0) { e = SKIM_CW_ENGINE_DEEPCW; }
-    else { g_warning("SKIM_CW_ENGINE=%s: unknown (v1|v2|deepcw) — ignored", env); }
+    else { g_warning("SKIM_CW_ENGINE=%s: unknown (v1|v2|v3|deepcw) — ignored", env); }
   } else if (g_getenv("SKIM_CW_V1")) {
     e = SKIM_CW_ENGINE_V1;
   }
@@ -321,9 +323,9 @@ static SkimCwEngine cw_engine_pick(const SkimPipelineConfig *cfg) {
     GError *err = NULL;
     if (!skim_decode_deepcw_available(&err)) {
       g_warning("DeepCW engine not available (%s) — falling back to the "
-                "classical v2 decoder", err ? err->message : "?");
+                "classical v3 decoder", err ? err->message : "?");
       g_clear_error(&err);
-      e = SKIM_CW_ENGINE_V2;
+      e = SKIM_CW_ENGINE_V3;
     }
   }
   return e;
@@ -333,6 +335,7 @@ static const SkimDecodeBackend *cw_backend(const SkimPipeline *p) {
   switch (p->cw_engine) {
     case SKIM_CW_ENGINE_V1:     return skim_decode_cw();
     case SKIM_CW_ENGINE_DEEPCW: return skim_decode_deepcw();
+    case SKIM_CW_ENGINE_V3:     return skim_decode_cw_v3();
     default:                    return skim_decode_cw_v2();
   }
 }
@@ -349,6 +352,7 @@ const char *skim_pipeline_cw_engine_name(const SkimPipeline *p) {
   switch (p->cw_engine) {
     case SKIM_CW_ENGINE_V1:     return "cw-v1";
     case SKIM_CW_ENGINE_DEEPCW: return "deepcw";
+    case SKIM_CW_ENGINE_V3:     return "cw-v3";
     default:                    return "cw-v2";
   }
 }

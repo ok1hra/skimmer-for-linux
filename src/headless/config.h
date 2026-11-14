@@ -11,9 +11,9 @@
  *            rate    48000 / 96000 / 192000 — one rate for all receivers
  *            clock_ppm  for the radios without @ppm
  *   [bands]  <name>=<centre Hz> [modes], in receiver order (RX1 first);
- *            modes a comma list of cw, cw:v2, cw:deepcw, rtty — none = cw
+ *            modes a comma list of cw, cw:v3, cw:v2, cw:deepcw, rtty — none = cw
  *            with [decode] engine
- *   [decode] engine=v2|deepcw (the bands that name none), log=true|false,
+ *   [decode] engine=v3|v2|deepcw (the bands that name none), log=true|false,
  *            suppress_cw_on_rtty (default false: rtty_pairs.h)
  *   [feed]   call, port (0 = off), min_score, min_hearings, settle_s,
  *            settle_nodict_s, fresh_s, fold_s, learn, gate, gate_mode,

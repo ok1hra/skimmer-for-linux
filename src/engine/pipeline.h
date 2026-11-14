@@ -36,11 +36,16 @@ typedef enum {
  * neural Conformer/CTC backend (decode_deepcw.c) that needs ONNX Runtime
  * and a model file at run time — when either is missing the pipeline
  * falls back to v2 and says so. Env override for replays and probes:
- * SKIM_CW_ENGINE=v1|v2|deepcw (SKIM_CW_V1=1 still means v1). */
+ * SKIM_CW_ENGINE=v1|v2|v3|deepcw (SKIM_CW_V1=1 still means v1).
+ * v3 (decode_cw_v3.c, 2026-11) is v2's lattice behind a carrier-matched
+ * front end, calibrated LLRs and an audio-confirmed callsign reader — the
+ * default on the v3 branch (docs/CW-V3.md). V2 stays 0: a zeroed config
+ * still means v2, which keeps the v0.7 golden reference reachable. */
 typedef enum {
   SKIM_CW_ENGINE_V2 = 0,
   SKIM_CW_ENGINE_V1,
   SKIM_CW_ENGINE_DEEPCW,
+  SKIM_CW_ENGINE_V3,
 } SkimCwEngine;
 
 /* Where the IQ comes from. TCI: a radio's TCI server (it owns the tuning;

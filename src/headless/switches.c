@@ -23,6 +23,12 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   { "SKIM_V2_NARROW", B }, { "SKIM_V2_NEAREST", B }, { "SKIM_V2_RAYCAP", B },
   { "SKIM_V2_RAYFADE", B }, { "SKIM_V2_RAYSMEAR", B }, { "SKIM_V2_RELOCK_DB", B },
   { "SKIM_V2_RESCORE", B }, { "SKIM_V2_RESCORE_DEBUG", D },
+  /* CW v3 (decode_cw_v3.c): v2's switches under its own names, plus its own */
+  { "SKIM_CW3_DEBUG", D }, { "SKIM_CW3_TRACE", D },
+  { "SKIM_V3_DAHMAX", B }, { "SKIM_V3_EDGE", B }, { "SKIM_V3_EDGE_WEAK", B },
+  { "SKIM_V3_NARROW", B }, { "SKIM_V3_NEAREST", B }, { "SKIM_V3_RAYCAP", B },
+  { "SKIM_V3_RAYFADE", B }, { "SKIM_V3_RAYSMEAR", B }, { "SKIM_V3_RELOCK_DB", B },
+  { "SKIM_V3_RESCORE", B }, { "SKIM_V3_RESCORE_DEBUG", D },
   /* DeepCW */
   { "SKIM_DEEPCW_BATCH", B }, { "SKIM_DEEPCW_DRAFT", B }, { "SKIM_DEEPCW_DRAFT_MIN", B },
   { "SKIM_DEEPCW_DRAFT_P", B }, { "SKIM_DEEPCW_FLUSH", B }, { "SKIM_DEEPCW_FLUSH_K", B },

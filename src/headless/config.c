@@ -29,15 +29,16 @@ static const char DEFAULT_CONFIG[] =
   "clock_ppm=0\n"
   "\n[bands]\n"
   "# name=centre Hz [modes], in receiver order (RX1 first). At 96 kHz a band\n"
-  "# spans its centre +-48 kHz. modes: cw, rtty (cw:deepcw = the neural CW\n"
-  "# decoder). At most 8 — the Red Pitaya has 8 receivers: to have 12 m,\n"
+  "# spans its centre +-48 kHz. modes: cw, rtty (cw:v2 = the v0.7 decoder,\n"
+  "# cw:deepcw = the neural CW decoder). At most 8 — the Red Pitaya has 8 receivers: to have 12 m,\n"
   "# put the # in front of another band.\n"
   "160m=1845500 cw,rtty\n80m=3545500 cw,rtty\n40m=7045500 cw,rtty\n"
   "30m=10125000 cw,rtty\n20m=14045500 cw,rtty\n17m=18113500 cw,rtty\n"
   "15m=21045500 cw,rtty\n10m=28045500 cw,rtty\n#12m=24915500 cw,rtty\n"
-  "\n[decode]\n# v2 (classical) or deepcw (needs ONNX Runtime + the model:\n"
-  "# skimmer-headless --fetch-deepcw-model); without them a band runs v2\n"
-  "engine=v2\n# per-band raw decode logs in ~/.local/share/skimmer-for-linux/headless\n"
+  "\n[decode]\n# v3 (classical, weak-signal front end), v2 (classical, as in v0.7) or\n"
+  "# deepcw (needs ONNX Runtime + the model: skimmer-headless --fetch-deepcw-model);\n"
+  "# without them a band runs v3\n"
+  "engine=v3\n# per-band raw decode logs in ~/.local/share/skimmer-for-linux/headless\n"
   "log=false\n"
   "# on a band that decodes RTTY too, keep its CW decoders off the RTTY stations\n"
   "# it copies (an FSK tone reads as junk CW); off until measured live\n"
@@ -130,6 +131,7 @@ static gboolean opt_bool(GKeyFile *kf, const char *group, const char *key, gbool
 }
 
 static gboolean engine_of(const char *s, SkimCwEngine *out) {
+  if (g_strcmp0(s, "v3") == 0) { *out = SKIM_CW_ENGINE_V3; return TRUE; }
   if (g_strcmp0(s, "v2") == 0) { *out = SKIM_CW_ENGINE_V2; return TRUE; }
   if (g_strcmp0(s, "deepcw") == 0) { *out = SKIM_CW_ENGINE_DEEPCW; return TRUE; }
   if (g_strcmp0(s, "v1") == 0) { *out = SKIM_CW_ENGINE_V1; return TRUE; }
@@ -137,7 +139,8 @@ static gboolean engine_of(const char *s, SkimCwEngine *out) {
 }
 
 static const char *engine_name(SkimCwEngine e) {
-  return e == SKIM_CW_ENGINE_DEEPCW ? "deepcw" : e == SKIM_CW_ENGINE_V1 ? "v1" : "v2";
+  return e == SKIM_CW_ENGINE_DEEPCW ? "deepcw" : e == SKIM_CW_ENGINE_V1 ? "v1"
+         : e == SKIM_CW_ENGINE_V3 ? "v3" : "v2";
 }
 
 char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt) {
@@ -179,7 +182,7 @@ static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
       } else if (g_strcmp0(t, "rtty") == 0) {
         b->rtty = TRUE;
       } else {
-        ok = bad(error, path, "band %s: mode \"%s\" (cw, cw:v2, cw:deepcw, rtty)", name, t);
+        ok = bad(error, path, "band %s: mode \"%s\" (cw, cw:v3, cw:v2, cw:deepcw, rtty)", name, t);
       }
     }
     g_strfreev(m);
@@ -266,9 +269,9 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
 
   char *eng = g_key_file_get_string(kf, "decode", "engine", NULL);
   if (eng) { g_strstrip(eng); }
-  h->engine = SKIM_CW_ENGINE_V2;
+  h->engine = SKIM_CW_ENGINE_V3;
   if (eng && eng[0] && !engine_of(eng, &h->engine)) {
-    bad(error, path, "[decode] engine \"%s\" (v2 or deepcw)", eng);
+    bad(error, path, "[decode] engine \"%s\" (v3, v2 or deepcw)", eng);
     g_free(eng);
     return FALSE;
   }

@@ -41,9 +41,9 @@ int main(void) {
     check("a Red Pitaya at 96 kHz, found on the LAN (host=auto)",
           ok && c.source == SKIM_HD_SOURCE_HPSDR_P1 && c.rate == 96000 &&
           g_strv_length(c.hosts) == 1 && strcmp(c.hosts[0], "auto") == 0);
-    check("eight bands (160 … 10 m), CW v2 and RTTY on each",
+    check("eight bands (160 … 10 m), CW v3 and RTTY on each",
           ok && c.nb == 8 && c.band[0].cw && c.band[0].rtty && c.band[7].rtty &&
-          c.band[0].cw_engine == SKIM_CW_ENGINE_V2 && strcmp(c.band[2].name, "40m") == 0 &&
+          c.band[0].cw_engine == SKIM_CW_ENGINE_V3 && strcmp(c.band[2].name, "40m") == 0 &&
           c.band[2].centre_hz == 7045500 && strcmp(c.band[7].name, "10m") == 0);
     {
       char *text = NULL;
@@ -164,7 +164,7 @@ int main(void) {
       { "a centre that is no number", "[bands]\n20m=fourteen\n", "20m" },
       { "a centre out of range", "[bands]\n20m=14045\n", "not a centre" },
       { "an unknown mode", "[bands]\n20m=14045500 psk\n", "\"psk\"" },
-      { "an unknown CW engine", "[bands]\n20m=14045500 cw:v3\n", "\"cw:v3\"" },
+      { "an unknown CW engine", "[bands]\n20m=14045500 cw:v9\n", "\"cw:v9\"" },
       { "nine bands", "[bands]\na=1900000\nb=3600000\nc=7000000\nd=10100000\n"
         "e=14000000\nf=18100000\ng=21000000\nh=24900000\ni=28000000\n", "8 receivers" },
       { "a rate the radio has not", "[radio]\nrate=44100\n[bands]\n20m=14045500\n", "44100" },

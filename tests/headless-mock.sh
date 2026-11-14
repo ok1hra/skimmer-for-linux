@@ -100,8 +100,8 @@ json=$(curl -s "http://127.0.0.1:$HTTP/status.json" || true)
 py() { python3 -c "import json,sys; d=json.loads(sys.argv[1]); print($1)" "$json" 2>/dev/null; }
 [[ $(py 'd["streaming"]') == True ]]; check "status: streaming" $?
 [[ $(py 'd["radio"]') == *mock* ]]; check "status: the radio is the mock" $?
-[[ $(py '",".join(b["band"] + ":" + b["engine"] + ":" + b["engine_wanted"] for b in d["bands"])') == "20m:cw-v2:deepcw,40m:cw-v2:v2" ]]
-check "status: both bands, each with its engine (20m asks for DeepCW, runs v2)" $?
+[[ $(py '",".join(b["band"] + ":" + b["engine"] + ":" + b["engine_wanted"] for b in d["bands"])') == "20m:cw-v3:deepcw,40m:cw-v2:v2" ]]
+check "status: both bands, each with its engine (20m asks for DeepCW, runs v3; 40m names v2)" $?
 [[ $(py 'd["deepcw"]["wanted"], d["deepcw"]["model_ok"], d["deepcw"]["fetch"]["state"], d["deepcw"]["runtime"]') == "True False idle None" &&
    $(py 'd["deepcw"]["fallback"]') == "no model at $T/data/skimmer-for-linux/models/deepcw/model.onnx"* ]]
 check "status: DeepCW not available — no model, the reason given" $?
@@ -126,7 +126,7 @@ check "web: stats.json (6 h, both bands, the global series)" $?
 [[ $(curl -s "http://127.0.0.1:$HTTP/api/log") == '[{"t":'*'"text":"skimmer-headless '* ]]; check "web: the log" $?
 [[ $(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$HTTP/../headless.ini") == 404 ]]
 check "web: no path out of the page" $?
-grep -q "decode: 40m CW, engine cw-v2 + RTTY$" "$T/log" && grep -q "decode: 20m CW, engine cw-v2$" "$T/log" &&
+grep -q "decode: 40m CW, engine cw-v2 + RTTY$" "$T/log" && grep -q "decode: 20m CW, engine cw-v3$" "$T/log" &&
   grep -q "decode: 40m CW stays off the RTTY stations RTTY copies" "$T/log"
 check "log: what each band decodes" $?
 grep -q "switch: SKIM_SCP_URL=http://127.0.0.1:9/ (system)" "$T/log"
@@ -211,7 +211,7 @@ rc=0; "$HL" --config "$T/bad.ini" > "$T/bad.log" 2>&1 || rc=$?
 
 "$HL" --list-switches | grep -q "^SKIM_V2_EDGE behaviour$"; check "--list-switches" $?
 out=$("$HL" --check-config --config "$T/headless.ini" 2>&1); rc=$?
-[[ $rc == 0 && $out == *"RX2    40m   7045.5 kHz  cw,rtty"* && $out == *"CW and RTTY"* ]]
+[[ $rc == 0 && $out == *"RX2    40m   7045.5 kHz  cw:v2,rtty"* && $out == *"CW and RTTY"* ]]
 check "--check-config: fine, the bands listed" $?
 printf '[bands]\n40m=7045500 rtty\n[feed]\nrtty=false\n' > "$T/cwonly.ini"
 out=$("$HL" --check-config --config "$T/cwonly.ini" 2>&1); rc=$?
@@ -224,8 +224,8 @@ rc=0; "$HL" --check-config --config "$T/none.ini" > /dev/null 2>&1 || rc=$?
 [[ $rc == 2 && ! -e $T/none.ini ]]; check "--check-config on a missing file: exit 2, nothing written" $?
 printf '[bands]\n20m=14045500 cw:deepcw\n' > "$T/dcw.ini"
 out=$("$HL" --check-config --config "$T/dcw.ini" 2>&1); rc=$?
-[[ $rc == 0 && $out == *"deepcw NOT AVAILABLE, those bands run v2: no model at"* ]]
-check "--check-config: a DeepCW band without the model starts on v2, says why" $?
+[[ $rc == 0 && $out == *"deepcw NOT AVAILABLE, those bands run v3: no model at"* ]]
+check "--check-config: a DeepCW band without the model starts on v3, says why" $?
 
 # ---- --fetch-deepcw-model ------------------------------------------------------------
 M=$T/data/skimmer-for-linux/models/deepcw

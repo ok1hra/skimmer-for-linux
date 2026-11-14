@@ -181,7 +181,7 @@ typedef struct {
   char         *dcw_model;     /* where the engine looks for it               */
   char         *dcw_base_url;  /* $SKIM_DEEPCW_URL, NULL = upstream           */
   char         *dcw_ca;        /* TLS trust store (AppImage)                  */
-  char         *dcw_fallback;  /* why the bands asking for it run v2          */
+  char         *dcw_fallback;  /* why the bands asking for it run v3          */
   GMutex        dcw_lock;
   gboolean      dcw_model_ok;
   char         *dcw_model_err;
@@ -418,7 +418,8 @@ static void dec_json(GString *json, Dec *d, gint64 now) {
 }
 
 static const char *engine_key(SkimCwEngine e) {
-  return e == SKIM_CW_ENGINE_DEEPCW ? "deepcw" : e == SKIM_CW_ENGINE_V1 ? "v1" : "v2";
+  return e == SKIM_CW_ENGINE_DEEPCW ? "deepcw" : e == SKIM_CW_ENGINE_V1 ? "v1"
+         : e == SKIM_CW_ENGINE_V3 ? "v3" : "v2";
 }
 
 static void json_opt_str(GString *o, const char *v) {
@@ -487,7 +488,7 @@ static void status_build(Hd *h, gboolean print) {
 
   char *jstate = skim_json_str(src->state);
   char *jhost = skim_json_str(src->host);
-  /* the decoder that actually runs (deepcw falls back to cw-v2 without its
+  /* the decoder that actually runs (deepcw falls back to cw-v3 without its
    * runtime or model) — a feed comparison needs to know which one spotted */
   const char *engine = "";
   for (guint i = 0; i < h->nb && !engine[0]; i++) {
@@ -570,7 +571,7 @@ static void status_build(Hd *h, gboolean print) {
     char *jname = skim_json_str(b->name);
     /* rtty_suppressed: CW decodes dropped on an RTTY pair (0 while off) */
     /* engine_wanted: what the config asks for — "deepcw" beside an
-     * engine "cw-v2" is a band that fell back (the reason: "deepcw") */
+     * engine "cw-v3" is a band that fell back (the reason: "deepcw") */
     g_string_append_printf(json, "%s{\"band\":\"%s\",\"centre_hz\":%.0f,\"ksps\":%.1f,"
                            "\"cw\":%s,\"engine_wanted\":\"%s\","
                            "\"rtty_suppressed\":%" G_GUINT64_FORMAT ",",
@@ -1297,9 +1298,9 @@ int main(int argc, char **argv) {
       /* the bands asking for DeepCW start anyway — on v2 when it is not here */
       char *model = skim_decode_deepcw_model_path();
       if (!skim_deepcw_model_check(model, &err)) {
-        printf("  deepcw NOT AVAILABLE, those bands run v2: %s\n", err->message);
+        printf("  deepcw NOT AVAILABLE, those bands run v3: %s\n", err->message);
       } else if (!skim_decode_deepcw_available(&err)) {
-        printf("  deepcw NOT AVAILABLE, those bands run v2: %s\n", err->message);
+        printf("  deepcw NOT AVAILABLE, those bands run v3: %s\n", err->message);
       } else {
         printf("  deepcw %s, ONNX Runtime %s\n", model, skim_decode_deepcw_runtime_info());
       }
@@ -1448,10 +1449,10 @@ int main(int argc, char **argv) {
       } else if (!skim_decode_deepcw_available(&e)) {
         h->dcw_fallback = g_strdup(e->message);
       } else {
-        h->dcw_fallback = g_strdup("the engine chose v2 (SKIM_CW_ENGINE?)");
+        h->dcw_fallback = g_strdup("the engine chose another decoder (SKIM_CW_ENGINE?)");
       }
       g_clear_error(&e);
-      g_warning("decode: DeepCW asked for, not available (%s) — those bands run cw-v2",
+      g_warning("decode: DeepCW asked for, not available (%s) — those bands run cw-v3",
                 h->dcw_fallback);
     }
   }

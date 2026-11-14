@@ -12,7 +12,10 @@
 # inputs.sha256 pins them; expected.sha256 pins every output. The full
 # reference outputs sit beside the inputs (ref/) so a mismatch shows a diff.
 #
-# Runs with an EMPTY environment: no SKIM_* switch, the code's defaults only.
+# Runs with an EMPTY environment: no SKIM_* switch, the code's defaults only —
+# with ONE pin: the CW engine of each IQ job (SKIM_CW_ENGINE). v3 is the
+# code's default since the v3 branch; the v2 jobs stay pinned to v2 so the
+# v0.7 reference proves v2 byte-identical, and the v3-* jobs carry v3's own.
 # Without the inputs the gate SKIPS (77) and says so — never a silent pass.
 # A deliberate behaviour change regenerates the reference (--update) in its
 # own commit, saying why.
@@ -35,7 +38,7 @@ mkdir -p "$OUT/cfg/skimmer-for-linux"
 cp "$G/scp/master.scp" "$OUT/cfg/skimmer-for-linux/"
 run() { env -i HOME="$OUT" PATH=/usr/bin:/bin XDG_CONFIG_HOME="$OUT/cfg" "$@"; }
 
-# <output dir>:<slice>:<mode>[:pairs] — CW on every slice; RTTY on the
+# <output dir>:<slice>:<mode>[:pairs[:engine]] — CW on every slice; RTTY on the
 # contest slice (g40m-rtty, JARTS) and on a 20 m evening with an RTTY net
 # (text, no spots); CW on the contest slice too: what CW makes of a band
 # full of FSK — and, with "pairs", CW kept off the RTTY pairs an RTTY
@@ -43,16 +46,18 @@ run() { env -i HOME="$OUT" PATH=/usr/bin:/bin XDG_CONFIG_HOME="$OUT/cfg" "$@"; }
 IQ=(g20m-day:g20m-day:cw g20m-eve:g20m-eve:cw g30m-day:g30m-day:cw
     g40m-night:g40m-night:cw g40m-rtty:g40m-rtty:cw
     rtty-g40m-rtty:g40m-rtty:rtty rtty-g20m-eve:g20m-eve:rtty
-    pairs-g40m-rtty:g40m-rtty:cw:pairs)
+    pairs-g40m-rtty:g40m-rtty:cw:pairs
+    v3-g20m-day:g20m-day:cw::v3 v3-g20m-eve:g20m-eve:cw::v3 v3-g30m-day:g30m-day:cw::v3
+    v3-g40m-night:g40m-night:cw::v3 v3-g40m-rtty:g40m-rtty:cw::v3)
 BANDS=(160m 80m 40m 30m 20m 17m 15m 40m-rtty)
 
-# IQ → channelizer → CW v2 / RTTY → extractor → station table → feed
+# IQ → channelizer → CW v2 or v3 / RTTY → extractor → station table → feed
 # (stderr feed:)
 for job in "${IQ[@]}"; do
-  IFS=: read -r d s mode pairs <<< "$job"
+  IFS=: read -r d s mode pairs engine <<< "$job"
   mkdir -p "$OUT/$d"
   ln -s "$G/$s.cf32" "$G/$s.cf32.meta" "$OUT/$d/"
-  ( run SKIM_MODE=$mode SKIM_REPLAY_RTTY_PAIRS=${pairs:+1} SKIM_REPLAY_FEED=new \
+  ( run SKIM_MODE=$mode SKIM_CW_ENGINE=${engine:-v2} SKIM_REPLAY_RTTY_PAIRS=${pairs:+1} SKIM_REPLAY_FEED=new \
       "$REPLAY" "$OUT/$d/$s.cf32" \
       > "$OUT/$d/out.raw" 2> "$OUT/$d/feed.txt"
     # paths and wall time are the only run-dependent bytes

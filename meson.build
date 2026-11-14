@@ -52,6 +52,7 @@ engine_sources = [
   'src/engine/fftw_lock.c',    # FFTW planner is not thread-safe: one lock
   'src/engine/decode_cw.c',    # M3: CW backend (implements decode.h)
   'src/engine/decode_cw_v2.c', # CW v2: semi-Markov Viterbi (QSB-proof)
+  'src/engine/decode_cw_v3.c', # CW v3: matched front end, calibrated LLR, kws reader
   'src/engine/decode_rtty.c',  # M7: RTTY backend (Baudot FSK)
   'src/engine/rtty_pairs.c',   # RTTY pairs held → the band's CW stays off them
   'src/engine/ort_shim.c',     # ONNX Runtime C API behind dlopen (optional)

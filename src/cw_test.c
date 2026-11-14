@@ -426,13 +426,12 @@ static void run_suite(const SkimDecodeBackend *cw) {
   g_rand_free(rng);
 }
 
-int main(void) {
-  printf("=== CW decode gate (offline, synthetic) ===\n");
-  /* The word re-read is on for the whole gate: with no dictionary loaded
-   * (until its own section) it finds no candidate and changes nothing. */
-  g_setenv("SKIM_V2_RESCORE", "1", FALSE);
-  run_suite(skim_decode_cw());
-  run_suite(skim_decode_cw_v2());
+/* The soft-decision cases (QSB, flutter, the fist model, a speed drop, the
+ * squelch attack, the cold start, the word re-read): what v2 exists for.
+ * v3 inherits v2's lattice and must pass every one of them too — the
+ * cases run for both, v1 beside them for information. */
+static void soft_cases(const SkimDecodeBackend *soft, const char *tag) {
+  printf("\n=== soft-decision cases: %s ===\n", tag);
 
   /* -- QSB mutation cases: what v2 exists for ------------------------------------
    * Deep slow QSB eats the weak elements of a character — the live-caught
@@ -448,7 +447,7 @@ int main(void) {
     g_cw = skim_decode_cw();
     char *v1 = run_decoder(env, 18.0, 30.0, 0.31, 16.0, rng, &last);
     if (g_getenv("QSB_TRACE")) { g_setenv("SKIM_CW2_TRACE", "1", TRUE); }
-    g_cw = skim_decode_cw_v2();
+    g_cw = soft;
     char *v2 = run_decoder(env, 18.0, 30.0, 0.31, 16.0, rng, &last);
     g_unsetenv("SKIM_CW2_TRACE");
     printf("--- QSB mutation: 16 dB @ 0.31 Hz, 25 WPM ---\n");
@@ -480,7 +479,7 @@ int main(void) {
     }
     g_cw = skim_decode_cw();
     v1 = run_decoder(env, 18.0, 30.0, 0, 0, rng, &last);
-    g_cw = skim_decode_cw_v2();
+    g_cw = soft;
     v2 = run_decoder(env, 18.0, 30.0, 0, 0, rng, &last);
     printf("--- flutter notches: 35 ms / -18 dB every 0.7 s, 22 WPM ---\n");
     show("v1 (info):", v1);
@@ -512,7 +511,7 @@ int main(void) {
     GArray *env = gen_env_fist(loop, 24, RATE, 0.05, rng, 5.1, 9.8);
     g_cw = skim_decode_cw();
     char *v1 = run_decoder(env, 12.0, 25.0, 0, 0, rng, &last);
-    g_cw = skim_decode_cw_v2();
+    g_cw = soft;
     char *v2 = run_decoder(env, 12.0, 25.0, 0, 0, rng, &last);
     printf("--- stretched fist: char gaps 5.1 dits, word gaps 9.8 (24 WPM) ---\n");
     show("v1 (info):", v1);
@@ -528,7 +527,7 @@ int main(void) {
 
     const char *RUN = "TEST OK1BR OK1BR TEST OK1BR OK1BR NR 5";
     env = gen_env_fist(RUN, 28, RATE, 0.05, rng, 3.0, 5.0);
-    g_cw = skim_decode_cw_v2();
+    g_cw = soft;
     v2 = run_decoder(env, 12.0, 25.0, 0, 0, rng, &last);
     printf("--- tight runner: word gaps squeezed to 5.0 dits (28 WPM) ---\n");
     show("v2:", v2);
@@ -557,7 +556,7 @@ int main(void) {
 
     g_cw = skim_decode_cw();
     char *v1 = run_decoder(env, 14.0, 28.0, 0, 0, rng, &last);
-    g_cw = skim_decode_cw_v2();
+    g_cw = soft;
     char *v2 = run_decoder(env, 14.0, 28.0, 0, 0, rng, &last);
     printf("--- speed drop: 34 -> 11 WPM mid-stream ---\n");
     show("v1 (info):", v1);
@@ -604,7 +603,7 @@ int main(void) {
         }
         gen_env_append(env, OVER, CASES[c].wpm, RATE, 0.0, rng, 3.0, 7.0);
         key_run(env, 1.5 * RATE, 0.0f, 0, rng);
-        g_cw = b ? skim_decode_cw_v2() : skim_decode_cw();
+        g_cw = b ? soft : skim_decode_cw();
         char **got = b ? &v2 : &v1;
         *got = run_decoder(env, 18.0, 25.0, 0, 0, rng, NULL);
         g_array_free(env, TRUE);
@@ -632,7 +631,7 @@ int main(void) {
       }
       gen_env_append(env, OVER, 33, RATE, 0.0, rng, 3.0, 7.0);
       key_run(env, 1.5 * RATE, 0.0f, 0, rng);
-      g_cw = b ? skim_decode_cw_v2() : skim_decode_cw();
+      g_cw = b ? soft : skim_decode_cw();
       char **got = b ? &v2 : &v1;
       *got = run_decoder(env, 18.0, 25.0, 0, 0, rng, NULL);
       g_array_free(env, TRUE);
@@ -661,7 +660,7 @@ int main(void) {
     g_file_set_contents(dict, "EE5E\nSE5E\n5E5E\nN5EE\nEE4E\nEA5BH\nEC6AAE\n",
                         -1, NULL);
     skim_callsign_dict_load(dict, NULL);
-    g_cw = skim_decode_cw_v2();
+    g_cw = soft;
     GRand *rng = g_rand_new_with_seed(20261016);
     printf("--- word re-read against the dictionary ---\n");
 
@@ -719,9 +718,23 @@ int main(void) {
     g_free(dict);
   }
 
+}
+
+int main(void) {
+  printf("=== CW decode gate (offline, synthetic) ===\n");
+  /* The word re-read is on for the whole gate: with no dictionary loaded
+   * (until its own section) it finds no candidate and changes nothing. */
+  g_setenv("SKIM_V2_RESCORE", "1", FALSE);
+  g_setenv("SKIM_V3_RESCORE", "1", FALSE);
+  run_suite(skim_decode_cw());
+  run_suite(skim_decode_cw_v2());
+  run_suite(skim_decode_cw_v3());
+  soft_cases(skim_decode_cw_v2(), "v2");
+  soft_cases(skim_decode_cw_v3(), "v3");
+
   printf("\n=== %d checks, %d failures ===\n%s\n", checks, fails,
-         fails ? "FAIL" : "PASS — both CW backends copy, adapt and stay "
-                          "quiet on noise; v2 rides out QSB and learns the "
+         fails ? "FAIL" : "PASS — all three CW backends copy, adapt and stay "
+                          "quiet on noise; v2 and v3 ride out QSB and learn the "
                           "operator's fist.");
   return fails ? 1 : 0;
 }

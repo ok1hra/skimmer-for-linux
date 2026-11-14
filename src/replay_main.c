@@ -414,6 +414,7 @@ int main(int argc, char **argv) {
   const char *menv = g_getenv("SKIM_MODE");
   const gboolean rtty = menv && g_ascii_strcasecmp(menv, "rtty") == 0;
   SkimPipelineConfig cfg = {
+    .cw_engine = SKIM_CW_ENGINE_V3,    /* the branch default; SKIM_CW_ENGINE overrides */
     .host = NULL,
     .port = 0,
     .iq_rate = 0,
@@ -454,7 +455,7 @@ int main(int argc, char **argv) {
     }
     g_setenv("SKIM_FEED_TRACE", "1", FALSE);
   }
-  /* SKIM_CW_ENGINE=v1|v2|deepcw picks the CW engine (the app's "CW engine"
+  /* SKIM_CW_ENGINE=v1|v2|v3|deepcw picks the CW engine (the app's "CW engine"
    * preference takes the same config field); the pipeline resolves the
    * DeepCW availability itself and falls back to v2 with a warning. A
    * replay runs DeepCW inference INLINE (deterministic, stream order) —

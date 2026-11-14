@@ -20,6 +20,11 @@ const SkimDecodeBackend *skim_decode_cw(void);
  * DEFAULT since 2026-08-04; SKIM_CW_V1=1 falls back to the classical v1. */
 const SkimDecodeBackend *skim_decode_cw_v2(void);
 
+/* v3: v2's lattice behind a carrier-matched front end, calibrated LLRs,
+ * a CFAR gate and an audio-confirmed callsign reader (docs/CW-V3.md).
+ * The default on the v3 branch; cw:v2 / SKIM_CW_ENGINE=v2 keep v2. */
+const SkimDecodeBackend *skim_decode_cw_v3(void);
+
 G_END_DECLS
 
 #endif /* SKIMMER_DECODE_CW_H */

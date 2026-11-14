@@ -259,7 +259,7 @@ function bandRow(b, i, n, may) {
     `<td><input data-k="name" value="${esc(b.name)}" size="6"${dis}></td>` +
     `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${dis}></td>` +
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
-    `<td><select data-k="engine"${dis}><option value="v2">v2</option><option value="deepcw">DeepCW</option></select></td>` +
+    `<td><select data-k="engine"${dis}><option value="v3">v3</option><option value="v2">v2</option><option value="deepcw">DeepCW</option></select></td>` +
     `<td><input type="checkbox" data-k="rtty"${b.rtty ? ' checked' : ''}${dis}></td>` +
     `<td><button type="button" data-a="up" title="earlier receiver"${i && may ? '' : ' disabled'}>↑</button>` +
     `<button type="button" data-a="down" title="later receiver"${i < n - 1 && may ? '' : ' disabled'}>↓</button>` +
@@ -294,7 +294,7 @@ $('#band-rows').addEventListener('click', (e) => {
 });
 $('#band-add').addEventListener('click', () => {
   const list = readBands();
-  list.push({ name: '', khz: '', cw: true, engine: $('[name="decode.engine"]').value || 'v2', rtty: false });
+  list.push({ name: '', khz: '', cw: true, engine: $('[name="decode.engine"]').value || 'v3', rtty: false });
   drawBands(list);
   cfg.dirty = true;
 });
