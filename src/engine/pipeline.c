@@ -207,6 +207,7 @@ struct _SkimPipeline {
   double           *lvl;                       /* per-channel level snapshot */
   FreqLock         *flock;                     /* per-channel frequency lock */
   SkimSnrMeter     *snr;                       /* shadow SNR (snr_meter.h)   */
+  gint64            snr_due_us;                /* next band-floor refresh    */
   guint64           ghosts;                    /* decodes suppressed         */
 
   GAsyncQueue      *queue;                     /* IqBlock*                   */
@@ -1570,9 +1571,18 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
    * all levels for this block are known — arbitration needs the neighbours).
    * An armed splitter sits between the channel and the decoders: samples go
    * through it and come back out per slot (verbatim while passthrough). */
+  /* The band floor for the backends (decode.h set_floor), refreshed once a
+   * second: the percentile over the neighbours is too dear per block. */
+  if (p->snr && cw->set_floor && p->stream_us >= p->snr_due_us) {
+    skim_snr_meter_refresh(p->snr);
+    p->snr_due_us = p->stream_us + G_USEC_PER_SEC;
+  }
   g_array_set_size(p->hits, 0);
   for (guint c = 0; c < p->nchan; c++) {
     SkimToneSplit *sp = p->split ? p->split[c] : NULL;
+    if (cw->set_floor && p->snr && !sp) {
+      cw->set_floor(p->dec[SL(c, WIDE_LANE)], skim_snr_meter_noise(p->snr, c));
+    }
     const double chan_hz = cw->set_freq
         ? b->center_hz + skim_channelizer_offset_hz(p->bank, c) : 0.0;
     if (cw->set_freq && !sp) {

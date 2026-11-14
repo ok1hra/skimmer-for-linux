@@ -168,6 +168,62 @@ enum { K_MARK, K_SPACE, K_EITHER };
 #define FIST_CSP0    3.0                /* seeds = the ITU ideals             */
 #define FIST_WSP0    7.0
 
+/* --- M8: the call reader (docs/CW-V3.md) ---------------------------------------
+ * Every KR_EVERY_S on a locked channel the last KR_WIN_S of the lattice's own
+ * LLR are searched for the calls the decoded text points at — a token two
+ * edits from a MASTER.SCP call, torn tokens joined, a glued token's inner
+ * call, a call this channel confirmed before — by forced alignment against
+ * the free reading (the kws oracle, WEAK-SIGNAL-PLAN §10: 291 of 711 missed
+ * CQ stations found in the audio, ~30 ppm false alarms). A call that fits
+ * within KR_DC of the free reading and beats its dictionary neighbours by
+ * KR_SEP, twice in separate windows (or once by far), goes to the extractor
+ * as a correction token — with a CQ before it when the over calls. */
+#define KR_TEXT     160
+#define KR_HITS     8
+#define KR_WIN_S    6.0
+#define KR_EVERY_S  3.0
+#define KR_SLOTS    3.0                 /* LLR slots a dit                    */
+#define KR_CANDS    16
+#define KR_NEAR     8
+#define KR_HOLD_S   300.0               /* a confirmed call is looked for     */
+#define KR_SAY_S    20.0                /* a call goes out at most this often */
+
+/* --- v3 front end (docs/CW-V3.md) --------------------------------------------
+ * Every channel runs a cheap carrier detector on a 64-point spectrum of its
+ * 250 Hz stream (2 s EMA, CFAR against the band floor); a detected carrier
+ * makes the channel a CANDIDATE: the raw I/Q ring of the last FE_RING_S is
+ * derotated onto the carrier, low-passed and summed coherently over half a
+ * dit (the matched filter for on-off keying), and the lattice reads
+ * calibrated log-likelihood ratios of that statistic against the measured
+ * noise power — not v2's heuristic on the channel's wide envelope. */
+#define FE_N        64                  /* detector FFT, bins of rate/64 Hz   */
+#define FE_HOP      64                  /* one spectrum per hop (256 ms)      */
+#define FE_SUMW2    (3.0 * FE_N / 8.0)  /* Σ hann²: white noise per bin       */
+#define FE_RING_S   6.0                 /* raw I/Q ring = pre-roll depth      */
+#define FE_SPAN_HZ  70.0                /* carrier search, channel-relative   */
+#define FE_SPEC_S   2.0                 /* spectrum EMA                       */
+#define FE_AFC_S    1.0                 /* carrier EMA                        */
+#define FE_LOST_S   3.0                 /* a candidate without its carrier    */
+#define FE_LP_HZ    60.0                /* complex low-pass ahead of the MA   */
+#define FE_MA_CAP   64                  /* MA frames at most (½ dit ≤ 38)     */
+#define FE_MA_DFLT  5                   /* before the clock: ~30 WPM          */
+#define FE_PW_S     4.0                 /* r² ring for the noise percentile   */
+#define FE_PW_EVERY 0.5                 /* its refresh, seconds               */
+#define FE_PW_Q     0.20                /* the noise percentile               */
+#define FE_LLR_MAX  4.0                 /* per-sample clamp after weighting   */
+#define FE_SIG_MIN  2.0                 /* σ1² ≥ this × σ0² (0 dB in-filter)  */
+/* σ1²/σ0² as the LLR sees it, at most: ln R/(R−1) = ¼ puts the zero
+ * crossing at HALF the key-down amplitude — where the half-dit MA crosses a
+ * rectangular edge, so marks and spaces keep their true length. Stronger
+ * stations would push the crossing down onto the MA's ramps (dits fuse);
+ * weaker ones keep the calibrated ratio, the crossing rises above ½. */
+#define FE_R_CAP    9.0
+#define FE_PK_S     2.0                 /* mark power: peak hold decay        */
+#define FE_MK_S     0.25                /* … and the mean of marks under it   */
+#define FE_KEY_P    0.45                /* keyed carrier: share of mark time  */
+#define FE_PRES_S   1.0                 /* presence log-odds EMA              */
+#define FE_DEAD_S   0.3                 /* presence < 0 this long = dead air  */
+
 typedef struct {
   double rate;
 
@@ -289,6 +345,51 @@ typedef struct {
   float   *kws;                         /* SKIM_ORACLE_MODE=kws: envelope ring */
   guint64  kws_n;                       /* samples written to it              */
 
+  /* --- v3 front end (FE_*): detector + AFC, matched filter, calibrated LLR --- */
+  gboolean fe_on;                       /* SKIM_V3_FRONT != v2                */
+  float   *iqr;                         /* raw I/Q ring, FE_RING_S            */
+  guint    iqr_size, iqr_head;          /* frames (power of two), writes      */
+  guint    fe_n;                        /* frames since the last hop          */
+  float    spec[FE_N];                  /* EMA power spectrum                 */
+  guint    spec_hops;
+  double   noise_chan;                  /* set_floor(): channel noise power   */
+  double   prom;                        /* detector prominence, linear        */
+  double   nb_local;                    /* the span's median bin, cached      */
+  guint    det_run;                     /* hops over the bar in a row         */
+  gboolean cand;                        /* a carrier is detected here         */
+  guint    cand_t;                      /* iqr_head at the last detection     */
+  double   fc_hz;                       /* the carrier (AFC), channel-relative*/
+  double   rot_re, rot_im;              /* derotator phasor                   */
+  guint    rot_n;
+  double   lp_x[2][2], lp_y[2][2];      /* FE_LP_HZ biquad history (I/Q)      */
+  float   *mab;                         /* complex MA ring, 2 floats a frame  */
+  double   ma_sr, ma_si;                /* its running sum over ma_len        */
+  guint    ma_used;                     /* the length that sum is over        */
+  gboolean pres_on;                     /* keep the presence statistic       */
+  guint    ma_len, ma_cap, ma_pos;
+  float   *pw;                          /* r² ring, FE_PW_S                   */
+  guint    pw_size, pw_head, pw_due;
+  double   n0;                          /* σ0²: the noise power of r²         */
+  double   p_fast;                      /* r² peak, 0.35 s release (→ σ1²)    */
+  double   k_pf;
+  double   pk, pmark;                   /* held peak / mean mark power (σ1²)  */
+  double   pres;                        /* EMA log-odds: keyed carrier : noise */
+  guint    pres_neg;                    /* samples with pres < 0 in a row     */
+  float   *pre3;                        /* pre-roll ring of the matched amp.  */
+  gboolean weak;                        /* below SKIM_V3_WEAK_DB: the lattice
+                                         * reads the calibrated matched LLR;
+                                         * above it v2's own view, verbatim  */
+  double   mf_hi, mf_lo;                /* matched-amplitude trackers: the
+                                         * bootstrap's and the pre-roll's bars */
+
+  /* --- M8: the call reader (kws_read) ----------------------------------------- */
+  char     kh[KR_TEXT];                 /* the decoded text, chars and gaps   */
+  guint64  kh_t[KR_TEXT];               /* … and when each one's audio ended  */
+  guint    kh_n;
+  guint64  kr_next;                     /* next read (samples)                */
+  struct { char call[16]; guint64 at, said; double dc; guint n; } kr_hit[KR_HITS];
+  char     kr_q[48];                    /* FIX phrase due at the next gap     */
+
   /* --- estimates -------------------------------------------------------------- */
   double prev_i, prev_q;
   double foff_hz;
@@ -345,6 +446,14 @@ typedef struct {
 typedef struct { guint8 key; float dur_ms; guint64 t_end; } RrRun;
 
 static SkimCwReader *rr_reader(void);
+static double rs_ev_weak(void);
+/* The weak view: everything v3 changes acts on it alone. A station above
+ * SKIM_V3_WEAK_DB keeps v2's gate, bootstrap, pre-roll, fist memory, AFC
+ * and likelihoods verbatim — v2 was tuned on strong live air and stays the
+ * reference there. */
+#define WEAKV(st) ((st)->fe_on && (st)->weak)
+static gint   fe_front_on(void);
+static double fe_snr500(const Cw3State *st);
 
 static gpointer cw3_channel_new(double sample_rate) {
   morse_init();
@@ -374,10 +483,31 @@ static gpointer cw3_channel_new(double sample_rate) {
   st->rr_gate  = g_getenv("SKIM_CW_READER_RAW") == NULL;
   /* Pre-roll ring ~2 s: long enough for the bootstrap span of a slow fist
    * (4 marks of a 15 WPM "Y" ≈ 1.2 s) plus its quiet lead-in. */
+  /* v3: FE_RING_S of raw I/Q and of the matched statistic — a candidate
+   * the detector took a second to be sure of still decodes from its first
+   * mark. */
+  st->fe_on = fe_front_on();
+  const double pre_s = st->fe_on ? FE_RING_S : 2.0;
   guint n = 1;
-  while (n < (guint)(2.0 * st->rate)) { n <<= 1; }
+  while (n < (guint)(pre_s * st->rate)) { n <<= 1; }
   st->pre_size = MIN(n, 4096u);
   st->pre      = g_new0(float, st->pre_size);
+  if (st->fe_on) {
+    st->iqr_size = st->pre_size;
+    st->pre3     = g_new0(float, st->pre_size);
+    st->iqr      = g_new0(float, 2 * st->iqr_size);
+    guint pn = 1;
+    while (pn < (guint)(FE_PW_S * st->rate)) { pn <<= 1; }
+    st->pw_size = pn;
+    st->pw      = g_new0(float, st->pw_size);
+    st->mab     = g_new0(float, 2 * FE_MA_CAP);
+    st->ma_cap  = FE_MA_CAP;
+    st->ma_len  = FE_MA_DFLT;
+    st->rot_re  = 1.0;
+    st->k_pf    = 1.0 - exp(-1.0 / (st->rate * 0.35));
+    st->mf_hi = st->mf_lo = -1.0;
+    st->noise_chan = NAN;
+  }
   return st;
 }
 
@@ -765,6 +895,10 @@ static void cw3_channel_free(gpointer state) {
   g_free(st->pre);
   g_free(st->kws);
   g_free(st->lat);
+  g_free(st->iqr);
+  g_free(st->pre3);
+  g_free(st->pw);
+  g_free(st->mab);
   g_free(st);
 }
 
@@ -790,6 +924,13 @@ static void emit(Cw3State *st, SkimDecode *out, guint *pos, char c,
     return;
   out->text[(*pos)++] = c;
   out->text[*pos] = '\0';
+  if (st->kh_n == KR_TEXT) {                   /* the oldest half goes      */
+    memmove(st->kh, st->kh + KR_TEXT / 2, KR_TEXT / 2);
+    memmove(st->kh_t, st->kh_t + KR_TEXT / 2, KR_TEXT / 2 * sizeof(guint64));
+    st->kh_n = KR_TEXT / 2;
+  }
+  st->kh[st->kh_n] = c;
+  st->kh_t[st->kh_n++] = c == ' ' ? st->t : t_end;
   CW3_DBG("[emit '%c' at %.2f (t %.2f)]\n", c, (double)t_end / st->rate,
           (double)st->t / st->rate);
   if (c != ' ') {
@@ -1391,7 +1532,11 @@ static gboolean rs_reread(Cw3State *st, guint64 B, char *alt, gsize alt_size) {
    * word read out of noise (dit chains, "EI5E") barely above zero — and
    * noise must never be talked into a call the dictionary happens to hold. */
   const double ev = sf / N;
-  if (ev < cfg->ev && !cfg->dbg) {
+  /* The weak view's LLRs are calibrated nats, a few tenths a sample on a
+   * keyed word (v2's heuristic saturates at 2.5): its own evidence bar,
+   * SKIM_V3_RS_EV_WEAK. fit and sep are likelihood differences in both. */
+  const double ev_bar = WEAKV(st) ? rs_ev_weak() : cfg->ev;
+  if (ev < ev_bar && !cfg->dbg) {
     g_free(buf);
     return FALSE;
   }
@@ -1425,7 +1570,7 @@ static gboolean rs_reread(Cw3State *st, guint64 B, char *alt, gsize alt_size) {
     }
   }
   g_free(buf);
-  const gboolean take = b1 >= 0 && !raw_known && s1 > NEG_INF && ev >= cfg->ev &&
+  const gboolean take = b1 >= 0 && !raw_known && s1 > NEG_INF && ev >= ev_bar &&
                         MAX(sf, s_raw) - s1 <= cfg->fit && s1 - s2 >= cfg->sep;
   if (cfg->dbg) {
     GString *g = g_string_new(NULL);
@@ -2015,7 +2160,8 @@ static void lattice_commit(Cw3State *st, double lag_dits, SkimDecode *out,
       }
       st->brk_out = FALSE;
       st->char_live = st->word_live = FALSE;   /* a new space will come      */
-      st->snr_latch = 20.0 * log10(st->env_hi / MAX(st->env_lo, 1e-9));
+      st->snr_latch = st->fe_on ? fe_snr500(st)
+                                : 20.0 * log10(st->env_hi / MAX(st->env_lo, 1e-9));
       break;
     case SEG_ESP:
       st->esp = st->esp > 0 ? st->esp + 0.2 * (d - st->esp) : d;
@@ -2071,12 +2217,699 @@ static void lattice_flush(Cw3State *st, SkimDecode *out, guint *pos) {
   st->active = FALSE;
 }
 
+/* --- M8: the call reader ---------------------------------------------------------- */
+
+static double kr_num(const char *name, double dflt) {
+  const char *e = g_getenv(name);
+  if (!e || !e[0])
+    return dflt;
+  return g_ascii_strtod(e, NULL);
+}
+
+/* SKIM_V3_KWS=0 turns the reader off; SKIM_V3_KWS_DC (−5), SKIM_V3_KWS_SEP (3)
+ * the bars; SKIM_V3_KWS_DEBUG=1 prints every read. */
+typedef struct { gint on; double dc, sep; gboolean dbg; } KrCfg;
+static const KrCfg *kr_cfg(void) {
+  static KrCfg c;
+  static gsize once;
+  if (g_once_init_enter(&once)) {
+    const char *e = g_getenv("SKIM_V3_KWS");
+    c.on  = !(e && strcmp(e, "0") == 0);
+    c.dc  = kr_num("SKIM_V3_KWS_DC", -5.0);
+    c.sep = kr_num("SKIM_V3_KWS_SEP", 3.0);
+    c.dbg = g_getenv("SKIM_V3_KWS_DEBUG") != NULL;
+    g_once_init_leave(&once, 1);
+  }
+  return &c;
+}
+
+static gboolean kr_shape(const char *w) {
+  gboolean dig = FALSE, let = FALSE;
+  guint n = 0;
+  for (const char *p = w; *p; p++, n++) {
+    dig |= g_ascii_isdigit(*p);
+    let |= g_ascii_isalpha(*p);
+    if (!g_ascii_isalnum(*p) && *p != '/')
+      return FALSE;
+  }
+  return dig && let && n >= 3 && n < SKIM_CALLSIGN_NEAR_LEN;
+}
+
+static void kr_add(char (*cand)[SKIM_CALLSIGN_NEAR_LEN], guint *nc, const char *w) {
+  if (*nc >= KR_CANDS || !kr_shape(w))
+    return;
+  for (guint i = 0; i < *nc; i++) {
+    if (strcmp(cand[i], w) == 0)
+      return;
+  }
+  g_strlcpy(cand[(*nc)++], w, SKIM_CALLSIGN_NEAR_LEN);
+}
+
+static void kr_add_near(char (*cand)[SKIM_CALLSIGN_NEAR_LEN], guint *nc, const char *w) {
+  if (strlen(w) < 3 || strlen(w) >= SKIM_CALLSIGN_NEAR_LEN)
+    return;
+  char near[RS_MAX_CAND][SKIM_CALLSIGN_NEAR_LEN];
+  const guint nn = skim_callsign_dict_near(w, near, RS_MAX_CAND);
+  for (guint i = 0; i < nn; i++) { kr_add(cand, nc, near[i]); }
+}
+
+/* The forced-alignment score of `call` over the window, minus the free
+ * reading's (≤ 0 by construction, NEG when the call does not fit). */
+static double kr_score(const double *c, int N, const KwsDur *k, const float *P,
+                       const float *S, float *a, float *b, const char *call) {
+  guint8 seg[RS_MAX_SEG];
+  const guint K = rs_segments(call, seg);
+  if (!K)
+    return -1e9;
+  const double v = kws_call(c, N, k, seg, K, P, S, a, b);
+  return v > KWS_SKIP ? v : -1e9;
+}
+
+static void kws_read(Cw3State *st) {
+  const KrCfg *cfg = kr_cfg();
+  const guint64 t = st->t;
+  guint ns = (guint)(KR_WIN_S * st->rate);
+  ns = MIN(ns, (guint)(t - st->lat_t0));
+  ns = MIN(ns, (guint)W - 16);
+  const double h = st->dit / KR_SLOTS;
+  if (st->dit <= 0 || ns < (guint)(2.0 * st->rate) || h < 1.0)
+    return;
+  const guint64 t0 = t - ns;
+
+  /* candidates from the text whose audio lies in the window */
+  char cand[KR_CANDS][SKIM_CALLSIGN_NEAR_LEN];
+  guint nc = 0;
+  char tok[24][SKIM_CALLSIGN_NEAR_LEN];
+  guint nt = 0, tl = 0;
+  gboolean calling = FALSE;
+  char cur[SKIM_CALLSIGN_NEAR_LEN] = "";
+  for (guint i = 0; i <= st->kh_n && nt < G_N_ELEMENTS(tok); i++) {
+    const gboolean end = i == st->kh_n || st->kh[i] == ' ';
+    if (!end && st->kh_t[i] >= t0) {
+      if (tl + 1 < sizeof(cur)) {
+        cur[tl++] = st->kh[i];
+        cur[tl] = '\0';
+      }
+      continue;
+    }
+    if (end && tl) {
+      g_strlcpy(tok[nt++], cur, SKIM_CALLSIGN_NEAR_LEN);
+      if (!strcmp(cur, "CQ") || !strcmp(cur, "TEST") || !strcmp(cur, "QRZ") ||
+          g_str_has_prefix(cur, "CQCQ") || g_str_has_prefix(cur, "CQTEST")) {
+        calling = TRUE;
+      }
+    }
+    tl = 0;
+    cur[0] = '\0';
+  }
+  for (guint i = 0; i + 1 < nt; i++) {             /* torn "C Q" */
+    if (!strcmp(tok[i], "C") && !strcmp(tok[i + 1], "Q")) { calling = TRUE; }
+  }
+  for (guint i = 0; i < nt; i++) {
+    if (skim_callsign_dict_has(tok[i])) { kr_add(cand, &nc, tok[i]); }
+  }
+  for (guint i = 0; i < nt; i++) {
+    kr_add_near(cand, &nc, tok[i]);
+    char j[48];
+    g_strlcpy(j, tok[i], sizeof(j));
+    for (guint k = i + 1; k < MIN(nt, i + 3); k++) {   /* torn: 2-3 joined */
+      g_strlcat(j, tok[k], sizeof(j));
+      if (strlen(j) >= 3 && strlen(j) <= 10) { kr_add_near(cand, &nc, j); }
+    }
+    const guint L = (guint)strlen(tok[i]);
+    if (L >= 7) {                                     /* glued: inner calls */
+      for (guint a = 0; a < L; a++) {
+        for (guint n = 4; n <= 8 && a + n <= L; n++) {
+          char sub[SKIM_CALLSIGN_NEAR_LEN];
+          memcpy(sub, tok[i] + a, n);
+          sub[n] = '\0';
+          if (skim_callsign_dict_has(sub)) { kr_add(cand, &nc, sub); }
+        }
+      }
+    }
+  }
+  for (guint i = 0; i < KR_HITS; i++) {
+    if (st->kr_hit[i].call[0] && t - st->kr_hit[i].at < (guint64)(KR_HOLD_S * st->rate)) {
+      kr_add(cand, &nc, st->kr_hit[i].call);
+    }
+  }
+  if (!nc)
+    return;
+
+  /* the window's LLR, a slot every third of a dit (integrate and dump) */
+  const struct Lattice *Lt = st->lat;
+  const int N = (int)(ns / h);
+  if (N < 32)
+    return;
+  double *c = g_new(double, 2 * (N + 1));
+  double *cr = c + N + 1;
+  const double base = Lt->cum[t0 & WMASK];
+  for (int j = 0; j <= N; j++) {
+    const guint64 tj = t0 + (guint64)lround(j * h);
+    c[j] = Lt->cum[MIN(tj, t) & WMASK] - base;
+  }
+  for (int u = 0; u <= N; u++) { cr[u] = c[N] - c[N - u]; }
+  float *buf = g_new(float, 7 * (N + 1));
+  float *P = buf, *Pr = buf + (N + 1), *S = buf + 2 * (N + 1), *a = buf + 3 * (N + 1),
+        *b = buf + 4 * (N + 1), *d3 = buf + 5 * (N + 1), *d4 = buf + 6 * (N + 1);
+  KwsDur k;
+  kws_dur(&k, KR_SLOTS, N);
+  const double F = kws_free(c, N, &k, P, a, b, d3, d4);
+  kws_free(cr, N, &k, Pr, a, b, d3, d4);
+  for (int u = 0; u <= N; u++) { S[u] = Pr[N - u]; }
+  /* A call must sit KR_EDGE dits inside the window at both ends: one cut
+   * by the window's edge fits its own head or tail as a shorter call
+   * (OK1HR out of OK1HRA, the A not in the window yet). */
+  const int edge = (int)(4.0 * KR_SLOTS);
+  for (int u = 0; u <= N; u++) {
+    if (u < edge) { P[u] = NEG_INF; }
+    if (u > N - edge) { S[u] = NEG_INF; }
+  }
+
+  double best = -1e9;
+  gint bi = -1;
+  double sc[KR_CANDS];
+  for (guint i = 0; i < nc; i++) {
+    sc[i] = kr_score(c, N, &k, P, S, a, b, cand[i]) - F;
+    if (sc[i] > best) {
+      best = sc[i];
+      bi = (gint)i;
+    }
+  }
+  double nb = -1e9;
+  const char *nbc = "-";
+  char near[RS_MAX_CAND][SKIM_CALLSIGN_NEAR_LEN];
+  if (bi >= 0 && best >= cfg->dc) {
+    /* the control: every dictionary call two edits from the winner, and
+     * every other candidate — a busted twin must lose by KR_SEP */
+    for (guint i = 0; i < nc; i++) {
+      if ((gint)i != bi && sc[i] > nb) {
+        nb = sc[i];
+        nbc = cand[i];
+      }
+    }
+    const guint nn = skim_callsign_dict_near(cand[bi], near, RS_MAX_CAND);
+    guint done = 0;
+    for (guint i = 0; i < nn && done < KR_NEAR; i++) {
+      if (!strcmp(near[i], cand[bi]))
+        continue;
+      gboolean seen = FALSE;
+      for (guint j = 0; j < nc; j++) { seen |= !strcmp(near[i], cand[j]); }
+      if (seen)
+        continue;
+      const double v = kr_score(c, N, &k, P, S, a, b, near[i]) - F;
+      done++;
+      if (v > nb) {
+        nb = v;
+        nbc = near[i];
+      }
+    }
+  }
+  double cq = -1e9;
+  const gboolean found = bi >= 0 && best >= cfg->dc && best - nb >= cfg->sep;
+  if (found && !calling) {
+    cq = MAX(kr_score(c, N, &k, P, S, a, b, "CQ"), kr_score(c, N, &k, P, S, a, b, "TEST")) - F;
+    calling = cq >= -3.0;
+  }
+  kws_dur_free(&k);
+  g_free(buf);
+  g_free(c);
+  if (cfg->dbg && bi >= 0) {
+    g_printerr("kws: %.2f %.1f %s dC %.1f next %s %.1f cq %d(%.1f) cands %u%s\n",
+               (double)t / st->rate, st->freq_hz, cand[bi], best, nbc, nb, calling, cq,
+               nc, found ? " HIT" : "");
+  }
+  if (!found)
+    return;
+
+  /* hit memory: separate windows (no shared audio) count as separate reads */
+  gint hi = -1, old = 0;
+  for (guint i = 0; i < KR_HITS; i++) {
+    if (!strcmp(st->kr_hit[i].call, cand[bi])) { hi = (gint)i; }
+    if (st->kr_hit[i].at < st->kr_hit[old].at) { old = (gint)i; }
+  }
+  if (hi < 0) {
+    hi = old;
+    memset(&st->kr_hit[hi], 0, sizeof(st->kr_hit[hi]));
+    g_strlcpy(st->kr_hit[hi].call, cand[bi], sizeof(st->kr_hit[hi].call));
+  }
+  if (st->kr_hit[hi].n == 0 || t - st->kr_hit[hi].at >= (guint64)ns) {
+    st->kr_hit[hi].n++;
+    st->kr_hit[hi].at = t;
+  }
+  st->kr_hit[hi].dc = MAX(st->kr_hit[hi].dc, best);
+  const gboolean sure = st->kr_hit[hi].n >= 2 || (best >= -2.0 && best - nb >= 5.0);
+  const gboolean due = st->kr_hit[hi].said == 0 ||
+                       t - st->kr_hit[hi].said >= (guint64)(KR_SAY_S * st->rate);
+  if (sure && due && !st->kr_q[0]) {
+    g_snprintf(st->kr_q, sizeof(st->kr_q), "%s%c%s%c ",
+               calling ? "\x01" "CQ\x02 " : "", SKIM_CALLSIGN_FIX_OPEN, cand[bi],
+               SKIM_CALLSIGN_FIX_CLOSE);
+    st->kr_hit[hi].said = t;
+    CW3_DBG("[kws: %s dC %.1f sep %.1f reads %u%s]\n", cand[bi], best, best - nb,
+            st->kr_hit[hi].n, calling ? " calling" : "");
+  }
+}
+
+/* --- v3 front end --------------------------------------------------------------- */
+
+/* SKIM_V3_FRONT=v2 keeps v2's envelope path — the A/B of the front end alone. */
+static gint fe_front_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_V3_FRONT");
+    on = !(e && g_ascii_strcasecmp(e, "v2") == 0);
+  }
+  return on;
+}
+
+static double env_num(const char *name, double dflt) {
+  const char *e = g_getenv(name);
+  if (!e || !e[0])
+    return dflt;
+  char *end = NULL;
+  const double v = g_ascii_strtod(e, &end);
+  return end && end != e ? v : dflt;
+}
+
+/* SKIM_V3_DET_DB: a carrier's prominence over the floor (6 dB) held for
+ * SKIM_V3_DET_S (1 s) makes a candidate; SKIM_V3_PREROLL_X: the pre-roll's
+ * head-over-quiet bar on the matched amplitude (2.5; v2's 5.6 on its
+ * envelope kept weak heads out on purpose); SKIM_V3_FIST_HOLD_S: quiet
+ * before the fist is forgotten (30 s; v2: 8). */
+static double fe_det_bar(void) {
+  static double v = -1;
+  if (v < 0) { v = pow(10.0, env_num("SKIM_V3_DET_DB", 6.0) / 10.0); }
+  return v;
+}
+static double fe_det_s(void) {
+  static double v = -1;
+  if (v < 0) { v = env_num("SKIM_V3_DET_S", 1.0); }
+  return v;
+}
+static double fe_preroll_x(void) {
+  static double v = -1;
+  if (v < 0) { v = env_num("SKIM_V3_PREROLL_X", 2.5); }
+  return v;
+}
+/* SKIM_V3_WEAK_DB (SNR in 500 Hz, 8 — where v2 and v3 cross on the weak ladder): below it the lattice reads the
+ * calibrated matched LLR; 3 dB above it v2's own view again (hysteresis).
+ * v2 was tuned on strong live air against CW Skimmer Server — its notch
+ * and QSB handling stays where it was earned; the new statistic serves
+ * the stations v2 loses (L of R 26-34 % under 10 dB). */
+static double fe_weak_db(void) {
+  static double v = -1e9;
+  if (v < -1e8) { v = env_num("SKIM_V3_WEAK_DB", 8.0); }
+  return v;
+}
+/* SKIM_V3_MIN_DB (SNR in 500 Hz, −4; −7 let dictionary words out of noise on
+ * live air, EE3E/EE5M): a weak-view channel under it is dead
+ * air — the ladder copies nothing below ~−2 dB, and noise measured against
+ * its own peaks reads ~−9 dB. */
+static double fe_min_db(void) {
+  static double v = -1e9;
+  if (v < -1e8) { v = env_num("SKIM_V3_MIN_DB", -4.0); }
+  return v;
+}
+static double rs_ev_weak(void) {
+  static double v = -1;
+  if (v < 0) { v = env_num("SKIM_V3_RS_EV_WEAK", 0.25); }
+  return v;
+}
+static double fist_hold_s(void) {
+  static double v = -1;
+  if (v < 0) { v = env_num("SKIM_V3_FIST_HOLD_S", 30.0); }
+  return v;
+}
+
+/* In-place radix-2 FFT of FE_N complex points: no FFTW planner, no lock, a
+ * few thousand flops per hop. */
+static void fe_fft(float *re, float *im) {
+  static float twr[FE_N / 2], twi[FE_N / 2];
+  static gsize once;
+  if (g_once_init_enter(&once)) {
+    for (guint k = 0; k < FE_N / 2; k++) {
+      twr[k] = (float)cos(-2.0 * G_PI * k / FE_N);
+      twi[k] = (float)sin(-2.0 * G_PI * k / FE_N);
+    }
+    g_once_init_leave(&once, 1);
+  }
+  for (guint i = 1, j = 0; i < FE_N; i++) {
+    guint bit = FE_N >> 1;
+    for (; j & bit; bit >>= 1) { j ^= bit; }
+    j ^= bit;
+    if (i < j) {
+      float t = re[i];
+      re[i] = re[j];
+      re[j] = t;
+      t = im[i];
+      im[i] = im[j];
+      im[j] = t;
+    }
+  }
+  for (guint len = 2; len <= FE_N; len <<= 1) {
+    const guint step = FE_N / len;
+    for (guint i = 0; i < FE_N; i += len) {
+      for (guint k = 0; k < len / 2; k++) {
+        const float wr = twr[k * step], wi = twi[k * step];
+        const guint a = i + k, b = a + len / 2;
+        const float xr = re[b] * wr - im[b] * wi, xi = re[b] * wi + im[b] * wr;
+        re[b] = re[a] - xr;
+        im[b] = im[a] - xi;
+        re[a] += xr;
+        im[a] += xi;
+      }
+    }
+  }
+}
+
+/* The k-th smallest of v[0..n) (Hoare's quickselect; v is reordered). */
+static float fe_select(float *v, guint n, guint k) {
+  guint lo = 0, hi = n - 1;
+  while (lo < hi) {
+    const float piv = v[(lo + hi) / 2];
+    guint i = lo, j = hi;
+    while (i <= j) {
+      while (v[i] < piv) { i++; }
+      while (v[j] > piv) { j--; }
+      if (i <= j) {
+        const float t = v[i];
+        v[i] = v[j];
+        v[j] = t;
+        i++;
+        if (j == 0) { break; }
+        j--;
+      }
+    }
+    if (k <= j) { hi = j; } else if (k >= i) { lo = i; } else { break; }
+  }
+  return v[k];
+}
+
+/* σ0²: the FE_PW_Q percentile of r² over the last FE_PW_S — the noise power
+ * of the matched statistic on THIS channel (a keyed station leaves its
+ * spaces there). The band floor (set_floor) bounds it: a channel whose
+ * every sample is signal cannot teach itself a high floor. */
+static void fe_noise_refresh(Cw3State *st) {
+  const guint n = MIN(st->pw_head, st->pw_size);
+  if (n < 64)
+    return;
+  float v[st->pw_size];
+  for (guint k = 0; k < n; k++) { v[k] = st->pw[(st->pw_head - n + k) & (st->pw_size - 1)]; }
+  /* Noise power through the MA is exponential (complex Gaussian). Start
+   * from the 10th percentile (−ln 0.9 of the mean) — low enough to sit in
+   * the noise of a channel that is keyed half the time — then refine on
+   * the samples under 3 means: a truncated exponential's mean is
+   * 0.843 of the full one. Marks above the cut cannot lift it. */
+  double mu = fe_select(v, n, (guint)(0.10 * (n - 1))) / 0.1054;
+  for (int it = 0; it < 4 && mu > 0; it++) {
+    const float cut = (float)(3.0 * mu);
+    double sum = 0.0;
+    guint  cnt = 0;
+    for (guint k = 0; k < n; k++) {
+      if (v[k] < cut) {
+        sum += v[k];
+        cnt++;
+      }
+    }
+    if (cnt < 16)
+      break;
+    mu = (sum / cnt) / 0.843;
+  }
+  if (st->noise_chan > 0 && !isnan(st->noise_chan)) {
+    /* the channel's noise through the MA: ENBW rate/L of the channel's
+     * 0.851 × spacing (snr_meter.h), spacing = rate/2 */
+    const double expect = st->noise_chan * 2.0 / (0.851 * st->ma_len);
+    mu = CLAMP(mu, 0.7 * expect, 1.5 * expect);
+  }
+  st->n0 = mu;
+}
+
+/* The matched-amplitude trackers (v1's envelope dynamics): the bootstrap's
+ * Schmitt and the pre-roll's bars read these in v3. */
+static void fe_track(Cw3State *st, float r) {
+  if (st->mf_hi < 0) { st->mf_hi = st->mf_lo = r; }
+  st->mf_hi = r > st->mf_hi ? r : st->mf_hi + st->k_hi_rel * (r - st->mf_hi);
+  if (r < 0.5 * (st->mf_lo + st->mf_hi)) { st->mf_lo += st->k_lo * (r - st->mf_lo); }
+}
+
+/* One raw frame through the candidate path: derotate onto the carrier, the
+ * low-pass, the coherent sum over half a dit. Returns |u|, the matched
+ * amplitude; keeps the power statistics the likelihoods are calibrated on. */
+static float fe_sample(Cw3State *st, float i, float q) {
+  const double w  = -2.0 * G_PI * st->fc_hz / st->rate;
+  const double cw = cos(w), sw = sin(w);
+  const double nr = st->rot_re * cw - st->rot_im * sw;
+  const double ni = st->rot_re * sw + st->rot_im * cw;
+  st->rot_re = nr;
+  st->rot_im = ni;
+  if ((++st->rot_n & 255) == 0) {
+    const double g = 1.0 / sqrt(nr * nr + ni * ni);
+    st->rot_re *= g;
+    st->rot_im *= g;
+  }
+  double x[2] = { i * nr - q * ni, i * ni + q * nr };
+  static double b0, b1, b2, a1, a2, for_rate;
+  if (for_rate != st->rate) {
+    const double k = tan(G_PI * FE_LP_HZ / st->rate), q2 = sqrt(2.0);
+    const double nrm = 1.0 / (1.0 + q2 * k + k * k);
+    b0 = k * k * nrm;
+    b1 = 2.0 * b0;
+    b2 = b0;
+    a1 = 2.0 * (k * k - 1.0) * nrm;
+    a2 = (1.0 - q2 * k + k * k) * nrm;
+    for_rate = st->rate;
+  }
+  for (int r = 0; r < 2; r++) {
+    const double y = b0 * x[r] + b1 * st->lp_x[r][0] + b2 * st->lp_x[r][1] -
+                     a1 * st->lp_y[r][0] - a2 * st->lp_y[r][1];
+    st->lp_x[r][1] = st->lp_x[r][0];
+    st->lp_x[r][0] = x[r];
+    st->lp_y[r][1] = st->lp_y[r][0];
+    st->lp_y[r][0] = y;
+    x[r] = y;
+  }
+  if (st->dit > 0) {
+    st->ma_len = (guint)CLAMP(lround(0.5 * st->dit), 2L, (long)st->ma_cap - 1);
+  }
+  /* the running sum: one frame in, the one ma_len back out; summed afresh
+   * when the length changes and every 1024 frames (float drift) */
+  const guint out_ix = (st->ma_pos + st->ma_cap - st->ma_len) % st->ma_cap;
+  if (st->ma_used == st->ma_len && (st->rot_n & 1023) != 0) {
+    st->ma_sr += x[0] - st->mab[2 * out_ix];
+    st->ma_si += x[1] - st->mab[2 * out_ix + 1];
+    st->mab[2 * st->ma_pos]     = (float)x[0];
+    st->mab[2 * st->ma_pos + 1] = (float)x[1];
+    st->ma_pos = (st->ma_pos + 1) % st->ma_cap;
+  } else {
+    st->mab[2 * st->ma_pos]     = (float)x[0];
+    st->mab[2 * st->ma_pos + 1] = (float)x[1];
+    st->ma_pos = (st->ma_pos + 1) % st->ma_cap;
+    st->ma_sr = st->ma_si = 0.0;
+    for (guint k = 0; k < st->ma_len; k++) {
+      const guint ix = (st->ma_pos + st->ma_cap - 1 - k) % st->ma_cap;
+      st->ma_sr += st->mab[2 * ix];
+      st->ma_si += st->mab[2 * ix + 1];
+    }
+    st->ma_used = st->ma_len;
+  }
+  const double sr = st->ma_sr / st->ma_len, si = st->ma_si / st->ma_len;
+  const double r2 = sr * sr + si * si;
+  st->p_fast = r2 > st->p_fast ? r2 : st->p_fast + st->k_pf * (r2 - st->p_fast);
+  /* σ1²: the station's key-down power, held through its spaces and past
+   * the end of an over (snr_meter's mark: the mean of samples within 6 dB
+   * of a decaying peak) — a σ1² that collapsed onto the noise in a pause
+   * would read noise as marks. */
+  st->pk = r2 > st->pk ? r2 : st->pk + (r2 - st->pk) / (FE_PK_S * st->rate);
+  if (r2 > 0.25 * st->pk) { st->pmark += (r2 - st->pmark) / (FE_MK_S * st->rate); }
+  /* Is a keyed carrier here at all? The mixture log-odds of the sample
+   * (marks a FE_KEY_P share of the time) against noise alone, one
+   * independent sample per MA length, averaged over FE_PRES_S. It falls
+   * below zero within a second of the last mark — v2's envelope squelch,
+   * but soft and calibrated. */
+  if (st->n0 > 0 && (st->pres_on || WEAKV(st))) {
+    const double s0 = st->n0, s1 = MAX(st->pmark, FE_SIG_MIN * s0);
+    const double lr = CLAMP(log(s0 / s1) + r2 * (1.0 / s0 - 1.0 / s1), -5.0, 5.0);
+    const double term = log((1.0 - FE_KEY_P) + FE_KEY_P * exp(lr)) / st->ma_len;
+    st->pres += (term - st->pres) / (FE_PRES_S * st->rate);
+    st->pres_neg = st->pres < 0 ? st->pres_neg + 1 : 0;
+  }
+  st->pw[st->pw_head++ & (st->pw_size - 1)] = (float)r2;
+  if (++st->pw_due >= (guint)(FE_PW_EVERY * st->rate) || (st->n0 <= 0 && st->pw_head >= 64)) {
+    st->pw_due = 0;
+    fe_noise_refresh(st);
+  }
+  return (float)sqrt(r2);
+}
+
+/* The channel just became a candidate. The detector took a second or so to
+ * be sure, and the pre-roll ring must hold the MATCHED statistic for the
+ * head of the over: run the front end over the raw ring up to (not
+ * including) the current frame, writing the ring the pre-roll replays and
+ * warming the trackers. */
+static void fe_backfill(Cw3State *st) {
+  st->rot_re = 1.0;
+  st->rot_im = 0.0;
+  st->rot_n  = 0;
+  memset(st->lp_x, 0, sizeof(st->lp_x));
+  memset(st->lp_y, 0, sizeof(st->lp_y));
+  memset(st->mab, 0, 2 * st->ma_cap * sizeof(float));
+  st->ma_pos  = 0;
+  st->ma_used = 0;
+  st->pres_on = TRUE;
+  st->pw_head = st->pw_due = 0;
+  st->n0 = st->p_fast = st->pk = st->pmark = st->pres = 0.0;
+  st->pres_neg = 0;
+  st->mf_hi = st->mf_lo = -1.0;
+  const guint imask = st->iqr_size - 1, pmask = st->pre_size - 1;
+  guint have = MIN(st->iqr_head, st->iqr_size);
+  have = MIN(have, MIN(st->pre_head + 1, st->pre_size));
+  for (guint k = have; k > 1; k--) {                 /* frames H−have … H−2    */
+    const guint f = (st->iqr_head - k) & imask;
+    const float r = fe_sample(st, st->iqr[2 * f], st->iqr[2 * f + 1]);
+    fe_track(st, r);
+    st->pre3[(st->pre_head - (k - 1)) & pmask] = r;
+  }
+  st->pres_on = FALSE;
+}
+
+/* One detector hop: the spectrum of the last FE_N frames (Hann) into the
+ * EMA; the strongest bin within ±FE_SPAN_HZ against the floor decides the
+ * candidate state and steers the carrier estimate. */
+static void fe_hop(Cw3State *st) {
+  static float win[FE_N];
+  static gsize once;
+  if (g_once_init_enter(&once)) {
+    for (guint k = 0; k < FE_N; k++) { win[k] = 0.5f - 0.5f * (float)cos(2.0 * G_PI * k / FE_N); }
+    g_once_init_leave(&once, 1);
+  }
+  float re[FE_N], im[FE_N];
+  const guint mask = st->iqr_size - 1;
+  for (guint k = 0; k < FE_N; k++) {
+    const guint f = (st->iqr_head - FE_N + k) & mask;
+    re[k] = st->iqr[2 * f] * win[k];
+    im[k] = st->iqr[2 * f + 1] * win[k];
+  }
+  fe_fft(re, im);
+  const guint  warm = (guint)(FE_SPEC_S * st->rate / FE_HOP);
+  const double a = st->spec_hops < warm ? 1.0 / (st->spec_hops + 1)
+                                        : (double)FE_HOP / (FE_SPEC_S * st->rate);
+  for (guint k = 0; k < FE_N; k++) {
+    const float p = re[k] * re[k] + im[k] * im[k];
+    st->spec[k] += (float)(a * (p - st->spec[k]));
+  }
+  st->spec_hops++;
+  if (st->spec_hops < 4)
+    return;
+  /* the floor per bin: the band's (set_floor) or this spectrum's median */
+  /* The floor per bin over the carrier search span only: outside the
+   * channel's passband the bins are filtered down and a median over all
+   * of them would call plain in-band noise a carrier. The band floor
+   * (set_floor) when there is one — a channel full of one station cannot
+   * lift it; its in-band density is rate/ENBW (2/0.851) of a white one. */
+  const gint kspan = (gint)(FE_SPAN_HZ * FE_N / st->rate);
+  /* A carrier belongs to the channel whose centre is nearest (±¼ of the
+   * 2×-oversampled rate): the overlapping neighbour sees it too, and two
+   * candidates on one station only cost a second lattice and a ghost. */
+  const gint kown = (gint)(0.25 * FE_N + 0.5);
+  /* … and never under this channel's own median there: on a crowded
+   * stretch the channel's noise (splatter, weak QRM) sits dB above the
+   * band's quiet 20th percentile and every bin would pass. */
+  if ((st->spec_hops & 3) == 0 || st->nb_local <= 0) {   /* every 4th hop */
+    float sv[FE_N];
+    guint ns = 0;
+    for (gint k = -kspan; k <= kspan; k++) { sv[ns++] = st->spec[(guint)((k + FE_N) % FE_N)]; }
+    st->nb_local = fe_select(sv, ns, ns / 2);
+  }
+  double nb = st->nb_local;
+  if (st->noise_chan > 0 && !isnan(st->noise_chan)) {
+    nb = MAX(nb, st->noise_chan * FE_SUMW2 * 2.0 / 0.851);
+  }
+  if (nb <= 0)
+    return;
+  gint   kp = 0;
+  double pk = -1.0;
+  for (gint k = -kspan; k <= kspan; k++) {
+    const guint ix = (guint)((k + FE_N) % FE_N);
+    if (st->spec[ix] > pk) {
+      pk = st->spec[ix];
+      kp = k;
+    }
+  }
+  /* not ours: the neighbour's carrier, or its skirt on our edge */
+  if (ABS(kp) > kown) { pk = 0.0; }
+  const double prom = pk / nb;
+  st->prom = prom;
+  const double bar = fe_det_bar();
+  if (prom >= bar) {
+    if (st->det_run < G_MAXUINT) { st->det_run++; }
+  } else {
+    st->det_run = 0;
+  }
+  if (prom >= 0.5 * bar) {
+    /* the carrier: a parabola through the log spectrum round the peak */
+    const double lm = log((double)st->spec[(kp - 1 + FE_N) % FE_N] + 1e-30);
+    const double l0 = log(pk + 1e-30);
+    const double lp = log((double)st->spec[(kp + 1 + FE_N) % FE_N] + 1e-30);
+    const double den = lm - 2.0 * l0 + lp;
+    const double dlt = den < 0 ? CLAMP(0.5 * (lm - lp) / den, -0.5, 0.5) : 0.0;
+    const double f = (kp + dlt) * st->rate / FE_N;
+    if (!st->cand && st->det_run <= 1) {
+      st->fc_hz = f;
+    } else {
+      st->fc_hz += (FE_HOP / (FE_AFC_S * st->rate)) * (f - st->fc_hz);
+    }
+    st->cand_t = st->iqr_head;
+  }
+  const guint need = MAX(1u, (guint)(fe_det_s() * st->rate / FE_HOP));
+  if (!st->cand && st->det_run >= need) {
+    st->cand = TRUE;
+    CW3_DBG("[candidate: carrier %+.1f Hz, %.1f dB over the floor, t=%lu]\n",
+            st->fc_hz, 10.0 * log10(prom), (unsigned long)st->t);
+    fe_backfill(st);
+    if (st->n0 > 0) {
+      st->weak = fe_snr500(st) < fe_weak_db() + 1.5;
+      CW3_DBG("[%s view at birth: %.1f dB]\n", st->weak ? "weak" : "strong", fe_snr500(st));
+    }
+  } else if (st->cand && st->iqr_head - st->cand_t > (guint)(FE_LOST_S * st->rate)) {
+    st->cand = FALSE;
+    st->det_run = 0;
+    CW3_DBG("[candidate lost, t=%lu]\n", (unsigned long)st->t);
+  }
+}
+
+/* The sample's log-likelihood ratio mark : space on the matched power r².
+ * Exponential power under both hypotheses — noise σ0² (the measured
+ * percentile) and noise plus the station's key-down power σ1² (the fast
+ * peak; a Rayleigh-fading mark, marginalised): llr = ln(σ0²/σ1²) +
+ * r²·(1/σ0² − 1/σ1²). It shrinks to nothing as σ1 → σ0 (the duration priors
+ * take over on a weak channel) and the 1/L weight pays for the MA's
+ * correlation — L frames ≈ one independent sample. */
+static double fe_llr(const Cw3State *st, float r) {
+  if (st->n0 <= 0)
+    return 0.0;
+  const double s1 = MAX(st->pmark, FE_SIG_MIN * st->n0);
+  const double s0 = MAX(st->n0, s1 / FE_R_CAP);
+  const double x  = MIN((double)r * r, 4.0 * s1);
+  const double l  = log(s0 / s1) + x * (1.0 / s0 - 1.0 / s1);
+  return CLAMP(l / st->ma_len, -FE_LLR_MAX, FE_LLR_MAX);
+}
+
+/* SNR500: key-down power over the noise in 500 Hz — the MA's noise is in
+ * rate/L Hz. The scale CW Skimmer Server reports on (≈ +1 dB). */
+static double fe_snr500(const Cw3State *st) {
+  if (st->n0 <= 0)
+    return 0.0;
+  const double sig = MAX(st->pmark - st->n0, 0.01 * st->n0);
+  return 10.0 * log10(sig / st->n0) + 10.0 * log10((st->rate / st->ma_len) / 500.0);
+}
+
 /* --- soft path: discriminator → llr ring → Viterbi ------------------------------
  * One sample through the soft path: µ trackers → carrier watch → LLR →
  * lattice step → lagged commit + live emission. Factored out of the live
  * loop VERBATIM so the pre-roll replay pushes ring samples through the
  * exact same float ops a live sample takes. */
-static void soft_step(Cw3State *st, float m, SkimDecode *out, guint *pos) {
+static void soft_step(Cw3State *st, float m, float r, SkimDecode *out, guint *pos) {
   /* µ_mark is a FAST decaying peak (instant attack, ~0.35 s release): a
    * QSB trough pulls it down within one fade edge, so faded marks stay
    * above the midpoint and keep their positive evidence — the fix for
@@ -2208,7 +3041,8 @@ static void soft_step(Cw3State *st, float m, SkimDecode *out, guint *pos) {
     rc_on = e && e[0] && strcmp(e, "0") != 0;
   }
   const double ray_v = rc_on && span_llr < 0 ? MIN(ray_llr, -span_llr) : ray_llr;
-  const double llr = (1.0 - w_ray) * span_llr + w_ray * ray_v;
+  const double llr = st->fe_on && st->weak ? fe_llr(st, r)
+                                          : (1.0 - w_ray) * span_llr + w_ray * ray_v;
   static gint trace = -1;              /* getenv per sample cost 3 % CPU     */
   if (G_UNLIKELY(trace < 0)) { trace = g_getenv("SKIM_CW3_TRACE") != NULL; }
   if (trace) {
@@ -2300,10 +3134,15 @@ static gboolean preroll_replay(Cw3State *st, SkimDecode *out, guint *pos) {
   if (!st->pre || st->dit <= 0 || !st->active)
     return FALSE;
   const guint size = st->pre_size;
+  /* v3: the head is found on the matched amplitude (its bars below) */
+  const float *ring = WEAKV(st) ? st->pre3 : st->pre;
   guint have = MIN(st->pre_head, size);
   have = MIN(have, st->pre_head - st->pre_from);
-  const float thr =
-      (float)(st->env_lo + 0.45 * (st->env_hi - st->env_lo));
+  /* the strong view replays v2's window (2 s), the weak one the whole ring */
+  if (!WEAKV(st)) { have = MIN(have, 512u); }
+  const float thr = WEAKV(st)
+      ? (float)(st->mf_lo + 0.45 * (st->mf_hi - st->mf_lo))
+      : (float)(st->env_lo + 0.45 * (st->env_hi - st->env_lo));
   const guint qmin    = (guint)MAX(2.0 * st->dit, 0.10 * st->rate);
   const guint marklen = (guint)MAX(3.0, 0.55 * st->dit);
   if (have < qmin + marklen)
@@ -2316,7 +3155,7 @@ static gboolean preroll_replay(Cw3State *st, SkimDecode *out, guint *pos) {
   guint quiet = 0, run = 0, run_at = 0, onset = 0;
   gboolean found = FALSE;
   for (guint k = 0; k < have && !found; k++) {
-    const float v = st->pre[(st->pre_head - have + k) & (size - 1)];
+    const float v = ring[(st->pre_head - have + k) & (size - 1)];
     if (v > thr) {
       if (run == 0) { run_at = k; }
       run++;
@@ -2347,26 +3186,27 @@ static gboolean preroll_replay(Cw3State *st, SkimDecode *out, guint *pos) {
     double qsum = 0.0, msum = 0.0;
     guint  qn = 0, mn = 0;
     for (guint k = onset > qmin ? onset - qmin : 0; k < onset; k++) {
-      const float v = st->pre[(st->pre_head - have + k) & (size - 1)];
+      const float v = ring[(st->pre_head - have + k) & (size - 1)];
       if (v <= thr) {
         qsum += v;
         qn++;
       }
     }
     for (guint k = onset; k < have && mn < 2 * marklen; k++) {
-      const float v = st->pre[(st->pre_head - have + k) & (size - 1)];
+      const float v = ring[(st->pre_head - have + k) & (size - 1)];
       if (v > thr) {
         msum += v;
         mn++;
       }
     }
-    if (!qn || !mn || msum * (double)qn < 5.6 * qsum * (double)mn)
+    const double bar = WEAKV(st) ? fe_preroll_x() : 5.6;
+    if (!qn || !mn || msum * (double)qn < bar * qsum * (double)mn)
       return FALSE;
   }
   const guint brk = (guint)(14.0 * st->dit);
   quiet = 0;
   for (guint k = onset; k < have; k++) {
-    const float v = st->pre[(st->pre_head - have + k) & (size - 1)];
+    const float v = ring[(st->pre_head - have + k) & (size - 1)];
     quiet = v > thr ? 0 : quiet + 1;
     if (quiet >= brk)
       return FALSE;
@@ -2375,7 +3215,8 @@ static gboolean preroll_replay(Cw3State *st, SkimDecode *out, guint *pos) {
   CW3_DBG("[preroll replay %u samples (onset -%u) at t=%lu]\n",
           have - (onset - lead), have - onset, (unsigned long)st->t);
   for (guint k = onset - lead; k < have; k++) {
-    soft_step(st, st->pre[(st->pre_head - have + k) & (size - 1)], out, pos);
+    const guint ix = (st->pre_head - have + k) & (size - 1);
+    soft_step(st, st->pre[ix], st->fe_on ? st->pre3[ix] : 0.0f, out, pos);
   }
   return TRUE;
 }
@@ -2472,36 +3313,68 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
     const float i = iq[2 * n], q = iq[2 * n + 1];
     const float mag = sqrtf(i * i + q * q);
     float nbmag = mag;
-    if (nb_on) {
-      st->nb_ph -= 2.0 * G_PI * st->foff_hz / st->rate;
-      if (st->nb_ph > G_PI || st->nb_ph < -G_PI) {
-        st->nb_ph = remainder(st->nb_ph, 2.0 * G_PI);
+    {
+      if (nb_on) {
+        st->nb_ph -= 2.0 * G_PI * st->foff_hz / st->rate;
+        if (st->nb_ph > G_PI || st->nb_ph < -G_PI) {
+          st->nb_ph = remainder(st->nb_ph, 2.0 * G_PI);
+        }
+        const double c = cos(st->nb_ph), sn = sin(st->nb_ph);
+        const double xin[2] = { i * c - q * sn, i * sn + q * c };
+        double yo[2];
+        for (int r = 0; r < 2; r++) {
+          yo[r] = nb_b0 * xin[r] + nb_b1 * st->nb_x[r][0] + nb_b2 * st->nb_x[r][1] -
+                  nb_a1 * st->nb_y[r][0] - nb_a2 * st->nb_y[r][1];
+          st->nb_x[r][1] = st->nb_x[r][0];
+          st->nb_x[r][0] = xin[r];
+          st->nb_y[r][1] = st->nb_y[r][0];
+          st->nb_y[r][0] = yo[r];
+        }
+        nbmag = (float)sqrt(yo[0] * yo[0] + yo[1] * yo[1]);
       }
-      const double c = cos(st->nb_ph), sn = sin(st->nb_ph);
-      const double xin[2] = { i * c - q * sn, i * sn + q * c };
-      double yo[2];
-      for (int r = 0; r < 2; r++) {
-        yo[r] = nb_b0 * xin[r] + nb_b1 * st->nb_x[r][0] + nb_b2 * st->nb_x[r][1] -
-                nb_a1 * st->nb_y[r][0] - nb_a2 * st->nb_y[r][1];
-        st->nb_x[r][1] = st->nb_x[r][0];
-        st->nb_x[r][0] = xin[r];
-        st->nb_y[r][1] = st->nb_y[r][0];
-        st->nb_y[r][0] = yo[r];
-      }
-      nbmag = (float)sqrt(yo[0] * yo[0] + yo[1] * yo[1]);
-    }
 
+    }
     st->ma[st->ma_n % 3] = mag;
     st->nb_ma[st->ma_n % 3] = nbmag;
     st->ma_n++;
     float m = (st->ma[0] + st->ma[1] + st->ma[2]) / (float)MIN(st->ma_n, 3);
-    /* The soft path's envelope: the narrow one when SKIM_V3_NARROW is on.
-     * Squelch, keying duty, bootstrap and the offset estimate keep reading
-     * the raw channel — they must find a carrier the filter is not yet
-     * centred on. */
+    /* The soft path's envelope: v3's matched amplitude on a candidate (or
+     * a lattice riding out a dip), v2's narrow one with SKIM_V3_FRONT=v2.
+     * Squelch, keying duty and v2's bootstrap keep reading the raw channel. */
     const float ms = nb_on ? (st->nb_ma[0] + st->nb_ma[1] + st->nb_ma[2]) /
                                  (float)MIN(st->ma_n, 3)
                            : m;
+    float mr = 0.0f;                           /* v3's matched amplitude     */
+    if (st->fe_on) {
+      const guint imask = st->iqr_size - 1;
+      st->iqr[2 * (st->iqr_head & imask)]     = i;
+      st->iqr[2 * (st->iqr_head & imask) + 1] = q;
+      st->iqr_head++;
+      if (++st->fe_n >= FE_HOP && st->iqr_head >= FE_N) {
+        st->fe_n = 0;
+        fe_hop(st);
+      }
+      /* the matched path costs: only on a candidate, or on a weak over
+       * the lattice still holds — a strong channel reads v2's view */
+      const gboolean locked = st->active && !st->paused;
+      if ((st->cand && !(locked && !WEAKV(st))) || (WEAKV(st) && locked)) {
+        mr = fe_sample(st, i, q);
+        fe_track(st, mr);
+        /* the view changes between overs only: mid-over the lattice would
+         * read two likelihood scales in one word */
+        if ((st->iqr_head & 15) == 0 && st->n0 > 0 && (!st->active || st->paused)) {
+          const double snr = fe_snr500(st), bar = fe_weak_db();
+          if (!st->weak && snr < bar) {
+            st->weak = TRUE;
+            CW3_DBG("[weak view: %.1f dB, t=%lu]\n", snr, (unsigned long)st->t);
+          } else if (st->weak && snr > bar + 3.0) {
+            st->weak = FALSE;
+            CW3_DBG("[strong view: %.1f dB, t=%lu]\n", snr, (unsigned long)st->t);
+          }
+        }
+      }
+      st->pre3[st->pre_head & (st->pre_size - 1)] = mr;
+    }
     st->pre[st->pre_head++ & (st->pre_size - 1)] = ms;
     if (G_UNLIKELY(om & SKIM_ORACLE_KWS)) { kws_push(st, ms); }
 
@@ -2529,6 +3402,11 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
     if (o_gate) {
       st->gate_open = TRUE;
       st->keying = TRUE;
+    }
+    if (st->fe_on && (o_gate || o_gsoft) && !st->cand) {
+      st->cand = TRUE;
+      st->cand_t = st->iqr_head;
+      fe_backfill(st);
     } else if (o_gsoft) {
       st->gate_open = st->env_hi > 2.0 * st->env_lo + 1e-6;
       st->keying = st->keying || st->p_high > 0.07;
@@ -2541,8 +3419,20 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
         st->dit > 0 && st->marks_ok >= 8 && st->elem_err < 0.35;
     const gboolean mu_alive =
         st->active && st->mu_m > 3.0 * st->mu_s;
-    const gboolean dead =
-        (!st->gate_open && !(solid && mu_alive)) || (!st->keying && !solid);
+    /* v3: the detector is the gate — a candidate, or a solid lattice
+     * riding out a dip; no envelope squelch, no keying-duty bar. */
+    /* A channel that locked on a station keeps its over through word gaps
+     * and fades: dead air there takes v2's over break — BREAK_DITS of no
+     * evidence — not one dip of the presence log-odds (it tore every weak
+     * word in two on live-air replays). */
+    const guint quiet_bar = solid ? (guint)MAX(BREAK_DITS * st->dit, 1.0 * st->rate)
+                                  : (guint)(FE_DEAD_S * st->rate);
+    const gboolean fe_quiet =
+        !st->cand || st->pres_neg > quiet_bar ||
+        (st->n0 > 0 && fe_snr500(st) < fe_min_db());
+    const gboolean dead = WEAKV(st)
+        ? (fe_quiet && !(solid && mu_alive))
+        : ((!st->gate_open && !(solid && mu_alive)) || (!st->keying && !solid));
 
     if (st->rd_on || st->rr_arm) {
       /* Run keyer: sees EVERY sample (before gate/pause early-exits), so the
@@ -2626,7 +3516,7 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
           st->pre_from = st->pre_head;
         }
         st->quiet += 1.0;
-        if (st->quiet > 8.0 * st->rate) {      /* forget the fist            */
+        if (st->quiet > (WEAKV(st) ? fist_hold_s() : 8.0) * st->rate) { /* forget the fist */
           st->dit = 0;
           st->nboot = 0;
           st->marks_ok = 0;
@@ -2665,7 +3555,7 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
         st->active || st->carrier
             ? st->mu_s + 0.55 * (st->mu_m - st->mu_s)
             : st->env_lo + 0.55 * (st->env_hi - st->env_lo);
-    if (!o_freq && m > mid_now && mag > st->env_lo * 3.0) {
+    if (!o_freq && !WEAKV(st) && m > mid_now && mag > st->env_lo * 3.0) {
       const double dr = (double)i * st->prev_i + (double)q * st->prev_q;
       const double di = (double)q * st->prev_i - (double)i * st->prev_q;
       if (dr != 0.0 || di != 0.0) {
@@ -2675,6 +3565,7 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
     }
     st->prev_i = i;
     st->prev_q = q;
+    if (WEAKV(st) && !o_freq) { st->foff_hz = st->fc_hz; }   /* the detector's AFC */
 
     if (o_clock && !st->active && !st->carrier) {
       st->dit = st->esp = o_dit;               /* R's clock, no bootstrap    */
@@ -2683,9 +3574,11 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
     }
     if (!st->active && !st->carrier) {
       /* Bootstrap: v1's Schmitt + first-marks clustering learns the dit. */
-      const double span = st->env_hi - st->env_lo;
-      const double thr  = st->env_lo + (st->key ? 0.30 : 0.55) * span;
-      const gboolean want = m > thr;
+      const double b_lo = WEAKV(st) ? st->mf_lo : st->env_lo;
+      const double b_hi = WEAKV(st) ? st->mf_hi : st->env_hi;
+      const double span = b_hi - b_lo;
+      const double thr  = b_lo + (st->key ? 0.30 : 0.55) * span;
+      const gboolean want = (WEAKV(st) ? mr : m) > thr;
       const double glitch = 3.0;
       if (want != st->key) {
         if (st->pend_valid) {
@@ -2736,7 +3629,16 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
       continue;
     }
 
-    soft_step(st, ms, out, &pos);
+    soft_step(st, ms, mr, out, &pos);
+    if (st->fe_on && st->active && !st->paused && st->dit > 0 && kr_cfg()->on &&
+        st->t >= st->kr_next) {
+      st->kr_next = st->t + (guint64)(KR_EVERY_S * st->rate);
+      kws_read(st);
+    }
+    if (st->kr_q[0] && st->wd_n == 0 && pos + strlen(st->kr_q) + 1 < SKIM_DECODE_TEXT_MAX) {
+      emit_str(out, &pos, st->kr_q);
+      st->kr_q[0] = '\0';
+    }
   }
 
   hy_call_end(st, out);
@@ -2765,6 +3667,10 @@ static void cw3_set_freq(gpointer state, double freq_hz) {
   ((Cw3State *)state)->freq_hz = freq_hz;
 }
 
+static void cw3_set_floor(gpointer state, double noise_pw) {
+  ((Cw3State *)state)->noise_chan = noise_pw;
+}
+
 static gboolean cw3_take_pane_op(gpointer state, SkimPaneOp *op) {
   Cw3State *st = state;
   if (!st->ops || !st->ops->len)
@@ -2779,6 +3685,7 @@ const SkimDecodeBackend *skim_decode_cw_v3(void) {
     .name           = "cw3",
     .channel_new    = cw3_channel_new,
     .set_freq       = cw3_set_freq,
+    .set_floor      = cw3_set_floor,
     .take_pane_op   = cw3_take_pane_op,
     .channel_free   = cw3_channel_free,
     .process        = cw3_process,

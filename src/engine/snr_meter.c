@@ -45,6 +45,8 @@ struct _SkimSnrMeter {
   SnrCh  *ch;
   float  *med;              /* one channel's ring, sorted                  */
   double *scratch;
+  double *medv;             /* refresh: every channel's noise              */
+  double *floor;            /* refresh: every channel's band floor         */
 };
 
 SkimSnrMeter *skim_snr_meter_new(guint nchan, double rate, double enbw_hz) {
@@ -59,6 +61,9 @@ SkimSnrMeter *skim_snr_meter_new(guint nchan, double rate, double enbw_hz) {
   m->ch = g_new0(SnrCh, nchan);
   m->med = g_new(float, RING);
   m->scratch = g_new(double, 2 * FLOOR_HALF + 1);
+  m->medv = g_new(double, nchan);
+  m->floor = g_new(double, nchan);
+  for (guint c = 0; c < nchan; c++) { m->floor[c] = NAN; }
   return m;
 }
 
@@ -68,6 +73,8 @@ void skim_snr_meter_free(SkimSnrMeter *m) {
   g_free(m->ch);
   g_free(m->med);
   g_free(m->scratch);
+  g_free(m->medv);
+  g_free(m->floor);
   g_free(m);
 }
 
@@ -96,13 +103,52 @@ void skim_snr_meter_push(SkimSnrMeter *m, guint chan, const float *iq,
   }
 }
 
-static int cmp_double(const void *a, const void *b) {
-  const double x = *(const double *)a, y = *(const double *)b;
-  return x < y ? -1 : x > y;
+static double sel_d(double *v, guint n, guint k) {
+  guint lo = 0, hi = n - 1;
+  while (lo < hi) {
+    const double piv = v[(lo + hi) / 2];
+    guint i = lo, j = hi;
+    while (i <= j) {
+      while (v[i] < piv) { i++; }
+      while (v[j] > piv) { j--; }
+      if (i <= j) {
+        const double x = v[i];
+        v[i] = v[j];
+        v[j] = x;
+        i++;
+        if (j == 0) { break; }
+        j--;
+      }
+    }
+    if (k <= j) { hi = j; } else if (k >= i) { lo = i; } else { break; }
+  }
+  return v[k];
 }
 
-static int cmp_float(const void *a, const void *b) {
-  const float x = *(const float *)a, y = *(const float *)b;
+static float sel_f(float *v, guint n, guint k) {
+  guint lo = 0, hi = n - 1;
+  while (lo < hi) {
+    const float piv = v[(lo + hi) / 2];
+    guint i = lo, j = hi;
+    while (i <= j) {
+      while (v[i] < piv) { i++; }
+      while (v[j] > piv) { j--; }
+      if (i <= j) {
+        const float x = v[i];
+        v[i] = v[j];
+        v[j] = x;
+        i++;
+        if (j == 0) { break; }
+        j--;
+      }
+    }
+    if (k <= j) { hi = j; } else if (k >= i) { lo = i; } else { break; }
+  }
+  return v[k];
+}
+
+static int cmp_double(const void *a, const void *b) {
+  const double x = *(const double *)a, y = *(const double *)b;
   return x < y ? -1 : x > y;
 }
 
@@ -110,13 +156,19 @@ static int cmp_float(const void *a, const void *b) {
 static double chan_noise(SkimSnrMeter *m, const SnrCh *c) {
   const guint n = MIN(c->ring_n, RING);
   memcpy(m->med, c->ring, n * sizeof(float));
-  qsort(m->med, n, sizeof(float), cmp_float);
-  return m->med[n / 2] / MEDIAN_BIAS;
+  return sel_f(m->med, n, n / 2) / MEDIAN_BIAS;
 }
 
 double skim_snr_meter_db(SkimSnrMeter *m, guint chan) {
   if (!m || chan >= m->nchan || m->ch[chan].ring_n < RING_READY)
     return NAN;
+  /* refreshed floors (a set_floor backend asked for them) are at most a
+   * second old: no median over the neighbours per decode event */
+  if (!isnan(m->floor[chan]) && m->floor[chan] > 0) {
+    const double noise = m->floor[chan];
+    const double sig = m->ch[chan].mark - noise;
+    return 10.0 * log10(MAX(sig, 1e-3 * noise) / noise) + m->to_2500_db;
+  }
   const gint M = (gint)m->nchan;
   const gint half = MIN(FLOOR_HALF, (M - 1) / 2);
   guint k = 0;
@@ -132,6 +184,32 @@ double skim_snr_meter_db(SkimSnrMeter *m, guint chan) {
     return NAN;
   const double sig = m->ch[chan].mark - noise;
   return 10.0 * log10(MAX(sig, 1e-3 * noise) / noise) + m->to_2500_db;
+}
+
+void skim_snr_meter_refresh(SkimSnrMeter *m) {
+  if (!m)
+    return;
+  for (guint c = 0; c < m->nchan; c++) {
+    m->medv[c] = m->ch[c].ring_n >= RING_READY ? chan_noise(m, &m->ch[c]) : NAN;
+  }
+  const gint M = (gint)m->nchan;
+  const gint half = MIN(FLOOR_HALF, (M - 1) / 2);
+  for (guint c = 0; c < m->nchan; c++) {
+    guint k = 0;
+    for (gint d = -half; d <= half; d++) {
+      const double v = m->medv[((gint)c + d % M + M) % M];
+      if (!isnan(v)) { m->scratch[k++] = v; }
+    }
+    if (k == 0) {
+      m->floor[c] = NAN;
+      continue;
+    }
+    m->floor[c] = sel_d(m->scratch, k, (guint)(FLOOR_RANK * (k - 1)));
+  }
+}
+
+double skim_snr_meter_noise(const SkimSnrMeter *m, guint chan) {
+  return m && chan < m->nchan ? m->floor[chan] : NAN;
 }
 
 double skim_snr_esn0_dot(double snr2500_db, double wpm) {

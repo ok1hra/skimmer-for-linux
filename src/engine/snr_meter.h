@@ -45,6 +45,16 @@ void   skim_snr_meter_push(SkimSnrMeter *m, guint chan, const float *iq,
  * white noise against a centred carrier (0 dB; -0.1 dB at 25 Hz off). */
 #define SKIM_SNR_CW_ENBW 0.851
 
+/* The band floor around every channel, refreshed at once (the percentile
+ * over the neighbours is too dear per block): the pipeline calls this about
+ * once a second, then hands each channel's floor to its decoder (decode.h
+ * set_floor). */
+void   skim_snr_meter_refresh(SkimSnrMeter *m);
+
+/* Channel chan's floor from the last refresh: the mean power of a
+ * noise-only sample of the channel, linear; NAN before the first one. */
+double skim_snr_meter_noise(const SkimSnrMeter *m, guint chan);
+
 /* Channel chan's SNR_2500 in dB; NAN until the meter has seen a couple
  * of seconds. */
 double skim_snr_meter_db(SkimSnrMeter *m, guint chan);

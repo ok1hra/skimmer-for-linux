@@ -720,6 +720,105 @@ static void soft_cases(const SkimDecodeBackend *soft, const char *tag) {
 
 }
 
+
+/* -- weak-signal ladder: v3's reason to exist ------------------------------------
+ * The same over, keyed by a clean fist at 25 WPM, under falling SNR (this
+ * gate's scale: carrier over the noise in the 250 Hz channel, SNR500 + 3 dB),
+ * plain and under slow 8 dB QSB, three seeds a rung. Every rung prints the
+ * edit distance of v2 and v3 summed over the seeds; the checks: v3 never
+ * loses to v2 on the ladder's sum, and wins where v2 starts to lose. */
+static void weak_ladder(void) {
+  const char *PAY = "CQ CQ DE OK1HRA OK1HRA K";
+  static const double RUNG[] = { 12, 9, 6, 4, 2, 0, -2 };
+  printf("\n=== weak-signal ladder (25 WPM, SNR in 250 Hz; SNR500 = −3 dB) ===\n");
+  int sum2 = 0, sum3 = 0, low2 = 0, low3 = 0;
+  for (guint q = 0; q < 2; q++) {
+    for (guint r = 0; r < G_N_ELEMENTS(RUNG); r++) {
+      int d2 = 0, d3 = 0;
+      for (guint seed = 0; seed < 3; seed++) {
+        char *got[2];
+        for (guint b = 0; b < 2; b++) {
+          GRand *rng = g_rand_new_with_seed(20261114 + 97 * seed + 1000 * q);
+          GArray *env = gen_env(PAY, 25, RATE, 0.03, rng);
+          gen_env_append(env, PAY, 25, RATE, 0.03, rng, 3.0, 7.0);
+          key_run(env, 1.5 * RATE, 0.0f, 0, rng);
+          g_cw = b ? skim_decode_cw_v3() : skim_decode_cw_v2();
+          got[b] = run_decoder(env, 11.0, RUNG[r], q ? 0.15 : 0.0, q ? 8.0 : 0.0, rng, NULL);
+          g_array_free(env, TRUE);
+          g_rand_free(rng);
+        }
+        char *both = g_strdup_printf("%s %s", PAY, PAY);
+        d2 += MIN(fuzzy_dist(got[0], both), (int)strlen(both));
+        d3 += MIN(fuzzy_dist(got[1], both), (int)strlen(both));
+        if (g_getenv("LADDER_SHOW")) { show("v2:", got[0]); show("v3:", got[1]); }
+        g_free(both);
+        g_free(got[0]);
+        g_free(got[1]);
+      }
+      printf("  %s %5.1f dB (SNR500 %5.1f): v2 dist %3d   v3 dist %3d\n",
+             q ? "QSB  " : "plain", RUNG[r], RUNG[r] - 3.0, d2, d3);
+      sum2 += d2;
+      sum3 += d3;
+      if (RUNG[r] <= 6) { low2 += d2; low3 += d3; }
+    }
+  }
+  printf("  sum: v2 %d, v3 %d; at SNR500 <= 3 dB: v2 %d, v3 %d\n", sum2, sum3, low2, low3);
+  check("weak ladder: v3 never worse than v2 over the ladder", sum3 <= sum2);
+  check("weak ladder: v3 reads more than v2 at SNR500 <= 3 dB", low3 < low2);
+}
+
+
+/* -- the call reader (v3 M8): a weak call the text tears is confirmed by
+ * the audio — the dictionary call, never its twin; noise gets nothing. */
+static void kws_cases(void) {
+  char *dict = g_build_filename(g_get_tmp_dir(), "skimmer-cw-test-kws.scp", NULL);
+  g_file_set_contents(dict, "OK1HRA\nOK1HRB\nOK2HRA\nOK1HR\nOK1RA\nDL1HRA\nOK1HQA\nEA5BH\n",
+                      -1, NULL);
+  skim_callsign_dict_load(dict, NULL);
+  g_cw = skim_decode_cw_v3();
+  printf("\n=== call reader (v3) ===\n");
+  const char *PAY = "CQ CQ DE OK1HRA OK1HRA K";
+  int hit = 0, twin = 0, runs = 0;
+  for (guint seed = 0; seed < 6; seed++) {
+    GRand *rng = g_rand_new_with_seed(20261115 + seed);
+    GArray *env = gen_env(PAY, 26, RATE, 0.04, rng);
+    for (guint rep = 0; rep < 2; rep++) {
+      gen_env_append(env, PAY, 26, RATE, 0.04, rng, 3.0, 7.0);
+    }
+    key_run(env, 2.0 * RATE, 0.0f, 0, rng);
+    char *got = run_decoder(env, 9.0, 4.0 + 1.0 * (seed % 3), 0, 0, rng, NULL);
+    runs++;
+    hit  += strstr(got, "\x01" "OK1HRA\x02") != NULL;
+    twin += strstr(got, "\x01" "OK1HRB\x02") || strstr(got, "\x01" "OK2HRA\x02") ||
+            strstr(got, "\x01" "OK1HR\x02") || strstr(got, "\x01" "DL1HRA\x02") ||
+            strstr(got, "\x01" "OK1HQA\x02");
+    char *shown = g_strdup(got);
+    for (char *p = shown; *p; p++) {
+      if (*p == SKIM_CALLSIGN_FIX_OPEN) { *p = '['; }
+      if (*p == SKIM_CALLSIGN_FIX_CLOSE) { *p = ']'; }
+    }
+    show("v3:", shown);
+    g_free(shown);
+    g_free(got);
+    g_array_free(env, TRUE);
+    g_rand_free(rng);
+  }
+  printf("       reader: OK1HRA confirmed in %d of %d runs, a twin in %d\n", hit, runs, twin);
+  check("call reader: the weak call confirmed in most runs", hit * 2 > runs);
+  check("call reader: never a dictionary twin", twin == 0);
+
+  GRand *rng = g_rand_new_with_seed(20261116);
+  GArray *env = g_array_new(FALSE, FALSE, sizeof(float));
+  key_run(env, 90.0 * RATE, 0.0f, 0, rng);
+  char *got = run_decoder(env, 0.0, 6.0, 0, 0, rng, NULL);
+  check("call reader: 90 s of noise, no correction", strchr(got, SKIM_CALLSIGN_FIX_OPEN) == NULL);
+  g_free(got);
+  g_array_free(env, TRUE);
+  g_rand_free(rng);
+  g_unlink(dict);
+  g_free(dict);
+}
+
 int main(void) {
   printf("=== CW decode gate (offline, synthetic) ===\n");
   /* The word re-read is on for the whole gate: with no dictionary loaded
@@ -731,6 +830,8 @@ int main(void) {
   run_suite(skim_decode_cw_v3());
   soft_cases(skim_decode_cw_v2(), "v2");
   soft_cases(skim_decode_cw_v3(), "v3");
+  weak_ladder();
+  kws_cases();
 
   printf("\n=== %d checks, %d failures ===\n%s\n", checks, fails,
          fails ? "FAIL" : "PASS — all three CW backends copy, adapt and stay "

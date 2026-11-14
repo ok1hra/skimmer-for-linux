@@ -29,6 +29,11 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   { "SKIM_V3_NARROW", B }, { "SKIM_V3_NEAREST", B }, { "SKIM_V3_RAYCAP", B },
   { "SKIM_V3_RAYFADE", B }, { "SKIM_V3_RAYSMEAR", B }, { "SKIM_V3_RELOCK_DB", B },
   { "SKIM_V3_RESCORE", B }, { "SKIM_V3_RESCORE_DEBUG", D },
+  { "SKIM_V3_FRONT", B }, { "SKIM_V3_DET_DB", B }, { "SKIM_V3_DET_S", B },
+  { "SKIM_V3_PREROLL_X", B }, { "SKIM_V3_FIST_HOLD_S", B }, { "SKIM_V3_WEAK_DB", B },
+  { "SKIM_V3_MIN_DB", B }, { "SKIM_V3_RS_EV_WEAK", B },
+  { "SKIM_V3_KWS", B }, { "SKIM_V3_KWS_DC", B }, { "SKIM_V3_KWS_SEP", B },
+  { "SKIM_V3_KWS_DEBUG", D },
   /* DeepCW */
   { "SKIM_DEEPCW_BATCH", B }, { "SKIM_DEEPCW_DRAFT", B }, { "SKIM_DEEPCW_DRAFT_MIN", B },
   { "SKIM_DEEPCW_DRAFT_P", B }, { "SKIM_DEEPCW_FLUSH", B }, { "SKIM_DEEPCW_FLUSH_K", B },

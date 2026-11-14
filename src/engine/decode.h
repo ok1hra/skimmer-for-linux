@@ -86,6 +86,13 @@ struct _SkimDecodeBackend {
    * carry real frequencies); the decode path never depends on it. Optional. */
   void (*set_freq)(gpointer state, double freq_hz);
 
+  /* The band's noise floor around this channel (snr_meter.h: the mean
+   * power of a noise-only sample of the channel, linear; NAN = not measured
+   * yet), refreshed by the pipeline about once a second before process().
+   * A backend that calibrates its likelihoods or reports an SNR against the
+   * band floor takes it here (v3). Optional. */
+  void (*set_floor)(gpointer state, double noise_pw);
+
   /* Pending DISPLAY-ONLY text (returns it and clears; caller g_frees; NULL
    * when none). The pipeline shows it (pane, decode log) but must NEVER
    * feed it to the callsign extractor: aux text may come from a lexically
