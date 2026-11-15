@@ -46,6 +46,11 @@ function dur(s) {
   const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
   return h >= 48 ? (s / 86400).toFixed(1) + ' d' : `${h} h ${m} min`;
 }
+function size(b) {
+  b = b || 0;
+  return b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : b >= 1e6 ? Math.round(b / 1e6) + ' MB'
+    : Math.max(1, Math.round(b / 1e3)) + ' kB';
+}
 const signed = (v, unit) => (v == null ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '±') + Math.abs(v) + unit);
 const CAT = {
   'match': 'match', 'only-L': 'only L', 'only-R': 'only R', 'nonCQ': 'R heard, not CQ',
@@ -136,6 +141,8 @@ async function refresh() {
       fetch('/api/events?' + q).then((r) => r.json()),
     ]);
     if (S.error || E.error) throw new Error(S.error || E.error);
+    if (S.loading !== undefined) { renderLoading(S); return; }
+    st.loadingSince = null;
     st.S = S; st.E = E.events;
     st.last = Date.now();
     st.took = st.last - t0;
@@ -146,8 +153,31 @@ async function refresh() {
       'last update failed: ' + e.message;
   } finally {
     st.inflight = false;
-    $('#main').classList.remove('busy');
+    if (!st.loadingSince) $('#main').classList.remove('busy');
   }
+}
+
+// The range needs sessions the server has not read yet: it loads them in the
+// background (a long session is hundreds of MB of RBN). Say how far it has
+// come, keep the last numbers dimmed, and ask again shortly.
+function renderLoading(S) {
+  st.loadingSince = st.loadingSince || Date.now();
+  $('#main').classList.add('busy');
+  renderStatus(S);
+  renderRange(S);
+  const L = S.loading || {};
+  const mb = (b) => (b / 1e6).toFixed(0);
+  const pct = L.total ? Math.min(99, Math.floor(100 * L.read / L.total)) : 0;
+  const what = (L.sessions || []).length === 1 ? 'session ' + L.sessions[0]
+    : `${(L.sessions || []).length} sessions`;
+  const box = $('#notice');
+  box.replaceChildren(L.error
+    ? el('span', null, el('b', null, `Loading ${what} failed: `), L.error)
+    : el('span', null, el('b', null, `Loading ${what}: ${pct} %`),
+      ` (${mb(L.read || 0)} of ${mb(L.total || 0)} MB, ${Math.round((Date.now() / 1000) - (L.since || Date.now() / 1000))} s)`));
+  box.hidden = false;
+  $('#updated').textContent = L.error ? 'load failed' : 'loading…';
+  if (!L.error) setTimeout(refresh, 1500);
 }
 // New data arrives every few seconds (RBN), but the numbers move slowly:
 // redraw at most once a minute, and a summary that takes long to compute
@@ -283,13 +313,14 @@ function setEngine(k) {
 
 function renderRange(S) {
   const sel = $('#range');
-  const cur = url.get('range') || 'all';
-  const opts = [['all', 'All data'], ['1h', 'Last hour'], ['6h', 'Last 6 hours'],
-    ['24h', 'Last 24 hours'], ['today', 'Today (UTC)'], ['session', 'Current session']];
+  const cur = url.get('range') || 'session';
+  const opts = [['session', 'Current session'], ['1h', 'Last hour'], ['6h', 'Last 6 hours'],
+    ['24h', 'Last 24 hours'], ['today', 'Today (UTC)']];
   for (const s of [...S.sessions].reverse()) {
-    opts.push(['session:' + s.T, `Session ${s.T} (${dur(s.common_s)} compared)`]);
+    opts.push(['session:' + s.T, `Session ${s.T} (` + (s.loaded ? `${dur(s.common_s)} compared`
+      : `${size(s.bytes)} to load`) + ')']);
   }
-  opts.push(['custom', 'Custom…']);
+  opts.push(['custom', 'Custom…'], ['all', 'All data (loads every session — slow)']);
   sel.replaceChildren(...opts.map(([v, t]) => el('option', { value: v, selected: v === cur }, t)));
   $('#custom').hidden = cur !== 'custom';
 }
@@ -1008,11 +1039,11 @@ function renderHists(S) {
 function renderSessions(S) {
   const t = $('#sessions');
   t.replaceChildren(el('thead', null, el('tr', null,
-    ['Session', 'Start (UTC)', 'End', 'Recorded', 'Compared', 'RBN', ''].map((h) => el('th', null, h)))));
+    ['Session', 'Start (UTC)', 'End', 'Recorded', 'Compared', 'Size', 'RBN', ''].map((h) => el('th', null, h)))));
   t.append(el('tbody', null, [...S.sessions].reverse().map((s) => el('tr', null,
     el('td', null, s.T), el('td', null, utc(s.start)), el('td', null, s.live ? 'running' : utc(s.end)),
-    el('td', null, dur(s.end - s.start)), el('td', null, dur(s.common_s)),
-    el('td', null, s.has_rbn ? 'yes' : 'no'),
+    el('td', null, dur(s.end - s.start)), el('td', null, s.loaded ? dur(s.common_s) : 'not loaded'),
+    el('td', null, size(s.bytes)), el('td', null, s.has_rbn ? 'yes' : 'no'),
     el('td', null, el('button', { type: 'button', onclick: () => setRange('session:' + s.T) }, 'show'))))));
 }
 

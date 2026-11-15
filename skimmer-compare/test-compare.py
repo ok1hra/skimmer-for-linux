@@ -287,7 +287,7 @@ def core(root, logs, A_T, B_T):
           % total_of(S2["timeline"]["other"]))
 
 
-def web(root):
+def web(root, A_T, B_T):
     print("=== web — the server answers")
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -304,12 +304,39 @@ def web(root):
             except OSError:
                 time.sleep(0.1)
         get = lambda path: urllib.request.urlopen(base + path, timeout=5)
-        S0 = json.load(get("/api/summary?range=all"))
+
+        def ready(path):
+            """The summary once the range's sessions are loaded, and whether
+            the first answer said "loading"."""
+            first = None
+            for _ in range(100):
+                S = json.load(get(path))
+                first = "loading" in S if first is None else first
+                if "loading" not in S:
+                    return S, first
+                time.sleep(0.1)
+            raise AssertionError("still loading: " + path)
+
+        Sd, waited = ready("/api/summary")
+        check(Sd["loaded"] == [B_T] and Sd["range"]["key"] == "session",
+              "default range: the current session only (the newest, %s) — loaded %s"
+              % (B_T, Sd["loaded"]))
+        cat = {x["T"]: x for x in Sd["sessions"]}
+        check(set(cat) == {A_T, B_T} and cat[B_T]["loaded"] and not cat[A_T]["loaded"]
+              and cat[A_T]["common_s"] is None and cat[A_T]["bytes"] > 0,
+              "every session is listed; the one not loaded has a size, no numbers")
+        Sa = json.load(get("/api/summary?range=session:" + A_T))
+        check("loading" in Sa and Sa["loading"]["sessions"] == [A_T],
+              "another session: the answer says it is loading (%s)" % Sa.get("loading"))
+        Sa, _ = ready("/api/summary?range=session:" + A_T)
+        check(Sa["loaded"] == [A_T], "then that session alone is loaded")
+        S0, _ = ready("/api/summary?range=all")
+        check(S0["loaded"] == sorted([A_T, B_T]), "range=all loads every session")
         check(S0["engine"] == "deepcw" and [o["key"] for o in S0["overview"]] == ["deepcw", "cw-v2"],
               "default comparison: the newest decoder (deepcw); the overview lists both")
         check(S0["names"]["local"] == "Local test" and S0["engines"][1]["label"] == "decoder v2",
               "names and decoder labels come from compare.ini")
-        S = json.load(get("/api/summary?range=session:20261001-120000&engine=cw-v2"))
+        S, _ = ready("/api/summary?range=session:20261001-120000&engine=cw-v2")
         check(S["recall"]["n"] == 4 and S["range"]["label"] == "session 20261001-120000",
               "/api/summary for session A, cw-v2: 4 real stations")
         check(S["rtty"]["time_s"] == 0 and S["rtty"]["bands"] == {},
@@ -319,6 +346,7 @@ def web(root):
         S3 = json.load(get("/api/summary?range=session:20261001-120000&engine=cw-v2&bust_edit=0"))
         check(S3["cats"].get("bust", 0) == 1,
               "bust_edit=0 still pairs EA3G/EA3GEH (prefix), parameters reach the matcher")
+        ready("/api/summary?range=all")
         E = json.load(get("/api/events?range=all&engine=cw-v2"))["events"]
         check(len(E) == 6, "/api/events lists every event of the comparison (%d)" % len(E))
         e = next(e for e in E if e["cat"] == "bust")
@@ -687,7 +715,7 @@ if __name__ == "__main__":
     root = tempfile.mkdtemp(prefix="compare-test-")
     root, logs, A, Bs = build(root)
     core(root, logs, A, Bs)
-    web(root)
+    web(root, A, Bs)
     current_session()
     band_plan()
     rbn_overlap()

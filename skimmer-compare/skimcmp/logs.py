@@ -11,6 +11,10 @@ UTC start time <T>:
 
 Files are tailed: each poll reads only what was appended, keeps a trailing
 partial line for the next poll, and picks up sessions that appear later.
+A Store may hold only some sessions (only=…): compare-web loads just the
+ones the chosen range needs — all of them were 2.7 GB of text, minutes to
+read and 1.5 GB of memory. catalog() describes every session without
+reading its spots.
 """
 import calendar
 import json
@@ -75,6 +79,10 @@ def parse_spot(t, body):
 
 class Truncated(Exception):
     pass
+
+
+class Cancelled(Exception):
+    """A Store's load was cancelled (its cancel event set) between batches."""
 
 
 class Tail:
@@ -188,12 +196,29 @@ class Session:
 class Store:
     """Everything recorded so far. poll() appends; readers take the lock."""
 
-    def __init__(self, logs_dir, rbn_index):
+    def __init__(self, logs_dir, rbn_index, only=None, cancel=None):
+        """only: the session names <T> to read (None: every session);
+        cancel: a threading.Event that stops a poll between batches."""
         self.dir = logs_dir
         self.rbn_factory = rbn_index
+        self.only = None if only is None else frozenset(only)
+        self.cancel = cancel
         self.lock = threading.RLock()
         self.version = 0
         self.reset()
+
+    def progress(self):
+        """(bytes read, bytes in the files) — how far a load has come.
+        Read without the lock: a poll holds it for the whole first read."""
+        done = total = 0
+        for s in list(self.sessions.values()):
+            for t in list(s.tails.values()):
+                done += t.off
+                try:
+                    total += os.path.getsize(t.path)
+                except OSError:
+                    total += t.off
+        return done, total
 
     def reset(self):
         self.sessions = {}
@@ -238,6 +263,8 @@ class Store:
             if not m:
                 continue
             kind, T = m.group(1), m.group(2)
+            if self.only is not None and T not in self.only:
+                continue
             s = self.sessions.get(T)
             if s is None:
                 s = self.sessions[T] = Session(T)
@@ -250,6 +277,8 @@ class Store:
                 if tail is None:
                     continue
                 for lines in tail.read():
+                    if self.cancel is not None and self.cancel.is_set():
+                        raise Cancelled()
                     changed = True
                     for line in lines:
                         self._ingest(s, kind, line)
@@ -317,3 +346,87 @@ class Store:
                 lst.insert(i, sp)
             else:
                 lst.append(sp)
+
+
+FEED_RE = re.compile(r"\b(local|remote|rbn) (up|DOWN)\b")
+
+
+def _tail_lines(path, nbytes):
+    """The complete lines in the last nbytes of a file ([] if unreadable)."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - nbytes))
+            data = fh.read()
+    except OSError:
+        return []
+    lines = data.decode("utf-8", "replace").split("\n")
+    if size > nbytes:
+        lines = lines[1:]            # the first one is cut
+    return [l.rstrip("\r") for l in lines if l.strip()]
+
+
+def catalog(logs_dir, now):
+    """Every session in logs_dir without reading its spots: the tail of its
+    events log says when it last wrote, whether it stopped and how its feeds
+    were at the last minute line; the tail of its status log names the
+    decoder. [{T, start, end, live, stopped, bytes, files, feeds, engine}],
+    oldest first; "current" marks the session a recorder writes now (else
+    the newest), as Store.current does."""
+    try:
+        names = os.listdir(logs_dir)
+    except OSError:
+        return []
+    S = {}
+    for n in names:
+        m = FILE_RE.match(n)
+        if not m:
+            continue
+        kind, T = m.group(1), m.group(2)
+        path = os.path.join(logs_dir, n)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        s = S.setdefault(T, {"T": T, "start": session_epoch(T), "files": {}, "bytes": 0,
+                             "mtime": 0, "paths": {}})
+        s["files"][kind] = st.st_size
+        s["paths"][kind] = path
+        s["bytes"] += st.st_size
+        s["mtime"] = max(s["mtime"], st.st_mtime)
+    out = []
+    for T in sorted(S):
+        s = S[T]
+        last_event = stopped = None
+        feeds = {}
+        for line in reversed(_tail_lines(s["paths"].get("events", ""), 16384)):
+            t = epoch(line[:20])
+            if t is None:
+                continue
+            if last_event is None:
+                last_event = t
+            if stopped is None and "stopped — write check" in line:
+                stopped = t
+            if not feeds and FEED_RE.search(line):
+                feeds = {k: v == "up" for k, v in FEED_RE.findall(line)}
+            if feeds and last_event is not None:
+                break
+        engine = None
+        for line in reversed(_tail_lines(s["paths"].get("status", ""), 65536)):
+            try:
+                engine = json.loads(line.partition("\t")[2]).get("engine")
+            except ValueError:
+                continue
+            break
+        end = stopped or max(last_event or 0, s["mtime"], s["start"])
+        out.append({"T": T, "start": s["start"], "end": end, "stopped": stopped,
+                    "last_event": last_event,
+                    "live": stopped is None and last_event is not None
+                            and now - last_event < STALE_S,
+                    "bytes": s["bytes"], "files": s["files"], "feeds": feeds,
+                    "engine": engine, "current": False})
+    cur = next((s for s in reversed(out) if s["live"]), out[-1] if out else None)
+    if cur:
+        cur["current"] = True
+    return out
