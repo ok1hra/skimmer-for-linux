@@ -2533,6 +2533,11 @@ static double fe_det_bar(void) {
   if (v < 0) { v = pow(10.0, env_num("SKIM_V3_DET_DB", 6.0) / 10.0); }
   return v;
 }
+static double fe_dead_s(void) {           /* SKIM_V3_DEAD_S: unlocked weak dead air */
+  static double v = -1;
+  if (v < 0) { v = env_num("SKIM_V3_DEAD_S", FE_DEAD_S); }
+  return v;
+}
 static double fe_det_s(void) {
   static double v = -1;
   if (v < 0) { v = env_num("SKIM_V3_DET_S", 1.0); }
@@ -3484,7 +3489,7 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
      * evidence — not one dip of the presence log-odds (it tore every weak
      * word in two on live-air replays). */
     const guint quiet_bar = solid ? (guint)MAX(BREAK_DITS * st->dit, 1.0 * st->rate)
-                                  : (guint)(FE_DEAD_S * st->rate);
+                                  : (guint)(fe_dead_s() * st->rate);
     const gboolean fe_quiet =
         !st->cand || st->pres_neg > quiet_bar ||
         (st->n0 > 0 && fe_snr500(st) < fe_min_db());

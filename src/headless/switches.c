@@ -31,7 +31,7 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   { "SKIM_V3_RESCORE", B }, { "SKIM_V3_RESCORE_DEBUG", D },
   { "SKIM_V3_FRONT", B }, { "SKIM_V3_DET_DB", B }, { "SKIM_V3_DET_S", B },
   { "SKIM_V3_PREROLL_X", B }, { "SKIM_V3_FIST_HOLD_S", B }, { "SKIM_V3_WEAK_DB", B },
-  { "SKIM_V3_MIN_DB", B }, { "SKIM_V3_RS_EV_WEAK", B },
+  { "SKIM_V3_MIN_DB", B }, { "SKIM_V3_RS_EV_WEAK", B }, { "SKIM_V3_DEAD_S", B },
   { "SKIM_V3_KWS", B }, { "SKIM_V3_KWS_DC", B }, { "SKIM_V3_KWS_SEP", B },
   { "SKIM_V3_KWS_DEBUG", D },
   /* DeepCW */
