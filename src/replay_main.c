@@ -32,6 +32,11 @@
  * over its intervals, to the sample — what sdr-for-linux puts on the wire
  * from key-down on (gh#17), so a SYNTHETIC over can be laid anywhere into a
  * recording: mute from the key, raise the flag a poll later.
+ * SKIM_REPLAY_NOISE_DB=<X> (SKIM_REPLAY_NOISE_SEED) lifts the band's noise
+ * floor X dB with white Gaussian noise: the floor is measured on the first
+ * 2 s (the median sample power — a band is mostly noise), so every station
+ * of the recording lands X dB weaker against it while CW Skimmer Server's
+ * truth stays. The weak-signal bench of docs/CW-V3.md (noise shift).
  * SKIM_REPLAY_FROM / SKIM_REPLAY_TO (stream seconds) replay a slice only;
  * hold and mute times stay absolute.
  *
@@ -72,6 +77,19 @@
 #include "engine/rbn_feed.h"
 
 #define BLK 2048                       /* frames per feed — the TCI block size */
+
+/* SKIM_REPLAY_NOISE_DB: a seeded xorshift and Box-Muller, deterministic. */
+static guint64 nz_s = 0x9E3779B97F4A7C15ull;
+static double nz_u(void) {
+  nz_s ^= nz_s << 13;
+  nz_s ^= nz_s >> 7;
+  nz_s ^= nz_s << 17;
+  return ((nz_s >> 11) + 0.5) / 9007199254740992.0;
+}
+static int nz_fcmp(const void *a, const void *b) {
+  const float x = *(const float *)a, y = *(const float *)b;
+  return x < y ? -1 : x > y;
+}
 
 static guint64 g_fragments;
 static GHashTable *g_stations;         /* call → SkimStation* (last state)     */
@@ -528,7 +546,33 @@ int main(int argc, char **argv) {
   const guint64 frames_to = to_env && to_env[0]
       ? (guint64)(g_ascii_strtod(to_env, NULL) * rate) : G_MAXUINT64;
   const guint64 frames_from = frames;
+  const char *nz_env = g_getenv("SKIM_REPLAY_NOISE_DB");
+  const double nz_db = nz_env && nz_env[0] ? g_ascii_strtod(nz_env, NULL) : 0.0;
+  const char *nz_seed = g_getenv("SKIM_REPLAY_NOISE_SEED");
+  if (nz_seed && nz_seed[0]) { nz_s ^= g_ascii_strtoull(nz_seed, NULL, 10) * 0xD1B54A32D192ED03ull; }
+  double nz_sig = -1.0;                /* per component; < 0 = not measured */
+  GArray *nz_pw = nz_db > 0 ? g_array_new(FALSE, FALSE, sizeof(float)) : NULL;
   while (frames < frames_to && (n = src_read(&src, buf, BLK)) > 0) {
+    if (nz_pw && nz_sig < 0) {
+      for (size_t i = 0; i < n; i++) {
+        const float pw = buf[2 * i] * buf[2 * i] + buf[2 * i + 1] * buf[2 * i + 1];
+        g_array_append_val(nz_pw, pw);
+      }
+      if (nz_pw->len >= (guint)(2.0 * rate)) {
+        qsort(nz_pw->data, nz_pw->len, sizeof(float), nz_fcmp);
+        const double floor_pw = g_array_index(nz_pw, float, nz_pw->len / 2) / M_LN2;
+        nz_sig = sqrt(0.5 * floor_pw * (pow(10.0, nz_db / 10.0) - 1.0));
+        printf("noise shift: +%.1f dB over a floor of %.3g per sample (sigma %.3g)\n",
+               nz_db, floor_pw, nz_sig);
+      }
+    }
+    if (nz_sig > 0) {
+      for (size_t i = 0; i < n; i++) {
+        const double r = sqrt(-2.0 * log(nz_u())), ph = 2.0 * G_PI * nz_u();
+        buf[2 * i]     += (float)(nz_sig * r * cos(ph));
+        buf[2 * i + 1] += (float)(nz_sig * r * sin(ph));
+      }
+    }
     if (holds->len) {
       skim_pipeline_set_tx_hold(p, holds_tx_at(holds, (double)frames / rate));
     }
@@ -553,6 +597,7 @@ int main(int argc, char **argv) {
   }
   g_array_free(holds, TRUE);
   g_array_free(mutes, TRUE);
+  if (nz_pw) { g_array_free(nz_pw, TRUE); }
   double wall   = (double)(g_get_monotonic_time() - t0) / G_USEC_PER_SEC;
   double stream = (double)(frames - frames_from) / rate;
 
