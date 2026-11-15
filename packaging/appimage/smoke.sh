@@ -69,7 +69,7 @@ for _ in $(seq 60); do
   st=$(get "$HTTP" /status.json 2>/dev/null) && [[ $st == *'"streaming":true'* ]] && break
   sleep 0.5
 done
-[[ $st == *'"streaming":true'* && $st == *'"engine":"cw-v2"'* && $st == *'"engine":"rtty"'* ]]
+[[ $st == *'"streaming":true'* && $st == *'"engine":"cw-v3"'* && $st == *'"engine":"rtty"'* ]]
 check "mock source: streaming, CW and RTTY, /status.json" $?
 page=$(get "$HTTP" / 2>/dev/null)
 [[ $page == *"<title>Skimmer for Linux</title>"* ]]; check "the web page (built in)" $?
@@ -90,8 +90,8 @@ if [[ -n $FETCH ]]; then
   check "DeepCW: the bundled ONNX Runtime loads the model" $?
 else
   out=$("$AI" --check-config --config "$T/d.ini" 2>/dev/null)
-  [[ $out == *"deepcw NOT AVAILABLE, those bands run v2: no model"* ]]
-  check "DeepCW without the model: v2, says why (--fetch: the runtime too)" $?
+  [[ $out == *"deepcw NOT AVAILABLE, those bands run v3: no model"* ]]
+  check "DeepCW without the model: v3, says why (--fetch: the runtime too)" $?
 fi
 
 if ((fails)); then echo "--- log"; cat "$T/log"; echo "FAIL ($fails)"; exit 1; fi
