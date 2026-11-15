@@ -187,6 +187,7 @@ enum { K_MARK, K_SPACE, K_EITHER };
 #define KR_NEAR     8
 #define KR_HOLD_S   300.0               /* a confirmed call is looked for     */
 #define KR_SAY_S    20.0                /* a call goes out at most this often */
+#define KR_CQ_S     12.0                /* CQ evidence covers the call this long */
 
 /* --- v3 front end (docs/CW-V3.md) --------------------------------------------
  * Every channel runs a cheap carrier detector on a 64-point spectrum of its
@@ -207,6 +208,10 @@ enum { K_MARK, K_SPACE, K_EITHER };
 #define FE_LP_HZ    60.0                /* complex low-pass ahead of the MA   */
 #define FE_MA_CAP   64                  /* MA frames at most (½ dit ≤ 38)     */
 #define FE_MA_DFLT  5                   /* before the clock: ~30 WPM          */
+#define FE_MA_MAX   10                  /* full matched gain down to ~15 WPM  */
+#define STALL_S     10.0                /* a clock that commits nothing this
+                                         * long while the channel lives is
+                                         * lost (stall watchdog)              */
 #define FE_PW_S     4.0                 /* r² ring for the noise percentile   */
 #define FE_PW_EVERY 0.5                 /* its refresh, seconds               */
 #define FE_PW_Q     0.20                /* the noise percentile               */
@@ -256,6 +261,8 @@ typedef struct {
   guint  marks_ok;
   guint  dah_streak;                    /* committed dahs since the last dit  */
   guint  dit_streak;                    /* committed dits since the last dah  */
+  guint64 mark_t;                       /* st->t of the last committed mark
+                                         * or of the clock's (re)start       */
   float  clk[CLK_RING];                 /* last raw mark durations (samples)  */
   guint  clk_n, clk_head, clk_hold;     /* re-lock ring (clock_push)          */
   float  clk_sp[CLK_RING];              /* last raw space durations (witness) */
@@ -389,6 +396,7 @@ typedef struct {
   guint64  kr_next;                     /* next read (samples)                */
   struct { char call[16]; guint64 at, said; double dc; guint n; } kr_hit[KR_HITS];
   char     kr_q[48];                    /* FIX phrase due at the next gap     */
+  guint64  kr_cq_t;                     /* last CQ evidence (text or audio)+1 */
 
   /* --- estimates -------------------------------------------------------------- */
   double prev_i, prev_q;
@@ -1012,6 +1020,17 @@ static void emit_code(Cw3State *st, SkimDecode *out, guint *pos,
 /* --- lattice ------------------------------------------------------------------- */
 
 static void lattice_start(Cw3State *st) {
+  st->mark_t = st->t;                        /* the stall watchdog's zero  */
+  /* No clock, no lattice: the over break restarts the lattice for the next
+   * over, and with the fist just forgotten (dit 0) that restart re-armed
+   * it with every block — "break" each 8 samples, the bootstrap never
+   * reached again, the channel deaf for hours (rec 2, 40 m, after a
+   * runaway weak clock had tripped the carrier rule). */
+  if (st->dit <= 0) {
+    st->active = FALSE;
+    st->carrier = FALSE;
+    return;
+  }
   if (!st->lat) { st->lat = g_new0(struct Lattice, 1); }
   struct Lattice *L = st->lat;
   for (guint i = 0; i < W; i++) {
@@ -2147,6 +2166,7 @@ static void lattice_commit(Cw3State *st, double lag_dits, SkimDecode *out,
       clock_push(st, d);
       st->dah_streak = ty == SEG_DAH ? st->dah_streak + 1 : 0;
       st->dit_streak = ty == SEG_DIT ? st->dit_streak + 1 : 0;
+      st->mark_t = st->t;
     }
       st->marks_ok++;
       if (st->wd_n == 0 && st->nelem == 0) { st->wd_t0 = end - segs_d[i - 1]; }
@@ -2314,8 +2334,12 @@ static void kws_read(Cw3State *st) {
     }
     if (end && tl) {
       g_strlcpy(tok[nt++], cur, SKIM_CALLSIGN_NEAR_LEN);
-      if (!strcmp(cur, "CQ") || !strcmp(cur, "TEST") || !strcmp(cur, "QRZ") ||
-          g_str_has_prefix(cur, "CQCQ") || g_str_has_prefix(cur, "CQTEST")) {
+      /* "CQ" glued to what follows ("CQCE", "CQDE", "CQT") calls too: the
+       * free text tears and glues at word gaps, and a call the audio
+       * confirmed without its CQ never reaches the feed (rec 2: SA6AUT
+       * read 210 times as "CQCE SA6A T", not one spot). */
+      if (!strcmp(cur, "TEST") || !strcmp(cur, "QRZ") ||
+          (g_str_has_prefix(cur, "CQ") && tl <= 8)) {
         calling = TRUE;
       }
     }
@@ -2353,6 +2377,7 @@ static void kws_read(Cw3State *st) {
       kr_add(cand, &nc, st->kr_hit[i].call);
     }
   }
+  if (calling) { st->kr_cq_t = t + 1; }          /* text CQ, even with no call */
   if (!nc)
     return;
 
@@ -2427,10 +2452,16 @@ static void kws_read(Cw3State *st) {
   }
   double cq = -1e9;
   const gboolean found = bi >= 0 && best >= cfg->dc && best - nb >= cfg->sep;
-  if (found && !calling) {
+  /* CQ evidence is kept per channel for KR_CQ_S: the window that confirms
+   * the call often starts after the over's "CQ CQ DE" (rec 2: 21 stations
+   * R spotted, the reader confirmed and the feed never saw — every one for
+   * want of a calling context). */
+  if (bi >= 0 && !calling) {
     cq = MAX(kr_score(c, N, &k, P, S, a, b, "CQ"), kr_score(c, N, &k, P, S, a, b, "TEST")) - F;
     calling = cq >= -3.0;
   }
+  if (calling) { st->kr_cq_t = t + 1; }
+  calling = st->kr_cq_t && t + 1 - st->kr_cq_t <= (guint64)(KR_CQ_S * st->rate);
   kws_dur_free(&k);
   g_free(buf);
   g_free(c);
@@ -2689,8 +2720,17 @@ static float fe_sample(Cw3State *st, float i, float q) {
     st->lp_y[r][0] = y;
     x[r] = y;
   }
+  /* The sum's length follows the UNBIASED dit, (dit + esp) / 2: the sum
+   * itself stretches marks and shrinks spaces by about its own length, so
+   * a length taken from the marks alone fed back on itself — longer sum,
+   * longer marks, slower clock, longer sum — until the clock sat at its
+   * 4 WPM floor and the channel never read again (rec 2, 40 m: 23 channels
+   * dead for hours). A stale esp (another station's) is ignored. */
   if (st->dit > 0) {
-    st->ma_len = (guint)CLAMP(lround(0.5 * st->dit), 2L, (long)st->ma_cap - 1);
+    const double u = st->esp > 0.25 * st->dit && st->esp < 1.25 * st->dit
+                         ? 0.5 * (st->dit + st->esp) : st->dit;
+    st->ma_len = (guint)CLAMP(lround(0.5 * u), 2L,
+                              (long)MIN(FE_MA_MAX, st->ma_cap - 1));
   }
   /* the running sum: one frame in, the one ma_len back out; summed afresh
    * when the length changes and every 1024 frames (float drift) */
@@ -3263,9 +3303,27 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
    * jumped to 9 and sat in "IISSESS" for 20 s). Real dit-only text runs
    * longer than real dah-only text ("5 IS HIS" happens), so the bar sits
    * higher than the dah watchdog's. */
-  if ((st->dah_streak >= 16 || st->dit_streak >= 24) && st->dit > 0) {
-    CW3_DBG("[clock lost at t=%lu — %u dahs/%u dits one-class; rebootstrap]\n",
-            (unsigned long)st->t, st->dah_streak, st->dit_streak);
+  /* v3 stall watchdog: a clock that commits no mark for STALL_S while the
+   * channel is live (not paused in dead air) reads nothing at all — the
+   * one-class streaks above never fire because nothing commits. Seen on
+   * replays: a clock run to its floor on a weak over sat on its channel for
+   * hours, strong stations included. Relearn it from what is arriving. */
+  if (st->dit > 0 && st->paused) { st->mark_t = st->t; }
+  const gboolean stalled =
+      st->dit > 0 && st->t > st->mark_t + (guint64)(STALL_S * st->rate);
+  /* v3, weak view: noise between the marks read as key-down glues them —
+   * marks grow, the intra-character spaces shrink to nothing, the clock
+   * follows the marks to its floor (rec 2: dit 25 -> 75 samples in 13 s,
+   * spaces 18). Real keying spaces about a dit; under 0.35 the clock is
+   * reading glue, not a fist. */
+  const gboolean collapsed = st->dit > 0 && WEAKV(st) && st->marks_ok >= 8 &&
+                             st->esp > 0 && st->esp < 0.35 * st->dit;
+  if (collapsed) { st->esp = 0.0; }
+  if ((st->dah_streak >= 16 || st->dit_streak >= 24 || stalled || collapsed) &&
+      st->dit > 0) {
+    CW3_DBG("[clock lost at t=%lu — %u dahs/%u dits one-class%s%s; rebootstrap]\n",
+            (unsigned long)st->t, st->dah_streak, st->dit_streak,
+            stalled ? ", stalled" : "", collapsed ? ", spaces collapsed" : "");
     lattice_flush(st, out, &pos);
     st->dit = 0;
     st->nboot = 0;
@@ -3518,6 +3576,7 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
         st->quiet += 1.0;
         if (st->quiet > (WEAKV(st) ? fist_hold_s() : 8.0) * st->rate) { /* forget the fist */
           st->dit = 0;
+          st->carrier = FALSE;                 /* v3: no lattice without a clock */
           st->nboot = 0;
           st->marks_ok = 0;
           st->clk_n = st->clk_sp_n = st->clk_head = st->clk_sp_head =
