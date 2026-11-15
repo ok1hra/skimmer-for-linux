@@ -100,8 +100,12 @@ streaming from unless told to (`--take-over`).
 
 ## What it does
 
-- **CW**, decoded by the soft-decision Viterbi decoder (v2, the default) or the
-  neural **DeepCW** model when an ONNX Runtime and the model are installed.
+- **CW**, decoded by decoder **v3** (the default: v2's soft-decision Viterbi
+  decoder for stations it reads well, plus a weak-signal path with a matched
+  filter on the carrier and a call reader that confirms MASTER.SCP calls in
+  the audio — [`docs/CW-V3.md`](docs/CW-V3.md)), by v2 itself (`cw:v2`,
+  `[decode] engine=v2`), or by the neural **DeepCW** model when an ONNX
+  Runtime and the model are installed.
   The decoder and the RBN feed are tuned on live air against CW Skimmer
   Server (v0.6.0): IQ recorded beside live decoding was replayed and scored on
   the same antenna, and the winners became the defaults. Method, numbers and
@@ -276,9 +280,9 @@ names no engine. It needs two things this program does not contain:
   For a GPU, point `SKIM_ORT_LIB` at a system ONNX Runtime with CUDA and set
   `SKIM_DEEPCW_DEVICE=cuda`.
 
-Without either one, a DeepCW band still starts but runs v2. The log, the
+Without either one, a DeepCW band still starts but runs v3. The log, the
 web page (in red) and `--check-config` say why, and a restart picks DeepCW
-up once both are in place. DeepCW uses far more CPU than v2: about 3 % of a
+up once both are in place. DeepCW uses far more CPU than v2 or v3: about 3 % of a
 core for every channel it is decoding.
 
 ## The web page
@@ -367,7 +371,7 @@ name the engine does not read is warned about.
 | Variable | Effect |
 | --- | --- |
 | `SKIM_CW_V1=1` | Use the classical CW decoder |
-| `SKIM_CW_ENGINE=v1\|v2\|deepcw` | Pick the CW engine for this run |
+| `SKIM_CW_ENGINE=v1\|v2\|v3\|deepcw` | Pick the CW engine for this run |
 | `SKIM_TONE_SPLIT=1` | Decode two stations in one channel separately — opt-in, awaiting its live validation |
 | `SKIM_TONE_FOCUS=1` | Narrow the channel filter onto a lone carrier (implies the splitter) — same status |
 | `SKIM_ORT_LIB=<path>` | ONNX Runtime library for DeepCW (e.g. a system one with CUDA) |
