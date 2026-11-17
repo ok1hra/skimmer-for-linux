@@ -31,6 +31,10 @@
     <div class="wrap"><table id="bands" class="grid"></table></div>
     <p class="mut note">decoders = channel decoders in the band · active = decoding running
       text now (noise fragments don't count) · <span class="cq">CQ</span> = heard calling</p>
+    <div id="workers-box" hidden>
+      <h2 class="sect">Workers <span class="mut">— other PCs decoding bands of this radio</span></h2>
+      <div class="wrap"><table id="workers" class="grid"></table></div>
+    </div>
     <div id="peers-box" hidden>
       <h2 class="sect">Other skimmers (peers)</h2>
       <div class="wrap"><table id="peers" class="grid"></table></div>
@@ -130,9 +134,11 @@
             <small>seconds each spot is held before it goes to the RBN, 0–99</small></label>
         </fieldset>
         <fieldset>
-          <legend>Other skimmers (peers)</legend>
+          <legend>Other skimmers: workers and peers</legend>
           <label>Name on the LAN <input name="hub.name" placeholder="host name">
-            <small>how other skimmers list this one (Skimmers on the LAN, below)</small></label>
+            <small>how other skimmers list this one (Skimmers on the LAN, below); a worker asks its hub for bands under it</small></label>
+          <label>Hub port <input name="hub.port" inputmode="numeric" placeholder="7380">
+            <small>workers connect here for the bands Bands → decoded by names after them; 0 = no hub</small></label>
           <label class="wide">Their feeds <input name="peers.hosts" placeholder="192.168.1.30, pc2:7300">
             <small>telnet feeds of other skimmers (ours or CW Skimmer Server), host or host:port; their CQ spots go out
             on this feed and to the RBN under this call, duplicates dropped — fine for skimmers on this station's antennas,
@@ -149,9 +155,10 @@
       <fieldset>
         <legend>Bands <span class="mut" id="band-count"></span></legend>
         <div class="wrap"><table class="grid bands-edit">
-          <thead><tr><th>RX</th><th title="received — an unticked band stays in the list, off">on</th><th>name</th><th>centre kHz</th><th>CW</th><th>engine</th><th>RTTY</th><th></th></tr></thead>
+          <thead><tr><th>RX</th><th title="received — an unticked band stays in the list, off">on</th><th>name</th><th>centre kHz</th><th>CW</th><th>engine</th><th>RTTY</th><th title="empty = this PC; a worker's name = received here, its IQ passed to that worker, which decodes it">decoded by</th><th></th></tr></thead>
           <tbody id="band-rows"></tbody>
         </table></div>
+        <datalist id="worker-names"></datalist>
         <button type="button" id="band-add" class="small">Add band</button>
         <small class="mut">one receiver per band that is on, in this order (8 at most); a band unticked in <i>on</i> stays in the list without a receiver; with 96 kHz a band spans its centre ± 48 kHz</small>
       </fieldset>

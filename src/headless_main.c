@@ -961,9 +961,11 @@ static char *web_config(GHashTable *q, gboolean may, guint *st, const char **typ
       g_string_append_printf(o, "%s{", i ? "," : "");
       json_kv(o, "name", b->name, FALSE);
       g_string_append_printf(o, ",\"centre_hz\":%.0f,\"cw\":%s,\"engine\":\"%s\",\"rtty\":%s,"
-                             "\"on\":%s}",
+                             "\"on\":%s,",
                              b->centre_hz, b->cw ? "true" : "false", engine_key(b->cw_engine),
                              b->rtty ? "true" : "false", b->off ? "false" : "true");
+      json_kv(o, "worker", b->worker, FALSE);
+      g_string_append_c(o, '}');
     }
     g_string_append_c(o, ']');
     skim_hd_config_clear(&c);

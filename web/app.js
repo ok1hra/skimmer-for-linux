@@ -40,6 +40,22 @@ function tile(k, v, unit = '') {
   return `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${v}${unit ? ` <small>${esc(unit)}</small>` : ''}</div></div>`;
 }
 
+// The bands as decoded: a band a worker decodes ("worker") is shown with
+// that worker's own numbers (its status comes with the hub's), or as waiting.
+function bandsDecoded(d) {
+  const workers = (d.hub && d.hub.workers) || [];
+  return d.bands.map((b) => {
+    if (!b.worker) return b;
+    const w = workers.find((x) => x.name === b.worker);
+    const wb = w && w.status && (w.status.bands || []).find((x) => x.band === b.band);
+    if (wb) return { ...wb, centre_hz: b.centre_hz, ksps: b.ksps, worker: b.worker };
+    const empty = { decoders: 0, active: 0, stations: 0, drops: 0, recent: [], engine: '' };
+    return { ...empty, band: b.band, centre_hz: b.centre_hz, ksps: b.ksps, worker: b.worker,
+             waiting: true, cw: b.worker_cw, spots: b.remote_spots,
+             rtty: b.worker_rtty ? { ...empty, spots: b.remote_spots_rtty } : null };
+  });
+}
+
 let status = null;
 function renderStatus(d) {
   status = d;
@@ -48,11 +64,13 @@ function renderStatus(d) {
   dot.className = `dot ${d.streaming ? 'ok' : 'bad'}`;
   $('#radio-text').textContent = d.radio;
   // a band's modes: its CW at the top level (when it decodes CW), its RTTY in .rtty
-  const modes = d.bands.flatMap((b) => [
+  const modes = bandsDecoded(d).flatMap((b) => [
     ...(b.cw !== false ? [{ ...b, mode: 'CW' }] : []),
-    ...(b.rtty ? [{ ...b.rtty, band: b.band, centre_hz: b.centre_hz, ksps: b.ksps, mode: 'RTTY' }] : []),
+    ...(b.rtty ? [{ ...b.rtty, band: b.band, centre_hz: b.centre_hz, ksps: b.ksps, mode: 'RTTY',
+                    worker: b.worker, waiting: b.waiting }] : []),
   ]);
   const spots = modes.reduce((a, b) => a + b.spots, 0);
+  const workers = (d.hub && d.hub.workers) || [];
   $('#tiles').innerHTML = [
     tile('uptime', uptime(d.uptime_s)),
     tile('CPU', fmt(d.cpu_pct), '% of a core'),
@@ -66,12 +84,17 @@ function renderStatus(d) {
       `aggregator${d.rbn.clients === 1 ? '' : 's'} · :${d.rbn.port} · ${fmt(d.rbn.lines)} sent` +
       (d.rbn.delay_s ? ` · held ${d.rbn.delay_s} s${d.rbn.waiting ? `, ${fmt(d.rbn.waiting)} waiting` : ''}` : ''))] : []),
     tile('MASTER.SCP', fmt(d.dict_calls), 'calls'),
+    ...(workers.length ? [tile('workers', fmt(workers.length),
+      `${fmt(workers.reduce((a, w) => a + w.mbps, 0), 1)} Mb/s out · ${fmt(workers.reduce((a, w) => a + w.spots, 0))} spots in`)] : []),
   ].join('');
 
   const head = '<tr><th>band</th><th class="l">mode</th><th>centre kHz</th><th>engine</th><th>decoders</th><th>active</th><th>stations</th><th>spots</th><th>drops</th><th>kS/s</th></tr>';
   // a band that asks for DeepCW and runs v2 (no model or no runtime) says so
   const dc = d.deepcw || {};
-  const engineCell = (b) => b.mode === 'CW' && b.engine_wanted === 'deepcw' && b.engine !== 'deepcw'
+  const engineCell = (b) => b.worker
+    ? `<td class="${b.waiting ? 'bad' : ''}" title="decoded by the worker ${esc(b.worker)}">` +
+      `${b.waiting ? 'waiting for' : `${esc(b.engine)} · on`} <b>${esc(b.worker)}</b></td>`
+    : b.mode === 'CW' && b.engine_wanted === 'deepcw' && b.engine !== 'deepcw'
     ? `<td class="bad" title="DeepCW not available: ${esc(dc.fallback || '')}">${esc(b.engine)} · DeepCW not available</td>`
     : `<td>${esc(b.engine || d.engine)}</td>`;
   $('#bands').innerHTML = head + modes.map((b) =>
@@ -79,6 +102,16 @@ function renderStatus(d) {
     `<td>${fmt(b.decoders)}</td><td>${fmt(b.active)}</td><td>${fmt(b.stations)}</td>` +
     `<td>${fmt(b.spots)}</td><td>${fmt(b.drops)}</td><td>${fmt(b.ksps)}</td></tr>`).join('');
 
+  $('#workers-box').hidden = !workers.length;
+  if (workers.length) {
+    $('#workers').innerHTML = '<tr><th>worker</th><th class="l">address</th><th class="l">bands</th><th>Mb/s</th>' +
+      '<th>dropped</th><th>spots in</th><th>CPU</th></tr>' + workers.map((w) =>
+        `<tr><td>${esc(w.name)}</td><td class="l">${esc(w.addr)}</td><td class="l">${w.assigned
+          ? esc(w.bands.map((i) => d.bands[i] ? d.bands[i].band : `#${i}`).join(', '))
+          : '<span class="mut">none assigned — Settings → Bands → decoded by</span>'}</td>` +
+        `<td>${fmt(w.mbps, 1)}</td><td class="${w.dropped ? 'bad' : ''}">${fmt(w.dropped)}</td><td>${fmt(w.spots)}</td>` +
+        `<td>${w.status ? `${fmt(w.status.cpu_pct)} %` : '–'}</td></tr>`).join('');
+  }
   const peers = d.peers || [];
   $('#peers-box').hidden = !peers.length;
   if (peers.length) {
@@ -93,7 +126,7 @@ function renderStatus(d) {
       `<tr><td${s.cq ? ' class="cq"' : ''}>${esc(s.call)}</td><td>${fmt(s.freq_hz / 1000, 1)}</td>` +
       `<td>${fmt(s.wpm)}</td><td>${fmt(s.snr_db)}</td><td>${age(s.age_s)}</td></tr>`).join('')
       : '<tr><td colspan="5" class="mut">nothing yet</td></tr>';
-    return `<div class="card"><h2>${esc(b.band)}${b.mode === 'RTTY' ? ' RTTY' : ''} <span class="mut">· ${fmt(b.stations)} station${b.stations === 1 ? '' : 's'}</span></h2>` +
+    return `<div class="card"><h2>${esc(b.band)}${b.mode === 'RTTY' ? ' RTTY' : ''}${b.worker ? ` <span class="mut">on ${esc(b.worker)}</span>` : ''} <span class="mut">· ${fmt(b.stations)} station${b.stations === 1 ? '' : 's'}</span></h2>` +
       `<table><tr><th>call</th><th>kHz</th><th>${b.mode === 'RTTY' ? 'Bd' : 'wpm'}</th><th>dB</th><th>heard</th></tr>${rows}</table></div>`;
   }).join('');
 
@@ -181,8 +214,9 @@ const stats = { hours: 24, mode: 'cw', data: null, at: 0 };
 function renderDecTile(d) {
   const el = $('#stats-dec');
   if (!el || !d) return;
-  const cw = d.bands.filter((b) => b.cw !== false);
-  const rt = d.bands.filter((b) => b.rtty);
+  const all = bandsDecoded(d);
+  const cw = all.filter((b) => b.cw !== false);
+  const rt = all.filter((b) => b.rtty);
   const n = (list, f) => list.reduce((a, b) => a + (f(b) || 0), 0);
   const part = (label, cls, list, f) => `<div class="part ${cls}"><div class="n">${list.length ? fmt(n(list, (b) => f(b).decoders)) : '–'}</div>` +
     `<div class="l">${label}<small>${list.length ? `${fmt(n(list, (b) => f(b).active))} active · ${list.length} band${list.length === 1 ? '' : 's'}` : 'no band'}</small></div></div>`;
@@ -318,6 +352,7 @@ function bandRow(b, i, n, may, rx) {
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
     `<td><select data-k="engine"${dis}><option value="v3">v3</option><option value="v2">v2</option><option value="deepcw" title="not tested with this skimmer">DeepCW (not tested)</option></select></td>` +
     `<td><input type="checkbox" data-k="rtty"${b.rtty ? ' checked' : ''}${dis}></td>` +
+    `<td><input data-k="worker" value="${esc(b.worker || '')}" list="worker-names" size="8" placeholder="this PC"${dis}></td>` +
     `<td><button type="button" data-a="up" title="earlier receiver"${i && may ? '' : ' disabled'}>↑</button>` +
     `<button type="button" data-a="down" title="later receiver"${i < n - 1 && may ? '' : ' disabled'}>↓</button>` +
     `<button type="button" data-a="del" title="remove"${n > 1 && may ? '' : ' disabled'}>✕</button></td>`;
@@ -332,12 +367,18 @@ function readBands() {
     engine: tr.querySelector('[data-k=engine]').value,
     rtty: tr.querySelector('[data-k=rtty]').checked,
     on: tr.querySelector('[data-k=on]').checked,
+    worker: tr.querySelector('[data-k=worker]').value.trim(),
   }));
 }
 function drawBands(list) {
   const may = cfg.data && cfg.data.may_change;
   let rx = 0;
   $('#band-rows').replaceChildren(...list.map((b, i) => bandRow(b, i, list.length, may, b.on ? ++rx : 0)));
+  // the workers this hub knows: named in a band, connected, or found on the LAN
+  const names = new Set(list.map((b) => b.worker).filter(Boolean));
+  for (const w of (status && status.hub && status.hub.workers) || []) names.add(w.name);
+  for (const n of cfg.lanWorkers || []) names.add(n);
+  $('#worker-names').innerHTML = [...names].map((n) => `<option value="${esc(n)}">`).join('');
   const off = list.length - rx;
   $('#band-count').textContent = `${rx} of ${MAX_BANDS} receivers${off ? ` · ${off} off` : ''}`;
   $('#band-count').classList.toggle('bad', rx > MAX_BANDS);
@@ -381,7 +422,8 @@ function fillSettings(d) {
   $('#set-export').disabled = false;                 // anyone may read the file
   $('#lan-find').disabled = false;                   // a search changes nothing
   drawBands(d.bands.map((b) => ({ name: b.name, khz: String(b.centre_hz / 1000), cw: b.cw,
-                                  engine: b.engine, rtty: b.rtty, on: b.on !== false })));
+                                  engine: b.engine, rtty: b.rtty, on: b.on !== false,
+                                  worker: b.worker || '' })));
   const lock = $('#set-lock');
   lock.hidden = d.may_change;
   if (!d.may_change) {
@@ -421,6 +463,7 @@ function formBody() {
     if (b.cw) modes.push(b.engine === dflt ? 'cw' : `cw:${b.engine}`);
     if (b.rtty) modes.push('rtty');
     if (!b.on) modes.push('off');
+    if (b.worker) modes.push(`@${b.worker}`);
     lines.push(`${b.name}=${Number.isFinite(hz) ? hz : b.khz}${modes.length ? ` ${modes.join(',')}` : ''}`);
   }
   p.set('bands', lines.join('\n'));
@@ -557,6 +600,8 @@ async function findSkimmers() {
           '</td></tr>';
       }).join('') : '<tr><td colspan="6" class="mut">no other skimmer answered</td></tr>');
     $('#lan-msg').textContent = `${d.found.length} found`;
+    cfg.lanWorkers = d.found.filter((s) => s.role === 'worker').map((s) => s.name);
+    if (cfg.data) drawBands(readBands());
   } catch (err) {
     $('#lan-msg').textContent = err.message;
   } finally {
