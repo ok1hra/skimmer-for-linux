@@ -122,6 +122,14 @@ extern const char *const SKIM_HD_EDITABLE[];
 char *skim_hd_config_apply_form(const char *text, gsize len, GHashTable *form,
                                 GError **error);
 
+/* An ini imported from a file (the settings page): in_text with the
+ * current file's [web] group in place of its own — who may change the
+ * settings is set in the file on this machine only, never by an upload.
+ * NULL + error when in_text is no key file. The result is NOT checked —
+ * skim_hd_config_parse() it. */
+char *skim_hd_config_import(const char *cur, gsize cur_len, const char *in_text, gsize in_len,
+                            GError **error);
+
 /* Write text as the config at path, the current file first copied to
  * <path>.bak-<UTC> (*backup: its name); at most SKIM_HD_BACKUPS kept. */
 #define SKIM_HD_BACKUPS 10

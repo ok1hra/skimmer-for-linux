@@ -312,6 +312,7 @@ function fillSettings(d) {
     else inp.value = v;
   }
   for (const inp of f.querySelectorAll('input, select, button')) inp.disabled = !d.may_change;
+  $('#set-export').disabled = false;                 // anyone may read the file
   drawBands(d.bands.map((b) => ({ name: b.name, khz: String(b.centre_hz / 1000), cw: b.cw,
                                   engine: b.engine, rtty: b.rtty })));
   const lock = $('#set-lock');
@@ -413,6 +414,42 @@ $('#set-restart').addEventListener('click', async () => {
   try { await post('api/restart', new URLSearchParams()); await waitRestart('Restart'); }
   catch (err) { $('#set-msg').textContent = err.message; }
 });
+// Export: the file on disk as it is (what a restart would run), named after
+// the day. Import: an exported file as the config — the skimmer keeps its own
+// [web] settings_from, checks the file with the start's parser and restarts.
+$('#set-export').addEventListener('click', async () => {
+  try {
+    const c = await getJSON('api/config');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([c.ini], { type: 'text/plain' }));
+    a.download = `headless-${new Date().toISOString().slice(0, 10)}.ini`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (err) { $('#set-msg').textContent = `Not exported: ${err.message}`; }
+});
+$('#set-import').addEventListener('click', () => $('#set-import-file').click());
+$('#set-import-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file || !cfg.data || !cfg.data.may_change) return;
+  if (cfg.dirty && !confirm('Discard the unsaved changes in the form?')) return;
+  if (!confirm(`Use ${file.name} as the config and restart? The current file is kept as a backup ` +
+               '(Earlier configs), and [web] settings_from stays as it is on this machine.')) return;
+  try {
+    const text = await file.text();
+    const j = await post('api/config/import', new URLSearchParams({ ini: text }));
+    if (!j.changed) { $('#set-msg').textContent = 'the imported file is the config already'; return; }
+    const port = /^\s*http_port\s*=\s*(\d+)/m.exec(text);   // the page may move with it
+    await waitRestart('Imported', port && port[1] !== '0' ? port[1] : '8073');
+  } catch (err) {
+    const box = $('#set-error');
+    box.hidden = false;
+    box.textContent = `Not imported: ${err.message}`;
+  }
+});
+
 async function restore(name) {
   if (!confirm(`Put ${name} back as the config and restart?`)) return;
   try { await post('api/rollback', new URLSearchParams({ name })); await waitRestart('Restored'); }

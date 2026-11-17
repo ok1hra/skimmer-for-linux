@@ -494,6 +494,30 @@ char *skim_hd_config_apply_form(const char *text, gsize len, GHashTable *form,
   return out;
 }
 
+char *skim_hd_config_import(const char *cur, gsize cur_len, const char *in_text, gsize in_len,
+                            GError **error) {
+  GKeyFile *in = g_key_file_new(), *now = g_key_file_new();
+  char *out = NULL;
+  if (!g_key_file_load_from_data(in, in_text, in_len, G_KEY_FILE_KEEP_COMMENTS, error)) {
+    g_prefix_error(error, "the imported file: ");
+  } else {
+    g_key_file_load_from_data(now, cur, cur_len, G_KEY_FILE_KEEP_COMMENTS, NULL);
+    g_key_file_remove_group(in, "web", NULL);
+    gsize n = 0;
+    char **keys = g_key_file_get_keys(now, "web", &n, NULL);
+    for (gsize i = 0; keys && i < n; i++) {
+      char *v = g_key_file_get_value(now, "web", keys[i], NULL);
+      g_key_file_set_value(in, "web", keys[i], v);
+      g_free(v);
+    }
+    g_strfreev(keys);
+    out = g_key_file_to_data(in, NULL, NULL);
+  }
+  g_key_file_free(in);
+  g_key_file_free(now);
+  return out;
+}
+
 static gint newest_first(gconstpointer a, gconstpointer b) {
   return strcmp(*(const char *const *)b, *(const char *const *)a);
 }

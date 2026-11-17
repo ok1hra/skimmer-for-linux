@@ -876,19 +876,15 @@ static char *web_config(GHashTable *q, gboolean may, guint *st, const char **typ
   return g_string_free(o, FALSE);
 }
 
-/* POST /api/config: the form applied to the file, checked by the start's
- * own parser, saved (the old file backed up), and a restart. */
-static char *web_config_post(GHashTable *form, guint *st, gpointer user) {
-  Hd *h = user;
-  char *text = NULL;
-  gsize len = 0;
+/* A new config text: checked by the start's own parser, saved (the old
+ * file backed up) and a restart — or the answer why not. text: the file
+ * now; what: for the log ("from the web page", "imported …"). */
+static char *config_replace(Hd *h, const char *text, const char *out, const char *what,
+                            guint *st) {
   GError *err = NULL;
-  char *body = NULL, *out = NULL, *bak = NULL;
+  char *bak = NULL, *body;
   SkimHdConfig c;
-  if (!g_file_get_contents(h->cfg_path, &text, &len, &err) ||
-      !(out = skim_hd_config_apply_form(text, len, form, &err))) {
-    body = json_error(st, 400, err->message);
-  } else if (!skim_hd_config_parse(&c, out, strlen(out), h->cfg_path, &err)) {
+  if (!skim_hd_config_parse(&c, out, strlen(out), h->cfg_path, &err)) {
     body = json_error(st, 400, err->message);         /* nothing written     */
   } else {
     skim_hd_config_clear(&c);
@@ -897,7 +893,7 @@ static char *web_config_post(GHashTable *form, guint *st, gpointer user) {
     } else if (!skim_hd_config_save(h->cfg_path, out, &bak, &err)) {
       body = json_error(st, 500, err->message);
     } else {
-      g_message("config: %s saved from the web page (previous: %s)", h->cfg_path, bak);
+      g_message("config: %s saved %s (previous: %s)", h->cfg_path, what, bak);
       GString *o = g_string_new("{\"ok\":true,\"changed\":true");
       json_kv(o, "backup", bak, TRUE);
       g_string_append(o, ",\"restart\":true}");
@@ -907,6 +903,44 @@ static char *web_config_post(GHashTable *form, guint *st, gpointer user) {
   }
   g_clear_error(&err);
   g_free(bak);
+  return body;
+}
+
+/* POST /api/config: the form applied to the file, then config_replace. */
+static char *web_config_post(GHashTable *form, guint *st, gpointer user) {
+  Hd *h = user;
+  char *text = NULL, *out = NULL, *body;
+  gsize len = 0;
+  GError *err = NULL;
+  if (!g_file_get_contents(h->cfg_path, &text, &len, &err) ||
+      !(out = skim_hd_config_apply_form(text, len, form, &err))) {
+    body = json_error(st, 400, err->message);
+  } else {
+    body = config_replace(h, text, out, "from the web page", st);
+  }
+  g_clear_error(&err);
+  g_free(out);
+  g_free(text);
+  return body;
+}
+
+/* POST /api/config/import ini=<an exported file>: the whole file as the
+ * config, this machine's [web] kept (skim_hd_config_import). */
+static char *web_config_import(GHashTable *form, guint *st, gpointer user) {
+  Hd *h = user;
+  const char *ini = g_hash_table_lookup(form, "ini");
+  char *text = NULL, *out = NULL, *body;
+  gsize len = 0;
+  GError *err = NULL;
+  if (!ini || !ini[0]) {
+    body = json_error(st, 400, "no file (ini=)");
+  } else if (!g_file_get_contents(h->cfg_path, &text, &len, &err) ||
+             !(out = skim_hd_config_import(text, len, ini, strlen(ini), &err))) {
+    body = json_error(st, 400, err->message);
+  } else {
+    body = config_replace(h, text, out, "imported on the web page", st);
+  }
+  g_clear_error(&err);
   g_free(out);
   g_free(text);
   return body;
@@ -1480,7 +1514,8 @@ int main(int argc, char **argv) {
   if (h->http_port > 0) {
     const SkimHdWebHooks hooks = {
       .status = web_status, .stats = web_stats, .log = web_log, .config = web_config,
-      .config_post = web_config_post, .restart = web_restart, .rollback = web_rollback,
+      .config_post = web_config_post, .config_import = web_config_import,
+      .restart = web_restart, .rollback = web_rollback,
       .deepcw = web_deepcw,
       .user = h,
     };

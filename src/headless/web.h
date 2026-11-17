@@ -9,6 +9,7 @@
  *   GET  /api/log               the last log lines
  *   GET  /api/config            the config: the ini, what may be edited, backups
  *   POST /api/config            a new config (settings_from only)
+ *   POST /api/config/import    an exported ini (ini=…) as the config (settings_from)
  *   POST /api/restart           restart with the config on disk (settings_from)
  *   POST /api/rollback          the previous config back, restart (settings_from)
  *   POST /api/deepcw            fetch the DeepCW model (settings_from)
@@ -39,7 +40,7 @@ typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
 typedef struct {
   SkimHdWebGet  status, stats, log, config;
-  SkimHdWebPost config_post, restart, rollback, deepcw;
+  SkimHdWebPost config_post, config_import, restart, rollback, deepcw;
   gpointer      user;
 } SkimHdWebHooks;
 

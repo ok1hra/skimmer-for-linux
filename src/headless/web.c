@@ -148,6 +148,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
   }
   if (post) {
     SkimHdWebPost hook = strcmp(path, "/api/config") == 0   ? k->config_post
+                       : strcmp(path, "/api/config/import") == 0 ? k->config_import
                        : strcmp(path, "/api/restart") == 0  ? k->restart
                        : strcmp(path, "/api/rollback") == 0 ? k->rollback
                        : strcmp(path, "/api/deepcw") == 0   ? k->deepcw

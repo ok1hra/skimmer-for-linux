@@ -237,6 +237,24 @@ int main(void) {
     g_clear_error(&err);
     g_hash_table_unref(bad);
 
+    static const char FOREIGN[] =
+        "# exported elsewhere\n[radio]\nhost=auto\n[bands]\n20m=14045500 cw,rtty\n"
+        "[web]\nsettings_from=0.0.0.0/0\n";
+    char *imp = skim_hd_config_import(INI, strlen(INI), FOREIGN, strlen(FOREIGN), &err);
+    const gboolean iok = imp && skim_hd_config_parse(&c, imp, strlen(imp), path, &err);
+    check("an imported file parses, its bands and radio taken",
+          iok && c.nb == 1 && strcmp(c.band[0].name, "20m") == 0 &&
+          strcmp(c.hosts[0], "auto") == 0 && strstr(imp, "# exported elsewhere"));
+    check("… but [web] settings_from stays this machine's (0.0.0.0/0 not taken)",
+          iok && g_strv_length(c.settings_from) == 1 &&
+          strcmp(c.settings_from[0], "127.0.0.1") == 0 && !strstr(imp, "0.0.0.0"));
+    if (iok) { skim_hd_config_clear(&c); }
+    g_free(imp);
+    g_clear_error(&err);
+    imp = skim_hd_config_import(INI, strlen(INI), "not [an ini", 11, &err);
+    check("an import that is no ini refused", !imp && err && strstr(err->message, "imported"));
+    g_clear_error(&err);
+
     char *bak = NULL;
     check("saved, the old file backed up", skim_hd_config_save(path, out, &bak, &err) && bak &&
           g_str_has_prefix(bak, "headless.ini.bak-"));
