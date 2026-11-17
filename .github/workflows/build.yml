@@ -61,6 +61,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # the release is created by hand right after the tag push
+          # The release is made by hand right after the tag push (gh release
+          # create --notes-file) — or, when the tag's notes are in the tree
+          # (packaging/release-notes/<tag>.md) and nobody made it by the time
+          # the AppImage is ready, here from those notes (a machine with no gh
+          # can release).
+          notes=packaging/release-notes/$GITHUB_REF_NAME.md
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && [ -f "$notes" ]; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "Skimmer for Linux ${GITHUB_REF_NAME#v}" --notes-file "$notes"
+          fi
           for _ in $(seq 60); do gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && break; sleep 10; done
           gh release upload "$GITHUB_REF_NAME" dist/*.AppImage --clobber
