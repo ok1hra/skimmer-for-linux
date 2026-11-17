@@ -210,7 +210,15 @@ function renderStats() {
   Charts.mirror($('#chart-spots'), x,
     [{ name: 'CW', series }, ...(d.rtty ? [{ name: 'RTTY', series: perHour(d.rtty) }] : [])],
     (v) => fmt(v, v < 10 && v % 1 ? 1 : 0));
-  Charts.heat($('#chart-active'), x, d.bands.map((b) => ({ name: b, values: m.active[b] })), (v) => fmt(v, 1));
+  // a band's block: CW over RTTY (a mode the band does not decode: an empty strip)
+  const decoded = (mm, b) => mm && mm.active[b] && mm.active[b].some((v) => v != null) ? mm.active[b] : null;
+  const amax = Charts.heat($('#chart-active'), x, d.bands.map((b) => ({ name: b, parts: [
+    { label: 'CW', values: decoded(d.cw, b), lo: '--seq-lo', hi: '--seq-hi' },
+    ...(d.rtty ? [{ label: 'RTTY', values: decoded(d.rtty, b), lo: '--seq2-lo', hi: '--seq2-hi' }] : []),
+  ] })), (v) => fmt(v, 1), 'active decoders');
+  $('#legend-active').innerHTML = [['CW', '--seq'], ...(d.rtty ? [['RTTY', '--seq2']] : [])].map(([l, v]) =>
+    `<span><i class="ramp" style="background:linear-gradient(90deg,var(${v}-lo),var(${v}-hi))"></i>` +
+    `${l}${amax[l] ? ` <span class="mut">0–${fmt(amax[l], amax[l] < 10 ? 1 : 0)}</span>` : ''}</span>`).join('');
   Charts.line($('#chart-cpu'), x, d.global.cpu, Charts.seriesColor(0), (v) => `${fmt(v)} %`, 'CPU, % of a core');
   Charts.line($('#chart-lost'), x, d.global.lost, Charts.seriesColor(1), (v) => `${fmt(v, 3)} %`, 'lost, worst minute');
   ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-lost'].forEach((id) => loading(id, false));

@@ -177,28 +177,45 @@ const Charts = (() => {
     const A = p(a), B = p(b);
     return `rgb(${A.map((c, i) => Math.round(c + (B[i] - c) * t)).join(',')})`;
   }
-  function heat(box, x, rows, fmtV) {
-    const rowH = 22;
-    const { svg, W, H } = frame(box, rows.length * rowH + 30);
-    const m = { l: 48, r: 8, t: 4 };
+  // rows: [{ name, parts: [{ label, values | null, lo, hi }, …] }] — a band is one
+  // block, its parts stacked inside it with no gap (CW over RTTY), a gap between
+  // bands. Each part label has its own ramp and its own maximum.
+  function heat(box, x, rows, fmtV, what) {
+    const partH = 13, bandGap = 5;
+    const np = Math.max(1, ...rows.map((r) => r.parts.length));
+    const blockH = partH * np;
+    const { svg, W, H } = frame(box, rows.length * (blockH + bandGap) + 26);
+    const m = { l: 48, r: 8, t: 2 };
     const n = x.t.length, pw = W - m.l - m.r, cw = pw / n;
-    const max = Math.max(1, ...rows.flatMap((r) => r.values.filter((v) => v != null)));
-    const lo = css('--seq-lo'), hi = css('--seq-hi'), gap = cw > 4 ? 1 : 0;
+    const max = {};
+    for (const r of rows) for (const p of r.parts) {
+      if (!p.values) continue;
+      max[p.label] = Math.max(max[p.label] || 1, ...p.values.filter((v) => v != null));
+    }
+    const gap = cw > 4 ? 1 : 0;
     const tt = tip(box);
     rows.forEach((r, j) => {
-      const yy = m.t + j * rowH;
-      const t = el('text', { x: m.l - 6, y: yy + rowH / 2 + 4, 'text-anchor': 'end', 'font-size': 12,
+      const yy = m.t + j * (blockH + bandGap);
+      const t = el('text', { x: m.l - 6, y: yy + blockH / 2 + 4, 'text-anchor': 'end', 'font-size': 12,
                              fill: css('--mut') }, svg);
       t.textContent = r.name;
-      r.values.forEach((v, i) => {
-        const c = el('rect', { x: m.l + i * cw, y: yy + 1, width: Math.max(0.5, cw - gap), height: rowH - 2,
-                               fill: v == null ? 'transparent' : mix(lo, hi, Math.sqrt(v / max)) }, svg);
-        if (v == null) return;
-        c.addEventListener('pointerenter', () => {
-          tt.show(m.l + (i + 1) * cw, yy, `${r.name} · ${x.label(i)}`, [{ value: fmtV(v), label: 'active decoders' }]);
-          c.setAttribute('stroke', css('--fg'));
+      r.parts.forEach((p, k) => {
+        const py = yy + k * partH;
+        if (!p.values) {                                         // the band does not decode it
+          el('rect', { x: m.l, y: py, width: pw - gap, height: partH, fill: css('--grid'), opacity: 0.5 }, svg);
+          return;
+        }
+        const lo = css(p.lo), hi = css(p.hi);
+        p.values.forEach((v, i) => {
+          if (v == null) return;
+          const c = el('rect', { x: m.l + i * cw, y: py, width: Math.max(0.5, cw - gap), height: partH,
+                                 fill: mix(lo, hi, Math.sqrt(v / max[p.label])) }, svg);
+          c.addEventListener('pointerenter', () => {
+            tt.show(m.l + (i + 1) * cw, py, `${r.name} ${p.label} · ${x.label(i)}`, [{ value: fmtV(v), label: what }]);
+            c.setAttribute('stroke', css('--fg'));
+          });
+          c.addEventListener('pointerleave', () => { tt.hide(); c.removeAttribute('stroke'); });
         });
-        c.addEventListener('pointerleave', () => { tt.hide(); c.removeAttribute('stroke'); });
       });
     });
     const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(pw / 90))));
@@ -207,6 +224,7 @@ const Charts = (() => {
                              fill: css('--tick') }, svg);
       t.textContent = timeLabel(x.t[i], x.spanH);
     }
+    return max;
   }
 
   // ---- one line, crosshair tooltip -------------------------------------------------

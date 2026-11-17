@@ -8,6 +8,7 @@
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
   --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
   --seq-lo: #cde2fb; --seq-hi: #0d366b;
+  --seq2-lo: #fde2d0; --seq2-hi: #8a3210;
   --grid: #e8e8ec; --axis: #c3c2b7; --tick: #898781;
   /* the top bar: its own colour, apart from the page */
   --hdr-bg: #163a63; --hdr-fg: #ffffff; --hdr-mut: #b9cbe2; --hdr-ln: rgba(255,255,255,.28);
@@ -20,6 +21,7 @@
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
     --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
     --seq-lo: #1d2a3a; --seq-hi: #9ec5f4;
+    --seq2-lo: #3a2418; --seq2-hi: #f5b07e;
     --grid: #2c2c30; --axis: #45454a; --tick: #898781;
     --hdr-bg: #0f2a4a; --hdr-fg: #eef3fa; --hdr-mut: #9fb6d4; --hdr-ln: rgba(255,255,255,.22);
     --hdr-on: #5aa9ff; --hdr-on-fg: #0b1726;
@@ -110,6 +112,7 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel);
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 6px; font-size: 12px; color: var(--mut); }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.legend i.ramp { width: 46px; }
 .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--ln);
        border-radius: 6px; padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15);
        white-space: nowrap; z-index: 2; }
