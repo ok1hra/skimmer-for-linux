@@ -128,7 +128,13 @@ def breakdown_block(evs):
     verified but outside U (R heard it without CQ), only ever in an unsettled
     pair, or confirmed by nobody (its busts, the busted strings of lost pairs
     included). found + nonCQ + unresolved + unverified = the side's unique
-    calls; found + nonCQ = its verified calls."""
+    calls; found + nonCQ = its verified calls.
+
+    found_scp (a part of found, not a segment of its own): found stations
+    only MASTER.SCP vouches for — no RBN skimmer near it, the other side
+    never spotted it. A misread landing on a real but absent call counts as
+    found there (live v3, 2026-11-15..17: 550 of L's 2882, R 16), so a
+    change that removes such reads lowers recall without losing a station."""
     real = {e["call"] for e in evs if e["inU"]}
     out = {"n": sum(e["inU"] for e in evs), "calls_real": len(real)}
     for X in ("L", "R"):
@@ -142,6 +148,8 @@ def breakdown_block(evs):
         rest = {e[X]["call"] for e in own} - found - ok - unres
         out[X] = {
             "found": sum(e["inU"] and e[c] for e in evs),
+            "found_scp": sum(e["inU"] and e[c] and e["v"] == "scp" and e["cat"] != "match"
+                             for e in evs),
             "lost": sum(e["inU"] and e[b] for e in evs),
             "missed": sum(e["inU"] and not e[c] and not e[b] for e in evs),
             "unverified": sum(not e["inU"] and e[b] for e in evs),

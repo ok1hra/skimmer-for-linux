@@ -710,6 +710,39 @@ static void near_note(SkimPipeline *p, const SkimStation *st) {
   r->hearings = MAX(r->hearings, st->hearings);
 }
 
+/* SKIM_GATE_HEAD=1: a call and its own longer reading on the same frequency
+ * (SM5D and SM5DAJ, G3M and G3MCK, EA5B and EA5BF) are one station whose
+ * tail was lost, not two look-alikes — and the dictionary's word must not
+ * decide which one goes out: MASTER.SCP is full of short heads and often
+ * lacks the full call. Without it the near-call rule kept the full call
+ * (read 298 times) off the wire because SCP knows SM5D, and the head, read
+ * once, went out (rec 2, 2026-10-16: 7 of 30 busts). With it the head
+ * yields to a longer reading read at least twice and at least as often,
+ * and a head never blocks its longer reading unless it was read far more
+ * often. A tail that is a word glued on (K, E, R, DX, KN, TU, 5NN, the
+ * call's own head again) is no tail. Default off. */
+static gboolean head_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_GATE_HEAD");
+    on = e && e[0] && strcmp(e, "0") != 0;
+  }
+  return on;
+}
+
+static gboolean is_head(const char *head, const char *call) {
+  const gsize lh = strlen(head), lc = strlen(call);
+  if (lh < 3 || lc <= lh || lc > lh + 3 || strncmp(head, call, lh) != 0)
+    return FALSE;
+  const char *t = call + lh;
+  static const char *const glue[] = { "K", "E", "R", "EE", "DX", "KN", "TU", "NN", "5NN" };
+  for (guint i = 0; i < G_N_ELEMENTS(glue); i++) {
+    if (!strcmp(t, glue[i]))
+      return FALSE;
+  }
+  return strncmp(head, t, strlen(t)) != 0;
+}
+
 static gboolean near_conflict(const SkimPipeline *p, const SkimStation *st) {
   if (p->near_hz <= 0)
     return FALSE;
@@ -718,7 +751,8 @@ static gboolean near_conflict(const SkimPipeline *p, const SkimStation *st) {
    * contest calls the dictionary is full of (E2M, M5E, T6A) are exactly
    * what a misread of a neighbour lands on. */
   const gboolean dict = skim_callsign_dict_has(st->call);
-  if (dict && p->near_dict <= 0)
+  const gboolean head = head_on();
+  if (dict && p->near_dict <= 0 && !head)
     return FALSE;
   const gint64 now = pipe_now_us(p);
   GHashTableIter it;
@@ -731,6 +765,23 @@ static gboolean near_conflict(const SkimPipeline *p, const SkimStation *st) {
       continue;
     }
     if (fabs(r->hz - st->freq_hz) > p->near_hz || strcmp(k, st->call) == 0)
+      continue;
+    if (head && is_head(st->call, k)) {        /* st lost the tail of k */
+      if (r->hearings >= MAX(2u, st->hearings)) {
+        if (G_UNLIKELY(g_getenv("SKIM_GATE_NEAR_DEBUG"))) {
+          g_printerr("near: %s (%u) is the head of %s (%u) df %.0f\n", st->call,
+                     st->hearings, (char *)k, r->hearings, r->hz - st->freq_hz);
+        }
+        return TRUE;
+      }
+      continue;
+    }
+    if (head && is_head(k, st->call)) {        /* k is st without its tail */
+      if (r->hearings >= 3 && r->hearings >= 2 * MAX(st->hearings, 1u))
+        return TRUE;
+      continue;
+    }
+    if (dict && p->near_dict <= 0)
       continue;
     /* a dictionary call read ONCE (it passed on the dictionary's word
      * alone) yields like an unknown one: to any look-alike that the
@@ -773,10 +824,10 @@ static gboolean rbn_gate(const SkimPipeline *p, const SkimStation *st) {
     const char *e = g_getenv("SKIM_GATE_DICT_MIN");
     dict_min = e && e[0] ? g_ascii_strtod(e, NULL) : 0.80;  /* "0" = off */
   }
-  const double need = dict_min > 0 && skim_callsign_dict_has(st->call)
-                          ? MIN(dict_min, p->rbn_min) : p->rbn_min;
+  const gboolean dict = skim_callsign_dict_has(st->call);
+  const double need = dict_min > 0 && dict ? MIN(dict_min, p->rbn_min) : p->rbn_min;
   return (st->cq || p->cfg.rbn_any_caller) && st->score >= need &&
-         (st->hearings >= p->rbn_hearings || skim_callsign_dict_has(st->call)) &&
+         (st->hearings >= p->rbn_hearings || dict) &&
          !near_conflict(p, st);
 }
 

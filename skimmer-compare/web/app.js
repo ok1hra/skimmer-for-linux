@@ -492,7 +492,10 @@ function renderBreakdown(S) {
     const d = B[side], c = d.calls, ok = c.found + c.nonCQ;
     return el('p', null, el('span', { cls: 'key key-' + side }),
       el('b', null, side), ` ${spots[side]} → ${fmt(d.episodes)} episodes · recall `,
-      el('b', null, pct(S.recall[side].p)), ` (${fmt(d.found)} of ${fmt(B.n)}) · bust rate `,
+      el('b', null, pct(S.recall[side].p)), ` (${fmt(d.found)} of ${fmt(B.n)}`,
+      d.found_scp == null ? '' : `, ${fmt(d.found - d.found_scp)} confirmed by RBN or the other side, `
+        + `${fmt(d.found_scp)} by MASTER.SCP alone`,
+      ') · bust rate ',
       el('b', null, pct(S.bust[side].p)),
       ` = ${fmt(d.lost)} busted a real station (lowers recall) + ${fmt(d.unverified)} unverified (bust rate only)`,
       ' · unique calls ', el('b', null, fmt(c.own)), ', verified ',

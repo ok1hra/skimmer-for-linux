@@ -136,3 +136,76 @@ torn by over breaks in the weak view, the CQ on one side, the call on the
 other.
 
 CPU: a 5 h replay of three bands takes v3 about 2.7× v2's time.
+
+## Precision: the reader's own busts (opt-in, 2026-11-17)
+
+Live 2026-11-15..17 (36.7 h against CW Skimmer Server): v3 recall 75.9 vs
+R 72.9, bust 4.9 % vs 2.4 %, and 550 of 2882 stations L "found" were vouched
+for by MASTER.SCP alone (no RBN skimmer, not R; R has 16 such). Each L
+episode was traced back to what started it: a reader correction (FIX
+token) or the free text (`skimmer-compare/skimcmp/fixsrc.py`,
+`tap-score.py --fix`). Corrections whose call the text read exactly (class
+C) were sound: 773 good, 94 SCP-only, 10 busts. The bad ones were:
+- A: the text read a valid call and the reader "corrected" it to a
+  different SCP call (W1KE → W1KT, EA3CE → TA3CE). 56 / 66 / 10.
+- B: the reader took the head of a torn call ("SM5D AJ" → SM5D, since
+  SM5DAJ is not in SCP). 48 / 40 / 16.
+- D: nothing like the call was in the text, mostly short SCP calls fitted
+  into noise (G0T, E2E). 70 / 162 / 4.
+
+Three switches, all default off:
+
+- `SKIM_V3_KR_RIVAL=1`: the text's own readings compete with the winner,
+  known to the dictionary or not. These are valid calls the text read
+  whole or as 2–3 torn tokens, within `skim_feed_gate_similar` ≤ 3 of the
+  winner. A rival only blocks; unknown calls are still never written.
+- `SKIM_V3_KR_TWO=1`: a correction the text does not support (only a near
+  form of a fragment, or the hit memory), or a call of 4 characters or
+  fewer that the text did not read, needs two reads with no shared audio.
+  The hit memory alone no longer counts as a read.
+- `SKIM_GATE_HEAD=1` (`pipeline.c`, `near_conflict`): a call and its own
+  longer reading on the same frequency are one station that lost its tail.
+  Before this, the near-call rule kept the full call off the wire because
+  SCP knows the head. SM5DAJ was read 298 times and held, while SM5D, read
+  once, went out. Now the head yields to a longer reading read at least
+  twice and at least as often. A glued word (K, E, R, DX, KN, TU, 5NN, the
+  call's own head again) is not a tail.
+
+Results: recall, bust, stations confirmed by RBN or R, stations vouched for
+by SCP alone, and busts.
+
+| | recall | bust | confirmed | SCP alone | busts |
+|---|---|---|---|---|---|
+| rec 2, v3 | 72.9 | 6.9 | 374 | 64 | 34 |
+| rec 2, RIVAL + TWO | 72.2 | 6.3 | 374 | 55 | 30 |
+| rec 2, + HEAD | 73.3 | 5.8 | 382 | 57 | 28 |
+| rec 3, v3 | 86.7 | 0.8 | 1346 | 673 | 17 |
+| rec 3, RIVAL + TWO | 86.2 | 0.8 | 1346 | 613 | 16 |
+| rec 3, + HEAD | 86.2 | 0.8 | 1347 | 613 | 16 |
+
+Recording 3 (a contest, WAG) is the guard for the strong contest stations
+that L hears and R does not.
+- With RIVAL + TWO, its 1346 confirmed stations stayed. Of the 45 SCP-only
+  stations that went, most were busts of a call RBN spotted on the same
+  frequency (K6JS for DK6JU, W6AG for DL6AG, DA3T for DA3M, DD5Y for
+  DL5YM), or a caller spotted with the runner's CQ (DF7TS answering LZ1ZF).
+- HEAD alone, on the live v3 taps 11-15..17: confirmed 2490 → 2508, busts
+  174 → 173.
+- HEAD alone, on the v2 contest taps 11-14: confirmed 4314 → 4320, busts
+  84 → 82, L-only ≥ 15 dB 2059 → 2063.
+- The tap replay of the live v3 taps matches live within one station in
+  250 (confirmed 2490 vs 2489, busts 174 vs 170).
+
+Tried and not kept (tap replay of the live v3 taps):
+- A glue tail K/E/DX at one read ratio instead of two: no bust gone,
+  +3 confirmed.
+- A non-SCP call whose 1–2 character longer form SCP knows (DF6Y, DF6YT)
+  needs 3 reads: −6 busts but −5 confirmed.
+- Rules over the remaining non-SCP busts (≤ 3 characters, a locator shape,
+  ≥ 40 WPM, 4 characters read once): each cost about as many real
+  stations as busts.
+
+What remains is mostly text busts, the same kind v2 had: heads of calls
+read only later (R4NC before R4NCU), and busts that are single-read and
+non-SCP (TM140FHBK read as T4EHBK). `SKIM_V3_KR_CQX=1` (an audio-only CQ
+vouches only for a call the text read) is built but not measured.

@@ -30,6 +30,7 @@ sys.path.insert(0, HERE)
 
 from skimcmp.arbiter import RbnIndex, load_scp           # noqa: E402
 from skimcmp.config import Config                         # noqa: E402
+from skimcmp.fixsrc import FixSource, table              # noqa: E402
 from skimcmp.logs import Store                            # noqa: E402
 from skimcmp.match import analyze                         # noqa: E402
 from skimcmp.stats import summarize                       # noqa: E402
@@ -105,6 +106,13 @@ def show(name, S):
     print("   L of R by R dB: " + "  ".join(
         f"{x['lo'] if x['lo'] is not None else '':>2}-{x['hi'] if x['hi'] is not None else '':<2} "
         f"{x['LofR']['p'] * 100:4.1f}" for x in S["snr"]["bins"]))
+    bd = S["breakdown"]["L"]
+    lonly = [e for e in S["_events"] if e["cat"] == "only-L" and e["inU"]]
+    strong = [e for e in lonly if e["snr"] is not None and e["snr"] >= 15]
+    print(f"   L found {bd['found']}: confirmed {bd['found'] - bd['found_scp']}, "
+          f"MASTER.SCP alone {bd['found_scp']} · L-only real {len(lonly)}, "
+          f"of them >= 15 dB {len(strong)} · busted real {bd['lost']}, "
+          f"unverified {bd['unverified']}")
     print("   recall by band: " + "  ".join(
         f"{x['band']} {x['L']['p'] * 100:4.1f}/{x['R']['p'] * 100:4.1f}" for x in S["bands"]
         if x["L"]["p"] is not None))
@@ -118,6 +126,10 @@ def main():
     ap.add_argument("--from", dest="frm", help="start of the scored range (UTC or Unix s)")
     ap.add_argument("--to", help="end of the scored range (UTC or Unix s)")
     ap.add_argument("--bands", help="comma list: score only these bands (a replay of some)")
+    ap.add_argument("--fix", action="store_true",
+                    help="split L's episodes by source (free text, or the v3 call "
+                    "reader's class C/B/A/D) from each ROWSDIR's tap-<band>.log")
+    ap.add_argument("--fix-tap", help="… from these taps instead (a glob; for 'live')")
     ap.add_argument("--json")
     ap.add_argument("--events", help="write each variant's compared events to "
                     "EVENTS-<n>.json (the /api/events shape live-breakdown.py reads)")
@@ -136,6 +148,12 @@ def main():
         S = score(cfg, a.session, d, when(a.to), when(a.frm), bands)
         show(d, S)
         evs = S.pop("_events")
+        if a.fix or a.fix_tap:
+            fs = FixSource.from_glob(a.fix_tap or os.path.join(d, "tap-*.log"))
+            T = table(fs, evs)
+            print("   L episodes by source (good / MASTER.SCP alone / bust): " + "  ".join(
+                f"{k} {v['good']}/{v['scp']}/{v['bust']}" for k, v in sorted(T.items())))
+            S["fix"] = T
         if a.events:
             with open("%s-%d.json" % (a.events, len(out)), "w") as fh:
                 json.dump({"events": evs}, fh)
