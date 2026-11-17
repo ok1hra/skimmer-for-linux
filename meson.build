@@ -353,6 +353,7 @@ headless_sources = files(
   'src/headless/service.c',         # --install-service: the systemd user unit
   'src/headless/source.c',          # IQ sources: the interface
   'src/headless/source_hpsdr_p1.c', # … a Red Pitaya (HPSDR P1)
+  'src/headless/source_hub.c',      # … a worker: the bands its hub passes on
   'src/headless/source_mock.c',     # … synthetic CW (the headless gate)
   'src/headless/stats.c',           # the 7-day per-minute history
   'src/headless/switches.c',        # the SKIM_* switches a start runs with

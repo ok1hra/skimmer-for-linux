@@ -551,6 +551,9 @@ async function findSkimmers() {
           `<td class="l">${esc(bands)}</td><td>` +
           (feed ? `<button type="button" class="small" data-peer="${esc(feed)}"${may && !have.has(feed) ? '' : ' disabled'}>` +
                   `${have.has(feed) ? 'a peer already' : 'Add as peer'}</button>` : '<span class="mut">no feed</span>') +
+          (s.hub_port && s.role !== 'worker'
+            ? ` <button type="button" class="small" data-hub="${esc(`${s.addr}:${s.hub_port}`)}"${may ? '' : ' disabled'} ` +
+              `title="this skimmer becomes its worker: it decodes the bands that hub assigns to ${esc(d.self.name)}">Use as hub</button>` : '') +
           '</td></tr>';
       }).join('') : '<tr><td colspan="6" class="mut">no other skimmer answered</td></tr>');
     $('#lan-msg').textContent = `${d.found.length} found`;
@@ -563,6 +566,15 @@ async function findSkimmers() {
 $('#lan-find').addEventListener('click', findSkimmers);
 $('#lan').addEventListener('toggle', () => { if ($('#lan').open) findSkimmers(); });
 $('#lan-list').addEventListener('click', (e) => {
+  const hub = e.target.dataset && e.target.dataset.hub;
+  if (hub) {
+    $('[name="radio.type"]').value = 'hub';
+    $('[name="radio.host"]').value = hub;
+    cfg.dirty = true;
+    e.target.disabled = true;
+    e.target.textContent = 'set as the hub — Save to apply';
+    return;
+  }
   const peer = e.target.dataset && e.target.dataset.peer;
   if (!peer) return;
   const inp = $('[name="peers.hosts"]');

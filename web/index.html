@@ -88,10 +88,14 @@
           <legend>Radio</legend>
           <label>Source <select name="radio.type">
             <option value="hpsdr-p1">Red Pitaya (HPSDR P1)</option>
-            <option value="mock">mock — synthetic CW, no radio</option></select></label>
+            <option value="mock">mock — synthetic CW, no radio</option>
+            <option value="hub">a hub — decode bands another skimmer passes on (worker)</option></select>
+            <small>worker: the hub assigns the bands (its Settings → Bands → decoded by) and the decoding policy;
+            this skimmer's bands below are then not used</small></label>
           <label class="wide">Hosts <input name="radio.host" placeholder="auto">
             <small>auto = the first idle Red Pitaya on the LAN (<code>skimmer-headless --find-radios</code> lists them);
-            or addresses tried in order, address@ppm = that radio's clock correction</small></label>
+            or addresses tried in order, address@ppm = that radio's clock correction. A worker: auto = the hub that
+            names it, or the hub's address[:port]</small></label>
           <label>Rate <select name="radio.rate" data-default="96000">
             <option value="48000">48 kHz</option><option value="96000">96 kHz</option>
             <option value="192000">192 kHz</option></select></label>

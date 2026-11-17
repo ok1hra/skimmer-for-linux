@@ -780,6 +780,9 @@ static void stats_minute(Hd *h) {
   }
 }
 
+static void worker_report(Hd *h);
+static void restart_soon(Hd *h, const char *why);
+
 /* 1 Hz: link supervision, rates, status. */
 static gboolean tick(gpointer data) {
   Hd *h = data;
@@ -830,6 +833,10 @@ static gboolean tick(gpointer data) {
   h->ticks++;
   const gboolean print = h->console_s > 0 && h->ticks % (guint)h->console_s == 0;
   status_build(h, print);
+  if (h->cfg.source == SKIM_HD_SOURCE_HUB) {
+    if (h->nb && h->ticks % 10 == 0) { worker_report(h); }
+    if (h->src_st.restart && !h->exit_code) { restart_soon(h, "the hub assigns other bands"); }
+  }
   return G_SOURCE_CONTINUE;
 }
 
@@ -1377,6 +1384,39 @@ static void hub_spot(const char *worker, const char *call, const char *mode, dou
   if (f) { skim_rbn_feed_spot_external(f, call, mode, freq_hz, snr_db, speed); }
 }
 
+/* A worker's spot (an engine thread): up the link to its hub. */
+static void worker_tap(const char *call, const char *mode, double freq_hz, double snr_db,
+                       double speed, gpointer user) {
+  Hd *h = user;
+  if (!h->src) { return; }
+  char f[G_ASCII_DTOSTR_BUF_SIZE];
+  g_ascii_formatd(f, sizeof(f), "%.1f", freq_hz);
+  char *line = g_strdup_printf("SPOT %s %s %s %.0f %.0f\n", call, mode, f, snr_db, speed);
+  skim_iq_source_hub_send(h->src, line);
+  g_free(line);
+}
+
+/* Every 10 s a worker tells its hub how its bands do (STAT) and its whole
+ * status (STATUS) — the hub's page and history show them. */
+static void worker_report(Hd *h) {
+  GString *o = g_string_new(NULL);
+  for (guint i = 0; i < h->nb; i++) {
+    for (guint k = 0; k < M_N; k++) {
+      Dec *d = &h->band[i].dec[k];
+      if (!d->p) { continue; }
+      BandStat bs;
+      band_stat(d, &bs);
+      g_string_append_printf(o, "STAT %s %s %u %u %u %" G_GUINT64_FORMAT "\n", h->band[i].name,
+                             MODE_KEY[k], bs.channels, bs.active, bs.stations, bs.spots);
+    }
+  }
+  g_mutex_lock(&h->snap_lock);
+  if (h->snap_json) { g_string_append_printf(o, "STATUS %s\n", h->snap_json); }
+  g_mutex_unlock(&h->snap_lock);
+  skim_iq_source_hub_send(h->src, o->str);
+  g_string_free(o, TRUE);
+}
+
 /* A peer's CQ spot (peers thread): out on our feed, unless it is a duplicate
  * of what went out already (ours or another peer's). */
 static void peer_spot(const char *peer, const char *call, const char *mode, double freq_hz,
@@ -1560,6 +1600,38 @@ int main(int argc, char **argv) {
     h->console_s = skim_hd_service_under_systemd() ? 0 : c->console_s >= 0 ? c->console_s : 10;
   }
   if (h->http_port < 0) { h->http_port = c->http_port >= 0 ? c->http_port : 8073; }
+  /* A worker: its bands and decoding policy come from its hub — the link
+   * first, the hub's fragment merged into this config, then the rest. */
+  SkimHubLink *hub_link = NULL;
+  char *hub_frag = NULL;
+  if (c->source == SKIM_HD_SOURCE_HUB && !check_config) {
+    g_message("hub link: looking for the hub (%s) as the worker %s", c->hosts_text, c->hub_name);
+    hub_link = skim_hub_link_open(c, 10, &hub_frag, &err);
+    if (!hub_link) {
+      g_warning("hub link: %s — starting without bands, still looking", err->message);
+      g_clear_error(&err);
+    } else if (!hub_frag) {
+      g_message("hub link: %s has no band for %s — waiting for one",
+                skim_hub_link_desc(hub_link), c->hub_name);
+    } else {
+      char *merged = skim_hd_config_worker_merge(h->cfg_text, strlen(h->cfg_text), hub_frag,
+                                                 strlen(hub_frag), &err);
+      SkimHdConfig nc;
+      if (merged && skim_hd_config_parse(&nc, merged, strlen(merged), h->cfg_path, &err)) {
+        skim_hd_config_clear(c);
+        *c = nc;
+        g_free(h->cfg_text);
+        h->cfg_text = merged;
+        g_message("hub link: %s assigns %u band%s to %s", skim_hub_link_desc(hub_link), c->nb,
+                  c->nb == 1 ? "" : "s", c->hub_name);
+      } else {
+        g_warning("hub link: the hub's bands do not parse here (%s) — none decoded",
+                  err ? err->message : "?");
+        g_clear_error(&err);
+        g_free(merged);
+      }
+    }
+  }
   h->feed_gate = g_strdup(c->feed_gate);
   h->feed_gate_mode = g_strdup(c->feed_gate_mode);
   if (!gate_load(h, &err)) {
@@ -1648,6 +1720,13 @@ int main(int argc, char **argv) {
         g_message("feed: telnet spots on port %d as %s", c->feed_port, c->feed_call);
       }
     }
+  }
+
+  /* a worker's spots go up its hub link: through its own feed when it has
+   * one, else through a feed that listens nowhere */
+  if (c->source == SKIM_HD_SOURCE_HUB && c->feed_call && c->feed_call[0]) {
+    if (!h->feed) { h->feed = skim_rbn_feed_new_sink(c->feed_call); }
+    skim_rbn_feed_set_tap(h->feed, worker_tap, h);
   }
 
   if (c->rbn_on) {
@@ -1856,7 +1935,15 @@ int main(int argc, char **argv) {
   h->loop = g_main_loop_new(NULL, FALSE);
   g_unix_signal_add(SIGINT, on_signal, h);
   g_unix_signal_add(SIGTERM, on_signal, h);
-  h->src = skim_iq_source_new(c, h->take_over, rx_iq_cb, h);
+  if (c->source == SKIM_HD_SOURCE_HUB) {
+    h->src = skim_iq_source_hub_new(c, hub_link, hub_frag);   /* takes the link */
+    h->src->cfg = c;
+    h->src->iq_cb = rx_iq_cb;
+    h->src->iq_user = h;
+  } else {
+    h->src = skim_iq_source_new(c, h->take_over, rx_iq_cb, h);
+  }
+  g_free(hub_frag);
   skim_iq_source_start(h->src);                /* first start attempt now     */
   tick(h);
   if (!h->exit_code) {                         /* a quit before run is lost   */

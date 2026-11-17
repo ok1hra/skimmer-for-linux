@@ -37,6 +37,8 @@ typedef struct {
   double   ppm;                  /* … its clock correction                  */
   guint64  packets;              /* since start (rate: the owner's delta)   */
   guint64  lost_frames;          /* frames the wire lost, zero-filled       */
+  gboolean restart;              /* the source wants a restart (a worker's
+                                  * hub assigned other bands)               */
 } SkimIqSourceStatus;
 
 typedef struct {
@@ -73,5 +75,21 @@ SkimIqSource *skim_iq_source_hpsdr_p1_new(const SkimHdConfig *cfg, gboolean take
  * SKIM_HPSDR_DISCOVER=addr[:port] aims it elsewhere (a gate's fake radio). */
 GArray *skim_iq_source_hpsdr_discover(void);
 SkimIqSource *skim_iq_source_mock_new(const SkimHdConfig *cfg);
+
+/* A worker's link to its hub (source_hub.c, headless/hub.h). open: find
+ * the hub (host=auto: discovery) and say HELLO, retrying for wait_s; the
+ * hub's fragment in *fragment (NULL: nothing assigned to this worker). */
+typedef struct _SkimHubLink SkimHubLink;
+SkimHubLink *skim_hub_link_open(const SkimHdConfig *cfg, guint wait_s, char **fragment,
+                                GError **error);
+void         skim_hub_link_close(SkimHubLink *l);
+const char  *skim_hub_link_desc(const SkimHubLink *l);
+/* The worker's source: takes link (NULL: none yet — it keeps looking);
+ * fragment = what cfg was built from. cfg, iq_cb and iq_user are set by
+ * the caller as skim_iq_source_new() would. */
+SkimIqSource *skim_iq_source_hub_new(const SkimHdConfig *cfg, SkimHubLink *link,
+                                     const char *fragment);
+/* A line up to the hub (SPOT, STAT, STATUS); dropped while no link. Any thread. */
+void          skim_iq_source_hub_send(SkimIqSource *s, const char *line);
 
 G_END_DECLS
