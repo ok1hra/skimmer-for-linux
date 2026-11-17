@@ -196,17 +196,20 @@ function renderStats() {
   $('#mode').hidden = !d.rtty;
   $('#stats-note').textContent = `${d.step_min}-minute buckets · times in UTC`;
 
-  // colour follows the band (config order), never its rank
-  const series = d.bands.map((b, i) => ({
+  // colour follows the band (config order), never its rank; CW up, RTTY down
+  const perHour = (mm) => d.bands.map((b, i) => ({
     name: b, color: Charts.seriesColor(i),
-    values: m.spots[b].map((v) => v == null ? null : v / stepH),   // per hour
+    values: mm.spots[b].map((v) => v == null ? null : v / stepH),
   }));
+  const series = perHour(d.cw);
   $('#legend-spots').replaceChildren(...series.map((s) => {
     const sp = document.createElement('span'); const i = document.createElement('i');
     i.style.background = s.color; sp.append(i, document.createTextNode(s.name)); return sp;
   }));
   const loading = (id, on) => $(id).classList.toggle('loading', on);
-  Charts.stacked($('#chart-spots'), x, series, (v) => fmt(v, v < 10 && v % 1 ? 1 : 0));
+  Charts.mirror($('#chart-spots'), x,
+    [{ name: 'CW', series }, ...(d.rtty ? [{ name: 'RTTY', series: perHour(d.rtty) }] : [])],
+    (v) => fmt(v, v < 10 && v % 1 ? 1 : 0));
   Charts.heat($('#chart-active'), x, d.bands.map((b) => ({ name: b, values: m.active[b] })), (v) => fmt(v, 1));
   Charts.line($('#chart-cpu'), x, d.global.cpu, Charts.seriesColor(0), (v) => `${fmt(v)} %`, 'CPU, % of a core');
   Charts.line($('#chart-lost'), x, d.global.lost, Charts.seriesColor(1), (v) => `${fmt(v, 3)} %`, 'lost, worst minute');

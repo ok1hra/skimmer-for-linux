@@ -2,7 +2,7 @@
 //
 // Specs (the dataviz method): the categorical hues in their validated fixed
 // order (CSS --s1…--s8, colour follows the band, never its rank); 2 px surface
-// gap between stacked segments, ≤ 24 px columns with a 4 px rounded top;
+// gap between stacked segments, ≤ 24 px columns with a 4 px rounded data end;
 // 2 px lines; hairline recessive grid; one y-axis per chart; text in text
 // colours only; every mark has a hover/focus tooltip, values lead.
 'use strict';
@@ -84,46 +84,85 @@ const Charts = (() => {
     };
   }
 
-  // ---- stacked columns: one column per bucket, a segment per series -----------------
-  function stacked(box, x, series, fmtV) {
-    const { svg, W, H } = frame(box, 240);
-    const n = x.t.length;
-    const totals = x.t.map((_, i) => series.reduce((a, s) => a + (s.values[i] || 0), 0));
-    const yMax = niceMax(Math.max(...totals, 0));
-    const a = axes(svg, W, H, x, yMax);
-    const slot = a.pw / n, bw = Math.min(24, Math.max(1, slot - (slot > 4 ? 2 : 0)));
-    const y = (v) => (a.ph * v) / yMax;
-    for (let i = 0; i < n; i++) {
-      let acc = 0;
-      const x0 = a.l + i * slot + (slot - bw) / 2;
-      const top = series.reduce((k, s, j) => (s.values[i] > 0 ? j : k), -1);
-      series.forEach((s, j) => {
-        const v = s.values[i] || 0;
-        if (v <= 0) return;
-        const h = y(v), y1 = a.t + a.ph - y(acc) - h;
-        acc += v;
-        const gap = j === top ? 0 : Math.min(2, h / 2);          // surface gap below the next one
-        const hh = Math.max(0.5, h - gap);
-        if (j === top && hh > 4 && bw >= 6) {                   // 4 px rounded data-end
-          const r = 4;
-          el('path', { d: `M${x0},${y1 + hh}V${y1 + r}q0,-${r} ${r},-${r}h${bw - 2 * r}q${r},0 ${r},${r}V${y1 + hh}Z`,
-                       fill: s.color }, svg);
-        } else {
-          el('rect', { x: x0, y: y1 + (h - hh), width: bw, height: hh, fill: s.color }, svg);
-        }
-      });
+  // ---- mirrored stacked columns: CW up, RTTY down from one zero line -----------------
+  // halves: [{ name, series }, …] — the first grows up, the second (if any) down.
+  // Each half has its own scale, its tallest column reaching 100 % of the half.
+  function mirror(box, x, halves, fmtV, halfH = 160) {
+    const m = { l: 44, r: 8, t: 8, b: 22 };
+    const two = halves.length > 1;
+    const { svg, W, H } = frame(box, m.t + halfH * (two ? 2 : 1) + m.b);
+    const n = x.t.length, pw = W - m.l - m.r;
+    const zero = m.t + halfH;
+    const slot = pw / n, bw = Math.min(24, Math.max(1, slot - (slot > 4 ? 2 : 0)));
+    const tot = halves.map((h) => x.t.map((_, i) => h.series.reduce((a, s) => a + (s.values[i] || 0), 0)));
+    const max = tot.map((t) => Math.max(0, ...t) || 1);
+    halves.forEach((h, k) => {
+      const dir = k ? 1 : -1;                                   // up for the first
+      const yv = (v) => zero + dir * (halfH * v) / max[k];
+      // grid: 0, 50 %, 100 % of this half's maximum
+      for (const f of [0.5, 1]) {
+        const y = yv(max[k] * f);
+        el('line', { x1: m.l, x2: W - m.r, y1: y, y2: y, stroke: css('--grid'), 'stroke-width': 1,
+                     'shape-rendering': 'crispEdges' }, svg);
+        const t = el('text', { x: m.l - 6, y: y + 4, 'text-anchor': 'end', 'font-size': 11, fill: css('--tick') }, svg);
+        t.textContent = compact(max[k] * f);
+      }
+      const lab = el('text', { x: m.l + 6, y: k ? zero + halfH - 6 : m.t + 12, 'font-size': 11,
+                               'font-weight': 600, fill: css('--mut'), stroke: css('--panel'),
+                               'stroke-width': 3, 'paint-order': 'stroke' }, svg);
+      lab.textContent = h.name;
+      h.lab = lab;
+      for (let i = 0; i < n; i++) {
+        let acc = 0;
+        const x0 = m.l + i * slot + (slot - bw) / 2;
+        const top = h.series.reduce((q, s, j) => (s.values[i] > 0 ? j : q), -1);
+        h.series.forEach((s, j) => {
+          const v = s.values[i] || 0;
+          if (v <= 0) return;
+          const len = (halfH * v) / max[k];
+          const gap = j === top ? 0 : Math.min(2, len / 2);      // surface gap before the next one
+          const ll = Math.max(0.5, len - gap);
+          const inner = zero + dir * (halfH * acc) / max[k];      // the end nearer zero
+          acc += v;
+          const y0 = k ? inner : inner - ll;                      // top edge of the segment
+          if (j === top && ll > 4 && bw >= 6) {                   // 4 px rounded data end
+            const r = 4;
+            el('path', { d: k
+              ? `M${x0},${y0}V${y0 + ll - r}q0,${r} ${r},${r}h${bw - 2 * r}q${r},0 ${r},-${r}V${y0}Z`
+              : `M${x0},${y0 + ll}V${y0 + r}q0,-${r} ${r},-${r}h${bw - 2 * r}q${r},0 ${r},${r}V${y0 + ll}Z`,
+            fill: s.color }, svg);
+          } else {
+            el('rect', { x: x0, y: y0, width: bw, height: ll, fill: s.color }, svg);
+          }
+        });
+      }
+    });
+    el('line', { x1: m.l, x2: W - m.r, y1: zero, y2: zero, stroke: css('--axis'), 'stroke-width': 1,
+                 'shape-rendering': 'crispEdges' }, svg);
+    for (const h of halves) { svg.appendChild(h.lab); delete h.lab; }       // above the columns
+    const t0 = el('text', { x: m.l - 6, y: zero + 4, 'text-anchor': 'end', 'font-size': 11, fill: css('--tick') }, svg);
+    t0.textContent = '0';
+    const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(pw / 90))));
+    for (let i = 0; i < n; i += every) {
+      const t = el('text', { x: m.l + ((i + 0.5) * pw) / n, y: H - 6, 'text-anchor': 'middle',
+                             'font-size': 11, fill: css('--tick') }, svg);
+      t.textContent = timeLabel(x.t[i], x.spanH);
     }
-    // hit targets: the whole slot, taller than the column
+    // hit targets: the whole slot, both halves
     const tt = tip(box);
+    const plotH = halfH * (two ? 2 : 1);
     for (let i = 0; i < n; i++) {
-      const r = el('rect', { x: a.l + i * slot, y: a.t, width: slot, height: a.ph, fill: 'transparent',
+      const r = el('rect', { x: m.l + i * slot, y: m.t, width: slot, height: plotH, fill: 'transparent',
                              tabindex: -1 }, svg);
       const show = () => {
-        const rows = series.map((s) => ({ value: s.values[i] == null ? '–' : fmtV(s.values[i]),
-                                         label: s.name, color: s.color }))
-          .filter((rw) => rw.value !== '–').reverse();
-        rows.unshift({ value: fmtV(totals[i]), label: 'all bands' });
-        tt.show(a.l + (i + 1) * slot, a.t + a.ph - y(totals[i]), x.label(i), rows);
+        const rows = [];
+        halves.forEach((h, k) => {
+          rows.push({ value: fmtV(tot[k][i]), label: `${h.name}, all bands` });
+          for (const s of [...h.series].reverse()) {
+            if (s.values[i] != null && s.values[i] > 0) rows.push({ value: fmtV(s.values[i]), label: `${h.name} ${s.name}`, color: s.color });
+          }
+        });
+        tt.show(m.l + (i + 1) * slot, zero - (halfH * tot[0][i]) / max[0], x.label(i), rows);
         r.setAttribute('fill', 'rgba(127,127,127,.08)');
       };
       r.addEventListener('pointerenter', show);
@@ -208,5 +247,5 @@ const Charts = (() => {
     });
   }
 
-  return { stacked, heat, line, seriesColor };
+  return { mirror, heat, line, seriesColor };
 })();
