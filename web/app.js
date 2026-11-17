@@ -281,11 +281,13 @@ function renderStats() {
       values: g.cpu.map((v, i) => v == null || cpuCw[i] == null ? null
         : Math.max(0, v - cpuCw[i] - (anyRt ? cpuRt[i] || 0 : 0))) },
   ];
+  const lostColor = Charts.seriesColor(7);
   $('#legend-cpu').innerHTML = layers.map((l) => `<span><i style="background:${l.color}"></i>${esc(l.name)}</span>`).join('') +
-    '<span><i class="line"></i>all</span>';
-  Charts.area($('#chart-cpu'), x, layers, g.cpu, (v) => `${fmt(v)} %`, 'all, % of a core');
-  Charts.line($('#chart-lost'), x, d.global.lost, Charts.seriesColor(1), (v) => `${fmt(v, 3)} %`, 'lost, worst minute');
-  ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-lost'].forEach((id) => loading(id, false));
+    `<span><i class="line"></i>all</span><span><i class="line" style="border-color:${lostColor};opacity:1"></i>IQ lost (right)</span>`;
+  Charts.area($('#chart-cpu'), x, layers, g.cpu, (v) => `${fmt(v)} %`, 'CPU, all, % of a core',
+    { name: 'IQ lost, worst minute', values: g.lost, color: lostColor,
+      fmtV: (v) => `${fmt(v, 3)} %`, fmtTick: (v) => `${+v.toPrecision(2)} %` });
+  ['#chart-spots', '#chart-active', '#chart-cpu'].forEach((id) => loading(id, false));
 
   const totSpots = d.bands.reduce((a, b) => a + sum(m.spots[b]), 0);
   const streamed = mean(d.global.streaming);
@@ -315,7 +317,7 @@ tabs.stats = {
   async refresh(force) {
     // history moves by the minute: refetch at most every 30 s
     if (!force && (stats.end || Date.now() - stats.at < 30000)) return;   // a past window stays
-    ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-lost'].forEach((id) => $(id).classList.add('loading'));
+    ['#chart-spots', '#chart-active', '#chart-cpu'].forEach((id) => $(id).classList.add('loading'));
     stats.data = await getJSON(`stats.json?hours=${stats.hours}${stats.end ? `&end=${stats.end}` : ''}`);
     stats.at = Date.now();
     renderStats();

@@ -43,8 +43,8 @@ const Charts = (() => {
     return { svg, W, H: height };
   }
   // y grid + ticks (4 lines), x ticks at ~6 positions; returns the plot area
-  function axes(svg, W, H, x, yMax, left = 40) {
-    const m = { l: left, r: 8, t: 6, b: 22 };
+  function axes(svg, W, H, x, yMax, left = 40, right = 8) {
+    const m = { l: left, r: right, t: 6, b: 22 };
     const pw = W - m.l - m.r, ph = H - m.t - m.b;
     for (let i = 0; i <= 4; i++) {
       const v = (yMax * i) / 4, y = m.t + ph - (ph * i) / 4;
@@ -232,11 +232,12 @@ const Charts = (() => {
 
   // ---- stacked areas under a total line, crosshair tooltip --------------------------
   // layers: [{ name, values, color }] stacked from zero (a bucket where any layer is
-  // null draws no area); total: the line on top. Same axes as line().
-  function area(box, x, layers, total, fmtV, totalName) {
-    const { svg, W, H } = frame(box, 160);
+  // null draws no area); total: the line on top. right: { name, values, color, fmtV }
+  // — a second quantity as a line on its own scale, the right axis in its colour.
+  function area(box, x, layers, total, fmtV, totalName, right) {
+    const { svg, W, H } = frame(box, 180);
     const yMax = niceMax(Math.max(0, ...total.filter((v) => v != null)));
-    const a = axes(svg, W, H, x, yMax, 36);
+    const a = axes(svg, W, H, x, yMax, 36, right ? 46 : 8);
     const n = x.t.length, px = (i) => a.l + ((i + 0.5) * a.pw) / n,
       py = (v) => a.t + a.ph - (a.ph * Math.min(v, yMax)) / yMax;
     const ok = (i) => layers.every((l) => l.values[i] != null);
@@ -273,6 +274,24 @@ const Charts = (() => {
     const ink = css('--fg');
     el('path', { d, fill: 'none', stroke: ink, 'stroke-width': 1.5, 'stroke-linejoin': 'round',
                  'stroke-opacity': 0.75 }, svg);
+    let ry = null;
+    if (right) {                                   // the second scale, at the right
+      const rMax = niceMax(Math.max(0, ...right.values.filter((v) => v != null)));
+      ry = (v) => a.t + a.ph - (a.ph * Math.min(v, rMax)) / rMax;
+      for (let i = 0; i <= 4; i++) {
+        const t = el('text', { x: W - a.r + 6, y: a.t + a.ph - (a.ph * i) / 4 + 4, 'font-size': 11,
+                               fill: right.color }, svg);
+        t.textContent = right.fmtTick ? right.fmtTick((rMax * i) / 4) : compact((rMax * i) / 4);
+      }
+      let rd = '', rp = false;
+      right.values.forEach((v, i) => {
+        if (v == null) { rp = false; return; }
+        rd += `${rp ? 'L' : 'M'}${px(i).toFixed(1)},${ry(v).toFixed(1)}`;
+        rp = true;
+      });
+      el('path', { d: rd, fill: 'none', stroke: right.color, 'stroke-width': 2, 'stroke-linejoin': 'round',
+                   'stroke-linecap': 'round' }, svg);
+    }
     const cross = el('line', { y1: a.t, y2: a.t + a.ph, stroke: css('--axis'), 'stroke-width': 1,
                                visibility: 'hidden' }, svg);
     const tt = tip(box);
@@ -286,48 +305,11 @@ const Charts = (() => {
       const rows = [{ value: total[i] == null ? 'no data' : fmtV(total[i]), label: totalName }];
       if (ok(i)) for (const l of [...layers].reverse()) rows.push({ value: fmtV(l.values[i]), label: l.name, color: l.color });
       else if (total[i] != null) rows.push({ value: '–', label: 'no split recorded' });
+      if (right) rows.push({ value: right.values[i] == null ? '–' : right.fmtV(right.values[i]), label: right.name, color: right.color });
       tt.show((px(i) * r.width) / W, (py(total[i] ?? 0) * r.height) / H, x.label(i), rows);
     });
     hit.addEventListener('pointerleave', () => { tt.hide(); cross.setAttribute('visibility', 'hidden'); });
   }
 
-  // ---- one line, crosshair tooltip -------------------------------------------------
-  function line(box, x, values, color, fmtV, unit) {
-    const { svg, W, H } = frame(box, 160);
-    const yMax = niceMax(Math.max(0, ...values.filter((v) => v != null)));
-    const a = axes(svg, W, H, x, yMax, 36);
-    const n = x.t.length, px = (i) => a.l + ((i + 0.5) * a.pw) / n, py = (v) => a.t + a.ph - (a.ph * v) / yMax;
-    let d = '', pen = false;
-    values.forEach((v, i) => {
-      if (v == null) { pen = false; return; }
-      d += `${pen ? 'L' : 'M'}${px(i).toFixed(1)},${py(v).toFixed(1)}`;
-      pen = true;
-    });
-    el('path', { d, fill: 'none', stroke: color, 'stroke-width': 2, 'stroke-linejoin': 'round',
-                 'stroke-linecap': 'round' }, svg);
-    const cross = el('line', { y1: a.t, y2: a.t + a.ph, stroke: css('--axis'), 'stroke-width': 1,
-                               visibility: 'hidden' }, svg);
-    const dot = el('circle', { r: 4, fill: color, stroke: css('--panel'), 'stroke-width': 2,
-                               visibility: 'hidden' }, svg);
-    const tt = tip(box);
-    const hit = el('rect', { x: a.l, y: a.t, width: a.pw, height: a.ph, fill: 'transparent' }, svg);
-    hit.addEventListener('pointermove', (e) => {
-      const r = svg.getBoundingClientRect();
-      const mx = ((e.clientX - r.left) * W) / r.width;
-      const i = Math.min(n - 1, Math.max(0, Math.floor(((mx - a.l) * n) / a.pw)));
-      cross.setAttribute('x1', px(i)); cross.setAttribute('x2', px(i));
-      cross.setAttribute('visibility', 'visible');
-      const v = values[i];
-      if (v != null) {
-        dot.setAttribute('cx', px(i)); dot.setAttribute('cy', py(v)); dot.setAttribute('visibility', 'visible');
-      } else dot.setAttribute('visibility', 'hidden');
-      tt.show((px(i) * r.width) / W, (py(v ?? 0) * r.height) / H, x.label(i),
-              [{ value: v == null ? 'no data' : fmtV(v), label: unit }]);
-    });
-    hit.addEventListener('pointerleave', () => {
-      tt.hide(); cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden');
-    });
-  }
-
-  return { mirror, heat, area, line, seriesColor };
+  return { mirror, heat, area, seriesColor };
 })();
