@@ -301,6 +301,14 @@ skimmer_peers_test = executable('skimmer-peers-test',
 )
 test('peers', skimmer_peers_test, timeout : 60)
 
+# The hub's side of the hub ↔ worker link: handshake, int24 IQ, lines, lag.
+skimmer_hub_test = executable('skimmer-hub-test',
+  ['src/hub_test.c', 'src/headless/hub.c', 'src/headless/config.c', 'src/headless/web.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps + [soup_dep],
+)
+test('hub', skimmer_hub_test, timeout : 60)
+
 # The 7-day history: buckets, reopen with re-ordered bands, a foreign file.
 skimmer_stats_test = executable('skimmer-stats-test',
   ['src/stats_test.c', 'src/headless/stats.c'],
@@ -337,6 +345,7 @@ headless_sources = files(
   'src/headless/config.c',          # headless.ini, parsed and checked
   'src/headless/deepcw_model.c',    # the DeepCW model: check, fetch
   'src/headless/discovery.c',       # instances finding each other on the LAN
+  'src/headless/hub.c',             # the hub: bands passed to workers on other PCs
   'src/headless/logring.c',         # the last log lines (/api/log)
   'src/headless/peers.c',           # [peers]: other skimmers' feeds, aggregated
   'src/headless/record.c',          # [record]: a band's IQ to disk

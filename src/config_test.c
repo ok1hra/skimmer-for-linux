@@ -128,6 +128,66 @@ int main(void) {
     g_clear_error(&err);
   }
 
+  printf("== hub and worker\n");
+  {
+    static const char HUB[] =
+        "[radio]\nrate=96000\n[bands]\n40m=7045500 cw,rtty\n20m=14045500 cw,rtty @pc2\n"
+        "15m=21045500 cw:v2 @pc2\n10m=28045500 @pc3,off\n[decode]\nengine=v3\nsuppress_cw_on_rtty=true\n"
+        "[feed]\ncall=OK1HRA\nport=7300\nmin_score=0.85\nlearn=true\n[hub]\nname=central\n";
+    SkimHdConfig c;
+    GError *err = NULL;
+    const gboolean ok = parse(&c, HUB, &err);
+    check("a hub: @pc2 on two bands, 40m here", ok && c.nb == 3 && !c.band[0].worker[0] &&
+          strcmp(c.band[1].worker, "pc2") == 0 && c.band[1].rtty &&
+          strcmp(c.band[2].worker, "pc2") == 0 && c.hub_port == 7380 &&
+          strcmp(c.hub_name, "central") == 0 && g_strv_length(c.hub_allow) >= 4);
+    if (!ok) { printf("       (%s)\n", err->message); }
+    char *m = ok ? skim_hd_band_modes(&c.band[1], c.engine) : NULL;
+    check("modes written back: \"cw,rtty @pc2\"", m && strcmp(m, "cw,rtty @pc2") == 0);
+    g_free(m);
+    skim_hd_config_clear(&c);
+    g_clear_error(&err);
+    char *frag = skim_hd_config_worker_fragment(HUB, strlen(HUB), "pc2");
+    check("pc2's fragment: its two bands, no @, the rate, decode and the feed policy only",
+          frag && strstr(frag, "20m=14045500 cw,rtty\n") && strstr(frag, "15m=21045500 cw:v2\n") &&
+          !strstr(frag, "40m") && !strstr(frag, "@") && strstr(frag, "rate=96000") &&
+          strstr(frag, "suppress_cw_on_rtty=true") && strstr(frag, "min_score=0.85") &&
+          strstr(frag, "call=OK1HRA") && !strstr(frag, "port=") && !strstr(frag, "learn"));
+    check("pc3 (its only band off) and an unknown worker get nothing",
+          !skim_hd_config_worker_fragment(HUB, strlen(HUB), "pc3") &&
+          !skim_hd_config_worker_fragment(HUB, strlen(HUB), "pc9"));
+    static const char OWN[] =
+        "# pc2\n[radio]\ntype=hub\nhost=auto\n[feed]\nport=7301\nmin_score=0.99\n"
+        "[status]\nhttp_port=8074\n[hub]\nname=pc2\n";
+    check("a worker's own ini parses without [bands]", parse(&c, OWN, &err) && c.nb == 0 &&
+          c.source == SKIM_HD_SOURCE_HUB && strcmp(c.hub_name, "pc2") == 0);
+    skim_hd_config_clear(&c);
+    g_clear_error(&err);
+    char *merged = frag ? skim_hd_config_worker_merge(OWN, strlen(OWN), frag, strlen(frag), &err) : NULL;
+    const gboolean mok = merged && parse(&c, merged, &err);
+    check("merged: the hub's bands and policy, the worker's own type, port, page and name",
+          mok && c.nb == 2 && c.source == SKIM_HD_SOURCE_HUB && c.feed_port == 7301 &&
+          c.feed_min_score == 0.85 && c.suppress_cw_on_rtty && c.http_port == 8074 &&
+          strcmp(c.hub_name, "pc2") == 0 && strcmp(c.feed_call, "OK1HRA") == 0 &&
+          c.band[1].cw_engine == SKIM_CW_ENGINE_V2 && strstr(merged, "# pc2"));
+    if (!mok) { printf("       (%s)\n", err ? err->message : "?"); }
+    if (mok) { skim_hd_config_clear(&c); }
+    g_clear_error(&err);
+    g_free(merged);
+    g_free(frag);
+    check("refused: @worker on a worker",
+          !parse(&c, "[radio]\ntype=hub\n[bands]\n20m=14045500 @pc3\n", &err) &&
+          strstr(err->message, "cannot pass"));
+    g_clear_error(&err);
+    check("refused: @worker with the hub server off",
+          !parse(&c, "[bands]\n20m=14045500 @pc3\n[hub]\nport=0\n", &err) &&
+          strstr(err->message, "[hub] port is 0"));
+    g_clear_error(&err);
+    check("refused: a bad worker name",
+          !parse(&c, "[bands]\n20m=14045500 @pc/3\n", &err) && strstr(err->message, "@pc/3"));
+    g_clear_error(&err);
+  }
+
   printf("== radio and feed\n");
   {
     SkimHdConfig c;

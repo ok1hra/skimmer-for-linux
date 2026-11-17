@@ -61,6 +61,7 @@
 
 #include "headless/config.h"
 #include "headless/deepcw_model.h"
+#include "headless/hub.h"
 #include "headless/discovery.h"
 #include "headless/json.h"
 #include "headless/logring.h"
@@ -126,15 +127,14 @@ typedef struct {
   char          label[96];
   Dec           dec[M_N];
   SkimRttyPairs *pairs;        /* CW and RTTY: the pairs RTTY copies (or NULL) */
+  volatile guint64 frames;     /* source thread: frames received             */
   guint64       frames_prev;   /* main loop: for kS/s                         */
   double        ksps;
   Rec          *rec;           /* [record]: this band's IQ tap, or NULL       */
+  const char   *worker;        /* "@name": decoded by that worker, or NULL    */
+  volatile gint remote_spots[M_N]; /* … the spots it sent, CW / RTTY (link thread) */
+  gint          remote_prev[M_N];   /* main loop: at the last minute's end    */
 } Band;
-
-/* A pipeline of the band — every one of them sees the same IQ. */
-static SkimPipeline *band_p(const Band *b) {
-  return b->dec[M_CW].p ? b->dec[M_CW].p : b->dec[M_RTTY].p;
-}
 
 typedef struct {
   SkimHdConfig cfg;
@@ -152,6 +152,8 @@ typedef struct {
   char    *switches_json;      /* the SKIM_* switches set at start            */
   char   **argv;               /* as started, for a restart without a supervisor */
   gint64   started_us;         /* real time of this start: tells starts apart */
+  char    *cfg_text;           /* the config this start runs (what a worker's
+                                * fragment is cut from)                      */
 
   Band     band[SKIM_HD_MAX_BANDS];
   guint    nb;
@@ -165,6 +167,7 @@ typedef struct {
   SkimRbnFeed    *rbn;         /* [rbn]: the Aggregator's port (delayed)      */
   SkimHdPeers    *peers;       /* [peers]: other skimmers' feeds, aggregated  */
   SkimHdDiscovery *disco;      /* answers the LAN's "who is there"            */
+  SkimHdHub      *hub;         /* [hub]: bands passed to workers              */
   SkimScpUpdater *scp;
   GMainLoop      *loop;
   gint64          t_start;
@@ -316,8 +319,14 @@ static void state_cb(gboolean connected, const char *detail, gpointer user) {
 /* Source thread: one block of band i to its pipeline (and its recording). */
 static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double centre,
                      gpointer user) {
-  Band *b = &((Hd *)user)->band[i];
+  Hd *h = user;
+  Band *b = &h->band[i];
+  b->frames += n;
   if (b->rec) { skim_rec_push(b->rec, iq, n, rate, centre); }
+  if (b->worker) {                             /* decoded on another PC     */
+    if (h->hub) { skim_hd_hub_push(h->hub, i, iq, n, rate, centre); }
+    return;
+  }
   for (guint k = 0; k < M_N; k++) {
     if (b->dec[k].p) { skim_pipeline_push(b->dec[k].p, iq, n, rate, centre); }
   }
@@ -475,7 +484,7 @@ static void status_build(Hd *h, gboolean print) {
   const gint64 now = g_get_monotonic_time();
   const SkimIqSourceStatus *src = &h->src_st;
   const guint64 lost = src->lost_frames;
-  guint64 frames0 = h->nb ? skim_pipeline_frames(band_p(&h->band[0])) : 0;
+  guint64 frames0 = h->nb ? h->band[0].frames : 0;
   const double lost_pct = frames0 ? 100.0 * (double)lost / (double)frames0 : 0;
   const guint fclients = h->feed ? skim_rbn_feed_clients(h->feed) : 0;
   const guint64 flines = h->feed ? skim_rbn_feed_lines(h->feed) : 0;
@@ -599,10 +608,30 @@ static void status_build(Hd *h, gboolean print) {
     /* rtty_suppressed: CW decodes dropped on an RTTY pair (0 while off) */
     /* engine_wanted: what the config asks for — "deepcw" beside an
      * engine "cw-v3" is a band that fell back (the reason: "deepcw") */
-    g_string_append_printf(json, "%s{\"band\":\"%s\",\"centre_hz\":%.0f,\"ksps\":%.1f,"
+    if (b->worker) {
+      g_string_append_printf(con, "   %-5s %-9s %6.1f   → decoded by the worker %s, %d spots\n",
+                             b->name, h->cfg.band[i].cw && h->cfg.band[i].rtty ? "cw,rtty"
+                             : h->cfg.band[i].rtty ? "rtty" : "cw",
+                             b->centre_hz / 1000.0, b->worker,
+                             g_atomic_int_get(&b->remote_spots[M_CW]) +
+                                 g_atomic_int_get(&b->remote_spots[M_RTTY]));
+    }
+    /* a band a worker decodes: who, which modes, the spots it sent — the
+     * page takes the rest from that worker's own status (hub.workers) */
+    char *jw = b->worker ? skim_json_str(b->worker) : NULL;
+    if (jw) {
+      g_string_append_printf(json, "%s{\"worker\":\"%s\",\"worker_cw\":%s,\"worker_rtty\":%s,"
+                             "\"remote_spots\":%d,\"remote_spots_rtty\":%d,", i ? "," : "", jw,
+                             h->cfg.band[i].cw ? "true" : "false",
+                             h->cfg.band[i].rtty ? "true" : "false",
+                             g_atomic_int_get(&b->remote_spots[M_CW]),
+                             g_atomic_int_get(&b->remote_spots[M_RTTY]));
+    }
+    g_free(jw);
+    g_string_append_printf(json, "%s\"band\":\"%s\",\"centre_hz\":%.0f,\"ksps\":%.1f,"
                            "\"cw\":%s,\"engine_wanted\":\"%s\","
                            "\"rtty_suppressed\":%" G_GUINT64_FORMAT ",",
-                           i ? "," : "", jname, b->centre_hz, b->ksps,
+                           b->worker ? "" : i ? ",{" : "{", jname, b->centre_hz, b->ksps,
                            b->dec[M_CW].p ? "true" : "false",
                            b->dec[M_CW].p ? engine_key(h->cfg.band[i].cw_engine) : "",
                            b->dec[M_CW].p ? skim_pipeline_rtty_suppressed(b->dec[M_CW].p) : 0);
@@ -620,7 +649,15 @@ static void status_build(Hd *h, gboolean print) {
     }
     g_string_append_c(json, '}');
   }
-  g_string_append(json, "],\"deepcw\":");
+  g_string_append(json, "],\"hub\":");
+  if (h->hub) {
+    char *hj = skim_hd_hub_json(h->hub);
+    g_string_append(json, hj);
+    g_free(hj);
+  } else {
+    g_string_append(json, "null");
+  }
+  g_string_append(json, ",\"deepcw\":");
   dcw_json(h, json);
   g_string_append_c(json, '}');
   g_free(clock);
@@ -654,6 +691,16 @@ static void stats_minute(Hd *h) {
     }
   }
   for (guint i = 0; i < h->nb && i < SKIM_STATS_BANDS; i++) {
+    Band *rb = &h->band[i];
+    for (guint k = 0; rb->worker && k < M_N; k++) {   /* decoded by a worker */
+      if (k == M_CW ? !h->cfg.band[i].cw : !h->cfg.band[i].rtty) { continue; }
+      const gint sp = g_atomic_int_get(&rb->remote_spots[k]);
+      const int act = h->hub ? skim_hd_hub_band_active(h->hub, i, k) : -1;
+      float *v = m.band[i][k];
+      v[SKIM_SM_SPOTS] = (float)(sp - rb->remote_prev[k]);
+      rb->remote_prev[k] = sp;
+      if (act >= 0) { v[SKIM_SM_ACTIVE] = (float)act; }
+    }
     for (guint k = 0; k < M_N; k++) {
       Dec *b = &h->band[i].dec[k];
       if (!b->p) { continue; }                 /* stays NaN: not decoded      */
@@ -682,7 +729,7 @@ static void stats_minute(Hd *h) {
     }
   }
   const SkimIqSourceStatus *src = &h->src_st;
-  const guint64 frames = h->nb ? skim_pipeline_frames(band_p(&h->band[0])) : 0;
+  const guint64 frames = h->nb ? h->band[0].frames : 0;
   const guint64 df = frames - h->min_frames_prev, dl = src->lost_frames - h->min_lost_prev;
   /* CPU: the minute's mean — the whole process, and the CW and RTTY
    * pipelines' engine threads in it (the rest is IQ in, feed, web) */
@@ -749,7 +796,7 @@ static gboolean tick(gpointer data) {
                ? (double)(pk - h->packets_prev) : 0;
   h->packets_prev = pk;
   for (guint i = 0; i < h->nb; i++) {
-    const guint64 fr = skim_pipeline_frames(band_p(&h->band[i]));
+    const guint64 fr = h->band[i].frames;
     h->band[i].ksps = h->band[i].frames_prev ? (fr - h->band[i].frames_prev) / 1000.0 : 0;
     h->band[i].frames_prev = fr;
   }
@@ -1192,6 +1239,18 @@ static int fetch_model_cli(void) {
 
 /* ---- the instances on the LAN (headless/discovery.h) ---------------------------- */
 
+/* A hub in the full sense: it passes a band on, or a worker is connected. */
+static gboolean disco_has_workers(Hd *h) {
+  if (!h->hub) { return FALSE; }
+  for (guint i = 0; i < h->nb; i++) {
+    if (h->band[i].worker) { return TRUE; }
+  }
+  char **idle = skim_hd_hub_idle_workers(h->hub);
+  const gboolean any = idle[0] != NULL;
+  g_strfreev(idle);
+  return any;
+}
+
 /* What this instance tells a discovery request: who, which role, where its
  * feed and page are, its bands. */
 static char *disco_info(gpointer user) {
@@ -1201,15 +1260,19 @@ static char *disco_info(gpointer user) {
   skim_json_append(o, c->hub_name);
   g_string_append_printf(o, "\",\"version\":\"%s\",\"call\":\"", SKIMMER_VERSION);
   skim_json_append(o, c->feed_call ? c->feed_call : "");
-  g_string_append_printf(o, "\",\"role\":\"solo\",\"http_port\":%d,\"feed_port\":%d,"
-                         "\"radio\":\"", h->http_port, h->feed ? c->feed_port : 0);
+  g_string_append_printf(o, "\",\"role\":\"%s\",\"http_port\":%d,\"feed_port\":%d,"
+                         "\"hub_port\":%u,\"radio\":\"",
+                         c->source == SKIM_HD_SOURCE_HUB ? "worker" : disco_has_workers(h) ? "hub" : "solo",
+                         h->http_port, h->feed ? c->feed_port : 0,
+                         h->hub ? skim_hd_hub_port(h->hub) : 0);
   skim_json_append(o, h->src_st.host);
   g_string_append(o, "\",\"bands\":[");
   for (guint i = 0; i < c->nb; i++) {
     char *m = skim_hd_band_modes(&c->band[i], c->engine);
     g_string_append_printf(o, "%s{\"name\":\"", i ? "," : "");
     skim_json_append(o, c->band[i].name);
-    g_string_append_printf(o, "\",\"centre_hz\":%.0f,\"modes\":\"%s\"}", c->band[i].centre_hz, m);
+    g_string_append_printf(o, "\",\"centre_hz\":%.0f,\"modes\":\"%s\"}", c->band[i].centre_hz,
+                           m);
     g_free(m);
   }
   g_string_append(o, "]}");
@@ -1286,6 +1349,32 @@ static void on_scp(const SkimScpOutcome *out, gpointer user) {
   (void)user;
   g_message("MASTER.SCP: %s (%u calls loaded)", out->detail,
             (guint)skim_callsign_dict_size());
+}
+
+/* ---- the hub (headless/hub.h) --------------------------------------------------- */
+
+/* What the worker `worker` is to decode: cut from this start's config. */
+static char *hub_assign(const char *worker, gpointer user) {
+  Hd *h = user;
+  return skim_hd_config_worker_fragment(h->cfg_text, strlen(h->cfg_text), worker);
+}
+
+/* A worker's spot (its link's thread): counted on its band, out on the feed. */
+static void hub_spot(const char *worker, const char *call, const char *mode, double freq_hz,
+                     double snr_db, double speed, gpointer user) {
+  (void)worker;
+  Hd *h = user;
+  const guint k = g_strcmp0(mode, "CW") == 0 ? M_CW : M_RTTY;
+  for (guint i = 0; i < h->nb; i++) {
+    Band *b = &h->band[i];
+    if (b->worker && fabs(freq_hz - b->centre_hz) <= h->cfg.rate / 2.0) {
+      g_atomic_int_inc(&b->remote_spots[k]);
+      break;
+    }
+  }
+  if (k == M_RTTY && !h->cfg.feed_rtty) { return; }
+  SkimRbnFeed *f = h->feed ? h->feed : h->rbn;
+  if (f) { skim_rbn_feed_spot_external(f, call, mode, freq_hz, snr_db, speed); }
 }
 
 /* A peer's CQ spot (peers thread): out on our feed, unless it is a duplicate
@@ -1462,7 +1551,8 @@ int main(int argc, char **argv) {
     g_message("config: %s did not exist — written with defaults", h->cfg_path);
   }
   SkimHdConfig *c = &h->cfg;
-  if (!skim_hd_config_load(c, h->cfg_path, &err)) {
+  if (!g_file_get_contents(h->cfg_path, &h->cfg_text, NULL, &err) ||
+      !skim_hd_config_parse(c, h->cfg_text, strlen(h->cfg_text), h->cfg_path, &err)) {
     g_printerr("config: %s\n", err->message);
     return EXIT_CONFIG;
   }
@@ -1611,6 +1701,10 @@ int main(int argc, char **argv) {
     g_strlcpy(b->name, cb->name, sizeof(b->name));
     b->centre_hz = cb->centre_hz;
     g_snprintf(b->label, sizeof(b->label), "RX%u %s", i + 1, b->name);
+    if (cb->worker[0]) {                       /* received here, decoded there */
+      b->worker = cb->worker;
+      continue;
+    }
     if (cb->cw && cb->rtty) { b->pairs = skim_rtty_pairs_new(); }
     for (guint k = 0; k < M_N; k++) {
       if (k == M_CW ? !cb->cw : !cb->rtty) { continue; }
@@ -1659,6 +1753,7 @@ int main(int argc, char **argv) {
   }
   for (guint i = 0; i < h->nb; i++) {
     const Band *b = &h->band[i];
+    if (b->worker) { continue; }               /* logged with the hub         */
     g_message("decode: %s%s%s%s%s", b->name, b->dec[M_CW].p ? " CW, engine " : "",
               b->dec[M_CW].p ? skim_pipeline_cw_engine_name(b->dec[M_CW].p) : "",
               b->dec[M_RTTY].p ? " + RTTY" : "",
@@ -1730,6 +1825,28 @@ int main(int argc, char **argv) {
     }
   }
 
+  /* the hub server: workers on other PCs connect for the bands named after
+   * them (and to be listed as available, with nothing assigned yet) */
+  if (c->hub_port > 0 && c->source != SKIM_HD_SOURCE_HUB) {
+    const char *bw[SKIM_HD_MAX_BANDS];
+    for (guint i = 0; i < h->nb; i++) { bw[i] = c->band[i].worker; }
+    h->hub = skim_hd_hub_new((guint16)c->hub_port, (const char *const *)c->hub_allow, bw, h->nb,
+                             hub_assign, hub_spot, h, &err);
+    if (!h->hub) {
+      g_warning("hub: port %d: %s — no workers", c->hub_port, err->message);
+      g_clear_error(&err);
+    } else {
+      g_message("hub: workers may connect on port %u (from %s)", skim_hd_hub_port(h->hub),
+                c->hub_allow[0]);
+    }
+  }
+  for (guint i = 0; i < h->nb; i++) {
+    if (h->band[i].worker) {
+      g_message("decode: %s on the worker %s%s", h->band[i].name, h->band[i].worker,
+                h->hub ? "" : " — but there is no hub server: not decoded at all");
+    }
+  }
+
   h->disco = skim_hd_discovery_new(disco_info, h, &err);
   if (!h->disco) {
     g_warning("discovery: %s — this skimmer will not be found on the LAN", err->message);
@@ -1754,6 +1871,7 @@ int main(int argc, char **argv) {
   g_cancellable_cancel(h->dcw_cancel);         /* a fetch in flight stops      */
   if (h->dcw_thread) { g_thread_join(h->dcw_thread); }
   g_clear_pointer(&h->src, skim_iq_source_free);
+  g_clear_pointer(&h->hub, skim_hd_hub_free);     /* nothing pushes any more   */
   for (guint i = 0; i < h->nb; i++) {
     for (guint k = 0; k < M_N; k++) { skim_pipeline_free(h->band[i].dec[k].p); }
     g_clear_pointer(&h->band[i].pairs, skim_rtty_pairs_unref);

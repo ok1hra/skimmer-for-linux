@@ -4,7 +4,9 @@
  * settings page validates a new ini with the same call before it is written,
  * so the file a restart reads has already been through the start's checks.
  *
- *   [radio]  type    hpsdr-p1 (default) | mock (synthetic CW, for the gates)
+ *   [radio]  type    hpsdr-p1 (default) | mock (synthetic CW, for the gates) |
+ *                    hub (a worker: IQ, bands and decoding policy from a hub —
+ *                    host=the hub[:port] or auto; [bands] not needed)
  *            host    one radio or a list (comma separated, tried in order),
  *                    each optionally host@ppm: that radio's own clock error;
  *                    auto (or none) = the radios a broadcast discovery finds
@@ -12,7 +14,8 @@
  *            clock_ppm  for the radios without @ppm
  *   [bands]  <name>=<centre Hz> [modes], in receiver order (RX1 first);
  *            modes a comma list of cw, cw:v3, cw:v2, cw:deepcw, rtty — none = cw
- *            with [decode] engine; off = the band is kept, not received
+ *            with [decode] engine; off = the band is kept, not received;
+ *            @name = received here, decoded by the worker "name" (hub.h)
  *   [decode] engine=v3|v2|deepcw (the bands that name none), log=true|false,
  *            suppress_cw_on_rtty (default false: rtty_pairs.h)
  *   [feed]   call, port (0 = off), min_score, min_hearings, settle_s,
@@ -22,7 +25,10 @@
  *            default 0): a second telnet port for the RBN Aggregator, which
  *            relays to the Reverse Beacon Network — the feed's spots, each
  *            held delay_s seconds (the feed's call; needs [feed] call)
- *   [hub]    name — this instance on the LAN (discovery; default the host name)
+ *   [hub]    name — this instance on the LAN (discovery, and the name a worker
+ *            asks its hub for bands under; default the host name);
+ *            port (7380, 0 = no hub), allow — who may connect as a worker
+ *            (networks, default the private ranges and loopback)
  *   [peers]  hosts — other skimmers' telnet feeds (host or host:port, comma
  *            separated) whose CQ spots this one sends on as its own,
  *            deduplicated (headless/peers.h)
@@ -49,7 +55,10 @@ G_BEGIN_DECLS
 typedef enum {
   SKIM_HD_SOURCE_HPSDR_P1 = 0,
   SKIM_HD_SOURCE_MOCK,
+  SKIM_HD_SOURCE_HUB,                 /* a worker: IQ from a hub             */
 } SkimHdSourceType;
+
+#define SKIM_HD_HUB_PORT 7380
 
 typedef struct {
   char         name[16];
@@ -58,6 +67,7 @@ typedef struct {
   SkimCwEngine cw_engine;             /* … with this engine                  */
   gboolean     rtty;                  /* decode RTTY beside it               */
   gboolean     off;                   /* listed, not received ("off")        */
+  char         worker[32];            /* "@name": decoded there; "" = here   */
 } SkimHdBand;
 
 typedef struct {
@@ -99,6 +109,8 @@ typedef struct {
   guint            rbn_delay_s;
   /* [hub] */
   char            *hub_name;          /* never NULL                          */
+  int              hub_port;          /* 0 = no hub server                   */
+  char           **hub_allow;         /* NULL-terminated, never empty        */
   /* [peers] */
   char           **peers;             /* NULL-terminated, maybe empty        */
   /* [status] — -1 = not in the file */
@@ -163,6 +175,20 @@ char **skim_hd_config_backups(const char *path);
 /* Put backup (a basename from skim_hd_config_backups) back as the config;
  * the current file becomes a backup itself, so a restore can be undone. */
 gboolean skim_hd_config_restore(const char *path, const char *backup, GError **error);
+
+/* ---- hub and worker ------------------------------------------------------------ */
+
+/* What a hub tells the worker "worker": the bands assigned to it ("@worker",
+ * on), the rate, [decode] and the feed policy of hub_text — an ini
+ * fragment; NULL when nothing is assigned to it. */
+char *skim_hd_config_worker_fragment(const char *hub_text, gsize len, const char *worker);
+
+/* The worker's own ini with a hub's fragment over it: [bands] and [decode]
+ * from the fragment, its [feed] keys and [radio] rate set; everything else
+ * (radio type/host, [hub], [status], [web], its feed port…) stays the
+ * worker's. NULL + error when either is no key file. */
+char *skim_hd_config_worker_merge(const char *own, gsize own_len, const char *frag,
+                                  gsize frag_len, GError **error);
 
 /* "cw", "cw:deepcw,rtty", "cw,off" … — the band's modes as the ini writes them. */
 char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt);

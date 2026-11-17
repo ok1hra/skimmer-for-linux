@@ -77,6 +77,11 @@ static const char DEFAULT_CONFIG[] =
   "# connects to this port and relays the spots to the network. They are the\n"
   "# feed's spots under its call, each held delay_s seconds (0-99) first.\n"
   "enabled=false\nport=7550\ndelay_s=0\n"
+  "\n[hub]\n# this skimmer on the LAN (default: the host name). Other PCs can decode\n"
+  "# bands of this radio: [radio] type=hub on them, and @THEIRNAME after a band\n"
+  "# here (20m=14045500 cw,rtty @pc2) — this one receives it and passes the IQ on\n"
+  "# (~4.6 Mb/s a band at 96 kHz). allow = who may connect as a worker\n"
+  "#name=\nport=7380\n#allow=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1\n"
   "\n[peers]\n# other skimmers' telnet feeds (host or host:port, comma separated):\n"
   "# their CQ spots go out on this feed under this call, duplicates dropped\n"
   "hosts=\n"
@@ -110,6 +115,7 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_strfreev(cfg->settings_from);
   g_strfreev(cfg->peers);
   g_free(cfg->hub_name);
+  g_strfreev(cfg->hub_allow);
   g_strfreev(cfg->rec_bands);
   g_free(cfg->rec_dir);
   memset(cfg, 0, sizeof(*cfg));
@@ -161,6 +167,7 @@ char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt) {
   }
   if (b->rtty) { g_string_append_printf(s, "%srtty", s->len ? "," : ""); }
   if (b->off) { g_string_append_printf(s, "%soff", s->len ? "," : ""); }
+  if (b->worker[0]) { g_string_append_printf(s, " @%s", b->worker); }
   return g_string_free(s, FALSE);
 }
 
@@ -182,10 +189,22 @@ static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
     b->cw = TRUE;
     b->cw_engine = dflt;
   } else {
-    char **m = g_strsplit(modes, ",", -1);
+    char **m = g_strsplit_set(modes, ", \t", -1);
     for (char **q = m; *q && ok; q++) {
       char *t = g_strstrip(*q);
-      if (g_strcmp0(t, "cw") == 0) {
+      if (!*t) { continue; }
+      if (t[0] == '@') {
+        gboolean name_ok = t[1] && strlen(t + 1) < sizeof(b->worker);
+        for (const char *x = t + 1; *x && name_ok; x++) {
+          name_ok = g_ascii_isalnum(*x) || *x == '-' || *x == '_' || *x == '.';
+        }
+        if (!name_ok) {
+          ok = bad(error, path, "band %s: worker \"%s\" (@name: letters, digits, - _ .)",
+                   name, t);
+        } else {
+          g_strlcpy(b->worker, t + 1, sizeof(b->worker));
+        }
+      } else if (g_strcmp0(t, "cw") == 0) {
         b->cw = TRUE;
         b->cw_engine = dflt;
       } else if (g_str_has_prefix(t, "cw:") && engine_of(t + 3, &b->cw_engine)) {
@@ -195,12 +214,12 @@ static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
       } else if (g_strcmp0(t, "off") == 0) {
         b->off = TRUE;
       } else {
-        ok = bad(error, path, "band %s: mode \"%s\" (cw, cw:v3, cw:v2, cw:deepcw, rtty, off)",
-                 name, t);
+        ok = bad(error, path, "band %s: mode \"%s\" (cw, cw:v3, cw:v2, cw:deepcw, rtty, off, "
+                 "@worker)", name, t);
       }
     }
     g_strfreev(m);
-    if (ok && !b->cw && !b->rtty) {           /* "off" alone: CW, as no modes */
+    if (ok && !b->cw && !b->rtty) {           /* "off" / "@x" alone: CW, as no modes */
       b->cw = TRUE;
       b->cw_engine = dflt;
     }
@@ -225,8 +244,10 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->source = SKIM_HD_SOURCE_HPSDR_P1;
   } else if (g_strcmp0(type, "mock") == 0) {
     h->source = SKIM_HD_SOURCE_MOCK;
+  } else if (g_strcmp0(type, "hub") == 0) {
+    h->source = SKIM_HD_SOURCE_HUB;
   } else {
-    bad(error, path, "[radio] type \"%s\" (hpsdr-p1 or mock)", type);
+    bad(error, path, "[radio] type \"%s\" (hpsdr-p1, mock or hub)", type);
     g_free(type);
     return FALSE;
   }
@@ -363,6 +384,41 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
       return bad(error, path, "[hub] name \"%s\": letters, digits, - _ . only", h->hub_name);
     }
   }
+  h->hub_port = SKIM_HD_HUB_PORT;
+  if (g_key_file_has_key(kf, "hub", "port", NULL)) {
+    GError *e = NULL;
+    h->hub_port = g_key_file_get_integer(kf, "hub", "port", &e);
+    if (e || h->hub_port < 0 || h->hub_port > 65535) {
+      g_clear_error(&e);
+      return bad(error, path, "[hub] port: 0 (off) to 65535");
+    }
+  }
+  {
+    char *av = g_key_file_get_string(kf, "hub", "allow", NULL);
+    GPtrArray *al = g_ptr_array_new();
+    char **ap = g_strsplit_set(av ? av : "", ", \t", -1);
+    gboolean aok = TRUE;
+    for (char **q = ap; *q && aok; q++) {
+      if (!**q) { continue; }
+      GInetAddressMask *m = g_inet_address_mask_new_from_string(*q, NULL);
+      if (!m) {
+        aok = bad(error, path, "[hub] allow \"%s\" (an address or address/bits)", *q);
+      } else {
+        g_object_unref(m);
+        g_ptr_array_add(al, g_strdup(*q));
+      }
+    }
+    g_strfreev(ap);
+    g_free(av);
+    if (!al->len) {
+      static const char *const PRIVATE[] = { "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                                             "127.0.0.0/8", "::1", "fe80::/10", "fc00::/7" };
+      for (guint i = 0; i < G_N_ELEMENTS(PRIVATE); i++) { g_ptr_array_add(al, g_strdup(PRIVATE[i])); }
+    }
+    g_ptr_array_add(al, NULL);
+    h->hub_allow = (char **)g_ptr_array_free(al, FALSE);
+    if (!aok) { return FALSE; }
+  }
   {
     char *pv = g_key_file_get_string(kf, "peers", "hosts", NULL);
     GPtrArray *pl = g_ptr_array_new();
@@ -463,8 +519,20 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->band[h->nb++] = *b;
   }
   g_strfreev(keys);
-  if (ok && h->nlisted == 0) { ok = bad(error, path, "no [bands] entries"); }
-  if (ok && h->nb == 0) { ok = bad(error, path, "every band is off"); }
+  /* a worker learns its bands from its hub: none of its own is fine */
+  if (ok && h->nlisted == 0 && h->source != SKIM_HD_SOURCE_HUB) {
+    ok = bad(error, path, "no [bands] entries");
+  }
+  if (ok && h->nlisted && h->nb == 0) { ok = bad(error, path, "every band is off"); }
+  for (guint i = 0; ok && i < h->nb; i++) {
+    if (h->band[i].worker[0] && h->source == SKIM_HD_SOURCE_HUB) {
+      ok = bad(error, path, "band %s: a worker cannot pass a band on (@%s)", h->band[i].name,
+               h->band[i].worker);
+    } else if (h->band[i].worker[0] && h->hub_port <= 0) {
+      ok = bad(error, path, "band %s: @%s needs the hub server ([hub] port is 0)",
+               h->band[i].name, h->band[i].worker);
+    }
+  }
   return ok;
 }
 
@@ -504,7 +572,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "decode.engine", "decode.log", "decode.suppress_cw_on_rtty",
   "feed.call", "feed.port", "feed.rtty",
   "rbn.enabled", "rbn.port", "rbn.delay_s",
-  "peers.hosts", "hub.name",
+  "peers.hosts", "hub.name", "hub.port",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
   NULL,
@@ -592,6 +660,85 @@ char *skim_hd_config_import(const char *cur, gsize cur_len, const char *in_text,
   }
   g_key_file_free(in);
   g_key_file_free(now);
+  return out;
+}
+
+/* ---- hub and worker ------------------------------------------------------------- */
+
+/* [feed] keys a hub hands its workers: the policy, not its port or its logs */
+static const char *const FEED_POLICY[] = {
+  "call", "min_score", "min_hearings", "settle_s", "settle_nodict_s", "fresh_s", "fold_s",
+  "rtty", "gate_mode", NULL,
+};
+
+char *skim_hd_config_worker_fragment(const char *hub_text, gsize len, const char *worker) {
+  SkimHdConfig c;
+  if (!skim_hd_config_parse(&c, hub_text, len, "hub", NULL)) { return NULL; }
+  GKeyFile *in = g_key_file_new();
+  g_key_file_load_from_data(in, hub_text, len, G_KEY_FILE_NONE, NULL);
+  GString *o = g_string_new(NULL);
+  guint n = 0;
+  g_string_append_printf(o, "# from the hub %s for the worker %s\n[radio]\nrate=%u\n[bands]\n",
+                         c.hub_name, worker, c.rate);
+  for (guint i = 0; i < c.nb; i++) {
+    SkimHdBand b = c.band[i];
+    if (g_strcmp0(b.worker, worker) != 0) { continue; }
+    b.worker[0] = '\0';
+    char *m = skim_hd_band_modes(&b, c.engine);
+    g_string_append_printf(o, "%s=%.0f %s\n", b.name, b.centre_hz, m);
+    g_free(m);
+    n++;
+  }
+  g_string_append(o, "[decode]\n");
+  gsize nk = 0;
+  char **keys = g_key_file_get_keys(in, "decode", &nk, NULL);
+  for (gsize i = 0; keys && i < nk; i++) {
+    char *v = g_key_file_get_value(in, "decode", keys[i], NULL);
+    g_string_append_printf(o, "%s=%s\n", keys[i], g_strstrip(v));
+    g_free(v);
+  }
+  g_strfreev(keys);
+  g_string_append(o, "[feed]\n");
+  for (const char *const *k = FEED_POLICY; *k; k++) {
+    char *v = g_key_file_get_value(in, "feed", *k, NULL);
+    if (v) { g_string_append_printf(o, "%s=%s\n", *k, g_strstrip(v)); }
+    g_free(v);
+  }
+  g_key_file_free(in);
+  skim_hd_config_clear(&c);
+  if (!n) {
+    g_string_free(o, TRUE);
+    return NULL;
+  }
+  return g_string_free(o, FALSE);
+}
+
+char *skim_hd_config_worker_merge(const char *own, gsize own_len, const char *frag,
+                                  gsize frag_len, GError **error) {
+  GKeyFile *kf = g_key_file_new(), *fr = g_key_file_new();
+  char *out = NULL;
+  if (!g_key_file_load_from_data(kf, own, own_len, G_KEY_FILE_KEEP_COMMENTS, error) ||
+      !g_key_file_load_from_data(fr, frag, frag_len, G_KEY_FILE_NONE, error)) {
+    g_prefix_error(error, "worker config: ");
+  } else {
+    g_key_file_remove_group(kf, "bands", NULL);
+    g_key_file_remove_group(kf, "decode", NULL);
+    static const char *const GROUPS[] = { "bands", "decode", "feed", "radio" };
+    for (guint g = 0; g < G_N_ELEMENTS(GROUPS); g++) {
+      gsize n = 0;
+      char **keys = g_key_file_get_keys(fr, GROUPS[g], &n, NULL);
+      for (gsize i = 0; keys && i < n; i++) {
+        if (g == 3 && strcmp(keys[i], "rate") != 0) { continue; }   /* [radio]: rate only */
+        char *v = g_key_file_get_value(fr, GROUPS[g], keys[i], NULL);
+        g_key_file_set_value(kf, GROUPS[g], keys[i], v);
+        g_free(v);
+      }
+      g_strfreev(keys);
+    }
+    out = g_key_file_to_data(kf, NULL, NULL);
+  }
+  g_key_file_free(kf);
+  g_key_file_free(fr);
   return out;
 }
 
