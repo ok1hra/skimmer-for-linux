@@ -9,6 +9,9 @@
   --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
   --seq-lo: #cde2fb; --seq-hi: #0d366b;
   --grid: #e8e8ec; --axis: #c3c2b7; --tick: #898781;
+  /* the top bar: its own colour, apart from the page */
+  --hdr-bg: #163a63; --hdr-fg: #ffffff; --hdr-mut: #b9cbe2; --hdr-ln: rgba(255,255,255,.28);
+  --hdr-on: #ffffff; --hdr-on-fg: #163a63;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -18,14 +21,17 @@
     --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
     --seq-lo: #1d2a3a; --seq-hi: #9ec5f4;
     --grid: #2c2c30; --axis: #45454a; --tick: #898781;
+    --hdr-bg: #0f2a4a; --hdr-fg: #eef3fa; --hdr-mut: #9fb6d4; --hdr-ln: rgba(255,255,255,.22);
+    --hdr-on: #5aa9ff; --hdr-on-fg: #0b1726;
   }
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { font: 14px/1.45 system-ui, sans-serif; margin: 0; color: var(--fg); background: var(--bg); }
 header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px;
-         padding: 12px 16px; border-bottom: 1px solid var(--ln); background: var(--panel);
-         position: sticky; top: 0; z-index: 1; }
+         padding: 12px 16px; border-bottom: 1px solid var(--hdr-ln); background: var(--hdr-bg);
+         color: var(--hdr-fg); position: sticky; top: 0; z-index: 1; }
+header .mut { color: var(--hdr-mut); }
 .title { display: flex; align-items: baseline; gap: 8px; }
 h1 { font-size: 17px; margin: 0; }
 h2 { font-size: 15px; margin: 0 0 6px; }
@@ -34,10 +40,13 @@ h2 { font-size: 15px; margin: 0 0 6px; }
 .radio #radio-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--mut); flex: none; }
 .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+header .dot { box-shadow: 0 0 0 2px rgba(255,255,255,.35); }
+header .dot.ok { background: #3ddc6f; } header .dot.bad { background: #ff6b6b; }
 nav { display: flex; gap: 4px; }
-nav button { font: inherit; border: 1px solid var(--ln); background: transparent; color: var(--fg);
+nav button { font: inherit; border: 1px solid var(--hdr-ln); background: transparent; color: var(--hdr-fg);
              padding: 4px 12px; border-radius: 6px; cursor: pointer; }
-nav button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+nav button:hover { background: rgba(255,255,255,.1); }
+nav button.on { background: var(--hdr-on); border-color: var(--hdr-on); color: var(--hdr-on-fg); font-weight: 600; }
 main { padding: 16px; max-width: 1280px; }
 footer { padding: 8px 16px 24px; font-size: 12px; }
 footer a { color: inherit; }
