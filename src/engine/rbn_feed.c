@@ -12,6 +12,10 @@
  * feed is realtime, there is nothing worth queueing for a reader that
  * stopped reading. The Aggregator reconnects by itself.
  *
+ * A delay (skim_rbn_feed_set_delay) holds each formatted line on a timeout
+ * source of the feed's context; a relay feed gets every spot too, through
+ * its own skim_rbn_feed_spot() (and its own delay).
+ *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include "rbn_feed.h"
@@ -41,6 +45,9 @@ struct _SkimRbnFeed {
   GPtrArray      *clients;                     /* Client* — feed thread only */
   volatile gint   nclients;                    /* logged-in (any thread)     */
   volatile gint   lines;                       /* spot lines written         */
+  volatile gint   waiting;                     /* lines held by the delay    */
+  guint           delay_s;
+  SkimRbnFeed    *relay;                       /* borrowed, or NULL          */
 };
 
 /* --- client lifecycle (feed thread) ---------------------------------------------- */
@@ -162,10 +169,15 @@ static gboolean incoming_cb(GSocketService *svc, GSocketConnection *conn,
 typedef struct {
   SkimRbnFeed *f;
   char        *line;
+  gboolean     held;                           /* counted in f->waiting      */
 } Broadcast;
 
 static gboolean broadcast_cb(gpointer data) {
   Broadcast *b = data;
+  if (b->held) {
+    g_atomic_int_add(&b->f->waiting, -1);
+    b->held = FALSE;
+  }
   GPtrArray *cl = b->f->clients;
   for (guint i = cl->len; i > 0; i--) {        /* drops mutate the array     */
     Client *c = g_ptr_array_index(cl, i - 1);
@@ -182,6 +194,7 @@ static gboolean broadcast_cb(gpointer data) {
 
 static void broadcast_free(gpointer data) {
   Broadcast *b = data;
+  if (b->held) { g_atomic_int_add(&b->f->waiting, -1); }   /* never sent    */
   g_free(b->line);
   g_free(b);
 }
@@ -207,8 +220,29 @@ void skim_rbn_feed_spot(SkimRbnFeed *f, const char *call, const char *mode,
       g_strcmp0(mode, "CW") == 0 ? "WPM" : "BPS",
       g_date_time_get_hour(now), g_date_time_get_minute(now));
   g_date_time_unref(now);
-  g_main_context_invoke_full(f->ctx, G_PRIORITY_DEFAULT, broadcast_cb, b,
-                             broadcast_free);
+  if (f->delay_s) {
+    b->held = TRUE;
+    g_atomic_int_inc(&f->waiting);
+    GSource *t = g_timeout_source_new(f->delay_s * 1000);
+    g_source_set_callback(t, broadcast_cb, b, broadcast_free);
+    g_source_attach(t, f->ctx);
+    g_source_unref(t);
+  } else {
+    g_main_context_invoke_full(f->ctx, G_PRIORITY_DEFAULT, broadcast_cb, b,
+                               broadcast_free);
+  }
+  if (f->relay) { skim_rbn_feed_spot(f->relay, call, mode, freq_hz, snr_db, speed); }
+}
+
+void skim_rbn_feed_set_delay(SkimRbnFeed *f, guint delay_s) {
+  f->delay_s = MIN(delay_s, SKIM_RBN_FEED_MAX_DELAY_S);
+}
+
+guint skim_rbn_feed_delay(const SkimRbnFeed *f) { return f->delay_s; }
+
+void skim_rbn_feed_set_relay(SkimRbnFeed *f, SkimRbnFeed *relay) {
+  g_return_if_fail(f != relay);
+  f->relay = relay;
 }
 
 /* --- server lifecycle -------------------------------------------------------------- */
@@ -291,4 +325,8 @@ guint skim_rbn_feed_clients(const SkimRbnFeed *f) {
 
 guint64 skim_rbn_feed_lines(const SkimRbnFeed *f) {
   return (guint64)g_atomic_int_get(&((SkimRbnFeed *)f)->lines);
+}
+
+guint skim_rbn_feed_waiting(const SkimRbnFeed *f) {
+  return (guint)g_atomic_int_get(&((SkimRbnFeed *)f)->waiting);
 }

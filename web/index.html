@@ -107,6 +107,15 @@
           <label class="check"><input type="checkbox" name="feed.rtty" data-default="true"> RTTY spots on the feed too</label>
         </fieldset>
         <fieldset>
+          <legend>Reverse Beacon Network</legend>
+          <label class="check"><input type="checkbox" name="rbn.enabled"> send the spots to the RBN</label>
+          <label>Aggregator port <input name="rbn.port" inputmode="numeric" placeholder="7550">
+            <small>the RBN Aggregator connects here and relays to <a href="https://www.reversebeacon.net" target="_blank" rel="noopener">reversebeacon.net</a>;
+            the feed's spots, under its call</small></label>
+          <label>Delay <input name="rbn.delay_s" inputmode="numeric" placeholder="0" data-max="99">
+            <small>seconds each spot is held before it goes to the RBN, 0–99</small></label>
+        </fieldset>
+        <fieldset>
           <legend>Status</legend>
           <label>Console every <input name="status.console_s" inputmode="numeric" placeholder="10">
             <small>seconds, 0 = quiet; always off as a service</small></label>

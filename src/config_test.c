@@ -60,6 +60,8 @@ int main(void) {
     check("status 10 s / 8073, no recording",
           ok && c.console_s == 10 && c.http_port == 8073 && !c.rec_bands);
     check("RTTY spots go to the feed unless told otherwise", ok && c.feed_rtty);
+    check("the RBN port off, 7550, no delay", ok && !c.rbn_on && c.rbn_port == 7550 &&
+          c.rbn_delay_s == 0);
     check("CW is not kept off the RTTY pairs unless told to", ok && !c.suppress_cw_on_rtty);
     skim_hd_config_clear(&c);
     g_remove(path);
@@ -179,6 +181,10 @@ int main(void) {
           parse(&c, "[bands]\n20m=14045500 cw,rtty\n[decode]\nsuppress_cw_on_rtty=true\n", NULL) &&
           c.suppress_cw_on_rtty);
     skim_hd_config_clear(&c);
+    check("[rbn] on, port 7551, held 99 s",
+          parse(&c, "[bands]\n20m=14045500\n[rbn]\nenabled=true\nport=7551\ndelay_s=99\n", NULL) &&
+          c.rbn_on && c.rbn_port == 7551 && c.rbn_delay_s == 99);
+    skim_hd_config_clear(&c);
     check("type=mock is the synthetic source",
           parse(&c, "[radio]\ntype=mock\n[bands]\n20m=14045500\n", NULL) &&
           c.source == SKIM_HD_SOURCE_MOCK);
@@ -206,6 +212,12 @@ int main(void) {
       { "[decode] suppress_cw_on_rtty that is no boolean",
         "[bands]\n20m=14045500\n[decode]\nsuppress_cw_on_rtty=1x\n",
         "[decode] suppress_cw_on_rtty: true or false" },
+      { "an RBN delay past 99 s", "[bands]\n20m=14045500\n[rbn]\ndelay_s=100\n", "0 to 99" },
+      { "an RBN delay that is no number", "[bands]\n20m=14045500\n[rbn]\ndelay_s=5s\n",
+        "delay_s" },
+      { "the RBN on the feed's port",
+        "[bands]\n20m=14045500\n[feed]\nport=7300\n[rbn]\nenabled=true\nport=7300\n",
+        "[feed] port too" },
       { "not an ini", "[bands\n20m=1\n", "test.ini" },
     };
     for (guint i = 0; i < G_N_ELEMENTS(BAD); i++) {

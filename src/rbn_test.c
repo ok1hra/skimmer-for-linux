@@ -6,7 +6,10 @@
  *   - spot line format: the classic cluster line the RBN Aggregator parses
  *     (DX de <call>-#: kHz call CW dB WPM CQ HHMMZ, CRLF-terminated),
  *   - broadcast to several logged-in clients, client/line counters,
- *   - a disconnected client leaves the count.
+ *   - a disconnected client leaves the count,
+ *   - a relay feed with a delay (the RBN's port beside the local feed):
+ *     the local line at once, the relayed one delay seconds later with the
+ *     time it was spotted, held in the meantime.
  *
  * Integration: the OFFLINE pipeline (skim_pipeline_feed) chews a synthesized
  * 48 kHz band with three stations — OK1BR calling CQ TEST, DL1ABC calling
@@ -608,6 +611,43 @@ int main(void) {
     }
     check("disconnected clients leave the count", gone);
     skim_rbn_feed_free(f);
+  }
+
+  /* -- a relay with a delay: the RBN's port beside the local feed ----------------- */
+  {
+    GError *err = NULL;
+    SkimRbnFeed *f = skim_rbn_feed_new("OK1BR", 0, &err);
+    SkimRbnFeed *r = skim_rbn_feed_new("OK1BR", 0, &err);
+    skim_rbn_feed_set_delay(r, 2);
+    skim_rbn_feed_set_relay(f, r);
+    Cap *a = cap_new(skim_rbn_feed_port(f)), *b = cap_new(skim_rbn_feed_port(r));
+    cap_wait(a, "Please enter your call:", 3000);
+    cap_wait(b, "Please enter your call:", 3000);
+    cap_send(a, "LOCAL\r\n");
+    cap_send(b, "AGGR\r\n");
+    cap_wait(a, "Hello LOCAL", 3000);
+    cap_wait(b, "Hello AGGR", 3000);
+    const gint64 t0 = g_get_monotonic_time();
+    skim_rbn_feed_spot(f, "SP9DLY", "CW", 7012300.0, 18.0, 26.0);
+    check("relay: the local feed has the line at once", cap_wait(a, "SP9DLY", 500));
+    check("relay: the delayed port holds it (one waiting, nothing sent)",
+          !cap_wait(b, "SP9DLY", 1000) && skim_rbn_feed_waiting(r) == 1 &&
+          skim_rbn_feed_lines(r) == 0);
+    const gboolean got = cap_wait(b, "SP9DLY", 3000);
+    const double dt = (g_get_monotonic_time() - t0) / 1e6;
+    printf("       relayed after %.2f s\n", dt);
+    check("relay: … and sends it after the delay (2 s)", got && dt >= 1.95 && dt < 3.5);
+    char *la = cap_line(a, "SP9DLY"), *lb = cap_line(b, "SP9DLY");
+    check("relay: the same line, the time it was spotted", la && lb && strcmp(la, lb) == 0);
+    check("relay: nothing waiting any more", skim_rbn_feed_waiting(r) == 0);
+    g_free(la);
+    g_free(lb);
+    skim_rbn_feed_spot(f, "SP9END", "CW", 7012300.0, 18.0, 26.0);
+    cap_free(a);
+    cap_free(b);
+    skim_rbn_feed_free(f);
+    skim_rbn_feed_free(r);                     /* a held line dropped, no leak */
+    check("relay: a feed freed with a line still held", TRUE);
   }
 
   /* -- the offline pipeline feeds the RBN: CQ-only, deduped, exact kHz ------------ */

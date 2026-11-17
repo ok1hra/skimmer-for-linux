@@ -32,13 +32,27 @@ void         skim_rbn_feed_free(SkimRbnFeed *f);
 
 guint16 skim_rbn_feed_port(const SkimRbnFeed *f);
 
-/* Broadcast one spot to every logged-in client. Thread-safe. */
+/* Hold every spot delay_s seconds (0 = none, the default; at most 99)
+ * before it goes out. The line keeps the time it was spotted. Set it
+ * before the first spot. */
+#define SKIM_RBN_FEED_MAX_DELAY_S 99
+void skim_rbn_feed_set_delay(SkimRbnFeed *f, guint delay_s);
+guint skim_rbn_feed_delay(const SkimRbnFeed *f);
+
+/* Every spot f sends goes to relay too (with relay's own delay) — the
+ * RBN's port beside the local feed. relay is borrowed: it must outlive f's
+ * spotting. NULL ends it. Set it before the first spot. */
+void skim_rbn_feed_set_relay(SkimRbnFeed *f, SkimRbnFeed *relay);
+
+/* Broadcast one spot to every logged-in client (after the delay). Thread-safe. */
 void skim_rbn_feed_spot(SkimRbnFeed *f, const char *call, const char *mode,
                         double freq_hz, double snr_db, double speed);
 
-/* Logged-in clients right now / spot lines actually written in total. */
+/* Logged-in clients right now / spot lines actually written in total /
+ * spots waiting out the delay. */
 guint   skim_rbn_feed_clients(const SkimRbnFeed *f);
 guint64 skim_rbn_feed_lines(const SkimRbnFeed *f);
+guint   skim_rbn_feed_waiting(const SkimRbnFeed *f);
 
 G_END_DECLS
 

@@ -159,6 +159,7 @@ typedef struct {
   double    pps;
   int       exit_code;         /* != 0: stop the main loop with it            */
   SkimRbnFeed    *feed;
+  SkimRbnFeed    *rbn;         /* [rbn]: the Aggregator's port (delayed)      */
   SkimScpUpdater *scp;
   GMainLoop      *loop;
   gint64          t_start;
@@ -384,7 +385,7 @@ static GPtrArray *band_recent(Dec *b, guint max) {
 /* The pipeline the feed policy is read from: any that feeds (one policy
  * for all). */
 static SkimPipeline *feed_pipeline(const Hd *h) {
-  if (!h->feed) { return NULL; }
+  if (!h->feed && !h->rbn) { return NULL; }
   for (guint i = 0; i < h->nb; i++) {
     if (h->band[i].dec[M_CW].p) { return h->band[i].dec[M_CW].p; }
   }
@@ -531,6 +532,14 @@ static void status_build(Hd *h, gboolean print) {
                         jgid, gate_on(h) ? "on" : "shadow", fg_thr, fg_spots, fg_below)
       : g_strdup("null");
   g_free(jgid);
+  /* [rbn]: the Aggregator's port — who is on it, what went out, what waits */
+  char *jrbn = h->rbn
+      ? g_strdup_printf("{\"port\":%d,\"delay_s\":%u,\"clients\":%u,\"lines\":%"
+                        G_GUINT64_FORMAT ",\"waiting\":%u}",
+                        h->cfg.rbn_port, skim_rbn_feed_delay(h->rbn),
+                        skim_rbn_feed_clients(h->rbn), skim_rbn_feed_lines(h->rbn),
+                        skim_rbn_feed_waiting(h->rbn))
+      : g_strdup("null");
   g_string_append_printf(json,
       "{\"version\":\"%s\",\"started_us\":%" G_GINT64_FORMAT ",\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
       "\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
@@ -539,16 +548,18 @@ static void status_build(Hd *h, gboolean print) {
       "\"settle_nodict_s\":%.1f,"
       "\"fresh_s\":%.1f,\"fold_s\":%.1f,\"folded\":%" G_GUINT64_FORMAT "},"
       "\"feed_gate\":%s,\"switches\":%s,\"supervisor\":%s,"
+      "\"rbn\":%s,"
       "\"suppress_cw_on_rtty\":%s,\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
       h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_nd, pol_fresh,
-      pol_fold, folded, jgate, h->switches_json, supervisor_json(),
+      pol_fold, folded, jgate, h->switches_json, supervisor_json(), jrbn,
       h->cfg.suppress_cw_on_rtty ? "true" : "false",
       h->feed ? h->cfg.feed_port : 0, h->cfg.feed_rtty ? "true" : "false", fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
   g_free(jgate);
+  g_free(jrbn);
   g_free(jhost);
 
   for (guint i = 0; i < h->nb; i++) {
@@ -1177,7 +1188,8 @@ static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const c
     .mode = rtty ? SKIM_PIPELINE_MODE_RTTY : SKIM_PIPELINE_MODE_CW,
     .cw_engine = cb->cw_engine,
     .decode_log_path = dlog,
-    .rbn = rtty && !c->feed_rtty ? NULL : h->feed,
+    /* the local feed relays to the RBN's port; without it the RBN's alone */
+    .rbn = rtty && !c->feed_rtty ? NULL : h->feed ? h->feed : h->rbn,
     .rbn_min_score = c->feed_min_score,
     .rbn_min_hearings = c->feed_min_hearings,
     .rbn_settle_s = c->feed_settle_s,
@@ -1324,10 +1336,10 @@ int main(int argc, char **argv) {
       g_free(slot);
       g_free(m);
     }
-    printf("  feed   %s port %d, %s\n  gate   %s, %s (CW)\n",
-           c->feed_call && c->feed_call[0] ? c->feed_call : "(no call)", c->feed_port,
-           c->feed_rtty ? "CW and RTTY" : "CW only",
-           h->gate_id ? h->gate_id : "none", h->feed_gate_mode);
+    printf("  feed   %s port %d, %s\n", c->feed_call && c->feed_call[0] ? c->feed_call : "(no call)",
+           c->feed_port, c->feed_rtty ? "CW and RTTY" : "CW only");
+    if (c->rbn_on) { printf("  rbn    port %d, spots held %u s\n", c->rbn_port, c->rbn_delay_s); }
+    printf("  gate   %s, %s (CW)\n", h->gate_id ? h->gate_id : "none", h->feed_gate_mode);
     gboolean dcw = FALSE;
     for (guint i = 0; i < c->nb; i++) {
       dcw |= c->band[i].cw && c->band[i].cw_engine == SKIM_CW_ENGINE_DEEPCW;
@@ -1396,6 +1408,23 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (c->rbn_on) {
+    if (!c->feed_call || !c->feed_call[0]) {
+      g_warning("rbn: [feed] call is empty — no spots to the RBN");
+    } else {
+      h->rbn = skim_rbn_feed_new(c->feed_call, (guint16)c->rbn_port, &err);
+      if (!h->rbn) {
+        g_warning("rbn: port %d: %s — no spots to the RBN", c->rbn_port, err->message);
+        g_clear_error(&err);
+      } else {
+        skim_rbn_feed_set_delay(h->rbn, c->rbn_delay_s);
+        if (h->feed) { skim_rbn_feed_set_relay(h->feed, h->rbn); }
+        g_message("rbn: the RBN Aggregator's port %d as %s, spots held %u s", c->rbn_port,
+                  c->feed_call, c->rbn_delay_s);
+      }
+    }
+  }
+
   char *logdir = g_build_filename(g_get_user_data_dir(), "skimmer-for-linux", "headless", NULL);
   GDateTime *now = g_date_time_new_now_local();
   char *day = g_date_time_format(now, "%Y-%m-%d");
@@ -1431,7 +1460,7 @@ int main(int argc, char **argv) {
   if (c->feed_learn) { g_message("learn: decode tap in %s", learndir); }
   if (!h->gate) {
     g_message("feed gate: off");
-  } else if (!h->feed) {
+  } else if (!h->feed && !h->rbn) {
     g_message("feed gate: %s — no telnet feed, not used", h->gate_id);
   } else {
     g_message("feed gate: %s, threshold %.2f, %s", h->gate_id,
@@ -1559,7 +1588,8 @@ int main(int argc, char **argv) {
     skim_rec_free(h->band[i].rec);
   }
   g_clear_pointer(&h->stats, skim_stats_free);  /* saves                       */
-  g_clear_pointer(&h->feed, skim_rbn_feed_free);
+  g_clear_pointer(&h->feed, skim_rbn_feed_free);   /* it relays to rbn: first */
+  g_clear_pointer(&h->rbn, skim_rbn_feed_free);
   g_clear_pointer(&h->scp, skim_scp_updater_free);
   if (h->exit_code == EXIT_RESTART && g_strcmp0(g_getenv("SKIM_SUPERVISED"), "1") != 0) {
     g_message("restart: starting again");

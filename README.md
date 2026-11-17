@@ -122,6 +122,12 @@ streaming from unless told to (`--take-over`).
   **learned feed gate** (a logistic model over what the pipeline knew when it
   spotted) is built in and runs in shadow: it scores every spot and reports,
   the hand gate decides. See [The feed gate](#the-feed-gate).
+- **To the Reverse Beacon Network:** the RBN takes spots from the RBN
+  Aggregator, which connects to a skimmer's telnet port. `[rbn]
+  enabled=true` opens a second port for it (`port=7550`) with the feed's
+  spots under its call, each held `delay_s` seconds first (0–99, default 0)
+  — the local feed on 7300 stays without delay. Settings → Reverse Beacon
+  Network on the web page.
 - **The Super Check Partial call list keeps itself current** in the background.
 - **Learning and measuring:** a decode tap per band (`[feed] learn=true`), raw
   IQ recordings (`[record]`), and `skimmer-compare/`, which scores the feed

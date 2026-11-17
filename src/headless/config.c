@@ -73,6 +73,10 @@ static const char DEFAULT_CONFIG[] =
   "# every spot and only reports, on holds back the ones below its threshold,\n"
   "# off drops it\n"
   "#gate=feed-gate.ini\n#gate_mode=shadow\n"
+  "\n[rbn]\n# the Reverse Beacon Network: the RBN Aggregator (www.reversebeacon.net)\n"
+  "# connects to this port and relays the spots to the network. They are the\n"
+  "# feed's spots under its call, each held delay_s seconds (0-99) first.\n"
+  "enabled=false\nport=7550\ndelay_s=0\n"
   "\n[status]\n# console table every N s (0 = off); web page port (0 = off)\n"
   "console_s=10\nhttp_port=8073\n"
   "\n[web]\n# who may change the settings from the web page (addresses or\n"
@@ -320,6 +324,29 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   h->feed_gate_mode = g_key_file_get_string(kf, "feed", "gate_mode", NULL);
   if (h->feed_gate_mode) { g_strstrip(h->feed_gate_mode); }
 
+  if (!opt_bool(kf, "rbn", "enabled", FALSE, &h->rbn_on, path, error)) { return FALSE; }
+  h->rbn_port = 7550;
+  if (g_key_file_has_key(kf, "rbn", "port", NULL)) {
+    GError *e = NULL;
+    h->rbn_port = g_key_file_get_integer(kf, "rbn", "port", &e);
+    if (e || h->rbn_port < 1 || h->rbn_port > 65535) {
+      g_clear_error(&e);
+      return bad(error, path, "[rbn] port: 1 to 65535");
+    }
+  }
+  if (h->rbn_on && h->feed_port > 0 && h->rbn_port == h->feed_port) {
+    return bad(error, path, "[rbn] port %d is the [feed] port too", h->rbn_port);
+  }
+  if (g_key_file_has_key(kf, "rbn", "delay_s", NULL)) {
+    GError *e = NULL;
+    const int d = g_key_file_get_integer(kf, "rbn", "delay_s", &e);
+    if (e || d < 0 || d > 99) {
+      g_clear_error(&e);
+      return bad(error, path, "[rbn] delay_s: whole seconds, 0 to 99");
+    }
+    h->rbn_delay_s = (guint)d;
+  }
+
   h->console_s = g_key_file_has_key(kf, "status", "console_s", NULL)
                      ? g_key_file_get_integer(kf, "status", "console_s", NULL) : -1;
   h->http_port = g_key_file_has_key(kf, "status", "http_port", NULL)
@@ -447,6 +474,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "bands",
   "decode.engine", "decode.log", "decode.suppress_cw_on_rtty",
   "feed.call", "feed.port", "feed.rtty",
+  "rbn.enabled", "rbn.port", "rbn.delay_s",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
   NULL,

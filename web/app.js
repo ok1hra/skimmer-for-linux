@@ -60,6 +60,9 @@ function renderStatus(d) {
     tile('lost', fmt(d.lost_pct, 3), '%'),
     tile('feed', d.feed_port ? fmt(d.feed_clients) : 'off', d.feed_port ? `client${d.feed_clients === 1 ? '' : 's'} · :${d.feed_port}` : ''),
     tile('spots', fmt(spots), `${fmt(d.feed_lines)} line${d.feed_lines === 1 ? '' : 's'} to clients`),
+    ...(d.rbn ? [tile('RBN', fmt(d.rbn.clients),
+      `aggregator${d.rbn.clients === 1 ? '' : 's'} · :${d.rbn.port} · ${fmt(d.rbn.lines)} sent` +
+      (d.rbn.delay_s ? ` · held ${d.rbn.delay_s} s${d.rbn.waiting ? `, ${fmt(d.rbn.waiting)} waiting` : ''}` : ''))] : []),
     tile('MASTER.SCP', fmt(d.dict_calls), 'calls'),
   ].join('');
 
@@ -409,6 +412,13 @@ $('#settings').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!cfg.data || !cfg.data.may_change) return;
   const body = formBody();
+  const delay = body.get('rbn.delay_s');
+  if (delay !== '' && !(/^\d+$/.test(delay) && Number(delay) <= 99)) {
+    const box = $('#set-error');
+    box.hidden = false;
+    box.textContent = 'Not saved: the RBN delay is whole seconds, 0 to 99.';
+    return;
+  }
   $('#set-msg').textContent = 'checking…';
   try {
     const j = await post('api/config', body);
