@@ -149,7 +149,7 @@ static gboolean opt_bool(GKeyFile *kf, const char *group, const char *key, gbool
 }
 
 static gboolean engine_of(const char *s, SkimCwEngine *out) {
-  if (g_strcmp0(s, "v3") == 0) { *out = SKIM_CW_ENGINE_V3; return TRUE; }
+  if (g_strcmp0(s, "v3") == 0 || g_strcmp0(s, "v3.1") == 0) { *out = SKIM_CW_ENGINE_V3; return TRUE; }
   if (g_strcmp0(s, "v2") == 0) { *out = SKIM_CW_ENGINE_V2; return TRUE; }
   if (g_strcmp0(s, "deepcw") == 0) { *out = SKIM_CW_ENGINE_DEEPCW; return TRUE; }
   if (g_strcmp0(s, "v1") == 0) { *out = SKIM_CW_ENGINE_V1; return TRUE; }

@@ -103,10 +103,12 @@ here; what was done and why is in git.
   classical, v2 semi-Markov Viterbi), callsign extraction/validation, the spot
   pipeline, the local telnet feed, RTTY (45.45 Bd). M8 (the waterfall) went
   with the GUI, and so did the engine's spectrum tap.
-- **CW backend: v3 is the default (v0.8.0).** v3 = v2 verbatim for stations
+- **CW backend: v3.1 is the default (v0.8.1).** v3 = v2 verbatim for stations
   above 8 dB SNR500 plus a weak view (carrier detector, matched filter,
   calibrated LLR) and an audio-confirmed call reader (FIX tokens to the
-  extractor); `docs/CW-V3.md`. `cw:v2` / `[decode] engine=v2` keep v2, and
+  extractor); v3.1 = v3 with the precision rules on (`SKIM_V3_KR_RIVAL`,
+  `SKIM_V3_KR_TWO`, `SKIM_GATE_HEAD` for CW v3 only; `=0` = v0.8.0's v3),
+  reported as `cw-v3.1`; `docs/CW-V3.md`. `cw:v2` / `[decode] engine=v2` keep v2, and
   the golden gate runs v2 and v3 jobs side by side. `SKIM_CW_V1=1` selects
   the classical v1. DeepCW (neural, ONNX Runtime via `dlopen`, model outside
   git), is chosen per band (`cw:deepcw`) or with `[decode] engine=deepcw`;

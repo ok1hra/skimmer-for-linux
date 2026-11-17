@@ -510,7 +510,7 @@ static void status_build(Hd *h, gboolean print) {
   char *jstate = skim_json_str(src->state);
   char *jcall = skim_json_str(h->cfg.feed_call ? h->cfg.feed_call : "");
   char *jhost = skim_json_str(src->host);
-  /* the decoder that actually runs (deepcw falls back to cw-v3 without its
+  /* the decoder that actually runs (deepcw falls back to cw-v3.1 without its
    * runtime or model) — a feed comparison needs to know which one spotted */
   const char *engine = "";
   for (guint i = 0; i < h->nb && !engine[0]; i++) {
@@ -611,7 +611,7 @@ static void status_build(Hd *h, gboolean print) {
     char *jname = skim_json_str(b->name);
     /* rtty_suppressed: CW decodes dropped on an RTTY pair (0 while off) */
     /* engine_wanted: what the config asks for — "deepcw" beside an
-     * engine "cw-v3" is a band that fell back (the reason: "deepcw") */
+     * engine "cw-v3.1" is a band that fell back (the reason: "deepcw") */
     if (b->worker) {
       g_string_append_printf(con, "   %-5s %-9s %6.1f   → decoded by the worker %s, %d spots\n",
                              b->name, h->cfg.band[i].cw && h->cfg.band[i].rtty ? "cw,rtty"
@@ -1948,7 +1948,7 @@ int main(int argc, char **argv) {
         h->dcw_fallback = g_strdup("the engine chose another decoder (SKIM_CW_ENGINE?)");
       }
       g_clear_error(&e);
-      g_warning("decode: DeepCW asked for, not available (%s) — those bands run cw-v3",
+      g_warning("decode: DeepCW asked for, not available (%s) — those bands run cw-v3.1",
                 h->dcw_fallback);
     }
   }

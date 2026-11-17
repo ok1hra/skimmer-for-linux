@@ -2251,20 +2251,22 @@ static double kr_num(const char *name, double dflt) {
 /* SKIM_V3_KWS=0 turns the reader off; SKIM_V3_KWS_DC (−5), SKIM_V3_KWS_SEP (3)
  * the bars; SKIM_V3_KWS_DEBUG=1 prints every read.
  *
- * Precision switches (live 2026-11-15..17: 40 of L's 64 bust pairs and most
+ * Precision rules (live 2026-11-15..17: 40 of L's 64 bust pairs and most
  * of its 550 calls nobody else confirmed came from the reader, every one a
  * MASTER.SCP call — a cut head of an unknown true call, SM5D for SM5DAJ, or
- * a short call fitted into noise, E2E, G4G):
- *  SKIM_V3_KR_RIVAL=1  the window's own call-shaped text — tokens and torn
+ * a short call fitted into noise, E2E, G4G). RIVAL and TWO are ON since
+ * v3.1 (v0.8.1: measured on replays and live against CW Skimmer Server,
+ * docs/CW-V3.md); =0 switches either off, which is v3 as in v0.8.0:
+ *  SKIM_V3_KR_RIVAL    the window's own call-shaped text — tokens and torn
  *                      joins like the winner, known to MASTER.SCP or not —
  *                      must lose to the winner by the separation too
- *  SKIM_V3_KR_TWO=1    a call the text does not support (only near a
+ *  SKIM_V3_KR_TWO      a call the text does not support (only near a
  *                      fragment, or only from the hit memory) and a short
  *                      one (≤ 4) the text did not read exactly need two
  *                      reads in separate windows; a memory-only fit neither
  *                      counts as a read nor keeps the call remembered
  *  SKIM_V3_KR_CQX=1    a CQ found in the audio alone goes only with a call
- *                      the text read exactly */
+ *                      the text read exactly (off: built, not measured) */
 typedef struct { gint on; double dc, sep; gboolean dbg, rival, two, cqx; } KrCfg;
 static const KrCfg *kr_cfg(void) {
   static KrCfg c;
@@ -2275,8 +2277,8 @@ static const KrCfg *kr_cfg(void) {
     c.dc  = kr_num("SKIM_V3_KWS_DC", -5.0);
     c.sep = kr_num("SKIM_V3_KWS_SEP", 3.0);
     c.dbg = g_getenv("SKIM_V3_KWS_DEBUG") != NULL;
-    c.rival = kr_num("SKIM_V3_KR_RIVAL", 0) != 0;
-    c.two   = kr_num("SKIM_V3_KR_TWO", 0) != 0;
+    c.rival = kr_num("SKIM_V3_KR_RIVAL", 1) != 0;
+    c.two   = kr_num("SKIM_V3_KR_TWO", 1) != 0;
     c.cqx   = kr_num("SKIM_V3_KR_CQX", 0) != 0;
     g_once_init_leave(&once, 1);
   }

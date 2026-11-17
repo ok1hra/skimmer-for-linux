@@ -137,7 +137,7 @@ other.
 
 CPU: a 5 h replay of three bands takes v3 about 2.7× v2's time.
 
-## Precision: the reader's own busts (opt-in, 2026-11-17)
+## Precision: the reader's own busts (v3.1, the default since v0.8.1)
 
 Live 2026-11-15..17 (36.7 h against CW Skimmer Server): v3 recall 75.9 vs
 R 72.9, bust 4.9 % vs 2.4 %, and 550 of 2882 stations L "found" were vouched
@@ -153,17 +153,21 @@ C) were sound: 773 good, 94 SCP-only, 10 busts. The bad ones were:
 - D: nothing like the call was in the text, mostly short SCP calls fitted
   into noise (G0T, E2E). 70 / 162 / 4.
 
-Three switches, all default off:
+Three rules — built opt-in on 2026-11-17, live from that day, and the
+default since v0.8.1, where v3 with them reports itself as `cw-v3.1`.
+`=0` on any of the switches turns that rule off; all three off is v3 as in
+v0.8.0. `SKIM_GATE_HEAD` is on for the CW v3 pipelines only: v2 and RTTY
+keep their v0.8.0 output unless it is forced with `=1`.
 
-- `SKIM_V3_KR_RIVAL=1`: the text's own readings compete with the winner,
+- `SKIM_V3_KR_RIVAL`: the text's own readings compete with the winner,
   known to the dictionary or not. These are valid calls the text read
   whole or as 2–3 torn tokens, within `skim_feed_gate_similar` ≤ 3 of the
   winner. A rival only blocks; unknown calls are still never written.
-- `SKIM_V3_KR_TWO=1`: a correction the text does not support (only a near
+- `SKIM_V3_KR_TWO`: a correction the text does not support (only a near
   form of a fragment, or the hit memory), or a call of 4 characters or
   fewer that the text did not read, needs two reads with no shared audio.
   The hit memory alone no longer counts as a read.
-- `SKIM_GATE_HEAD=1` (`pipeline.c`, `near_conflict`): a call and its own
+- `SKIM_GATE_HEAD` (`pipeline.c`, `near_conflict`): a call and its own
   longer reading on the same frequency are one station that lost its tail.
   Before this, the near-call rule kept the full call off the wire because
   SCP knows the head. SM5DAJ was read 298 times and held, while SM5D, read
@@ -204,6 +208,12 @@ Tried and not kept (tap replay of the live v3 taps):
 - Rules over the remaining non-SCP busts (≤ 3 characters, a locator shape,
   ≥ 40 WPM, 4 characters read once): each cost about as many real
   stations as busts.
+
+Live with all three (2026-11-17, 14:14–21:43 UTC, 7.5 h, skimmer-compare
+session 20261117-141427, CW Skimmer Server on the same antenna as R): of
+1020 stations either skimmer spotted, L found 77.2 % and R 47.4 %; L busted
+4.6 % of its calls, R 9.6 % (p = 0.0002). On this evidence they became the
+default (v0.8.1).
 
 What remains is mostly text busts, the same kind v2 had: heads of calls
 read only later (R4NC before R4NCU), and busts that are single-read and

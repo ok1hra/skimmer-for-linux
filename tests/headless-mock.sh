@@ -101,7 +101,7 @@ json=$(curl -s "http://127.0.0.1:$HTTP/status.json" || true)
 py() { python3 -c "import json,sys; d=json.loads(sys.argv[1]); print($1)" "$json" 2>/dev/null; }
 [[ $(py 'd["streaming"]') == True ]]; check "status: streaming" $?
 [[ $(py 'd["radio"]') == *mock* ]]; check "status: the radio is the mock" $?
-[[ $(py '",".join(b["band"] + ":" + b["engine"] + ":" + b["engine_wanted"] for b in d["bands"])') == "20m:cw-v3:deepcw,40m:cw-v2:v2" ]]
+[[ $(py '",".join(b["band"] + ":" + b["engine"] + ":" + b["engine_wanted"] for b in d["bands"])') == "20m:cw-v3.1:deepcw,40m:cw-v2:v2" ]]
 check "status: both bands, each with its engine (20m asks for DeepCW, runs v3; 40m names v2)" $?
 [[ $(py 'd["deepcw"]["wanted"], d["deepcw"]["model_ok"], d["deepcw"]["fetch"]["state"], d["deepcw"]["runtime"]') == "True False idle None" &&
    $(py 'd["deepcw"]["fallback"]') == "no model at $T/data/skimmer-for-linux/models/deepcw/model.onnx"* ]]
@@ -132,7 +132,7 @@ spj=$(curl -s "http://127.0.0.1:$HTTP/api/spots?minutes=10")
 check "web: /api/spots — the feed's spots, each with its band, made here" $?
 out=$("$HL" --find-skimmers 2>&1)
 [[ $out == *" solo "*"TEST"*"web :$HTTP"*"feed $FEED"* ]]; check "--find-skimmers: this instance, its call and ports" $?
-grep -q "decode: 40m CW, engine cw-v2 + RTTY$" "$T/log" && grep -q "decode: 20m CW, engine cw-v3$" "$T/log" &&
+grep -q "decode: 40m CW, engine cw-v2 + RTTY$" "$T/log" && grep -q "decode: 20m CW, engine cw-v3.1$" "$T/log" &&
   grep -q "decode: 40m CW stays off the RTTY stations RTTY copies" "$T/log"
 check "log: what each band decodes" $?
 grep -q "switch: SKIM_SCP_URL=http://127.0.0.1:9/ (system)" "$T/log"

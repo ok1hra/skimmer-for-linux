@@ -316,7 +316,9 @@ static SkimCwEngine cw_engine_pick(const SkimPipelineConfig *cfg) {
   if (env && env[0]) {
     if (g_ascii_strcasecmp(env, "v1") == 0)          { e = SKIM_CW_ENGINE_V1; }
     else if (g_ascii_strcasecmp(env, "v2") == 0)     { e = SKIM_CW_ENGINE_V2; }
-    else if (g_ascii_strcasecmp(env, "v3") == 0)     { e = SKIM_CW_ENGINE_V3; }
+    else if (g_ascii_strcasecmp(env, "v3") == 0 || g_ascii_strcasecmp(env, "v3.1") == 0) {
+      e = SKIM_CW_ENGINE_V3;
+    }
     else if (g_ascii_strcasecmp(env, "deepcw") == 0) { e = SKIM_CW_ENGINE_DEEPCW; }
     else { g_warning("SKIM_CW_ENGINE=%s: unknown (v1|v2|v3|deepcw) — ignored", env); }
   } else if (g_getenv("SKIM_CW_V1")) {
@@ -355,7 +357,7 @@ const char *skim_pipeline_cw_engine_name(const SkimPipeline *p) {
   switch (p->cw_engine) {
     case SKIM_CW_ENGINE_V1:     return "cw-v1";
     case SKIM_CW_ENGINE_DEEPCW: return "deepcw";
-    case SKIM_CW_ENGINE_V3:     return "cw-v3";
+    case SKIM_CW_ENGINE_V3:     return "cw-v3.1";   /* v3 + the precision rules */
     default:                    return "cw-v2";
   }
 }
@@ -712,7 +714,7 @@ static void near_note(SkimPipeline *p, const SkimStation *st) {
   r->hearings = MAX(r->hearings, st->hearings);
 }
 
-/* SKIM_GATE_HEAD=1: a call and its own longer reading on the same frequency
+/* The head rule: a call and its own longer reading on the same frequency
  * (SM5D and SM5DAJ, G3M and G3MCK, EA5B and EA5BF) are one station whose
  * tail was lost, not two look-alikes — and the dictionary's word must not
  * decide which one goes out: MASTER.SCP is full of short heads and often
@@ -722,14 +724,17 @@ static void near_note(SkimPipeline *p, const SkimStation *st) {
  * yields to a longer reading read at least twice and at least as often,
  * and a head never blocks its longer reading unless it was read far more
  * often. A tail that is a word glued on (K, E, R, DX, KN, TU, 5NN, the
- * call's own head again) is no tail. Default off. */
-static gboolean head_on(void) {
-  static gint on = -1;
-  if (G_UNLIKELY(on < 0)) {
+ * call's own head again) is no tail. On for the CW v3 decoder since v3.1
+ * (v0.8.1), off for v2 and RTTY, which keep their v0.8.0 output;
+ * SKIM_GATE_HEAD=1 / =0 forces it on or off for every pipeline. */
+static gboolean head_on(const SkimPipeline *p) {
+  static gint env = -2;                        /* -1 unset, 0 off, 1 on    */
+  if (G_UNLIKELY(env == -2)) {
     const char *e = g_getenv("SKIM_GATE_HEAD");
-    on = e && e[0] && strcmp(e, "0") != 0;
+    env = !e || !e[0] ? -1 : strcmp(e, "0") != 0;
   }
-  return on;
+  if (env >= 0) { return env; }
+  return p->cfg.mode == SKIM_PIPELINE_MODE_CW && p->cw_engine == SKIM_CW_ENGINE_V3;
 }
 
 static gboolean is_head(const char *head, const char *call) {
@@ -753,7 +758,7 @@ static gboolean near_conflict(const SkimPipeline *p, const SkimStation *st) {
    * contest calls the dictionary is full of (E2M, M5E, T6A) are exactly
    * what a misread of a neighbour lands on. */
   const gboolean dict = skim_callsign_dict_has(st->call);
-  const gboolean head = head_on();
+  const gboolean head = head_on(p);
   if (dict && p->near_dict <= 0 && !head)
     return FALSE;
   const gint64 now = pipe_now_us(p);

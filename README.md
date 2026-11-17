@@ -100,10 +100,11 @@ streaming from unless told to (`--take-over`).
 
 ## What it does
 
-- **CW**, decoded by decoder **v3** (the default: v2's soft-decision Viterbi
+- **CW**, decoded by decoder **v3.1** (the default: v2's soft-decision Viterbi
   decoder for stations it reads well, plus a weak-signal path with a matched
   filter on the carrier and a call reader that confirms MASTER.SCP calls in
-  the audio — [`docs/CW-V3.md`](docs/CW-V3.md)), by v2 itself (`cw:v2`,
+  the audio, with the precision rules that keep its corrections from busting
+  calls — [`docs/CW-V3.md`](docs/CW-V3.md)), by v2 itself (`cw:v2`,
   `[decode] engine=v2`), or by the neural **DeepCW** model when an ONNX
   Runtime and the model are installed.
   The decoder and the RBN feed are tuned on live air against CW Skimmer
