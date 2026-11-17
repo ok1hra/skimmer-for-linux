@@ -161,6 +161,44 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .map-foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 6px; font-size: 12px; letter-spacing: .04em; flex-wrap: wrap; }
 @media (max-width: 1000px) { .st-top { grid-template-columns: 1fr; } .st-map { border-right: 0; } }
 
+/* ---- the status page: DX cluster ---- */
+.dxc-bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin-bottom: 8px; }
+.dxc-bar h2 { margin: 0; flex: 1 1 auto; }
+.dxc-bar .small { margin-top: 0; }
+.dxc-colmenu { position: relative; }
+.dxc-colmenu summary { list-style: none; cursor: pointer; display: inline-block; }
+.dxc-colmenu summary::-webkit-details-marker { display: none; }
+.dxc-cols { position: absolute; right: 0; top: 28px; z-index: 7; background: var(--deep); border: 1px solid var(--ln2);
+            padding: 8px 12px; display: grid; grid-template-columns: repeat(2, max-content); gap: 3px 16px;
+            box-shadow: 0 6px 18px rgba(0,0,0,.5); font-size: 14px; }
+table.dxc { border-collapse: collapse; width: 100%; background: var(--well); font-variant-numeric: tabular-nums; }
+.dxc th { text-align: left; color: var(--hot-ink); background: #2a8c5c; font-size: 13px; padding: 3px 6px 3px 8px;
+          letter-spacing: .06em; white-space: nowrap; }
+.dxc th .fbtn { font: inherit; font-size: 11px; border: 0; background: rgba(0,0,0,.18); color: var(--hot-ink);
+                margin-left: 4px; padding: 0 4px; cursor: pointer; vertical-align: 1px; }
+.dxc th .fbtn.on { background: var(--warn); color: #1d1300; }
+.dxc td { padding: 3px 8px; color: #b6f5cf; font-size: 16px; border-bottom: 1px solid #0c1a12; white-space: nowrap; }
+.dxc .c-khz, .dxc .c-km, .dxc .c-db, .dxc .c-speed, .dxc .c-az { text-align: right; }
+.dxc th.c-khz, .dxc th.c-km, .dxc th.c-db, .dxc th.c-speed, .dxc th.c-az { text-align: right; }
+.dxc td.c-call { color: #fff; font-weight: 700; letter-spacing: .03em; }
+.dxc td.c-db { font-weight: 700; }
+.dxc td.c-db .m { letter-spacing: -1px; margin-right: 6px; font-weight: 400; opacity: .9; }
+.dxc td.c-time, .dxc td.c-country, .dxc td.c-src, .dxc td.c-mode { color: #8fd4ab; }
+.dxc tr.old td { opacity: .55; }
+.dxc tbody tr { cursor: pointer; }
+.dxc tbody tr:hover td { background: #0f2a1c; }
+.dxc tbody tr.hi td { background: #164a30; }
+.fmenu { position: absolute; z-index: 20; background: var(--deep); border: 1px solid var(--ln2); padding: 10px 12px;
+         min-width: 220px; box-shadow: 0 8px 22px rgba(0,0,0,.6); display: grid; gap: 7px; font-size: 14px; }
+.fmenu .fm-t { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--hot); }
+.fmenu .fm-grid { display: grid; grid-template-columns: repeat(3, max-content); gap: 3px 14px; }
+.fmenu .fm-range { display: flex; align-items: center; gap: 6px; }
+.fmenu .fm-range input { width: 76px; }
+.fmenu .fm-act { display: flex; gap: 6px; flex-wrap: wrap; }
+.fmenu .fm-act button { font: inherit; font-size: 12px; letter-spacing: .06em; border: 1px solid var(--ln2); background: transparent;
+                        color: var(--fg); padding: 2px 9px; cursor: pointer; }
+.fmenu .fm-act button.on { background: var(--hot); color: var(--hot-ink); border-color: var(--hot); }
+
 /* ---- settings ---- */
 #tab-settings, #tab-stats, #tab-log, .pad { padding: 14px 18px; }
 fieldset { border: 1px solid var(--ln); background: var(--panel); margin: 0 0 12px; padding: 8px 14px 12px; min-width: 0; }

@@ -218,11 +218,21 @@ async function refreshSpots(force) {
   spots.list = d.spots.map((s) => ({ ...s, age: d.now - s.t }));
   renderSpots();
 }
+// The DX cluster filters the spots; the map draws what the filters leave, the
+// row clicked marked on it.
 function renderSpots() {
-  if (typeof SkMap === 'undefined') return;
-  if (!mapMounted) { SkMap.mount($('#skmap')); mapMounted = true; }
+  if (typeof SkMap === 'undefined' || typeof Dxc === 'undefined') return;
+  if (!mapMounted) {
+    SkMap.mount($('#skmap'));
+    Dxc.mount($('#dxc'), (shown, marked) =>
+      SkMap.update(shown.map((s) => ({ ...s, hi: s.call === marked })), spots.locator || 'JO60'));
+    mapMounted = true;
+    SkMap.update([], spots.locator || 'JO60');              // the centre before the rows
+  }
   $('#loc-warn').hidden = !!spots.locator;
-  SkMap.update(spots.list, spots.locator || 'JO60');
+  const bands = status ? status.bands.map((b) => b.band) : [];
+  const workers = status && status.hub ? status.hub.workers.map((w) => w.name) : [];
+  Dxc.update(spots.list, bands, workers);
 }
 
 tabs.status = {
