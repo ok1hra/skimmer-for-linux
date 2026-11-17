@@ -30,6 +30,15 @@ typedef struct _SkimRbnFeed SkimRbnFeed;
 SkimRbnFeed *skim_rbn_feed_new(const char *mycall, guint16 port, GError **error);
 void         skim_rbn_feed_free(SkimRbnFeed *f);
 
+/* A feed that listens nowhere: its spots go only to its tap and its relay
+ * (a worker hands them to its hub this way). Port 0 in the answers. */
+SkimRbnFeed *skim_rbn_feed_new_sink(const char *mycall);
+
+/* Every spot the feed sends, on the spotting thread, before any delay. */
+typedef void (*SkimRbnFeedTap)(const char *call, const char *mode, double freq_hz,
+                               double snr_db, double speed, gpointer user);
+void skim_rbn_feed_set_tap(SkimRbnFeed *f, SkimRbnFeedTap tap, gpointer user);
+
 guint16 skim_rbn_feed_port(const SkimRbnFeed *f);
 
 /* Hold every spot delay_s seconds (0 = none, the default; at most 99)
@@ -47,6 +56,15 @@ void skim_rbn_feed_set_relay(SkimRbnFeed *f, SkimRbnFeed *relay);
 /* Broadcast one spot to every logged-in client (after the delay). Thread-safe. */
 void skim_rbn_feed_spot(SkimRbnFeed *f, const char *call, const char *mode,
                         double freq_hz, double snr_db, double speed);
+
+/* A spot another skimmer made (a peer's feed, a hub's worker): sent like
+ * skim_rbn_feed_spot() unless this feed sent the call within 300 Hz in the
+ * last 600 s, whoever spotted it — then dropped (FALSE) and counted. Every
+ * spot, local or not, is noted for this, and a local spot of a call another
+ * skimmer's spot already sent is dropped and counted too. Thread-safe. */
+gboolean skim_rbn_feed_spot_external(SkimRbnFeed *f, const char *call, const char *mode,
+                                     double freq_hz, double snr_db, double speed);
+guint64  skim_rbn_feed_dup_dropped(const SkimRbnFeed *f);
 
 /* Logged-in clients right now / spot lines actually written in total /
  * spots waiting out the delay. */

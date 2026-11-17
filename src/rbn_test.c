@@ -9,7 +9,10 @@
  *   - a disconnected client leaves the count,
  *   - a relay feed with a delay (the RBN's port beside the local feed):
  *     the local line at once, the relayed one delay seconds later with the
- *     time it was spotted, held in the meantime.
+ *     time it was spotted, held in the meantime,
+ *   - spots from other skimmers (a peer, a hub's worker): one the feed already
+ *     sent within 300 Hz / 600 s is dropped, whoever sent it; a sink hands
+ *     its spots to its tap and listens nowhere.
  *
  * Integration: the OFFLINE pipeline (skim_pipeline_feed) chews a synthesized
  * 48 kHz band with three stations — OK1BR calling CQ TEST, DL1ABC calling
@@ -529,6 +532,11 @@ static void on_station(const SkimStation *st, gpointer user) {
   g_mutex_unlock(&c_lock);
 }
 
+static void tap_cb(const char *call, const char *mode, double freq_hz, double snr_db,
+                   double speed, gpointer user) {
+  g_string_append_printf(user, "%s %s %.0f %.0f %.0f;", call, mode, freq_hz, snr_db, speed);
+}
+
 int main(void) {
   printf("=== RBN telnet feed gate (offline) ===\n");
 
@@ -648,6 +656,44 @@ int main(void) {
     skim_rbn_feed_free(f);
     skim_rbn_feed_free(r);                     /* a held line dropped, no leak */
     check("relay: a feed freed with a line still held", TRUE);
+  }
+
+  /* -- spots from other skimmers: cross-source dedup; a sink with a tap ------------ */
+  {
+    GError *err = NULL;
+    SkimRbnFeed *f = skim_rbn_feed_new("OK1BR", 0, &err);
+    Cap *a = cap_new(skim_rbn_feed_port(f));
+    cap_wait(a, "Please enter your call:", 3000);
+    cap_send(a, "LOCAL\r\n");
+    cap_wait(a, "Hello LOCAL", 3000);
+    skim_rbn_feed_spot(f, "DL1LOC", "CW", 14025000.0, 20.0, 25.0);           /* local */
+    check("external: a call the feed sent 200 Hz off is dropped",
+          !skim_rbn_feed_spot_external(f, "DL1LOC", "CW", 14025200.0, 18.0, 25.0));
+    check("external: … the same call 2 kHz away is a new spot",
+          skim_rbn_feed_spot_external(f, "DL1LOC", "CW", 14027000.0, 18.0, 25.0));
+    check("external: a new call goes out", skim_rbn_feed_spot_external(f, "G4EXT", "CW",
+                                                                     7012000.0, 9.0, 30.0));
+    check("external: … and a second peer's copy of it is dropped",
+          !skim_rbn_feed_spot_external(f, "G4EXT", "CW", 7012080.0, 11.0, 30.0));
+    skim_rbn_feed_spot(f, "G4EXT", "CW", 7012000.0, 9.0, 30.0);       /* local, later */
+    skim_rbn_feed_spot(f, "DL1LOC", "CW", 14025000.0, 20.0, 25.0);     /* local again */
+    cap_wait(a, "G4EXT", 3000);
+    g_usleep(300 * 1000);
+    check("external: a local spot of a call a peer sent first is dropped; local re-spots "
+          "of our own pass (DL1LOC 3×, G4EXT once)",
+          cap_count(a, "DL1LOC") == 3 && cap_count(a, "G4EXT") == 1);
+    check("external: three dropped, counted", skim_rbn_feed_dup_dropped(f) == 3);
+    cap_free(a);
+    skim_rbn_feed_free(f);
+
+    SkimRbnFeed *sink = skim_rbn_feed_new_sink("OK1BR");
+    GString *got = g_string_new(NULL);
+    skim_rbn_feed_set_tap(sink, tap_cb, got);
+    skim_rbn_feed_spot(sink, "SP2SNK", "RTTY", 14083500.0, 15.0, 45.0);
+    check("sink: no port, the tap has the spot",
+          skim_rbn_feed_port(sink) == 0 && strcmp(got->str, "SP2SNK RTTY 14083500 15 45;") == 0);
+    skim_rbn_feed_free(sink);
+    g_string_free(got, TRUE);
   }
 
   /* -- the offline pipeline feeds the RBN: CQ-only, deduped, exact kHz ------------ */

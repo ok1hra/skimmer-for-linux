@@ -12,6 +12,14 @@
  * feed is realtime, there is nothing worth queueing for a reader that
  * stopped reading. The Aggregator reconnects by itself.
  *
+ * Every spot also lands in a short table of recent spots (call, kHz, when);
+ * skim_rbn_feed_spot_external() — a spot another skimmer made (a peer's
+ * telnet feed, a worker of the hub) — consults it and drops a call this feed
+ * already sent within RECENT_HZ and RECENT_S, whoever spotted it; a local
+ * spot is dropped only when another skimmer's spot of the call went first
+ * (without peers or workers the feed sends exactly what it did before). A sink
+ * (skim_rbn_feed_new_sink) listens nowhere; with a tap it hands its spots on.
+ *
  * A delay (skim_rbn_feed_set_delay) holds each formatted line on a timeout
  * source of the feed's context; a relay feed gets every spot too, through
  * its own skim_rbn_feed_spot() (and its own delay).
@@ -21,10 +29,22 @@
 #include "rbn_feed.h"
 
 #include <gio/gio.h>
+#include <math.h>
 #include <string.h>
 
 #define RBN_GREETING "skimmer-for-linux telnet feed\r\n"
 #define RBN_PROMPT   "Please enter your call: "
+
+/* Cross-source dedup: the pipeline's own re-spot interval and a little more
+ * than its QSY tolerance — two skimmers read one carrier a few Hz apart. */
+#define RECENT_S     600
+#define RECENT_HZ    300.0
+
+typedef struct {
+  double   freq_hz;
+  gint64   at_us;
+  gboolean external;                 /* another skimmer's spot               */
+} Recent;
 
 typedef struct {
   SkimRbnFeed       *f;
@@ -48,6 +68,12 @@ struct _SkimRbnFeed {
   volatile gint   waiting;                     /* lines held by the delay    */
   guint           delay_s;
   SkimRbnFeed    *relay;                       /* borrowed, or NULL          */
+  SkimRbnFeedTap  tap;
+  gpointer        tap_user;
+  GMutex          recent_lock;
+  GHashTable     *recent;                      /* call → GArray of Recent    */
+  gint64          recent_pruned_us;
+  volatile gint   dup_dropped;                 /* external spots dropped     */
 };
 
 /* --- client lifecycle (feed thread) ---------------------------------------------- */
@@ -199,9 +225,52 @@ static void broadcast_free(gpointer data) {
   g_free(b);
 }
 
-void skim_rbn_feed_spot(SkimRbnFeed *f, const char *call, const char *mode,
-                        double freq_hz, double snr_db, double speed) {
-  g_return_if_fail(f && call && call[0]);
+/* Was call sent within RECENT_HZ / RECENT_S — by anyone (external), or by
+ * another skimmer (a local spot)? Noted when not (f->recent_lock). */
+static gboolean recent_seen(SkimRbnFeed *f, const char *call, double freq_hz, gint64 now,
+                            gboolean external) {
+  if (now - f->recent_pruned_us > 60 * G_USEC_PER_SEC) {     /* drop old entries */
+    f->recent_pruned_us = now;
+    GHashTableIter it;
+    gpointer k, v;
+    g_hash_table_iter_init(&it, f->recent);
+    while (g_hash_table_iter_next(&it, &k, &v)) {
+      GArray *a = v;
+      for (guint i = a->len; i > 0; i--) {
+        if (now - g_array_index(a, Recent, i - 1).at_us > RECENT_S * G_USEC_PER_SEC) {
+          g_array_remove_index_fast(a, i - 1);
+        }
+      }
+      if (!a->len) { g_hash_table_iter_remove(&it); }
+    }
+  }
+  GArray *a = g_hash_table_lookup(f->recent, call);
+  if (!a) {
+    a = g_array_new(FALSE, FALSE, sizeof(Recent));
+    g_hash_table_insert(f->recent, g_strdup(call), a);
+  }
+  gboolean seen = FALSE;
+  for (guint i = 0; i < a->len; i++) {
+    Recent *r = &g_array_index(a, Recent, i);
+    if (fabs(r->freq_hz - freq_hz) <= RECENT_HZ &&
+        now - r->at_us <= RECENT_S * G_USEC_PER_SEC && (external || r->external)) {
+      seen = TRUE;
+      break;
+    }
+  }
+  if (!seen) {
+    const Recent r = { freq_hz, now, external };
+    g_array_append_val(a, r);
+  }
+  return seen;
+}
+
+/* The line out (after the delay), the relay, the tap. */
+static void spot_out(SkimRbnFeed *f, const char *call, const char *mode, double freq_hz,
+                     double snr_db, double speed) {
+  if (f->tap) { f->tap(call, mode, freq_hz, snr_db, speed, f->tap_user); }
+  if (f->relay) { skim_rbn_feed_spot(f->relay, call, mode, freq_hz, snr_db, speed); }
+  if (!f->svc) { return; }                     /* a sink: nobody to write to */
   GDateTime *now = g_date_time_new_now_utc();
   Broadcast *b = g_new0(Broadcast, 1);
   b->f = f;
@@ -231,7 +300,44 @@ void skim_rbn_feed_spot(SkimRbnFeed *f, const char *call, const char *mode,
     g_main_context_invoke_full(f->ctx, G_PRIORITY_DEFAULT, broadcast_cb, b,
                                broadcast_free);
   }
-  if (f->relay) { skim_rbn_feed_spot(f->relay, call, mode, freq_hz, snr_db, speed); }
+}
+
+void skim_rbn_feed_spot(SkimRbnFeed *f, const char *call, const char *mode,
+                        double freq_hz, double snr_db, double speed) {
+  g_return_if_fail(f && call && call[0]);
+  /* our own pipelines' policy decides their re-spots; only a spot another
+   * skimmer sent first makes ours a duplicate (never without peers/workers) */
+  g_mutex_lock(&f->recent_lock);
+  const gboolean seen = recent_seen(f, call, freq_hz, g_get_monotonic_time(), FALSE);
+  g_mutex_unlock(&f->recent_lock);
+  if (seen) {
+    g_atomic_int_inc(&f->dup_dropped);
+    return;
+  }
+  spot_out(f, call, mode, freq_hz, snr_db, speed);
+}
+
+gboolean skim_rbn_feed_spot_external(SkimRbnFeed *f, const char *call, const char *mode,
+                                     double freq_hz, double snr_db, double speed) {
+  g_return_val_if_fail(f && call && call[0], FALSE);
+  g_mutex_lock(&f->recent_lock);
+  const gboolean seen = recent_seen(f, call, freq_hz, g_get_monotonic_time(), TRUE);
+  g_mutex_unlock(&f->recent_lock);
+  if (seen) {
+    g_atomic_int_inc(&f->dup_dropped);
+    return FALSE;
+  }
+  spot_out(f, call, mode, freq_hz, snr_db, speed);
+  return TRUE;
+}
+
+void skim_rbn_feed_set_tap(SkimRbnFeed *f, SkimRbnFeedTap tap, gpointer user) {
+  f->tap = tap;
+  f->tap_user = user;
+}
+
+guint64 skim_rbn_feed_dup_dropped(const SkimRbnFeed *f) {
+  return (guint64)g_atomic_int_get(&((SkimRbnFeed *)f)->dup_dropped);
 }
 
 void skim_rbn_feed_set_delay(SkimRbnFeed *f, guint delay_s) {
@@ -255,17 +361,41 @@ static gpointer feed_thread(gpointer data) {
   return NULL;
 }
 
-SkimRbnFeed *skim_rbn_feed_new(const char *mycall, guint16 port, GError **error) {
-  g_return_val_if_fail(mycall && mycall[0], NULL);
+/* The parts every feed has, a sink included. */
+static SkimRbnFeed *feed_alloc(const char *mycall) {
   SkimRbnFeed *f = g_new0(SkimRbnFeed, 1);
   char up[16];
   g_strlcpy(up, mycall, sizeof(up));
   for (char *p = up; *p; p++) { *p = g_ascii_toupper(*p); }
   g_snprintf(f->spotter, sizeof(f->spotter), "%s-#:", g_strstrip(up));
-
   f->ctx     = g_main_context_new();
   f->loop    = g_main_loop_new(f->ctx, FALSE);
   f->clients = g_ptr_array_new_with_free_func(client_free);
+  g_mutex_init(&f->recent_lock);
+  f->recent = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
+                                    (GDestroyNotify)g_array_unref);
+  return f;
+}
+
+static void feed_dealloc(SkimRbnFeed *f) {
+  g_ptr_array_free(f->clients, TRUE);
+  g_main_loop_unref(f->loop);
+  g_main_context_unref(f->ctx);
+  g_hash_table_unref(f->recent);
+  g_mutex_clear(&f->recent_lock);
+  g_free(f);
+}
+
+SkimRbnFeed *skim_rbn_feed_new_sink(const char *mycall) {
+  g_return_val_if_fail(mycall && mycall[0], NULL);
+  SkimRbnFeed *f = feed_alloc(mycall);
+  f->thread = g_thread_new("skim-rbn", feed_thread, f);    /* the delay's timers */
+  return f;
+}
+
+SkimRbnFeed *skim_rbn_feed_new(const char *mycall, guint16 port, GError **error) {
+  g_return_val_if_fail(mycall && mycall[0], NULL);
+  SkimRbnFeed *f = feed_alloc(mycall);
 
   /* Create the service (and bind) with our context as thread-default, so
    * its accept sources — and thus ::incoming — dispatch on the feed thread. */
@@ -287,10 +417,7 @@ SkimRbnFeed *skim_rbn_feed_new(const char *mycall, guint16 port, GError **error)
 
   if (!ok) {
     g_object_unref(f->svc);
-    g_ptr_array_free(f->clients, TRUE);
-    g_main_loop_unref(f->loop);
-    g_main_context_unref(f->ctx);
-    g_free(f);
+    feed_dealloc(f);
     return NULL;
   }
   f->thread = g_thread_new("skim-rbn", feed_thread, f);
@@ -299,8 +426,10 @@ SkimRbnFeed *skim_rbn_feed_new(const char *mycall, guint16 port, GError **error)
 
 static gboolean shutdown_cb(gpointer data) {
   SkimRbnFeed *f = data;
-  g_socket_service_stop(f->svc);
-  g_socket_listener_close(G_SOCKET_LISTENER(f->svc));
+  if (f->svc) {
+    g_socket_service_stop(f->svc);
+    g_socket_listener_close(G_SOCKET_LISTENER(f->svc));
+  }
   g_main_loop_quit(f->loop);
   return G_SOURCE_REMOVE;
 }
@@ -310,11 +439,8 @@ void skim_rbn_feed_free(SkimRbnFeed *f) {
     return;
   g_main_context_invoke(f->ctx, shutdown_cb, f);
   g_thread_join(f->thread);
-  g_ptr_array_free(f->clients, TRUE);          /* thread is gone — safe      */
-  g_object_unref(f->svc);
-  g_main_loop_unref(f->loop);
-  g_main_context_unref(f->ctx);
-  g_free(f);
+  if (f->svc) { g_object_unref(f->svc); }
+  feed_dealloc(f);                             /* thread is gone — safe      */
 }
 
 guint16 skim_rbn_feed_port(const SkimRbnFeed *f) { return f->port; }
