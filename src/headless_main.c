@@ -508,6 +508,7 @@ static void status_build(Hd *h, gboolean print) {
 
 
   char *jstate = skim_json_str(src->state);
+  char *jcall = skim_json_str(h->cfg.feed_call ? h->cfg.feed_call : "");
   char *jhost = skim_json_str(src->host);
   /* the decoder that actually runs (deepcw falls back to cw-v3 without its
    * runtime or model) — a feed comparison needs to know which one spotted */
@@ -566,7 +567,7 @@ static void status_build(Hd *h, gboolean print) {
       : g_strdup("null");
   g_string_append_printf(json,
       "{\"version\":\"%s\",\"started_us\":%" G_GINT64_FORMAT ",\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
-      "\"locator\":\"%s\",\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
+      "\"call\":\"%s\",\"locator\":\"%s\",\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"cpu_cw_pct\":%.1f,\"cpu_rtty_pct\":%.1f,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
@@ -576,7 +577,7 @@ static void status_build(Hd *h, gboolean print) {
       "\"rbn\":%s,\"peers\":%s,\"external_dups\":%" G_GUINT64_FORMAT ","
       "\"suppress_cw_on_rtty\":%s,\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
-      SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, h->cfg.locator, src->ppm, h->cfg.rate, lost_pct,
+      SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, jcall, h->cfg.locator, src->ppm, h->cfg.rate, lost_pct,
       h->pps, h->cpu_pct, h->cpu_mode_pct[M_CW], h->cpu_mode_pct[M_RTTY], engine, pol_score,
       pol_hear, pol_settle, pol_nd, pol_fresh,
       pol_fold, folded, jgate, h->switches_json, supervisor_json(), jrbn, jpeers, dups,
@@ -584,6 +585,7 @@ static void status_build(Hd *h, gboolean print) {
       h->feed ? h->cfg.feed_port : 0, h->cfg.feed_rtty ? "true" : "false", fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
+  g_free(jcall);
   g_free(jgate);
   g_free(jrbn);
   g_free(jpeers);

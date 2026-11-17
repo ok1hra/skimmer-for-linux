@@ -59,7 +59,11 @@ function bandsDecoded(d) {
 let status = null;
 function renderStatus(d) {
   status = d;
-  $('#version').textContent = d.version ? `headless ${d.version}` : '';
+  $('#call').textContent = d.call || 'SKIMMER';
+  $('#version').textContent = d.locator || (d.version ? `v${d.version}` : '');
+  $('#hdr-stats').innerHTML = `<span>CPU <b>${fmt(d.cpu_pct)}%</b></span> <span>lost <b>${fmt(d.lost_pct, 3)}%</b></span> ` +
+    `<span>feed <b>${d.feed_port ? fmt(d.feed_clients) : 'off'}</b></span> <span>${esc(d.engine || '')}</span> <span>v${esc(d.version || '')}</span>`;
+  document.title = `${d.call ? `${d.call} · ` : ''}Skimmer for Linux`;
   const dot = $('#radio .dot');
   dot.className = `dot ${d.streaming ? 'ok' : 'bad'}`;
   $('#radio-text').textContent = d.radio;

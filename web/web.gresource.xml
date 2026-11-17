@@ -6,5 +6,7 @@
     <file>app.css</file>
     <file>app.js</file>
     <file>charts.js</file>
+    <file compressed="true">fonts/RC-R.ttf</file>
+    <file compressed="true">fonts/RC-B.ttf</file>
   </gresource>
 </gresources>

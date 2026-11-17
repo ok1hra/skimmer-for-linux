@@ -72,6 +72,7 @@ static const char *type_of(const char *path) {
   if (g_str_has_suffix(path, ".js")) { return "text/javascript; charset=utf-8"; }
   if (g_str_has_suffix(path, ".css")) { return "text/css; charset=utf-8"; }
   if (g_str_has_suffix(path, ".svg")) { return "image/svg+xml"; }
+  if (g_str_has_suffix(path, ".ttf")) { return "font/ttf"; }
   return "text/html; charset=utf-8";
 }
 

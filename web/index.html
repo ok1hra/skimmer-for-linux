@@ -9,11 +9,13 @@
 </head>
 <body>
 <header>
-  <div class="title">
-    <h1>Skimmer for Linux</h1>
-    <span id="version" class="mut"></span>
+  <div class="title" title="Skimmer for Linux">
+    <h1 id="call">SKIMMER</h1><span id="version"></span>
   </div>
-  <div id="radio" class="radio"><span class="dot"></span><span id="radio-text">…</span></div>
+  <div class="strip">
+    <span id="radio" class="radio"><span class="dot"></span><span id="radio-text">…</span></span>
+    <span id="hdr-stats"></span>
+  </div>
   <nav>
     <button data-tab="status" class="on">Status</button>
     <button data-tab="stats">Statistics</button>
@@ -24,7 +26,7 @@
 
 <div id="overlay" hidden><div><b id="overlay-text">Restarting…</b><p class="mut" id="overlay-sub"></p></div></div>
 <main>
-  <section id="tab-status">
+  <section id="tab-status" class="pad">
     <div id="rollback" class="warnbox" hidden></div>
     <div id="dcw-warn" class="warnbox" hidden></div>
     <div id="tiles" class="tiles"></div>
@@ -124,8 +126,10 @@
           <div id="dcw" class="dcw"></div>
         </fieldset>
         <fieldset>
-          <legend>Telnet feed</legend>
+          <legend>Station and feed</legend>
           <label>Call <input name="feed.call" placeholder="YOURCALL"></label>
+          <label>Locator <input name="station.locator" placeholder="JO60WA" maxlength="6">
+            <small>the centre of the map on Status, the distances and bearings</small></label>
           <label>Port <input name="feed.port" inputmode="numeric" placeholder="7300">
             <small>0 = off</small></label>
           <label class="check"><input type="checkbox" name="feed.rtty" data-default="true"> RTTY spots on the feed too</label>
