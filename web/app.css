@@ -79,6 +79,8 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel);
 .grid th { color: var(--mut); font-weight: 500; font-size: 12px; }
 .grid tr:last-child td { border-bottom: 0; }
 .note { font-size: 12px; margin: 6px 0 14px; }
+h2.sect { margin: 4px 0 6px; }
+#peers-box { margin-bottom: 14px; }
 .cq { color: var(--cq); font-weight: 600; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 10px; }
 .card { background: var(--panel); border: 1px solid var(--ln); border-radius: 8px; padding: 8px 10px; }

@@ -77,6 +77,9 @@ static const char DEFAULT_CONFIG[] =
   "# connects to this port and relays the spots to the network. They are the\n"
   "# feed's spots under its call, each held delay_s seconds (0-99) first.\n"
   "enabled=false\nport=7550\ndelay_s=0\n"
+  "\n[peers]\n# other skimmers' telnet feeds (host or host:port, comma separated):\n"
+  "# their CQ spots go out on this feed under this call, duplicates dropped\n"
+  "hosts=\n"
   "\n[status]\n# console table every N s (0 = off); web page port (0 = off)\n"
   "console_s=10\nhttp_port=8073\n"
   "\n[web]\n# who may change the settings from the web page (addresses or\n"
@@ -105,6 +108,7 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_free(cfg->feed_gate);
   g_free(cfg->feed_gate_mode);
   g_strfreev(cfg->settings_from);
+  g_strfreev(cfg->peers);
   g_strfreev(cfg->rec_bands);
   g_free(cfg->rec_dir);
   memset(cfg, 0, sizeof(*cfg));
@@ -347,6 +351,19 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->rbn_delay_s = (guint)d;
   }
 
+  {
+    char *pv = g_key_file_get_string(kf, "peers", "hosts", NULL);
+    GPtrArray *pl = g_ptr_array_new();
+    char **pp = g_strsplit_set(pv ? pv : "", ", \t", -1);
+    for (char **q = pp; *q; q++) {
+      if (**q) { g_ptr_array_add(pl, g_strdup(*q)); }
+    }
+    g_strfreev(pp);
+    g_free(pv);
+    g_ptr_array_add(pl, NULL);
+    h->peers = (char **)g_ptr_array_free(pl, FALSE);
+  }
+
   h->console_s = g_key_file_has_key(kf, "status", "console_s", NULL)
                      ? g_key_file_get_integer(kf, "status", "console_s", NULL) : -1;
   h->http_port = g_key_file_has_key(kf, "status", "http_port", NULL)
@@ -475,6 +492,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "decode.engine", "decode.log", "decode.suppress_cw_on_rtty",
   "feed.call", "feed.port", "feed.rtty",
   "rbn.enabled", "rbn.port", "rbn.delay_s",
+  "peers.hosts",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
   NULL,

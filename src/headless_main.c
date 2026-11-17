@@ -62,6 +62,7 @@
 #include "headless/deepcw_model.h"
 #include "headless/json.h"
 #include "headless/logring.h"
+#include "headless/peers.h"
 #include "headless/record.h"
 #include "headless/scp_update.h"
 #include "headless/service.h"
@@ -160,6 +161,7 @@ typedef struct {
   int       exit_code;         /* != 0: stop the main loop with it            */
   SkimRbnFeed    *feed;
   SkimRbnFeed    *rbn;         /* [rbn]: the Aggregator's port (delayed)      */
+  SkimHdPeers    *peers;       /* [peers]: other skimmers' feeds, aggregated  */
   SkimScpUpdater *scp;
   GMainLoop      *loop;
   gint64          t_start;
@@ -536,6 +538,10 @@ static void status_build(Hd *h, gboolean print) {
                         jgid, gate_on(h) ? "on" : "shadow", fg_thr, fg_spots, fg_below)
       : g_strdup("null");
   g_free(jgid);
+  /* [peers]: who is connected, what came in, what the dedup dropped */
+  char *jpeers = h->peers ? skim_hd_peers_json(h->peers) : g_strdup("[]");
+  const guint64 dups = h->feed ? skim_rbn_feed_dup_dropped(h->feed)
+                     : h->rbn  ? skim_rbn_feed_dup_dropped(h->rbn) : 0;
   /* [rbn]: the Aggregator's port — who is on it, what went out, what waits */
   char *jrbn = h->rbn
       ? g_strdup_printf("{\"port\":%d,\"delay_s\":%u,\"clients\":%u,\"lines\":%"
@@ -553,19 +559,20 @@ static void status_build(Hd *h, gboolean print) {
       "\"settle_nodict_s\":%.1f,"
       "\"fresh_s\":%.1f,\"fold_s\":%.1f,\"folded\":%" G_GUINT64_FORMAT "},"
       "\"feed_gate\":%s,\"switches\":%s,\"supervisor\":%s,"
-      "\"rbn\":%s,"
+      "\"rbn\":%s,\"peers\":%s,\"external_dups\":%" G_GUINT64_FORMAT ","
       "\"suppress_cw_on_rtty\":%s,\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
       h->pps, h->cpu_pct, h->cpu_mode_pct[M_CW], h->cpu_mode_pct[M_RTTY], engine, pol_score,
       pol_hear, pol_settle, pol_nd, pol_fresh,
-      pol_fold, folded, jgate, h->switches_json, supervisor_json(), jrbn,
+      pol_fold, folded, jgate, h->switches_json, supervisor_json(), jrbn, jpeers, dups,
       h->cfg.suppress_cw_on_rtty ? "true" : "false",
       h->feed ? h->cfg.feed_port : 0, h->cfg.feed_rtty ? "true" : "false", fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   g_free(jstate);
   g_free(jgate);
   g_free(jrbn);
+  g_free(jpeers);
   g_free(jhost);
 
   for (guint i = 0; i < h->nb; i++) {
@@ -1194,6 +1201,16 @@ static void on_scp(const SkimScpOutcome *out, gpointer user) {
             (guint)skim_callsign_dict_size());
 }
 
+/* A peer's CQ spot (peers thread): out on our feed, unless it is a duplicate
+ * of what went out already (ours or another peer's). */
+static void peer_spot(const char *peer, const char *call, const char *mode, double freq_hz,
+                      double snr_db, double speed, gpointer user) {
+  (void)peer;
+  Hd *h = user;
+  if (g_strcmp0(mode, "CW") != 0 && !h->cfg.feed_rtty) { return; }   /* CW-only feed */
+  skim_rbn_feed_spot_external(h->feed ? h->feed : h->rbn, call, mode, freq_hz, snr_db, speed);
+}
+
 static gboolean on_signal(gpointer user) {
   g_message("signal — stopping");
   g_main_loop_quit(((Hd *)user)->loop);
@@ -1468,6 +1485,18 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (c->peers && c->peers[0]) {
+    if (!h->feed && !h->rbn) {
+      g_warning("peers: no feed to send their spots on ([feed] call and port, or [rbn]) — "
+                "not connected");
+    } else {
+      h->peers = skim_hd_peers_new((const char *const *)c->peers, c->feed_call, peer_spot, h);
+      char *l = g_strjoinv(", ", c->peers);
+      g_message("peers: their CQ spots go out as %s, duplicates dropped: %s", c->feed_call, l);
+      g_free(l);
+    }
+  }
+
   char *logdir = g_build_filename(g_get_user_data_dir(), "skimmer-for-linux", "headless", NULL);
   GDateTime *now = g_date_time_new_now_local();
   char *day = g_date_time_format(now, "%Y-%m-%d");
@@ -1631,6 +1660,7 @@ int main(int argc, char **argv) {
     skim_rec_free(h->band[i].rec);
   }
   g_clear_pointer(&h->stats, skim_stats_free);  /* saves                       */
+  g_clear_pointer(&h->peers, skim_hd_peers_free);  /* they spot into the feed */
   g_clear_pointer(&h->feed, skim_rbn_feed_free);   /* it relays to rbn: first */
   g_clear_pointer(&h->rbn, skim_rbn_feed_free);
   g_clear_pointer(&h->scp, skim_scp_updater_free);

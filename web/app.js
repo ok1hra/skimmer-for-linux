@@ -60,6 +60,8 @@ function renderStatus(d) {
     tile('lost', fmt(d.lost_pct, 3), '%'),
     tile('feed', d.feed_port ? fmt(d.feed_clients) : 'off', d.feed_port ? `client${d.feed_clients === 1 ? '' : 's'} · :${d.feed_port}` : ''),
     tile('spots', fmt(spots), `${fmt(d.feed_lines)} line${d.feed_lines === 1 ? '' : 's'} to clients`),
+    ...((d.peers || []).length ? [tile('peers', `${fmt(d.peers.filter((p) => p.connected).length)}/${fmt(d.peers.length)}`,
+      `connected · ${fmt(d.peers.reduce((a, p) => a + p.spots, 0))} spots in`)] : []),
     ...(d.rbn ? [tile('RBN', fmt(d.rbn.clients),
       `aggregator${d.rbn.clients === 1 ? '' : 's'} · :${d.rbn.port} · ${fmt(d.rbn.lines)} sent` +
       (d.rbn.delay_s ? ` · held ${d.rbn.delay_s} s${d.rbn.waiting ? `, ${fmt(d.rbn.waiting)} waiting` : ''}` : ''))] : []),
@@ -76,6 +78,15 @@ function renderStatus(d) {
     `<tr><td>${esc(b.band)}</td><td class="l">${b.mode}</td><td>${fmt(b.centre_hz / 1000, 1)}</td>${engineCell(b)}` +
     `<td>${fmt(b.decoders)}</td><td>${fmt(b.active)}</td><td>${fmt(b.stations)}</td>` +
     `<td>${fmt(b.spots)}</td><td>${fmt(b.drops)}</td><td>${fmt(b.ksps)}</td></tr>`).join('');
+
+  const peers = d.peers || [];
+  $('#peers-box').hidden = !peers.length;
+  if (peers.length) {
+    $('#peers').innerHTML = '<tr><th>feed</th><th class="l">state</th><th>CQ spots in</th><th>lines</th></tr>' +
+      peers.map((p) => `<tr><td>${esc(p.host)}</td><td class="l ${p.connected ? 'ok' : 'bad'}">${esc(p.state)}</td>` +
+        `<td>${fmt(p.spots)}</td><td>${fmt(p.lines)}</td></tr>`).join('') +
+      `<tr><td colspan="4" class="mut">${fmt(d.external_dups)} of their spots dropped as duplicates of what the feed sent already</td></tr>`;
+  }
 
   $('#recent').innerHTML = modes.map((b) => {
     const rows = b.recent.length ? b.recent.map((s) =>

@@ -292,6 +292,15 @@ skimmer_config_test = executable('skimmer-config-test',
 )
 test('config', skimmer_config_test, timeout : 30)
 
+# [peers]: other skimmers' feeds read, their CQ spots handed on; the line parser.
+skimmer_peers_test = executable('skimmer-peers-test',
+  ['src/peers_test.c', 'src/headless/peers.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('peers', skimmer_peers_test, timeout : 60)
+
 # The 7-day history: buckets, reopen with re-ordered bands, a foreign file.
 skimmer_stats_test = executable('skimmer-stats-test',
   ['src/stats_test.c', 'src/headless/stats.c'],
@@ -328,6 +337,7 @@ headless_sources = files(
   'src/headless/config.c',          # headless.ini, parsed and checked
   'src/headless/deepcw_model.c',    # the DeepCW model: check, fetch
   'src/headless/logring.c',         # the last log lines (/api/log)
+  'src/headless/peers.c',           # [peers]: other skimmers' feeds, aggregated
   'src/headless/record.c',          # [record]: a band's IQ to disk
   'src/headless/scp_update.c',      # MASTER.SCP updater
   'src/headless/service.c',         # --install-service: the systemd user unit
