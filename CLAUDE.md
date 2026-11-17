@@ -137,7 +137,11 @@ here; what was done and why is in git.
   (`skim_rbn_feed_spot_external`); UDP 8075 discovery (`discovery.c`).
 - **The web page** (libsoup 3, `src/headless/web.c`, static files in `web/`
   built in as a GResource, plain JS/SVG — no libraries, it must work
-  offline): status, 7-day statistics (`stats.c`), settings (one parser:
+  offline; the look of IP-rotator/wifilt, Roboto Condensed built in):
+  status = an azimuthal map of the last 30 min of spots (`web/map.js`, data
+  `web/map/` from IP-rotator) + the DX cluster with column filters
+  (`web/dxc.js`), both from `/api/spots`; statistics (`stats.c`, three
+  rings: 1 min × 7 d, 15 min × 90 d, 1 h × 2 y, saved in place), settings (one parser:
   `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
   backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
   POSTs only from `[web] settings_from`, no foreign Origin.
