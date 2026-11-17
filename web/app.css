@@ -56,6 +56,17 @@ footer a { color: inherit; }
 .tile .k { font-size: 12px; color: var(--mut); }
 .tile .v { font-size: 20px; font-variant-numeric: tabular-nums; }
 .tile .v small { font-size: 12px; color: var(--mut); }
+.contents { display: contents; }
+.tile.hero { grid-column: span 2; border: 2px solid var(--accent); padding: 8px 12px;
+             background: linear-gradient(135deg, var(--panel), color-mix(in srgb, var(--accent) 8%, var(--panel))); }
+.tile.hero .k { font-weight: 600; color: var(--fg); }
+.tile.hero .k small { font-weight: 400; color: var(--mut); margin-left: 4px; }
+.tile.hero .parts { display: flex; gap: 2px 22px; margin-top: 2px; }
+.tile.hero .part { display: flex; flex-direction: column; min-width: 0; }
+.tile.hero .n { font-size: 30px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.tile.hero .cw .n { color: var(--s1); } .tile.hero .rtty .n { color: var(--s2); }
+.tile.hero .l { font-size: 13px; font-weight: 600; line-height: 1.2; white-space: nowrap; }
+.tile.hero .l small { font-weight: 400; font-size: 11px; color: var(--mut); margin-left: 5px; }
 .wrap { overflow-x: auto; }
 table.grid { border-collapse: collapse; width: 100%; background: var(--panel);
              border: 1px solid var(--ln); border-radius: 8px; }
@@ -140,6 +151,7 @@ button:disabled { opacity: .5; cursor: default; }
 @media (max-width: 760px) { .pair { grid-template-columns: 1fr; } }
 @media (max-width: 600px) {
   main { padding: 12px; }
+  .tile.hero { grid-column: 1 / -1; }
   .tile .v { font-size: 17px; }
 }
 td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }

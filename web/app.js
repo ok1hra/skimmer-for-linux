@@ -114,6 +114,7 @@ function renderStatus(d) {
                    : 'The model can be fetched under Settings → Decoding.');
   }
   renderDcw(dc);
+  if (tab === 'stats') renderDecTile(d);
 }
 
 // The DeepCW model (Settings → Decoding): installed or not, the runtime,
@@ -163,6 +164,20 @@ tabs.status = {
 
 // ---- statistics ------------------------------------------------------------------
 const stats = { hours: 24, mode: 'cw', data: null, at: 0 };
+
+// The CW + RTTY decoders tile: every channel decoder running now, summed over
+// the bands, CW beside RTTY (live, from the status — the history has no count).
+function renderDecTile(d) {
+  const el = $('#stats-dec');
+  if (!el || !d) return;
+  const cw = d.bands.filter((b) => b.cw !== false);
+  const rt = d.bands.filter((b) => b.rtty);
+  const n = (list, f) => list.reduce((a, b) => a + (f(b) || 0), 0);
+  const part = (label, cls, list, f) => `<div class="part ${cls}"><div class="n">${list.length ? fmt(n(list, (b) => f(b).decoders)) : '–'}</div>` +
+    `<div class="l">${label}<small>${list.length ? `${fmt(n(list, (b) => f(b).active))} active · ${list.length} band${list.length === 1 ? '' : 's'}` : 'no band'}</small></div></div>`;
+  el.innerHTML = '<div class="k">CW + RTTY decoders <small>running now</small></div><div class="parts">' +
+    part('CW', 'cw', cw, (b) => b) + part('RTTY', 'rtty', rt, (b) => b.rtty) + '</div>';
+}
 function sum(a) { return a.reduce((x, v) => x + (v || 0), 0); }
 function mean(a) { const v = a.filter((x) => x != null); return v.length ? sum(v) / v.length : null; }
 
@@ -199,6 +214,7 @@ function renderStats() {
 
   const totSpots = d.bands.reduce((a, b) => a + sum(m.spots[b]), 0);
   const streamed = mean(d.global.streaming);
+  renderDecTile(status);
   $('#stats-tiles').innerHTML = [
     tile('spots', fmt(totSpots), `in ${stats.hours} h`),
     tile('stations appeared', fmt(d.bands.reduce((a, b) => a + sum(m.stations[b]), 0))),
