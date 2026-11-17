@@ -1880,7 +1880,8 @@ int main(int argc, char **argv) {
   char *stats_path = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux",
                                       "stats.bin", NULL);
   h->stats = skim_stats_open(stats_path, names, h->nb);
-  g_message("stats: %s (7 days, a record a minute)", stats_path);
+  g_message("stats: %s (a record a minute for 7 days, per 15 min for 90 days, per hour for "
+            "2 years)", stats_path);
   g_free(stats_path);
 
   SkimHdWeb *web = NULL;

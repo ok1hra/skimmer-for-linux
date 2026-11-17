@@ -99,6 +99,7 @@ h2.sect { margin: 4px 0 6px; }
        max-height: 75vh; overflow: auto; margin: 0; }
 .log .warn { color: var(--warn); } .log .crit, .log .error { color: var(--bad); }
 .warnbox { border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; }
+.seg { flex-wrap: wrap; }
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 12px; }
 .seg { display: inline-flex; border: 1px solid var(--ln); border-radius: 6px; overflow: hidden; }
 .seg button { font: inherit; border: 0; background: var(--panel); color: var(--fg); padding: 4px 10px; cursor: pointer; }

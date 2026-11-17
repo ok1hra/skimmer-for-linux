@@ -1,18 +1,28 @@
 /* stats.c — see stats.h. Part of skimmer-for-linux. GPL-3.0-or-later.
  *
- * File: a header, then SKIM_STATS_MINUTES slots, the slot of a minute at
- * (unix minute mod SKIM_STATS_MINUTES). Native byte order — the file never
- * leaves the machine that wrote it.
+ * Three rings, round-robin archives as in RRD: TIER[t] keeps len slots of
+ * res minutes each — 1 min × 7 days, 15 min × 90 days, 1 h × 2 years. Every
+ * minute put lands in all three: its own slot in the first, merged into the
+ * 15-minute and the hour slot that hold it (counts summed, levels averaged
+ * over the minutes that had a value, the worst lost, the last radio). The
+ * slot of a minute in tier t is (minute / res mod len); a slot whose start
+ * is not the current one is cleared first.
  *
- * Saving writes only the slots put since the last save, in place (pwrite
- * on the file kept open): a few kB every few minutes, not the whole 4 MB.
- * The whole file is written — atomically, to a temp file renamed over it —
- * only when there is none yet, when it is of an older version, or when the
- * config's bands differ from the file's columns (they are matched by name
- * and re-ordered). A slot torn by a power cut costs that one minute.
+ * File (version 3): a header, then the three rings one after the other.
+ * Native byte order — the file never leaves the machine that wrote it.
+ * Versions 1 and 2 (the minutes only) are read, their week merged into the
+ * coarser rings, and the file is written anew.
+ *
+ * Saving writes only the slots changed since the last save, in place (pwrite
+ * on the file kept open): a few kB every few minutes. The whole file is
+ * written — atomically, to a temp file renamed over it — only when there is
+ * none yet, when it is of an older version, or when the config's bands
+ * differ from the file's columns (they are matched by name and re-ordered).
+ * A slot torn by a power cut costs that slot.
  *
  * /stats.json:
  *   { "now": <unix s>, "t0": <unix s of the first bucket>, "step_min": S, "n": N,
+ *     "res_min": R (the ring the answer comes from),
  *     "bands": ["160m", …],
  *     "cw":   { "spots": { "160m": [v|null × N], … }, "stations": …, "active": …,
  *               "folded": …, "gate_below": …, "snr": … },
@@ -21,7 +31,9 @@
  *                 "cpu_cw": …, "cpu_rtty": … } }
  *   A bucket sums the counts (spots, stations, folded, gate_below), averages
  *   the levels (active, cpu, clients, snr, streaming = the share of minutes
- *   streamed), takes the worst lost and the last radio. null = no record.
+ *   streamed) over the minutes that had them, takes the worst lost and the
+ *   last radio. null = no record. The answer comes from the finest ring that
+ *   covers the span; its step is a whole number of that ring's slots.
  */
 #include "stats.h"
 
@@ -34,246 +46,19 @@
 
 #include "json.h"
 
-#define MAGIC "SKIMSTAT"
-#define VERSION 2                    /* 2: + cpu_cw, cpu_rtty               */
+#define MAGIC   "SKIMSTAT"
+#define VERSION 3                    /* 3: the 15-minute and hour rings      */
 #define V1_SG_N 5                    /* version 1's global metrics           */
+#define NV      (SKIM_STATS_BANDS * SKIM_STATS_MODES * SKIM_SM_N + SKIM_SG_N)
+#define NTIER   3
 
-typedef struct {
-  char    magic[8];
-  guint32 version, minutes, bands, modes, sm_n, sg_n;
-  char    names[SKIM_STATS_BANDS][16];
-} Header;
-
-typedef struct {
-  gint64          minute;                /* unix minute; 0 = empty           */
-  SkimStatsMinute m;
-} Slot;
-
-/* A version 1 slot: the same, with the first V1_SG_N global metrics. */
-typedef struct {
-  gint64 minute;
-  float  band[SKIM_STATS_BANDS][SKIM_STATS_MODES][SKIM_SM_N];
-  float  glob[V1_SG_N];
-} SlotV1;
-
-struct _SkimStats {
-  char   *path;
-  char    names[SKIM_STATS_BANDS][16];
-  guint   nb;
-  Slot   *slot;                          /* SKIM_STATS_MINUTES              */
-  gboolean dirty;                        /* something to write              */
-  gboolean full;                         /* … the whole file (see the top)  */
-  guint8  *dirty_slot;                   /* bitmap: slots put since a save  */
-  int      fd;                           /* the file, open for pwrite; -1   */
+static const struct { guint res, len; } TIER[NTIER] = {
+  { 1, SKIM_STATS_MINUTES },                   /* 1 min × 7 days            */
+  { 15, 90 * 24 * 4 },                         /* 15 min × 90 days          */
+  { 60, 2 * 365 * 24 },                        /* 1 h × 2 years             */
 };
 
-static void empty_minute(SkimStatsMinute *m) {
-  for (guint b = 0; b < SKIM_STATS_BANDS; b++) {
-    for (guint k = 0; k < SKIM_STATS_MODES; k++) {
-      for (guint j = 0; j < SKIM_SM_N; j++) { m->band[b][k][j] = NAN; }
-    }
-  }
-  for (guint j = 0; j < SKIM_SG_N; j++) { m->glob[j] = NAN; }
-}
-
-/* The file's columns, re-ordered to this config's bands by name. TRUE when
- * the file can be written in place as it is (this version, these bands). */
-static gboolean load(SkimStats *s) {
-  char *data = NULL;
-  gsize len = 0;
-  if (!g_file_get_contents(s->path, &data, &len, NULL)) { return FALSE; }
-  const Header *h = (const Header *)data;
-  const gboolean v1 = len >= sizeof(Header) && h->version == 1;
-  const gsize slot = v1 ? sizeof(SlotV1) : sizeof(Slot);
-  if (len < sizeof(Header) || len != sizeof(Header) + SKIM_STATS_MINUTES * slot ||
-      memcmp(h->magic, MAGIC, 8) != 0 || (h->version != VERSION && !v1) ||
-      h->minutes != SKIM_STATS_MINUTES || h->bands != SKIM_STATS_BANDS ||
-      h->modes != SKIM_STATS_MODES || h->sm_n != SKIM_SM_N ||
-      h->sg_n != (v1 ? V1_SG_N : SKIM_SG_N)) {
-    g_warning("stats: %s is not this version's history — starting a fresh one", s->path);
-    g_free(data);
-    return FALSE;
-  }
-  const gboolean same = !v1 && memcmp(h->names, s->names, sizeof(s->names)) == 0;
-  int from[SKIM_STATS_BANDS];
-  for (guint b = 0; b < SKIM_STATS_BANDS; b++) {
-    from[b] = -1;
-    for (guint f = 0; b < s->nb && f < SKIM_STATS_BANDS; f++) {
-      if (h->names[f][0] && strncmp(h->names[f], s->names[b], 16) == 0) { from[b] = (int)f; }
-    }
-  }
-  const Slot *in = (const Slot *)(data + sizeof(Header));
-  const SlotV1 *in1 = (const SlotV1 *)(data + sizeof(Header));
-  for (guint i = 0; i < SKIM_STATS_MINUTES; i++) {
-    Slot *o = &s->slot[i];
-    o->minute = v1 ? in1[i].minute : in[i].minute;
-    empty_minute(&o->m);
-    if (v1) {                                  /* the CPU split stays NaN    */
-      memcpy(o->m.glob, in1[i].glob, sizeof(in1[i].glob));
-    } else {
-      memcpy(o->m.glob, in[i].m.glob, sizeof(o->m.glob));
-    }
-    for (guint b = 0; b < s->nb; b++) {
-      if (from[b] >= 0) {
-        memcpy(o->m.band[b], v1 ? in1[i].band[from[b]] : in[i].m.band[from[b]],
-               sizeof(o->m.band[b]));
-      }
-    }
-  }
-  if (v1) {
-    g_message("stats: %s is a version 1 history — carried over (no CPU split before now)",
-              s->path);
-    s->dirty = TRUE;                           /* written as version 2      */
-  }
-  if (!same) { s->dirty = TRUE; }              /* re-ordered: written whole */
-  g_free(data);
-  return same;
-}
-
-SkimStats *skim_stats_open(const char *path, const char *const *bands, guint nb) {
-  SkimStats *s = g_new0(SkimStats, 1);
-  s->path = g_strdup(path);
-  s->nb = MIN(nb, (guint)SKIM_STATS_BANDS);
-  for (guint b = 0; b < s->nb; b++) { g_strlcpy(s->names[b], bands[b], 16); }
-  s->slot = g_new0(Slot, SKIM_STATS_MINUTES);
-  for (guint i = 0; i < SKIM_STATS_MINUTES; i++) { empty_minute(&s->slot[i].m); }
-  s->dirty_slot = g_new0(guint8, SKIM_STATS_MINUTES / 8 + 1);
-  s->fd = -1;
-  s->full = !load(s);
-  if (!s->full) {
-    s->fd = g_open(s->path, O_RDWR | O_CLOEXEC, 0);
-    if (s->fd < 0) { s->full = TRUE; }
-  }
-  return s;
-}
-
-void skim_stats_put(SkimStats *s, gint64 unix_minute, const SkimStatsMinute *m) {
-  const guint i = (guint)(unix_minute % SKIM_STATS_MINUTES);
-  Slot *o = &s->slot[i];
-  o->minute = unix_minute;
-  o->m = *m;
-  s->dirty_slot[i / 8] |= (guint8)(1u << (i % 8));
-  s->dirty = TRUE;
-}
-
-/* The slots put since the last save, each at its place in the open file. */
-static gboolean save_slots(SkimStats *s, GError **error) {
-  for (guint i = 0; i < SKIM_STATS_MINUTES; i++) {
-    if (!(s->dirty_slot[i / 8] & (1u << (i % 8)))) { continue; }
-    const off_t at = (off_t)(sizeof(Header) + (gsize)i * sizeof(Slot));
-    if (pwrite(s->fd, &s->slot[i], sizeof(Slot), at) != (gssize)sizeof(Slot)) {
-      g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errno), "%s: %s", s->path,
-                  g_strerror(errno));
-      return FALSE;
-    }
-  }
-  return TRUE;
-}
-
-gboolean skim_stats_save(SkimStats *s, GError **error) {
-  if (!s->dirty) { return TRUE; }
-  if (!s->full && s->fd >= 0) {
-    if (save_slots(s, error)) {
-      memset(s->dirty_slot, 0, SKIM_STATS_MINUTES / 8 + 1);
-      s->dirty = FALSE;
-      return TRUE;
-    }
-    s->full = TRUE;                            /* next time: the whole file */
-    return FALSE;
-  }
-  const gsize len = sizeof(Header) + SKIM_STATS_MINUTES * sizeof(Slot);
-  char *buf = g_malloc0(len);
-  Header *h = (Header *)buf;
-  memcpy(h->magic, MAGIC, 8);
-  h->version = VERSION;
-  h->minutes = SKIM_STATS_MINUTES;
-  h->bands = SKIM_STATS_BANDS;
-  h->modes = SKIM_STATS_MODES;
-  h->sm_n = SKIM_SM_N;
-  h->sg_n = SKIM_SG_N;
-  memcpy(h->names, s->names, sizeof(h->names));
-  memcpy(buf + sizeof(Header), s->slot, SKIM_STATS_MINUTES * sizeof(Slot));
-  char *dir = g_path_get_dirname(s->path);
-  g_mkdir_with_parents(dir, 0755);
-  g_free(dir);
-  const gboolean ok = g_file_set_contents(s->path, buf, (gssize)len, error);
-  g_free(buf);
-  if (ok) {                                    /* a new file: open it anew  */
-    if (s->fd >= 0) { close(s->fd); }
-    s->fd = g_open(s->path, O_RDWR | O_CLOEXEC, 0);
-    s->full = s->fd < 0;
-    memset(s->dirty_slot, 0, SKIM_STATS_MINUTES / 8 + 1);
-    s->dirty = FALSE;
-  }
-  return ok;
-}
-
-void skim_stats_free(SkimStats *s) {
-  if (!s) { return; }
-  GError *err = NULL;
-  if (!skim_stats_save(s, &err)) {
-    g_warning("stats: %s", err->message);
-    g_clear_error(&err);
-  }
-  if (s->fd >= 0) { close(s->fd); }
-  g_free(s->dirty_slot);
-  g_free(s->slot);
-  g_free(s->path);
-  g_free(s);
-}
-
-/* ---- JSON ------------------------------------------------------------------------ */
-
 typedef enum { AGG_SUM, AGG_MEAN, AGG_MAX, AGG_LAST } Agg;
-
-typedef struct {
-  double acc;
-  guint  n;
-} Bucket;
-
-static void bucket_add(Bucket *k, Agg agg, float v) {
-  if (isnan(v)) { return; }
-  if (agg == AGG_MAX) { k->acc = k->n ? MAX(k->acc, v) : v; }
-  else if (agg == AGG_LAST) { k->acc = v; }
-  else { k->acc += v; }
-  k->n++;
-}
-
-static void bucket_out(GString *o, const Bucket *k, Agg agg, guint i) {
-  if (i) { g_string_append_c(o, ','); }
-  if (!k->n) { g_string_append(o, "null"); return; }
-  const double v = agg == AGG_MEAN ? k->acc / k->n : k->acc;
-  char num[G_ASCII_DTOSTR_BUF_SIZE];
-  g_ascii_formatd(num, sizeof(num), "%.4g", v);
-  g_string_append(o, num);
-}
-
-/* One series: band b / mode k / metric j (b < 0: global metric j). */
-static void series(GString *o, SkimStats *s, gint64 first, guint step, guint n, int b,
-                   guint k, guint j, Agg agg) {
-  Bucket *bk = g_new0(Bucket, n);
-  for (guint i = 0; i < SKIM_STATS_MINUTES; i++) {
-    const Slot *sl = &s->slot[i];
-    if (!sl->minute || sl->minute < first || sl->minute >= first + (gint64)step * n) {
-      continue;
-    }
-    const guint at = (guint)((sl->minute - first) / step);
-    bucket_add(&bk[at], agg, b < 0 ? sl->m.glob[j] : sl->m.band[b][k][j]);
-  }
-  g_string_append_c(o, '[');
-  for (guint i = 0; i < n; i++) { bucket_out(o, &bk[i], agg, i); }
-  g_string_append_c(o, ']');
-  g_free(bk);
-}
-
-static gboolean mode_used(SkimStats *s, guint k) {
-  for (guint i = 0; i < SKIM_STATS_MINUTES; i++) {
-    for (guint b = 0; s->slot[i].minute && b < s->nb; b++) {
-      if (!isnan(s->slot[i].m.band[b][k][SKIM_SM_ACTIVE])) { return TRUE; }
-    }
-  }
-  return FALSE;
-}
 
 static const struct { const char *name; Agg agg; } BAND_M[SKIM_SM_N] = {
   [SKIM_SM_SPOTS] = { "spots", AGG_SUM },       [SKIM_SM_STATIONS] = { "stations", AGG_SUM },
@@ -287,19 +72,399 @@ static const struct { const char *name; Agg agg; } GLOB_M[SKIM_SG_N] = {
   [SKIM_SG_CPU_CW] = { "cpu_cw", AGG_MEAN },    [SKIM_SG_CPU_RTTY] = { "cpu_rtty", AGG_MEAN },
 };
 
+typedef struct {
+  char    magic[8];
+  guint32 version, minutes, bands, modes, sm_n, sg_n;
+  char    names[SKIM_STATS_BANDS][16];
+} Header;                                      /* versions 1 and 2           */
+
+typedef struct {
+  Header  h;                                   /* version 3, minutes = 0     */
+  guint32 ntier, tier_res[NTIER], tier_len[NTIER], pad;
+} Header3;
+
+/* A slot of any ring: the minute its span starts at (0 = empty), the values
+ * (as a minute record) and how many minutes each value merges. */
+typedef struct {
+  gint64          start;
+  SkimStatsMinute m;
+  guint8          n[NV];
+} Slot;
+
+/* Versions 1 and 2: a minute and its record (version 1: 5 global metrics). */
+typedef struct {
+  gint64          minute;
+  SkimStatsMinute m;
+} SlotV2;
+typedef struct {
+  gint64 minute;
+  float  band[SKIM_STATS_BANDS][SKIM_STATS_MODES][SKIM_SM_N];
+  float  glob[V1_SG_N];
+} SlotV1;
+
+struct _SkimStats {
+  char    *path;
+  char     names[SKIM_STATS_BANDS][16];
+  guint    nb;
+  Slot    *ring[NTIER];
+  guint8  *dirty_slot[NTIER];                  /* bitmaps: changed since a save */
+  gboolean dirty;                              /* something to write          */
+  gboolean full;                               /* … the whole file            */
+  int      fd;                                 /* open for pwrite; -1         */
+};
+
+/* The values of a record as one array, and the aggregation of each. */
+static inline float *vals(SkimStatsMinute *m) { return (float *)m; }
+static inline const float *cvals(const SkimStatsMinute *m) { return (const float *)m; }
+G_STATIC_ASSERT(sizeof(SkimStatsMinute) == NV * sizeof(float));
+
+static Agg agg_of(guint v) {
+  const guint nb = SKIM_STATS_BANDS * SKIM_STATS_MODES * SKIM_SM_N;
+  return v < nb ? BAND_M[v % SKIM_SM_N].agg : GLOB_M[v - nb].agg;
+}
+
+static void empty_minute(SkimStatsMinute *m) {
+  float *v = vals(m);
+  for (guint i = 0; i < NV; i++) { v[i] = NAN; }
+}
+
+static void slot_clear(Slot *sl, gint64 start) {
+  sl->start = start;
+  empty_minute(&sl->m);
+  memset(sl->n, 0, sizeof(sl->n));
+}
+
+static void mark(SkimStats *s, guint t, guint i) {
+  s->dirty_slot[t][i / 8] |= (guint8)(1u << (i % 8));
+  s->dirty = TRUE;
+}
+
+/* One minute into ring t. */
+static void merge(SkimStats *s, guint t, gint64 minute, const SkimStatsMinute *m) {
+  const gint64 start = minute - minute % TIER[t].res;
+  const guint i = (guint)((minute / TIER[t].res) % TIER[t].len);
+  Slot *sl = &s->ring[t][i];
+  if (sl->start != start) { slot_clear(sl, start); }
+  float *v = vals(&sl->m);
+  const float *x = cvals(m);
+  for (guint j = 0; j < NV; j++) {
+    if (isnan(x[j])) { continue; }
+    const guint8 n = sl->n[j];
+    switch (agg_of(j)) {
+      case AGG_SUM:  v[j] = n ? v[j] + x[j] : x[j]; break;
+      case AGG_MEAN: v[j] = n ? (v[j] * n + x[j]) / (n + 1) : x[j]; break;
+      case AGG_MAX:  v[j] = n ? MAX(v[j], x[j]) : x[j]; break;
+      case AGG_LAST: v[j] = x[j]; break;
+    }
+    if (n < 255) { sl->n[j] = n + 1; }
+  }
+  mark(s, t, i);
+}
+
+/* ---- the file -------------------------------------------------------------------- */
+
+static gsize file_len(void) {
+  gsize n = sizeof(Header3);
+  for (guint t = 0; t < NTIER; t++) { n += (gsize)TIER[t].len * sizeof(Slot); }
+  return n;
+}
+
+static gsize ring_offset(guint t) {
+  gsize n = sizeof(Header3);
+  for (guint u = 0; u < t; u++) { n += (gsize)TIER[u].len * sizeof(Slot); }
+  return n;
+}
+
+/* The file's band column for each of ours (by name), -1 = none. */
+static void columns(const char names[][16], const SkimStats *s, int *from) {
+  for (guint b = 0; b < SKIM_STATS_BANDS; b++) {
+    from[b] = -1;
+    for (guint f = 0; b < s->nb && f < SKIM_STATS_BANDS; f++) {
+      if (names[f][0] && strncmp(names[f], s->names[b], 16) == 0) { from[b] = (int)f; }
+    }
+  }
+}
+
+static void remap(SkimStatsMinute *o, const SkimStatsMinute *in, const int *from, guint nb,
+                  guint8 *on, const guint8 *in_n) {
+  SkimStatsMinute m;
+  empty_minute(&m);
+  guint8 n[NV] = { 0 };
+  memcpy(m.glob, in->glob, sizeof(m.glob));
+  const guint gb = SKIM_STATS_BANDS * SKIM_STATS_MODES * SKIM_SM_N;
+  if (in_n) { memcpy(n + gb, in_n + gb, SKIM_SG_N); }
+  for (guint b = 0; b < nb; b++) {
+    if (from[b] < 0) { continue; }
+    memcpy(m.band[b], in->band[from[b]], sizeof(m.band[b]));
+    if (in_n) {
+      const guint per = SKIM_STATS_MODES * SKIM_SM_N;
+      memcpy(n + b * per, in_n + from[b] * per, per);
+    }
+  }
+  *o = m;
+  if (on) { memcpy(on, n, NV); }
+}
+
+/* Version 1 or 2: the week of minutes, merged into every ring. */
+static void load_old(SkimStats *s, const char *data, const Header *h, gboolean v1) {
+  int from[SKIM_STATS_BANDS];
+  columns(h->names, s, from);
+  const SlotV2 *in = (const SlotV2 *)(data + sizeof(Header));
+  const SlotV1 *in1 = (const SlotV1 *)(data + sizeof(Header));
+  /* oldest first, so the coarse slots fill in time order */
+  GArray *order = g_array_new(FALSE, FALSE, sizeof(guint));
+  gint64 newest = 0;
+  for (guint i = 0; i < SKIM_STATS_MINUTES; i++) {
+    newest = MAX(newest, v1 ? in1[i].minute : in[i].minute);
+  }
+  for (gint64 m = newest - SKIM_STATS_MINUTES + 1; newest && m <= newest; m++) {
+    const guint i = (guint)(m % SKIM_STATS_MINUTES);
+    if ((v1 ? in1[i].minute : in[i].minute) == m) { g_array_append_val(order, i); }
+  }
+  for (guint k = 0; k < order->len; k++) {
+    const guint i = g_array_index(order, guint, k);
+    SkimStatsMinute mm, src;
+    empty_minute(&src);
+    gint64 minute;
+    if (v1) {                                  /* the CPU split stays NaN    */
+      minute = in1[i].minute;
+      memcpy(src.band, in1[i].band, sizeof(src.band));
+      memcpy(src.glob, in1[i].glob, sizeof(in1[i].glob));
+    } else {
+      minute = in[i].minute;
+      src = in[i].m;
+    }
+    remap(&mm, &src, from, s->nb, NULL, NULL);
+    for (guint t = 0; t < NTIER; t++) { merge(s, t, minute, &mm); }
+  }
+  g_array_unref(order);
+  g_message("stats: %s is a version %u history — carried over, its week merged into the "
+            "15-minute and hour rings", s->path, h->version);
+}
+
+/* TRUE when the file can be written in place as it is (version 3, these
+ * bands). */
+static gboolean load(SkimStats *s) {
+  char *data = NULL;
+  gsize len = 0;
+  if (!g_file_get_contents(s->path, &data, &len, NULL)) { return FALSE; }
+  const Header *h = (const Header *)data;
+  const gboolean head_ok = len >= sizeof(Header) && memcmp(h->magic, MAGIC, 8) == 0 &&
+                           h->bands == SKIM_STATS_BANDS && h->modes == SKIM_STATS_MODES &&
+                           h->sm_n == SKIM_SM_N;
+  const gboolean v1 = head_ok && h->version == 1 && h->sg_n == V1_SG_N &&
+                      h->minutes == SKIM_STATS_MINUTES &&
+                      len == sizeof(Header) + SKIM_STATS_MINUTES * sizeof(SlotV1);
+  const gboolean v2 = head_ok && h->version == 2 && h->sg_n == SKIM_SG_N &&
+                      h->minutes == SKIM_STATS_MINUTES &&
+                      len == sizeof(Header) + SKIM_STATS_MINUTES * sizeof(SlotV2);
+  gboolean v3 = head_ok && h->version == VERSION && h->sg_n == SKIM_SG_N && len == file_len();
+  const Header3 *h3 = (const Header3 *)data;
+  for (guint t = 0; v3 && t < NTIER; t++) {
+    v3 = h3->ntier == NTIER && h3->tier_res[t] == TIER[t].res && h3->tier_len[t] == TIER[t].len;
+  }
+  gboolean same = FALSE;
+  if (v1 || v2) {
+    load_old(s, data, h, v1);
+    s->dirty = TRUE;                           /* written as version 3      */
+  } else if (v3) {
+    int from[SKIM_STATS_BANDS];
+    columns(h->names, s, from);
+    for (guint t = 0; t < NTIER; t++) {
+      const Slot *in = (const Slot *)(data + ring_offset(t));
+      for (guint i = 0; i < TIER[t].len; i++) {
+        Slot *o = &s->ring[t][i];
+        o->start = in[i].start;
+        remap(&o->m, &in[i].m, from, s->nb, o->n, in[i].n);
+      }
+    }
+    same = memcmp(h->names, s->names, sizeof(s->names)) == 0;
+    if (!same) { s->dirty = TRUE; }            /* re-ordered: written whole */
+  } else {
+    g_warning("stats: %s is not this version's history — starting a fresh one", s->path);
+  }
+  g_free(data);
+  return same;
+}
+
+SkimStats *skim_stats_open(const char *path, const char *const *bands, guint nb) {
+  SkimStats *s = g_new0(SkimStats, 1);
+  s->path = g_strdup(path);
+  s->nb = MIN(nb, (guint)SKIM_STATS_BANDS);
+  for (guint b = 0; b < s->nb; b++) { g_strlcpy(s->names[b], bands[b], 16); }
+  for (guint t = 0; t < NTIER; t++) {
+    s->ring[t] = g_new(Slot, TIER[t].len);
+    for (guint i = 0; i < TIER[t].len; i++) { slot_clear(&s->ring[t][i], 0); }
+    s->dirty_slot[t] = g_new0(guint8, TIER[t].len / 8 + 1);
+  }
+  s->fd = -1;
+  s->full = !load(s);
+  if (!s->full) {
+    s->fd = g_open(s->path, O_RDWR | O_CLOEXEC, 0);
+    if (s->fd < 0) { s->full = TRUE; }
+  }
+  return s;
+}
+
+void skim_stats_put(SkimStats *s, gint64 unix_minute, const SkimStatsMinute *m) {
+  for (guint t = 0; t < NTIER; t++) { merge(s, t, unix_minute, m); }
+}
+
+static void clean(SkimStats *s) {
+  for (guint t = 0; t < NTIER; t++) { memset(s->dirty_slot[t], 0, TIER[t].len / 8 + 1); }
+  s->dirty = FALSE;
+}
+
+/* The changed slots, each at its place in the open file. */
+static gboolean save_slots(SkimStats *s, GError **error) {
+  for (guint t = 0; t < NTIER; t++) {
+    const gsize base = ring_offset(t);
+    for (guint i = 0; i < TIER[t].len; i++) {
+      if (!(s->dirty_slot[t][i / 8] & (1u << (i % 8)))) { continue; }
+      const off_t at = (off_t)(base + (gsize)i * sizeof(Slot));
+      if (pwrite(s->fd, &s->ring[t][i], sizeof(Slot), at) != (gssize)sizeof(Slot)) {
+        g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errno), "%s: %s", s->path,
+                    g_strerror(errno));
+        return FALSE;
+      }
+    }
+  }
+  return TRUE;
+}
+
+gboolean skim_stats_save(SkimStats *s, GError **error) {
+  if (!s->dirty) { return TRUE; }
+  if (!s->full && s->fd >= 0) {
+    if (save_slots(s, error)) {
+      clean(s);
+      return TRUE;
+    }
+    s->full = TRUE;                            /* next time: the whole file */
+    return FALSE;
+  }
+  const gsize len = file_len();
+  char *buf = g_malloc0(len);
+  Header3 *h = (Header3 *)buf;
+  memcpy(h->h.magic, MAGIC, 8);
+  h->h.version = VERSION;
+  h->h.bands = SKIM_STATS_BANDS;
+  h->h.modes = SKIM_STATS_MODES;
+  h->h.sm_n = SKIM_SM_N;
+  h->h.sg_n = SKIM_SG_N;
+  memcpy(h->h.names, s->names, sizeof(h->h.names));
+  h->ntier = NTIER;
+  for (guint t = 0; t < NTIER; t++) {
+    h->tier_res[t] = TIER[t].res;
+    h->tier_len[t] = TIER[t].len;
+    memcpy(buf + ring_offset(t), s->ring[t], (gsize)TIER[t].len * sizeof(Slot));
+  }
+  char *dir = g_path_get_dirname(s->path);
+  g_mkdir_with_parents(dir, 0755);
+  g_free(dir);
+  const gboolean ok = g_file_set_contents(s->path, buf, (gssize)len, error);
+  g_free(buf);
+  if (ok) {                                    /* a new file: open it anew  */
+    if (s->fd >= 0) { close(s->fd); }
+    s->fd = g_open(s->path, O_RDWR | O_CLOEXEC, 0);
+    s->full = s->fd < 0;
+    clean(s);
+  }
+  return ok;
+}
+
+void skim_stats_free(SkimStats *s) {
+  if (!s) { return; }
+  GError *err = NULL;
+  if (!skim_stats_save(s, &err)) {
+    g_warning("stats: %s", err->message);
+    g_clear_error(&err);
+  }
+  if (s->fd >= 0) { close(s->fd); }
+  for (guint t = 0; t < NTIER; t++) {
+    g_free(s->dirty_slot[t]);
+    g_free(s->ring[t]);
+  }
+  g_free(s->path);
+  g_free(s);
+}
+
+/* ---- JSON ------------------------------------------------------------------------ */
+
+typedef struct {
+  double acc;
+  guint  n;                                    /* minutes in it              */
+  gint64 at;                                   /* AGG_LAST: the newest slot  */
+} Bucket;
+
+static void bucket_add(Bucket *k, Agg agg, float v, guint n, gint64 start) {
+  if (isnan(v) || !n) { return; }
+  switch (agg) {
+    case AGG_MAX:  k->acc = k->n ? MAX(k->acc, v) : v; break;
+    case AGG_LAST: if (!k->n || start >= k->at) { k->acc = v; k->at = start; } break;
+    case AGG_MEAN: k->acc += (double)v * n; break;  /* weighted by its minutes */
+    case AGG_SUM:  k->acc += v; break;
+  }
+  k->n += n;
+}
+
+static void bucket_out(GString *o, const Bucket *k, Agg agg, guint i) {
+  if (i) { g_string_append_c(o, ','); }
+  if (!k->n) { g_string_append(o, "null"); return; }
+  const double v = agg == AGG_MEAN ? k->acc / k->n : k->acc;
+  char num[G_ASCII_DTOSTR_BUF_SIZE];
+  g_ascii_formatd(num, sizeof(num), "%.4g", v);
+  g_string_append(o, num);
+}
+
+/* One series from ring t: value index v. */
+static void series(GString *o, SkimStats *s, guint t, gint64 first, guint step, guint n,
+                   guint v) {
+  Bucket *bk = g_new0(Bucket, n);
+  const Agg agg = agg_of(v);
+  const gint64 end = first + (gint64)step * n;
+  for (guint i = 0; i < TIER[t].len; i++) {
+    const Slot *sl = &s->ring[t][i];
+    if (!sl->start || sl->start < first || sl->start >= end) { continue; }
+    bucket_add(&bk[(sl->start - first) / step], agg, cvals(&sl->m)[v], sl->n[v], sl->start);
+  }
+  g_string_append_c(o, '[');
+  for (guint i = 0; i < n; i++) { bucket_out(o, &bk[i], agg, i); }
+  g_string_append_c(o, ']');
+  g_free(bk);
+}
+
+static gboolean mode_used(SkimStats *s, guint t, guint k) {
+  for (guint i = 0; i < TIER[t].len; i++) {
+    for (guint b = 0; s->ring[t][i].start && b < s->nb; b++) {
+      if (!isnan(s->ring[t][i].m.band[b][k][SKIM_SM_ACTIVE])) { return TRUE; }
+    }
+  }
+  return FALSE;
+}
+
+static guint band_value(guint b, guint k, guint j) {
+  return (b * SKIM_STATS_MODES + k) * SKIM_SM_N + j;
+}
+
 char *skim_stats_json(SkimStats *s, gint64 now_minute, guint hours, guint step) {
-  hours = CLAMP(hours, 1u, 168u);
+  const guint max_h = TIER[NTIER - 1].res * TIER[NTIER - 1].len / 60;
+  hours = CLAMP(hours, 1u, max_h);
   const guint span = hours * 60;
+  /* the finest ring that covers the span; the step a whole number of its slots */
+  guint t = 0;
+  while (t + 1 < NTIER && (gsize)TIER[t].res * TIER[t].len < span) { t++; }
+  const guint res = TIER[t].res;
   if (!step) { step = MAX(1u, (span + 719) / 720); }
   step = CLAMP(step, 1u, span);
+  step = (step + res - 1) / res * res;
   const guint n = (span + step - 1) / step;
   /* buckets end with the current minute, aligned to the step */
   const gint64 last = now_minute - now_minute % step;
   const gint64 first = last - (gint64)step * (n - 1);
   GString *o = g_string_new(NULL);
   g_string_append_printf(o, "{\"now\":%" G_GINT64_FORMAT ",\"t0\":%" G_GINT64_FORMAT
-                         ",\"step_min\":%u,\"n\":%u,\"bands\":[",
-                         now_minute * 60, first * 60, step, n);
+                         ",\"step_min\":%u,\"n\":%u,\"res_min\":%u,\"bands\":[",
+                         now_minute * 60, first * 60, step, n, res);
   for (guint b = 0; b < s->nb; b++) {
     g_string_append_printf(o, "%s\"", b ? "," : "");
     skim_json_append(o, s->names[b]);
@@ -309,7 +474,7 @@ char *skim_stats_json(SkimStats *s, gint64 now_minute, guint hours, guint step) 
   static const char *MODE[SKIM_STATS_MODES] = { "cw", "rtty" };
   for (guint k = 0; k < SKIM_STATS_MODES; k++) {
     g_string_append_printf(o, ",\"%s\":", MODE[k]);
-    if (k && !mode_used(s, k)) { g_string_append(o, "null"); continue; }
+    if (k && !mode_used(s, t, k)) { g_string_append(o, "null"); continue; }
     g_string_append_c(o, '{');
     for (guint j = 0; j < SKIM_SM_N; j++) {
       g_string_append_printf(o, "%s\"%s\":{", j ? "," : "", BAND_M[j].name);
@@ -317,16 +482,17 @@ char *skim_stats_json(SkimStats *s, gint64 now_minute, guint hours, guint step) 
         g_string_append_printf(o, "%s\"", b ? "," : "");
         skim_json_append(o, s->names[b]);
         g_string_append(o, "\":");
-        series(o, s, first, step, n, (int)b, k, j, BAND_M[j].agg);
+        series(o, s, t, first, step, n, band_value(b, k, j));
       }
       g_string_append_c(o, '}');
     }
     g_string_append_c(o, '}');
   }
   g_string_append(o, ",\"global\":{");
+  const guint gb = SKIM_STATS_BANDS * SKIM_STATS_MODES * SKIM_SM_N;
   for (guint j = 0; j < SKIM_SG_N; j++) {
     g_string_append_printf(o, "%s\"%s\":", j ? "," : "", GLOB_M[j].name);
-    series(o, s, first, step, n, -1, 0, j, GLOB_M[j].agg);
+    series(o, s, t, first, step, n, gb + j);
   }
   g_string_append(o, "}}");
   return g_string_free(o, FALSE);

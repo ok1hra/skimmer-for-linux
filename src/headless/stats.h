@@ -1,4 +1,5 @@
-/* stats.h — skimmer-headless's history: one record a minute, seven days.
+/* stats.h — skimmer-headless's history: a record a minute for seven days,
+ * a record per 15 minutes for 90 days, an hourly one for two years.
  *
  * Per band and mode (CW, RTTY): spots sent, stations that appeared, active
  * decoders, calls the fold held back, spots the learned gate scored below
@@ -6,10 +7,10 @@
  * CW and RTTY pipelines' share), lost IQ, feed clients, whether the radio
  * streamed and which one.
  *
- * The ring lives in a fixed-size file (~4 MB) under
- * ~/.local/state/skimmer-for-linux/stats.bin; every few minutes and at exit
- * the minutes recorded since are written into it in place, so a restart —
- * every settings change is one — keeps the graphs.
+ * The three rings live in a fixed-size file (~19 MB, held in memory too)
+ * under ~/.local/state/skimmer-for-linux/stats.bin; every few minutes and at
+ * exit the slots changed since are written into it in place (a few kB), so
+ * a restart — every settings change is one — keeps the graphs.
  * Bands are matched by name: a band added later starts empty, a band
  * dropped from the config loses its history at the next save. A version 1
  * file (no CPU split) is read and carried over, its split empty.
@@ -67,8 +68,9 @@ void skim_stats_put(SkimStats *s, gint64 unix_minute, const SkimStatsMinute *m);
  * ring (atomically) when the file is missing, old or of other bands. */
 gboolean skim_stats_save(SkimStats *s, GError **error);
 
-/* The last hours (1..168) ending at now_minute, in buckets of step minutes
- * (0 = automatic: at most ~720 buckets), as a JSON body (see stats.c). */
+/* The last hours (1..17520, two years) ending at now_minute, in buckets of
+ * step minutes (0 = automatic: at most ~720 buckets), from the finest ring
+ * that covers them, as a JSON body (see stats.c). */
 char *skim_stats_json(SkimStats *s, gint64 now_minute, guint hours, guint step);
 
 G_END_DECLS

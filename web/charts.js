@@ -31,7 +31,10 @@ const Charts = (() => {
   function timeLabel(t, spanH) {
     const d = new Date(t * 1000);
     const hm = `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}`;
-    return spanH > 24 ? `${two(d.getUTCDate())}.${two(d.getUTCMonth() + 1)}. ${hm}` : hm;
+    const dm = `${two(d.getUTCDate())}.${two(d.getUTCMonth() + 1)}.`;
+    if (spanH > 2160) return `${dm}${String(d.getUTCFullYear()).slice(2)}`;   // months: the date
+    if (spanH > 168) return dm;
+    return spanH > 24 ? `${dm} ${hm}` : hm;
   }
   function frame(box, height) {
     box.innerHTML = '';

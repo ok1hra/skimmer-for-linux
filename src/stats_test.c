@@ -71,7 +71,7 @@ int main(void) {
     }
     char *j = skim_stats_json(s, now, 1, 3);   /* 1 h in 3-minute buckets */
     check("1 h in 3-minute buckets: n 20, step 3, both bands",
-          strstr(j, "\"step_min\":3,\"n\":20,\"bands\":[\"20m\",\"40m\"]") != NULL);
+          strstr(j, "\"step_min\":3,\"n\":20,\"res_min\":1,\"bands\":[\"20m\",\"40m\"]") != NULL);
     char *sp = series_of(j, "spots", "20m");
     check("counts are summed per bucket, empty buckets null (… null,6,15)",
           sp && g_str_has_suffix(sp, "null,null,6,15") && g_str_has_prefix(sp, "null,"));
@@ -178,14 +178,64 @@ int main(void) {
     m.glob[SKIM_SG_CPU_CW] = 80;
     m.glob[SKIM_SG_CPU_RTTY] = 20;
     skim_stats_put(s, now + 1, &m);
-    skim_stats_free(s);                          /* written as version 2     */
+    skim_stats_free(s);                          /* written as version 3     */
     s = skim_stats_open(path, bands, 1);
     j = skim_stats_json(s, now + 1, 2, 120);    /* one bucket: both minutes */
-    check("saved as version 2 and read back: the old minute and the split",
+    char *jt = skim_stats_json(s, now, 720, 0);
+    check("its week merged into the coarser rings (the old minute's 7 + the new one's 1)",
+          strstr(jt, "\"res_min\":15") && strstr(jt, "\"20m\":[null") && strstr(jt, ",8]") != NULL);
+    g_free(jt);
+    check("saved as version 3 and read back: the old minute and the split",
           strstr(j, "\"cpu\":[81.5]") && strstr(j, "\"cpu_cw\":[80]") &&
           strstr(j, "\"cpu_rtty\":[20]") && strstr(j, "\"spots\":{\"20m\":[8]}"));
     g_free(j);
     skim_stats_free(s);
+  }
+
+  printf("== the 15-minute and hour rings\n");
+  {
+    char *p2 = g_build_filename(dir, "tiers.bin", NULL);
+    const char *bands[] = { "20m" };
+    SkimStats *s = skim_stats_open(p2, bands, 1);
+    const gint64 hb = now - now % 60;            /* the current hour            */
+    const gint64 t0 = hb - 180;                  /* the three before: a spot a minute */
+    for (gint64 m = t0; m < hb; m++) {
+      SkimStatsMinute r = minute_of(1, 0, (m - t0) < 90 ? 10 : 20, NAN);
+      r.glob[SKIM_SG_LOST] = m == t0 + 100 ? 7.5f : 0;
+      skim_stats_put(s, m, &r);
+    }
+    char *j = skim_stats_json(s, now, 720, 0);  /* 30 days: past the minutes  */
+    check("30 days: the 15-minute ring, hour buckets (step 60, 720 of them)",
+          strstr(j, "\"step_min\":60,\"n\":720,\"res_min\":15") != NULL);
+    char *sp = series_of(j, "spots", "20m");
+    check("… counts summed across the ring's slots (… 60,60,60,null)",
+          sp && g_str_has_suffix(sp, ",60,60,60,null"));
+    char *ac = series_of(j, "active", "20m");
+    check("… levels averaged by the minutes they hold (10, then 10/20 halves, 20)",
+          ac && g_str_has_suffix(ac, ",10,15,20,null"));
+    g_free(sp); g_free(ac);
+    check("… the worst lost minute kept", strstr(j, ",7.5,") != NULL);
+    g_free(j);
+    j = skim_stats_json(s, now, 24 * 365, 0);   /* a year: the hour ring      */
+    check("a year: the hour ring (res 60), whole hours per bucket",
+          strstr(j, "\"res_min\":60") && strstr(j, "\"step_min\":780,"));
+    sp = series_of(j, "spots", "20m");
+    check("… the three hours' 180 spots in it", sp && strstr(sp, "180"));
+    g_free(sp); g_free(j);
+    j = skim_stats_json(s, now, 24 * 900, 0);
+    check("asked for more than two years: two years", strstr(j, "\"res_min\":60") != NULL);
+    g_free(j);
+    j = skim_stats_json(s, now, 3, 1);
+    skim_stats_free(s);
+    s = skim_stats_open(p2, bands, 1);
+    char *j2 = skim_stats_json(s, now, 3, 1);
+    char *j3 = skim_stats_json(s, now, 720, 0);
+    check("reopened: the same minutes, and the rings kept",
+          strcmp(j, j2) == 0 && strstr(j3, ",60,60,60,null"));
+    g_free(j); g_free(j2); g_free(j3);
+    skim_stats_free(s);
+    g_remove(p2);
+    g_free(p2);
   }
 
   printf("== a foreign file\n");

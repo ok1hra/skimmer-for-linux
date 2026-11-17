@@ -235,11 +235,16 @@ function renderStats() {
   const label = (i) => {
     const a = new Date(t[i] * 1000), b = new Date((t[i] + d.step_min * 60) * 1000);
     const f = (x) => `${String(x.getUTCHours()).padStart(2, '0')}:${String(x.getUTCMinutes()).padStart(2, '0')}`;
-    return `${a.getUTCDate()}.${a.getUTCMonth() + 1}. ${f(a)}–${f(b)} UTC`;
+    const day = (x) => `${x.getUTCDate()}.${x.getUTCMonth() + 1}.${stats.hours > 2160 ? x.getUTCFullYear() : ''}`;
+    return d.step_min >= 1440 || a.getUTCDate() !== b.getUTCDate() && d.step_min >= 360
+      ? `${day(a)} ${f(a)} – ${day(b)} ${f(b)} UTC` : `${day(a)} ${f(a)}–${f(b)} UTC`;
   };
   const x = { t, spanH: stats.hours, label };
   $('#mode').hidden = !d.rtty;
-  $('#stats-note').textContent = `${d.step_min}-minute buckets · times in UTC`;
+  const per = d.step_min % 1440 === 0 ? `${d.step_min / 1440}-day` : d.step_min % 60 === 0
+    ? `${d.step_min / 60}-hour` : `${d.step_min}-minute`;
+  $('#stats-note').textContent = `${per} buckets · times in UTC` +
+    (d.res_min > 1 ? ` · kept as ${d.res_min === 60 ? 'hourly' : `${d.res_min}-minute`} records for this range` : '');
 
   // colour follows the band (config order), never its rank; CW up, RTTY down
   const perHour = (mm) => d.bands.map((b, i) => ({
