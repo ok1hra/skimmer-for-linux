@@ -113,6 +113,7 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel);
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .legend i.ramp { width: 46px; }
+.legend i.line { width: 14px; height: 0; border-top: 2px solid var(--fg); opacity: .75; border-radius: 0; }
 .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--ln);
        border-radius: 6px; padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15);
        white-space: nowrap; z-index: 2; }

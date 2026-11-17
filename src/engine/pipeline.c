@@ -20,6 +20,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "callsign.h"
 #include "channelizer.h"
@@ -257,6 +258,7 @@ struct _SkimPipeline {
 
 
   volatile guint64 frames;
+  volatile guint64 cpu_ns;      /* the engine thread's CPU time (live mode)    */
   volatile guint64 dropped;
   guint64          spots_total;                /* survives stop()            */
 };
@@ -1678,6 +1680,11 @@ static gpointer engine_thread(gpointer data) {
     }
     rbn_settle_tick(p, now);
     tap_clock(p);
+    struct timespec ts;                          /* skim_pipeline_cpu_ns()   */
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0) {
+      __atomic_store_n(&p->cpu_ns, (guint64)ts.tv_sec * 1000000000u + (guint64)ts.tv_nsec,
+                       __ATOMIC_RELAXED);
+    }
   }
   return NULL;
 }
@@ -1915,6 +1922,9 @@ void skim_pipeline_set_spot_round_hz(SkimPipeline *p, guint hz) {
 }
 
 guint64 skim_pipeline_frames(const SkimPipeline *p) { return p->frames; }
+guint64 skim_pipeline_cpu_ns(const SkimPipeline *p) {
+  return __atomic_load_n(&p->cpu_ns, __ATOMIC_RELAXED);
+}
 guint64 skim_pipeline_spots(const SkimPipeline *p) {
   return p->spots ? skim_spot_out_count(p->spots) : p->spots_total;
 }

@@ -219,7 +219,20 @@ function renderStats() {
   $('#legend-active').innerHTML = [['CW', '--seq'], ...(d.rtty ? [['RTTY', '--seq2']] : [])].map(([l, v]) =>
     `<span><i class="ramp" style="background:linear-gradient(90deg,var(${v}-lo),var(${v}-hi))"></i>` +
     `${l}${amax[l] ? ` <span class="mut">0–${fmt(amax[l], amax[l] < 10 ? 1 : 0)}</span>` : ''}</span>`).join('');
-  Charts.line($('#chart-cpu'), x, d.global.cpu, Charts.seriesColor(0), (v) => `${fmt(v)} %`, 'CPU, % of a core');
+  // CPU: the CW and RTTY pipelines' threads and the rest of the process, stacked
+  // under the total (history before the split has the total line only)
+  const g = d.global, cpuCw = g.cpu_cw || g.cpu.map(() => null), cpuRt = g.cpu_rtty || g.cpu.map(() => null);
+  const anyRt = cpuRt.some((v) => v != null);
+  const layers = [
+    { name: 'CW decoders', color: Charts.seriesColor(0), values: cpuCw },
+    ...(anyRt ? [{ name: 'RTTY decoders', color: Charts.seriesColor(1), values: cpuRt }] : []),
+    { name: 'rest (IQ in, feed, web)', color: getComputedStyle(document.documentElement).getPropertyValue('--axis').trim(),
+      values: g.cpu.map((v, i) => v == null || cpuCw[i] == null ? null
+        : Math.max(0, v - cpuCw[i] - (anyRt ? cpuRt[i] || 0 : 0))) },
+  ];
+  $('#legend-cpu').innerHTML = layers.map((l) => `<span><i style="background:${l.color}"></i>${esc(l.name)}</span>`).join('') +
+    '<span><i class="line"></i>all</span>';
+  Charts.area($('#chart-cpu'), x, layers, g.cpu, (v) => `${fmt(v)} %`, 'all, % of a core');
   Charts.line($('#chart-lost'), x, d.global.lost, Charts.seriesColor(1), (v) => `${fmt(v, 3)} %`, 'lost, worst minute');
   ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-lost'].forEach((id) => loading(id, false));
 

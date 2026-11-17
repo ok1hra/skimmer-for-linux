@@ -227,6 +227,67 @@ const Charts = (() => {
     return max;
   }
 
+  // ---- stacked areas under a total line, crosshair tooltip --------------------------
+  // layers: [{ name, values, color }] stacked from zero (a bucket where any layer is
+  // null draws no area); total: the line on top. Same axes as line().
+  function area(box, x, layers, total, fmtV, totalName) {
+    const { svg, W, H } = frame(box, 160);
+    const yMax = niceMax(Math.max(0, ...total.filter((v) => v != null)));
+    const a = axes(svg, W, H, x, yMax, 36);
+    const n = x.t.length, px = (i) => a.l + ((i + 0.5) * a.pw) / n,
+      py = (v) => a.t + a.ph - (a.ph * Math.min(v, yMax)) / yMax;
+    const ok = (i) => layers.every((l) => l.values[i] != null);
+    const base = new Array(n).fill(0);
+    for (const l of layers) {
+      let d = '';
+      for (let i = 0; i < n;) {
+        if (!ok(i)) { i++; continue; }
+        let j = i;
+        while (j + 1 < n && ok(j + 1)) j++;
+        const up = [], lo = [];
+        for (let k = i; k <= j; k++) {
+          up.push(`${px(k).toFixed(1)},${py(base[k] + l.values[k]).toFixed(1)}`);
+          lo.push(`${px(k).toFixed(1)},${py(base[k]).toFixed(1)}`);
+        }
+        if (i === j) {                                         // a lone bucket: a thin bar
+          const w = Math.max(1, a.pw / n / 2);
+          d += `M${(px(i) - w).toFixed(1)},${py(base[i]).toFixed(1)}V${py(base[i] + l.values[i]).toFixed(1)}` +
+               `H${(px(i) + w).toFixed(1)}V${py(base[i]).toFixed(1)}Z`;
+        } else {
+          d += `M${up.join('L')}L${lo.reverse().join('L')}Z`;
+        }
+        i = j + 1;
+      }
+      if (d) el('path', { d, fill: l.color, 'fill-opacity': 0.8, stroke: 'none' }, svg);
+      for (let i = 0; i < n; i++) if (ok(i)) base[i] += l.values[i];
+    }
+    let d = '', pen = false;
+    total.forEach((v, i) => {
+      if (v == null) { pen = false; return; }
+      d += `${pen ? 'L' : 'M'}${px(i).toFixed(1)},${py(v).toFixed(1)}`;
+      pen = true;
+    });
+    const ink = css('--fg');
+    el('path', { d, fill: 'none', stroke: ink, 'stroke-width': 1.5, 'stroke-linejoin': 'round',
+                 'stroke-opacity': 0.75 }, svg);
+    const cross = el('line', { y1: a.t, y2: a.t + a.ph, stroke: css('--axis'), 'stroke-width': 1,
+                               visibility: 'hidden' }, svg);
+    const tt = tip(box);
+    const hit = el('rect', { x: a.l, y: a.t, width: a.pw, height: a.ph, fill: 'transparent' }, svg);
+    hit.addEventListener('pointermove', (e) => {
+      const r = svg.getBoundingClientRect();
+      const mx = ((e.clientX - r.left) * W) / r.width;
+      const i = Math.min(n - 1, Math.max(0, Math.floor(((mx - a.l) * n) / a.pw)));
+      cross.setAttribute('x1', px(i)); cross.setAttribute('x2', px(i));
+      cross.setAttribute('visibility', 'visible');
+      const rows = [{ value: total[i] == null ? 'no data' : fmtV(total[i]), label: totalName }];
+      if (ok(i)) for (const l of [...layers].reverse()) rows.push({ value: fmtV(l.values[i]), label: l.name, color: l.color });
+      else if (total[i] != null) rows.push({ value: '–', label: 'no split recorded' });
+      tt.show((px(i) * r.width) / W, (py(total[i] ?? 0) * r.height) / H, x.label(i), rows);
+    });
+    hit.addEventListener('pointerleave', () => { tt.hide(); cross.setAttribute('visibility', 'hidden'); });
+  }
+
   // ---- one line, crosshair tooltip -------------------------------------------------
   function line(box, x, values, color, fmtV, unit) {
     const { svg, W, H } = frame(box, 160);
@@ -265,5 +326,5 @@ const Charts = (() => {
     });
   }
 
-  return { mirror, heat, line, seriesColor };
+  return { mirror, heat, area, line, seriesColor };
 })();

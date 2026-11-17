@@ -4,7 +4,8 @@
  * Records land in their minute's slot and come back out of /stats.json
  * summed or averaged per bucket; the file survives a reopen, with the bands
  * matched by name when the config re-orders, adds or drops them; a file of
- * another size starts a fresh ring instead of being misread.
+ * another size starts a fresh ring instead of being misread; a version 1
+ * file (before the CPU split) is carried over.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -99,6 +100,67 @@ int main(void) {
     check("15 m starts empty", sp15 && !strstr(sp15, "6") && g_str_has_prefix(sp15, "null"));
     check("40 m is gone from the answer", !strstr(j, "\"40m\""));
     g_free(sp20); g_free(sp15); g_free(j);
+    skim_stats_free(s);
+  }
+
+  printf("== a version 1 file (no CPU split)\n");
+  {
+    /* stats.c's version 1 layout, written by hand */
+    typedef struct {
+      char    magic[8];
+      guint32 version, minutes, bands, modes, sm_n, sg_n;
+      char    names[SKIM_STATS_BANDS][16];
+    } H1;
+    typedef struct {
+      gint64 minute;
+      float  band[SKIM_STATS_BANDS][SKIM_STATS_MODES][SKIM_SM_N];
+      float  glob[5];
+    } S1;
+    const gsize len = sizeof(H1) + SKIM_STATS_MINUTES * sizeof(S1);
+    char *buf = g_malloc0(len);
+    H1 *h = (H1 *)buf;
+    memcpy(h->magic, "SKIMSTAT", 8);
+    h->version = 1;
+    h->minutes = SKIM_STATS_MINUTES;
+    h->bands = SKIM_STATS_BANDS;
+    h->modes = SKIM_STATS_MODES;
+    h->sm_n = SKIM_SM_N;
+    h->sg_n = 5;
+    g_strlcpy(h->names[0], "20m", 16);
+    S1 *sl = (S1 *)(buf + sizeof(H1));
+    for (guint i = 0; i < SKIM_STATS_MINUTES; i++) {
+      for (guint b = 0; b < SKIM_STATS_BANDS; b++)
+        for (guint k = 0; k < SKIM_STATS_MODES; k++)
+          for (guint j = 0; j < SKIM_SM_N; j++) sl[i].band[b][k][j] = NAN;
+      for (guint j = 0; j < 5; j++) sl[i].glob[j] = NAN;
+    }
+    S1 *one = &sl[now % SKIM_STATS_MINUTES];
+    one->minute = now;
+    one->band[0][0][SKIM_SM_SPOTS] = 7;
+    one->glob[SKIM_SG_CPU] = 123;
+    one->glob[SKIM_SG_RADIO] = 2;
+    g_file_set_contents(path, buf, (gssize)len, NULL);
+    g_free(buf);
+    const char *bands[] = { "20m" };
+    SkimStats *s = skim_stats_open(path, bands, 1);
+    char *j = skim_stats_json(s, now, 1, 60);
+    check("its spots and CPU carried over",
+          strstr(j, "\"spots\":{\"20m\":[7]}") && strstr(j, "\"cpu\":[123]") &&
+          strstr(j, "\"radio\":[2]"));
+    check("… the CPU split empty (null)",
+          strstr(j, "\"cpu_cw\":[null]") && strstr(j, "\"cpu_rtty\":[null]"));
+    g_free(j);
+    SkimStatsMinute m = minute_of(1, 1, 1, 1);
+    m.glob[SKIM_SG_CPU_CW] = 80;
+    m.glob[SKIM_SG_CPU_RTTY] = 20;
+    skim_stats_put(s, now + 1, &m);
+    skim_stats_free(s);                          /* written as version 2     */
+    s = skim_stats_open(path, bands, 1);
+    j = skim_stats_json(s, now + 1, 2, 120);    /* one bucket: both minutes */
+    check("saved as version 2 and read back: the old minute and the split",
+          strstr(j, "\"cpu\":[81.5]") && strstr(j, "\"cpu_cw\":[80]") &&
+          strstr(j, "\"cpu_rtty\":[20]") && strstr(j, "\"spots\":{\"20m\":[8]}"));
+    g_free(j);
     skim_stats_free(s);
   }
 

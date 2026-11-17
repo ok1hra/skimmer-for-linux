@@ -121,7 +121,7 @@ page=$(curl -s "http://127.0.0.1:$HTTP/")
 check "web: app.js" $?
 stj=$(curl -s "http://127.0.0.1:$HTTP/stats.json?hours=6")
 # (rtty: null until a minute with RTTY was recorded, and then never on 20m)
-[[ $(python3 -c "import json,sys; d=json.loads(sys.argv[1]); r=d['rtty']; print(d['bands'], d['n'], d['step_min'], r is None or all(v is None for v in r['spots']['20m']), len(d['cw']['spots']['20m']), sorted(d['global']))" "$stj" 2>&1) == "['20m', '40m'] 360 1 True 360 ['clients', 'cpu', 'lost', 'radio', 'streaming']" ]]
+[[ $(python3 -c "import json,sys; d=json.loads(sys.argv[1]); r=d['rtty']; print(d['bands'], d['n'], d['step_min'], r is None or all(v is None for v in r['spots']['20m']), len(d['cw']['spots']['20m']), sorted(d['global']))" "$stj" 2>&1) == "['20m', '40m'] 360 1 True 360 ['clients', 'cpu', 'cpu_cw', 'cpu_rtty', 'lost', 'radio', 'streaming']" ]]
 check "web: stats.json (6 h, both bands, the global series)" $?
 [[ $(curl -s "http://127.0.0.1:$HTTP/api/log") == '[{"t":'*'"text":"skimmer-headless '* ]]; check "web: the log" $?
 [[ $(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$HTTP/../headless.ini") == 404 ]]

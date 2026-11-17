@@ -284,6 +284,10 @@ const char *skim_pipeline_feed_gate_stats(const SkimPipeline *p,
 
 /* Counters for the status line / gates. */
 guint64 skim_pipeline_frames(const SkimPipeline *p);
+/* CPU time the pipeline's engine thread has used (ns, since its start;
+ * live mode only — 0 offline). The DeepCW inference worker, shared by
+ * every pipeline, is not in it. */
+guint64 skim_pipeline_cpu_ns(const SkimPipeline *p);
 guint64 skim_pipeline_spots(const SkimPipeline *p);
 guint64 skim_pipeline_rbn_spots(const SkimPipeline *p);
 guint   skim_pipeline_stations(const SkimPipeline *p);

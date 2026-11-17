@@ -166,11 +166,15 @@ typedef struct {
   guint64         cpu_prev;    /* clock ticks, utime + stime                  */
   gint64          cpu_prev_us;
   double          cpu_pct;
+  guint64         cpu_mode_prev[M_N];   /* ns, the pipelines' engine threads */
+  double          cpu_mode_pct[M_N];    /* CW, RTTY: % of one core           */
   guint           ticks;
 
   SkimStats *stats;            /* the 7-day history (stats.h)                 */
   gint64    minute;            /* the unix minute being collected             */
   guint64   min_frames_prev, min_lost_prev;
+  guint64   min_cpu_prev, min_mode_prev[M_N];  /* CPU at the last minute's end  */
+  gint64    min_cpu_us;                         /* … and when (0 = not yet)      */
   guint     minutes;           /* minutes recorded since start                */
 
   GMutex   snap_lock;          /* the web page's copy of the status           */
@@ -543,6 +547,7 @@ static void status_build(Hd *h, gboolean print) {
   g_string_append_printf(json,
       "{\"version\":\"%s\",\"started_us\":%" G_GINT64_FORMAT ",\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
       "\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
+      "\"cpu_cw_pct\":%.1f,\"cpu_rtty_pct\":%.1f,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
       "\"settle_nodict_s\":%.1f,"
@@ -552,7 +557,8 @@ static void status_build(Hd *h, gboolean print) {
       "\"suppress_cw_on_rtty\":%s,\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
-      h->pps, h->cpu_pct, engine, pol_score, pol_hear, pol_settle, pol_nd, pol_fresh,
+      h->pps, h->cpu_pct, h->cpu_mode_pct[M_CW], h->cpu_mode_pct[M_RTTY], engine, pol_score,
+      pol_hear, pol_settle, pol_nd, pol_fresh,
       pol_fold, folded, jgate, h->switches_json, supervisor_json(), jrbn,
       h->cfg.suppress_cw_on_rtty ? "true" : "false",
       h->feed ? h->cfg.feed_port : 0, h->cfg.feed_rtty ? "true" : "false", fclients, flines,
@@ -668,7 +674,33 @@ static void stats_minute(Hd *h) {
   const SkimIqSourceStatus *src = &h->src_st;
   const guint64 frames = h->nb ? skim_pipeline_frames(band_p(&h->band[0])) : 0;
   const guint64 df = frames - h->min_frames_prev, dl = src->lost_frames - h->min_lost_prev;
-  m.glob[SKIM_SG_CPU] = (float)h->cpu_pct;
+  /* CPU: the minute's mean — the whole process, and the CW and RTTY
+   * pipelines' engine threads in it (the rest is IQ in, feed, web) */
+  const gint64 now_us = g_get_monotonic_time();
+  const guint64 cpu = cpu_ticks();
+  guint64 mode_ns[M_N] = { 0 };
+  gboolean has[M_N] = { FALSE };
+  for (guint i = 0; i < h->nb; i++) {
+    for (guint k = 0; k < M_N; k++) {
+      if (!h->band[i].dec[k].p) { continue; }
+      has[k] = TRUE;
+      mode_ns[k] += skim_pipeline_cpu_ns(h->band[i].dec[k].p);
+    }
+  }
+  const double wall = h->min_cpu_us ? (now_us - h->min_cpu_us) / 1e6 : 0;
+  m.glob[SKIM_SG_CPU] = wall > 0 ? (float)(100.0 * (double)(cpu - h->min_cpu_prev) /
+                                           (double)sysconf(_SC_CLK_TCK) / wall)
+                                 : (float)h->cpu_pct;
+  m.glob[SKIM_SG_CPU_CW] = m.glob[SKIM_SG_CPU_RTTY] = NAN;
+  for (guint k = 0; k < M_N && wall > 0; k++) {
+    if (has[k] && mode_ns[k] >= h->min_mode_prev[k]) {
+      m.glob[k == M_CW ? SKIM_SG_CPU_CW : SKIM_SG_CPU_RTTY] =
+          (float)(100.0 * (double)(mode_ns[k] - h->min_mode_prev[k]) / 1e9 / wall);
+    }
+  }
+  h->min_cpu_prev = cpu;
+  memcpy(h->min_mode_prev, mode_ns, sizeof(mode_ns));
+  h->min_cpu_us = now_us;
   m.glob[SKIM_SG_LOST] = df + dl && src->lost_frames >= h->min_lost_prev
                              ? (float)(100.0 * (double)dl / (double)(df + dl)) : 0;
   m.glob[SKIM_SG_CLIENTS] = h->feed ? (float)skim_rbn_feed_clients(h->feed) : 0;
@@ -713,11 +745,22 @@ static gboolean tick(gpointer data) {
   }
   const gint64 now = g_get_monotonic_time();
   const guint64 cpu = cpu_ticks();
+  guint64 mode_ns[M_N] = { 0 };               /* the CW / RTTY pipelines' share */
+  for (guint i = 0; i < h->nb; i++) {
+    for (guint k = 0; k < M_N; k++) {
+      if (h->band[i].dec[k].p) { mode_ns[k] += skim_pipeline_cpu_ns(h->band[i].dec[k].p); }
+    }
+  }
   if (h->cpu_prev_us) {
     const double wall = (now - h->cpu_prev_us) / 1e6;
     h->cpu_pct = wall > 0 ? 100.0 * (double)(cpu - h->cpu_prev) /
                                 (double)sysconf(_SC_CLK_TCK) / wall : 0;
+    for (guint k = 0; k < M_N; k++) {
+      h->cpu_mode_pct[k] = wall > 0 && mode_ns[k] >= h->cpu_mode_prev[k]
+          ? 100.0 * (double)(mode_ns[k] - h->cpu_mode_prev[k]) / 1e9 / wall : 0;
+    }
   }
+  memcpy(h->cpu_mode_prev, mode_ns, sizeof(mode_ns));
   h->cpu_prev = cpu;
   h->cpu_prev_us = now;
 

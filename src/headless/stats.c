@@ -10,7 +10,8 @@
  *     "cw":   { "spots": { "160m": [v|null × N], … }, "stations": …, "active": …,
  *               "folded": …, "gate_below": …, "snr": … },
  *     "rtty": { … } | null              (null while no band decoded RTTY)
- *     "global": { "cpu": [ … ], "lost": …, "clients": …, "streaming": …, "radio": … } }
+ *     "global": { "cpu": [ … ], "lost": …, "clients": …, "streaming": …, "radio": …,
+ *                 "cpu_cw": …, "cpu_rtty": … } }
  *   A bucket sums the counts (spots, stations, folded, gate_below), averages
  *   the levels (active, cpu, clients, snr, streaming = the share of minutes
  *   streamed), takes the worst lost and the last radio. null = no record.
@@ -23,6 +24,8 @@
 #include "json.h"
 
 #define MAGIC "SKIMSTAT"
+#define VERSION 2                    /* 2: + cpu_cw, cpu_rtty               */
+#define V1_SG_N 5                    /* version 1's global metrics           */
 
 typedef struct {
   char    magic[8];
@@ -34,6 +37,13 @@ typedef struct {
   gint64          minute;                /* unix minute; 0 = empty           */
   SkimStatsMinute m;
 } Slot;
+
+/* A version 1 slot: the same, with the first V1_SG_N global metrics. */
+typedef struct {
+  gint64 minute;
+  float  band[SKIM_STATS_BANDS][SKIM_STATS_MODES][SKIM_SM_N];
+  float  glob[V1_SG_N];
+} SlotV1;
 
 struct _SkimStats {
   char   *path;
@@ -58,10 +68,13 @@ static void load(SkimStats *s) {
   gsize len = 0;
   if (!g_file_get_contents(s->path, &data, &len, NULL)) { return; }
   const Header *h = (const Header *)data;
-  if (len != sizeof(Header) + SKIM_STATS_MINUTES * sizeof(Slot) ||
-      memcmp(h->magic, MAGIC, 8) != 0 || h->version != 1 ||
+  const gboolean v1 = len >= sizeof(Header) && h->version == 1;
+  const gsize slot = v1 ? sizeof(SlotV1) : sizeof(Slot);
+  if (len < sizeof(Header) || len != sizeof(Header) + SKIM_STATS_MINUTES * slot ||
+      memcmp(h->magic, MAGIC, 8) != 0 || (h->version != VERSION && !v1) ||
       h->minutes != SKIM_STATS_MINUTES || h->bands != SKIM_STATS_BANDS ||
-      h->modes != SKIM_STATS_MODES || h->sm_n != SKIM_SM_N || h->sg_n != SKIM_SG_N) {
+      h->modes != SKIM_STATS_MODES || h->sm_n != SKIM_SM_N ||
+      h->sg_n != (v1 ? V1_SG_N : SKIM_SG_N)) {
     g_warning("stats: %s is not this version's history — starting a fresh one", s->path);
     g_free(data);
     return;
@@ -74,16 +87,27 @@ static void load(SkimStats *s) {
     }
   }
   const Slot *in = (const Slot *)(data + sizeof(Header));
+  const SlotV1 *in1 = (const SlotV1 *)(data + sizeof(Header));
   for (guint i = 0; i < SKIM_STATS_MINUTES; i++) {
     Slot *o = &s->slot[i];
-    o->minute = in[i].minute;
+    o->minute = v1 ? in1[i].minute : in[i].minute;
     empty_minute(&o->m);
-    memcpy(o->m.glob, in[i].m.glob, sizeof(o->m.glob));
+    if (v1) {                                  /* the CPU split stays NaN    */
+      memcpy(o->m.glob, in1[i].glob, sizeof(in1[i].glob));
+    } else {
+      memcpy(o->m.glob, in[i].m.glob, sizeof(o->m.glob));
+    }
     for (guint b = 0; b < s->nb; b++) {
       if (from[b] >= 0) {
-        memcpy(o->m.band[b], in[i].m.band[from[b]], sizeof(o->m.band[b]));
+        memcpy(o->m.band[b], v1 ? in1[i].band[from[b]] : in[i].m.band[from[b]],
+               sizeof(o->m.band[b]));
       }
     }
+  }
+  if (v1) {
+    g_message("stats: %s is a version 1 history — carried over (no CPU split before now)",
+              s->path);
+    s->dirty = TRUE;                           /* written as version 2      */
   }
   g_free(data);
 }
@@ -112,7 +136,7 @@ gboolean skim_stats_save(SkimStats *s, GError **error) {
   char *buf = g_malloc0(len);
   Header *h = (Header *)buf;
   memcpy(h->magic, MAGIC, 8);
-  h->version = 1;
+  h->version = VERSION;
   h->minutes = SKIM_STATS_MINUTES;
   h->bands = SKIM_STATS_BANDS;
   h->modes = SKIM_STATS_MODES;
@@ -203,6 +227,7 @@ static const struct { const char *name; Agg agg; } GLOB_M[SKIM_SG_N] = {
   [SKIM_SG_CPU] = { "cpu", AGG_MEAN },          [SKIM_SG_LOST] = { "lost", AGG_MAX },
   [SKIM_SG_CLIENTS] = { "clients", AGG_MEAN },  [SKIM_SG_STREAMING] = { "streaming", AGG_MEAN },
   [SKIM_SG_RADIO] = { "radio", AGG_LAST },
+  [SKIM_SG_CPU_CW] = { "cpu_cw", AGG_MEAN },    [SKIM_SG_CPU_RTTY] = { "cpu_rtty", AGG_MEAN },
 };
 
 char *skim_stats_json(SkimStats *s, gint64 now_minute, guint hours, guint step) {
