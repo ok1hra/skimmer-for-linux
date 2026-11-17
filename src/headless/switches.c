@@ -34,6 +34,7 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   { "SKIM_V3_MIN_DB", B }, { "SKIM_V3_RS_EV_WEAK", B }, { "SKIM_V3_DEAD_S", B },
   { "SKIM_V3_KWS", B }, { "SKIM_V3_KWS_DC", B }, { "SKIM_V3_KWS_SEP", B },
   { "SKIM_V3_KWS_DEBUG", D },
+  { "SKIM_V3_KR_RIVAL", B }, { "SKIM_V3_KR_TWO", B }, { "SKIM_V3_KR_CQX", B },
   /* DeepCW */
   { "SKIM_DEEPCW_BATCH", B }, { "SKIM_DEEPCW_DRAFT", B }, { "SKIM_DEEPCW_DRAFT_MIN", B },
   { "SKIM_DEEPCW_DRAFT_P", B }, { "SKIM_DEEPCW_FLUSH", B }, { "SKIM_DEEPCW_FLUSH_K", B },
@@ -53,7 +54,7 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   { "SKIM_DUMP_CHAN", D },
   /* the RBN feed */
   { "SKIM_FEED_CONFIRM", B }, { "SKIM_GATE_DICT_MIN", B }, { "SKIM_GATE_NEAR", B },
-  { "SKIM_GATE_NEAR_DICT", B }, { "SKIM_GATE_NEAR_TTL", B },
+  { "SKIM_GATE_NEAR_DICT", B }, { "SKIM_GATE_HEAD", B }, { "SKIM_GATE_NEAR_TTL", B },
   { "SKIM_GATE_SETTLE_NODICT", B }, { "SKIM_FEED_TRACE", D }, { "SKIM_SNR_TRACE", D },
   { "SKIM_GATE_NEAR_DEBUG", D },
   /* measurement only: the decoder oracles (docs/WEAK-SIGNAL-PLAN.md) */

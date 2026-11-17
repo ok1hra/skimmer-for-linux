@@ -40,6 +40,7 @@
 #include "decode_cw.h"
 
 #include "callsign.h"
+#include "feed_gate.h"
 #include "cw_reader.h"
 #include "oracle.h"
 
@@ -397,6 +398,7 @@ typedef struct {
   struct { char call[16]; guint64 at, said; double dc; guint n; } kr_hit[KR_HITS];
   char     kr_q[48];                    /* FIX phrase due at the next gap     */
   guint64  kr_cq_t;                     /* last CQ evidence (text or audio)+1 */
+  guint64  kr_cqtx_t;                   /* … from the text alone (+1)         */
 
   /* --- estimates -------------------------------------------------------------- */
   double prev_i, prev_q;
@@ -2247,8 +2249,23 @@ static double kr_num(const char *name, double dflt) {
 }
 
 /* SKIM_V3_KWS=0 turns the reader off; SKIM_V3_KWS_DC (−5), SKIM_V3_KWS_SEP (3)
- * the bars; SKIM_V3_KWS_DEBUG=1 prints every read. */
-typedef struct { gint on; double dc, sep; gboolean dbg; } KrCfg;
+ * the bars; SKIM_V3_KWS_DEBUG=1 prints every read.
+ *
+ * Precision switches (live 2026-11-15..17: 40 of L's 64 bust pairs and most
+ * of its 550 calls nobody else confirmed came from the reader, every one a
+ * MASTER.SCP call — a cut head of an unknown true call, SM5D for SM5DAJ, or
+ * a short call fitted into noise, E2E, G4G):
+ *  SKIM_V3_KR_RIVAL=1  the window's own call-shaped text — tokens and torn
+ *                      joins like the winner, known to MASTER.SCP or not —
+ *                      must lose to the winner by the separation too
+ *  SKIM_V3_KR_TWO=1    a call the text does not support (only near a
+ *                      fragment, or only from the hit memory) and a short
+ *                      one (≤ 4) the text did not read exactly need two
+ *                      reads in separate windows; a memory-only fit neither
+ *                      counts as a read nor keeps the call remembered
+ *  SKIM_V3_KR_CQX=1    a CQ found in the audio alone goes only with a call
+ *                      the text read exactly */
+typedef struct { gint on; double dc, sep; gboolean dbg, rival, two, cqx; } KrCfg;
 static const KrCfg *kr_cfg(void) {
   static KrCfg c;
   static gsize once;
@@ -2258,10 +2275,20 @@ static const KrCfg *kr_cfg(void) {
     c.dc  = kr_num("SKIM_V3_KWS_DC", -5.0);
     c.sep = kr_num("SKIM_V3_KWS_SEP", 3.0);
     c.dbg = g_getenv("SKIM_V3_KWS_DEBUG") != NULL;
+    c.rival = kr_num("SKIM_V3_KR_RIVAL", 0) != 0;
+    c.two   = kr_num("SKIM_V3_KR_TWO", 0) != 0;
+    c.cqx   = kr_num("SKIM_V3_KR_CQX", 0) != 0;
     g_once_init_leave(&once, 1);
   }
   return &c;
 }
+
+/* Where a candidate came from (bits): read exactly as a token, as a join of
+ * torn tokens, as a glued token's inner call; a dictionary call near a
+ * call-shaped token; near a fragment or a join only; the hit memory. */
+enum { KO_EXACT = 1, KO_JOIN = 2, KO_INNER = 4, KO_NEAR = 8, KO_FRAG = 16, KO_MEM = 32 };
+#define KO_READ (KO_EXACT | KO_JOIN | KO_INNER)
+#define KO_SUPPORTED (KO_READ | KO_NEAR)
 
 static gboolean kr_shape(const char *w) {
   gboolean dig = FALSE, let = FALSE;
@@ -2275,22 +2302,33 @@ static gboolean kr_shape(const char *w) {
   return dig && let && n >= 3 && n < SKIM_CALLSIGN_NEAR_LEN;
 }
 
-static void kr_add(char (*cand)[SKIM_CALLSIGN_NEAR_LEN], guint *nc, const char *w) {
-  if (*nc >= KR_CANDS || !kr_shape(w))
+static void kr_add(char (*cand)[SKIM_CALLSIGN_NEAR_LEN], guint8 *org, guint *nc,
+                   const char *w, guint8 bit) {
+  if (!kr_shape(w))
     return;
   for (guint i = 0; i < *nc; i++) {
-    if (strcmp(cand[i], w) == 0)
+    if (strcmp(cand[i], w) == 0) {
+      org[i] |= bit;
       return;
+    }
   }
+  if (*nc >= KR_CANDS)
+    return;
+  org[*nc] = bit;
   g_strlcpy(cand[(*nc)++], w, SKIM_CALLSIGN_NEAR_LEN);
 }
 
-static void kr_add_near(char (*cand)[SKIM_CALLSIGN_NEAR_LEN], guint *nc, const char *w) {
+/* The dictionary's calls near w: w itself (when known) as `self`, the
+ * others as `bit`. */
+static void kr_add_near(char (*cand)[SKIM_CALLSIGN_NEAR_LEN], guint8 *org, guint *nc,
+                        const char *w, guint8 self, guint8 bit) {
   if (strlen(w) < 3 || strlen(w) >= SKIM_CALLSIGN_NEAR_LEN)
     return;
   char near[RS_MAX_CAND][SKIM_CALLSIGN_NEAR_LEN];
   const guint nn = skim_callsign_dict_near(w, near, RS_MAX_CAND);
-  for (guint i = 0; i < nn; i++) { kr_add(cand, nc, near[i]); }
+  for (guint i = 0; i < nn; i++) {
+    kr_add(cand, org, nc, near[i], strcmp(near[i], w) == 0 ? self : bit);
+  }
 }
 
 /* The forced-alignment score of `call` over the window, minus the free
@@ -2349,16 +2387,19 @@ static void kws_read(Cw3State *st) {
   for (guint i = 0; i + 1 < nt; i++) {             /* torn "C Q" */
     if (!strcmp(tok[i], "C") && !strcmp(tok[i + 1], "Q")) { calling = TRUE; }
   }
+  guint8 org[KR_CANDS];
   for (guint i = 0; i < nt; i++) {
-    if (skim_callsign_dict_has(tok[i])) { kr_add(cand, &nc, tok[i]); }
+    if (skim_callsign_dict_has(tok[i])) { kr_add(cand, org, &nc, tok[i], KO_EXACT); }
   }
   for (guint i = 0; i < nt; i++) {
-    kr_add_near(cand, &nc, tok[i]);
+    kr_add_near(cand, org, &nc, tok[i], KO_EXACT, kr_shape(tok[i]) ? KO_NEAR : KO_FRAG);
     char j[48];
     g_strlcpy(j, tok[i], sizeof(j));
     for (guint k = i + 1; k < MIN(nt, i + 3); k++) {   /* torn: 2-3 joined */
       g_strlcat(j, tok[k], sizeof(j));
-      if (strlen(j) >= 3 && strlen(j) <= 10) { kr_add_near(cand, &nc, j); }
+      if (strlen(j) >= 3 && strlen(j) <= 10) {
+        kr_add_near(cand, org, &nc, j, KO_JOIN, KO_FRAG);
+      }
     }
     const guint L = (guint)strlen(tok[i]);
     if (L >= 7) {                                     /* glued: inner calls */
@@ -2367,17 +2408,20 @@ static void kws_read(Cw3State *st) {
           char sub[SKIM_CALLSIGN_NEAR_LEN];
           memcpy(sub, tok[i] + a, n);
           sub[n] = '\0';
-          if (skim_callsign_dict_has(sub)) { kr_add(cand, &nc, sub); }
+          if (skim_callsign_dict_has(sub)) { kr_add(cand, org, &nc, sub, KO_INNER); }
         }
       }
     }
   }
   for (guint i = 0; i < KR_HITS; i++) {
     if (st->kr_hit[i].call[0] && t - st->kr_hit[i].at < (guint64)(KR_HOLD_S * st->rate)) {
-      kr_add(cand, &nc, st->kr_hit[i].call);
+      kr_add(cand, org, &nc, st->kr_hit[i].call, KO_MEM);
     }
   }
-  if (calling) { st->kr_cq_t = t + 1; }          /* text CQ, even with no call */
+  if (calling) {                                  /* text CQ, even with no call */
+    st->kr_cq_t = t + 1;
+    st->kr_cqtx_t = t + 1;
+  }
   if (!nc)
     return;
 
@@ -2423,6 +2467,7 @@ static void kws_read(Cw3State *st) {
   }
   double nb = -1e9;
   const char *nbc = "-";
+  char rbuf[SKIM_CALLSIGN_NEAR_LEN];
   char near[RS_MAX_CAND][SKIM_CALLSIGN_NEAR_LEN];
   if (bi >= 0 && best >= cfg->dc) {
     /* the control: every dictionary call two edits from the winner, and
@@ -2449,6 +2494,38 @@ static void kws_read(Cw3State *st) {
         nbc = near[i];
       }
     }
+    if (cfg->rival) {
+      /* the text's own reading competes too, known or not: a valid call
+       * the free text read (or tore into 2-3 tokens) that the winner is a
+       * cut, a glue or a near misread of — SM5DAJ read as "SM5D AJ" must
+       * not lose its tail to the dictionary's SM5D, nor a clean EA3CE turn
+       * into TA3CE. A rival only blocks; unknown calls are never said. */
+      guint nr = 0;
+      for (guint i = 0; i < nt && nr < KR_NEAR; i++) {
+        char j[48] = "";
+        for (guint q = i; q < MIN(nt, i + 3) && nr < KR_NEAR; q++) {
+          g_strlcat(j, tok[q], sizeof(j));
+          if (strlen(j) >= SKIM_CALLSIGN_NEAR_LEN)
+            break;
+          if (!kr_shape(j) || !strcmp(j, cand[bi]) || !skim_callsign_is_valid(j))
+            continue;
+          const gint d = skim_feed_gate_similar(j, cand[bi], 2);
+          if (d < 0 || d > 3)
+            continue;
+          gboolean seen = FALSE;
+          for (guint u = 0; u < nc; u++) { seen |= !strcmp(j, cand[u]); }
+          if (seen)
+            continue;
+          const double v = kr_score(c, N, &k, P, S, a, b, j) - F;
+          nr++;
+          if (v > nb) {
+            nb = v;
+            g_strlcpy(rbuf, j, sizeof(rbuf));
+            nbc = rbuf;
+          }
+        }
+      }
+    }
   }
   double cq = -1e9;
   const gboolean found = bi >= 0 && best >= cfg->dc && best - nb >= cfg->sep;
@@ -2461,7 +2538,12 @@ static void kws_read(Cw3State *st) {
     calling = cq >= -3.0;
   }
   if (calling) { st->kr_cq_t = t + 1; }
-  calling = st->kr_cq_t && t + 1 - st->kr_cq_t <= (guint64)(KR_CQ_S * st->rate);
+  const guint64 cq_win = (guint64)(KR_CQ_S * st->rate);
+  calling = st->kr_cq_t && t + 1 - st->kr_cq_t <= cq_win;
+  /* SKIM_V3_KR_CQX: the audio's CQ vouches only for a call the text read */
+  if (calling && cfg->cqx && bi >= 0 && !(org[bi] & KO_READ)) {
+    calling = st->kr_cqtx_t && t + 1 - st->kr_cqtx_t <= cq_win;
+  }
   kws_dur_free(&k);
   g_free(buf);
   g_free(c);
@@ -2484,12 +2566,21 @@ static void kws_read(Cw3State *st) {
     memset(&st->kr_hit[hi], 0, sizeof(st->kr_hit[hi]));
     g_strlcpy(st->kr_hit[hi].call, cand[bi], sizeof(st->kr_hit[hi].call));
   }
-  if (st->kr_hit[hi].n == 0 || t - st->kr_hit[hi].at >= (guint64)ns) {
+  /* SKIM_V3_KR_TWO: a fit only the hit memory proposed is no new read —
+   * the memory must not confirm (nor keep alive) what it remembers */
+  const gboolean memonly = cfg->two && org[bi] == KO_MEM;
+  if (!memonly && (st->kr_hit[hi].n == 0 || t - st->kr_hit[hi].at >= (guint64)ns)) {
     st->kr_hit[hi].n++;
     st->kr_hit[hi].at = t;
   }
   st->kr_hit[hi].dc = MAX(st->kr_hit[hi].dc, best);
-  const gboolean sure = st->kr_hit[hi].n >= 2 || (best >= -2.0 && best - nb >= 5.0);
+  /* … and a call the text does not support, or a short one it did not read
+   * exactly, has no once-by-far path: two separate reads */
+  const gboolean need_two =
+      cfg->two && (!(org[bi] & KO_SUPPORTED) ||
+                   (strlen(cand[bi]) <= 4 && !(org[bi] & KO_READ)));
+  const gboolean sure = st->kr_hit[hi].n >= 2 ||
+                        (!need_two && best >= -2.0 && best - nb >= 5.0);
   const gboolean due = st->kr_hit[hi].said == 0 ||
                        t - st->kr_hit[hi].said >= (guint64)(KR_SAY_S * st->rate);
   if (sure && due && !st->kr_q[0]) {
