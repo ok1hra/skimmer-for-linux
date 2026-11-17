@@ -41,8 +41,9 @@ int main(void) {
     check("a Red Pitaya at 96 kHz, found on the LAN (host=auto)",
           ok && c.source == SKIM_HD_SOURCE_HPSDR_P1 && c.rate == 96000 &&
           g_strv_length(c.hosts) == 1 && strcmp(c.hosts[0], "auto") == 0);
-    check("eight bands (160 … 10 m), CW v3 and RTTY on each",
-          ok && c.nb == 8 && c.band[0].cw && c.band[0].rtty && c.band[7].rtty &&
+    check("eight bands on (160 … 10 m), CW v3 and RTTY on each; 12 m listed, off",
+          ok && c.nb == 8 && c.nlisted == 9 && c.listed[8].off &&
+          strcmp(c.listed[8].name, "12m") == 0 && c.listed[8].rtty && c.band[0].cw && c.band[0].rtty && c.band[7].rtty &&
           c.band[0].cw_engine == SKIM_CW_ENGINE_V3 && strcmp(c.band[2].name, "40m") == 0 &&
           c.band[2].centre_hz == 7045500 && strcmp(c.band[7].name, "10m") == 0);
     {
@@ -96,6 +97,33 @@ int main(void) {
     g_free(m1);
     g_free(m2);
     skim_hd_config_clear(&c);
+  }
+
+  printf("== bands kept but off\n");
+  {
+    SkimHdConfig c;
+    GError *err = NULL;
+    const gboolean ok = parse(&c,
+        "[bands]\n160m=1845500 cw,off\n80m=3545500\n12m=24915500 off\n"
+        "a=1900000\nb=3600000\nc=7000000\nd=10100000\ne=14000000\nf=18100000\n"
+        "g=21000000\n", &err);
+    check("parses: eight on, three off (more lines than receivers)", ok && c.nb == 8 &&
+          c.nlisted == 10);
+    if (!ok) { printf("       (%s)\n", err->message); }
+    check("the receivers skip the bands off (80m is RX1)",
+          ok && strcmp(c.band[0].name, "80m") == 0 && strcmp(c.band[1].name, "a") == 0);
+    check("listed keeps file order, off marked; \"off\" alone is CW",
+          ok && strcmp(c.listed[0].name, "160m") == 0 && c.listed[0].off &&
+          c.listed[2].off && c.listed[2].cw && !c.listed[1].off);
+    char *m = ok ? skim_hd_band_modes(&c.listed[0], c.engine) : NULL;
+    check("modes written back: \"cw,off\"", m && strcmp(m, "cw,off") == 0);
+    g_free(m);
+    skim_hd_config_clear(&c);
+    g_clear_error(&err);
+    check("refused: every band off",
+          !parse(&c, "[bands]\n20m=14045500 off\n", &err) && err &&
+          strstr(err->message, "every band is off"));
+    g_clear_error(&err);
   }
 
   printf("== radio and feed\n");

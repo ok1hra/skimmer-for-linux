@@ -838,12 +838,14 @@ static char *web_config(GHashTable *q, gboolean may, guint *st, const char **typ
   SkimHdConfig c;
   if (skim_hd_config_parse(&c, text, len, h->cfg_path, &err)) {
     g_string_append(o, ",\"file_error\":null,\"bands\":[");
-    for (guint i = 0; i < c.nb; i++) {
+    for (guint i = 0; i < c.nlisted; i++) {           /* the ones off too */
+      const SkimHdBand *b = &c.listed[i];
       g_string_append_printf(o, "%s{", i ? "," : "");
-      json_kv(o, "name", c.band[i].name, FALSE);
-      g_string_append_printf(o, ",\"centre_hz\":%.0f,\"cw\":%s,\"engine\":\"%s\",\"rtty\":%s}",
-                             c.band[i].centre_hz, c.band[i].cw ? "true" : "false",
-                             engine_key(c.band[i].cw_engine), c.band[i].rtty ? "true" : "false");
+      json_kv(o, "name", b->name, FALSE);
+      g_string_append_printf(o, ",\"centre_hz\":%.0f,\"cw\":%s,\"engine\":\"%s\",\"rtty\":%s,"
+                             "\"on\":%s}",
+                             b->centre_hz, b->cw ? "true" : "false", engine_key(b->cw_engine),
+                             b->rtty ? "true" : "false", b->off ? "false" : "true");
     }
     g_string_append_c(o, ']');
     skim_hd_config_clear(&c);
@@ -1314,10 +1316,12 @@ int main(int argc, char **argv) {
     printf("%s: fine\n  radio  %s, %u kHz\n", h->cfg_path,
            c->source == SKIM_HD_SOURCE_MOCK ? "mock (no radio)" : c->hosts_text,
            c->rate / 1000);
-    for (guint i = 0; i < c->nb; i++) {
-      char *m = skim_hd_band_modes(&c->band[i], c->engine);
-      printf("  RX%u    %-5s %.1f kHz  %s\n", i + 1, c->band[i].name,
-             c->band[i].centre_hz / 1000.0, m);
+    for (guint i = 0, rx = 0; i < c->nlisted; i++) {
+      const SkimHdBand *b = &c->listed[i];
+      char *m = skim_hd_band_modes(b, c->engine);
+      char *slot = b->off ? g_strdup("off") : g_strdup_printf("RX%u", ++rx);
+      printf("  %-6s %-5s %.1f kHz  %s\n", slot, b->name, b->centre_hz / 1000.0, m);
+      g_free(slot);
       g_free(m);
     }
     printf("  feed   %s port %d, %s\n  gate   %s, %s (CW)\n",

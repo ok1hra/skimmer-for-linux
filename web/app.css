@@ -111,6 +111,8 @@ input:disabled, select:disabled { opacity: .6; }
 input.bad { border-color: var(--bad); }
 .bands-edit input[type=text], .bands-edit input:not([type]) { width: 7em; }
 .bands-edit td { padding: 3px 6px; }
+.bands-edit tr.off td { background: var(--bg); }
+.bands-edit tr.off input:not([data-k=on]), .bands-edit tr.off select { opacity: .55; }
 button.small, .bands-edit button { font: inherit; font-size: 12px; border: 1px solid var(--ln); background: var(--panel);
                                    color: var(--fg); border-radius: 6px; padding: 2px 8px; cursor: pointer; margin-top: 6px; }
 .bands-edit button { margin: 0 1px; }

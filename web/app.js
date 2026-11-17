@@ -249,13 +249,16 @@ window.addEventListener('resize', () => {
 
 // ---- settings --------------------------------------------------------------------
 const cfg = { data: null, dirty: false };
-const MAX_BANDS = 8;
+const MAX_BANDS = 8;          // receivers: the bands on
+const MAX_LISTED = 16;        // [bands] lines, the ones off included
 
-function bandRow(b, i, n, may) {
+function bandRow(b, i, n, may, rx) {
   const tr = document.createElement('tr');
   const dis = may ? '' : ' disabled';
+  tr.classList.toggle('off', !b.on);
   tr.innerHTML =
-    `<td>RX${i + 1}</td>` +
+    `<td>${b.on ? `RX${rx}` : '<span class="mut">off</span>'}</td>` +
+    `<td><input type="checkbox" data-k="on"${b.on ? ' checked' : ''}${dis} title="received"></td>` +
     `<td><input data-k="name" value="${esc(b.name)}" size="6"${dis}></td>` +
     `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${dis}></td>` +
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
@@ -274,14 +277,22 @@ function readBands() {
     cw: tr.querySelector('[data-k=cw]').checked,
     engine: tr.querySelector('[data-k=engine]').value,
     rtty: tr.querySelector('[data-k=rtty]').checked,
+    on: tr.querySelector('[data-k=on]').checked,
   }));
 }
 function drawBands(list) {
   const may = cfg.data && cfg.data.may_change;
-  $('#band-rows').replaceChildren(...list.map((b, i) => bandRow(b, i, list.length, may)));
-  $('#band-count').textContent = `${list.length} of ${MAX_BANDS} receivers`;
-  $('#band-add').disabled = !may || list.length >= MAX_BANDS;
+  let rx = 0;
+  $('#band-rows').replaceChildren(...list.map((b, i) => bandRow(b, i, list.length, may, b.on ? ++rx : 0)));
+  const off = list.length - rx;
+  $('#band-count').textContent = `${rx} of ${MAX_BANDS} receivers${off ? ` · ${off} off` : ''}`;
+  $('#band-count').classList.toggle('bad', rx > MAX_BANDS);
+  $('#band-add').disabled = !may || list.length >= MAX_LISTED;
 }
+// ticking a band on or off renumbers the receivers
+$('#band-rows').addEventListener('change', (e) => {
+  if (e.target.dataset && e.target.dataset.k === 'on') drawBands(readBands());
+});
 $('#band-rows').addEventListener('click', (e) => {
   const a = e.target.dataset && e.target.dataset.a;
   if (!a) return;
@@ -294,7 +305,8 @@ $('#band-rows').addEventListener('click', (e) => {
 });
 $('#band-add').addEventListener('click', () => {
   const list = readBands();
-  list.push({ name: '', khz: '', cw: true, engine: $('[name="decode.engine"]').value || 'v3', rtty: false });
+  const on = list.filter((b) => b.on).length < MAX_BANDS;   // a ninth line starts off
+  list.push({ name: '', khz: '', cw: true, engine: $('[name="decode.engine"]').value || 'v3', rtty: false, on });
   drawBands(list);
   cfg.dirty = true;
 });
@@ -314,7 +326,7 @@ function fillSettings(d) {
   for (const inp of f.querySelectorAll('input, select, button')) inp.disabled = !d.may_change;
   $('#set-export').disabled = false;                 // anyone may read the file
   drawBands(d.bands.map((b) => ({ name: b.name, khz: String(b.centre_hz / 1000), cw: b.cw,
-                                  engine: b.engine, rtty: b.rtty })));
+                                  engine: b.engine, rtty: b.rtty, on: b.on !== false })));
   const lock = $('#set-lock');
   lock.hidden = d.may_change;
   if (!d.may_change) {
@@ -353,6 +365,7 @@ function formBody() {
     const modes = [];
     if (b.cw) modes.push(b.engine === dflt ? 'cw' : `cw:${b.engine}`);
     if (b.rtty) modes.push('rtty');
+    if (!b.on) modes.push('off');
     lines.push(`${b.name}=${Number.isFinite(hz) ? hz : b.khz}${modes.length ? ` ${modes.join(',')}` : ''}`);
   }
   p.set('bands', lines.join('\n'));

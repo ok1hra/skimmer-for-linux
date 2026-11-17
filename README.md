@@ -207,7 +207,9 @@ skimmer-headless [--config FILE] [--take-over] [--status-every S]
      its address there; a list is tried in order (`host=192.168.1.21,auto`).
      A radio on another subnet is not reached by a broadcast — name it.
    - eight bands (160, 80, 40, 30, 20, 17, 15, 10 m), CW and RTTY on each —
-     a Red Pitaya has eight receivers; 12 m is in the file, commented out.
+     a Red Pitaya has eight receivers; 12 m is in the list too, `off`. A band
+     with `off` among its modes stays in the file (and on the settings page)
+     without a receiver: up to sixteen lines, eight of them on.
 3. **Set your call** in `[feed] call=` — the telnet feed stays off until it
    is set — on the web page (`http://<host>:8073/`, Settings) or in the file.
 4. **Correct the clock.** A Red Pitaya's clock is off by a few ppm and every

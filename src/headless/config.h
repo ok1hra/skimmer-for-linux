@@ -12,7 +12,7 @@
  *            clock_ppm  for the radios without @ppm
  *   [bands]  <name>=<centre Hz> [modes], in receiver order (RX1 first);
  *            modes a comma list of cw, cw:v3, cw:v2, cw:deepcw, rtty — none = cw
- *            with [decode] engine
+ *            with [decode] engine; off = the band is kept, not received
  *   [decode] engine=v3|v2|deepcw (the bands that name none), log=true|false,
  *            suppress_cw_on_rtty (default false: rtty_pairs.h)
  *   [feed]   call, port (0 = off), min_score, min_hearings, settle_s,
@@ -35,6 +35,7 @@
 G_BEGIN_DECLS
 
 #define SKIM_HD_MAX_BANDS 8           /* sdr_receiver_hpsdr's receiver count */
+#define SKIM_HD_MAX_LISTED 16         /* [bands] lines, the ones off included */
 #define SKIM_HD_HOST_AUTO "auto"      /* [radio] host: what a broadcast finds */
 
 typedef enum {
@@ -48,6 +49,7 @@ typedef struct {
   gboolean     cw;                    /* decode CW on this band              */
   SkimCwEngine cw_engine;             /* … with this engine                  */
   gboolean     rtty;                  /* decode RTTY beside it               */
+  gboolean     off;                   /* listed, not received ("off")        */
 } SkimHdBand;
 
 typedef struct {
@@ -60,9 +62,12 @@ typedef struct {
   char            *hosts_text;        /* "a, b" for messages                 */
   guint            rate;
   double           ppm;               /* clock_ppm for the radios w/o @ppm   */
-  /* [bands] */
+  /* [bands] — band[]: the ones received, in receiver order; listed[]:
+   * every line in file order, the ones off included (the settings page) */
   SkimHdBand       band[SKIM_HD_MAX_BANDS];
   guint            nb;
+  SkimHdBand       listed[SKIM_HD_MAX_LISTED];
+  guint            nlisted;
   /* [decode] */
   SkimCwEngine     engine;            /* default for bands that name none    */
   gboolean         decode_log;
@@ -99,7 +104,7 @@ gboolean skim_hd_config_write_default(const char *path, const char *radios, GErr
 /* Parse an ini held in memory; path names it in messages and anchors its
  * relative paths. FALSE + error (and cfg cleared) on a bad host, a band that
  * is no centre in Hz or names an unknown mode, more than SKIM_HD_MAX_BANDS
- * bands, no band at all, a rate other than 48/96/192 kHz or an unknown
+ * bands on (SKIM_HD_MAX_LISTED in all), no band on at all, a rate other than 48/96/192 kHz or an unknown
  * radio type. */
 gboolean skim_hd_config_parse(SkimHdConfig *cfg, const char *text, gsize len,
                               const char *path, GError **error);
@@ -143,7 +148,7 @@ char **skim_hd_config_backups(const char *path);
  * the current file becomes a backup itself, so a restore can be undone. */
 gboolean skim_hd_config_restore(const char *path, const char *backup, GError **error);
 
-/* "cw", "cw:deepcw,rtty", … — the band's modes as the ini writes them. */
+/* "cw", "cw:deepcw,rtty", "cw,off" … — the band's modes as the ini writes them. */
 char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt);
 
 G_END_DECLS

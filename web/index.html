@@ -117,11 +117,11 @@
       <fieldset>
         <legend>Bands <span class="mut" id="band-count"></span></legend>
         <div class="wrap"><table class="grid bands-edit">
-          <thead><tr><th>RX</th><th>name</th><th>centre kHz</th><th>CW</th><th>engine</th><th>RTTY</th><th></th></tr></thead>
+          <thead><tr><th>RX</th><th title="received — an unticked band stays in the list, off">on</th><th>name</th><th>centre kHz</th><th>CW</th><th>engine</th><th>RTTY</th><th></th></tr></thead>
           <tbody id="band-rows"></tbody>
         </table></div>
         <button type="button" id="band-add" class="small">Add band</button>
-        <small class="mut">one receiver per band, in this order; with 96 kHz a band spans its centre ± 48 kHz</small>
+        <small class="mut">one receiver per band that is on, in this order (8 at most); a band unticked in <i>on</i> stays in the list without a receiver; with 96 kHz a band spans its centre ± 48 kHz</small>
       </fieldset>
       <fieldset>
         <legend>Recording raw IQ</legend>

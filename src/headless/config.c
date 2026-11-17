@@ -30,11 +30,12 @@ static const char DEFAULT_CONFIG[] =
   "\n[bands]\n"
   "# name=centre Hz [modes], in receiver order (RX1 first). At 96 kHz a band\n"
   "# spans its centre +-48 kHz. modes: cw, rtty (cw:v2 = the v0.7 decoder,\n"
-  "# cw:deepcw = the neural CW decoder). At most 8 — the Red Pitaya has 8 receivers: to have 12 m,\n"
-  "# put the # in front of another band.\n"
+  "# cw:deepcw = the neural CW decoder); off keeps the band here without\n"
+  "# receiving it. At most 8 on — the Red Pitaya has 8 receivers: to have\n"
+  "# 12 m, take off from it and put it on another band.\n"
   "160m=1845500 cw,rtty\n80m=3545500 cw,rtty\n40m=7045500 cw,rtty\n"
   "30m=10125000 cw,rtty\n20m=14045500 cw,rtty\n17m=18113500 cw,rtty\n"
-  "15m=21045500 cw,rtty\n10m=28045500 cw,rtty\n#12m=24915500 cw,rtty\n"
+  "15m=21045500 cw,rtty\n10m=28045500 cw,rtty\n12m=24915500 cw,rtty,off\n"
   "\n[decode]\n# v3 (classical, weak-signal front end), v2 (classical, as in v0.7) or\n"
   "# deepcw (needs ONNX Runtime + the model: skimmer-headless --fetch-deepcw-model);\n"
   "# without them a band runs v3\n"
@@ -150,6 +151,7 @@ char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt) {
     if (b->cw_engine != dflt) { g_string_append_printf(s, ":%s", engine_name(b->cw_engine)); }
   }
   if (b->rtty) { g_string_append_printf(s, "%srtty", s->len ? "," : ""); }
+  if (b->off) { g_string_append_printf(s, "%soff", s->len ? "," : ""); }
   return g_string_free(s, FALSE);
 }
 
@@ -181,11 +183,18 @@ static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
         b->cw = TRUE;
       } else if (g_strcmp0(t, "rtty") == 0) {
         b->rtty = TRUE;
+      } else if (g_strcmp0(t, "off") == 0) {
+        b->off = TRUE;
       } else {
-        ok = bad(error, path, "band %s: mode \"%s\" (cw, cw:v3, cw:v2, cw:deepcw, rtty)", name, t);
+        ok = bad(error, path, "band %s: mode \"%s\" (cw, cw:v3, cw:v2, cw:deepcw, rtty, off)",
+                 name, t);
       }
     }
     g_strfreev(m);
+    if (ok && !b->cw && !b->rtty) {           /* "off" alone: CW, as no modes */
+      b->cw = TRUE;
+      b->cw_engine = dflt;
+    }
   }
   g_free(v);
   return ok;
@@ -374,22 +383,32 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   gsize n = 0;
   char **keys = g_key_file_get_keys(kf, "bands", &n, NULL);   /* file order */
   for (gsize i = 0; keys && i < n && ok; i++) {
-    if (h->nb == SKIM_HD_MAX_BANDS) {
-      ok = bad(error, path, "band %s: %d receivers at most", keys[i], SKIM_HD_MAX_BANDS);
+    if (h->nlisted == SKIM_HD_MAX_LISTED) {
+      ok = bad(error, path, "band %s: %d [bands] lines at most", keys[i], SKIM_HD_MAX_LISTED);
       break;
     }
+    SkimHdBand *b = &h->listed[h->nlisted];
     char *v = g_key_file_get_value(kf, "bands", keys[i], NULL);
-    ok = band_parse(&h->band[h->nb], keys[i], v, h->engine, path, error);
+    ok = band_parse(b, keys[i], v, h->engine, path, error);
     g_free(v);
-    for (guint k = 0; ok && k < h->nb; k++) {
-      if (strcmp(h->band[k].name, keys[i]) == 0) {
+    for (guint k = 0; ok && k < h->nlisted; k++) {
+      if (strcmp(h->listed[k].name, keys[i]) == 0) {
         ok = bad(error, path, "band %s twice", keys[i]);
       }
     }
-    if (ok) { h->nb++; }
+    if (!ok) { break; }
+    h->nlisted++;
+    if (b->off) { continue; }
+    if (h->nb == SKIM_HD_MAX_BANDS) {
+      ok = bad(error, path, "band %s: %d receivers at most — put off on another band",
+               keys[i], SKIM_HD_MAX_BANDS);
+      break;
+    }
+    h->band[h->nb++] = *b;
   }
   g_strfreev(keys);
-  if (ok && h->nb == 0) { ok = bad(error, path, "no [bands] entries"); }
+  if (ok && h->nlisted == 0) { ok = bad(error, path, "no [bands] entries"); }
+  if (ok && h->nb == 0) { ok = bad(error, path, "every band is off"); }
   return ok;
 }
 
