@@ -6,6 +6,7 @@
  *                    [--feed-gate-mode off|shadow|on] [--check-config]
  *                    [--list-switches] [--fetch-deepcw-model]
  *                    [--install-service] [--uninstall-service] [--find-radios]
+ *                    [--find-skimmers]
  *
  * An IQ source (headless/source.h — a Red Pitaya running sdr_receiver_hpsdr,
  * up to 8 receivers at once) feeds one engine pipeline per band and mode
@@ -60,6 +61,7 @@
 
 #include "headless/config.h"
 #include "headless/deepcw_model.h"
+#include "headless/discovery.h"
 #include "headless/json.h"
 #include "headless/logring.h"
 #include "headless/peers.h"
@@ -162,6 +164,7 @@ typedef struct {
   SkimRbnFeed    *feed;
   SkimRbnFeed    *rbn;         /* [rbn]: the Aggregator's port (delayed)      */
   SkimHdPeers    *peers;       /* [peers]: other skimmers' feeds, aggregated  */
+  SkimHdDiscovery *disco;      /* answers the LAN's "who is there"            */
   SkimScpUpdater *scp;
   GMainLoop      *loop;
   gint64          t_start;
@@ -1187,6 +1190,90 @@ static int fetch_model_cli(void) {
   return rc;
 }
 
+/* ---- the instances on the LAN (headless/discovery.h) ---------------------------- */
+
+/* What this instance tells a discovery request: who, which role, where its
+ * feed and page are, its bands. */
+static char *disco_info(gpointer user) {
+  Hd *h = user;
+  const SkimHdConfig *c = &h->cfg;
+  GString *o = g_string_new("{\"name\":\"");
+  skim_json_append(o, c->hub_name);
+  g_string_append_printf(o, "\",\"version\":\"%s\",\"call\":\"", SKIMMER_VERSION);
+  skim_json_append(o, c->feed_call ? c->feed_call : "");
+  g_string_append_printf(o, "\",\"role\":\"solo\",\"http_port\":%d,\"feed_port\":%d,"
+                         "\"radio\":\"", h->http_port, h->feed ? c->feed_port : 0);
+  skim_json_append(o, h->src_st.host);
+  g_string_append(o, "\",\"bands\":[");
+  for (guint i = 0; i < c->nb; i++) {
+    char *m = skim_hd_band_modes(&c->band[i], c->engine);
+    g_string_append_printf(o, "%s{\"name\":\"", i ? "," : "");
+    skim_json_append(o, c->band[i].name);
+    g_string_append_printf(o, "\",\"centre_hz\":%.0f,\"modes\":\"%s\"}", c->band[i].centre_hz, m);
+    g_free(m);
+  }
+  g_string_append(o, "]}");
+  return g_string_free(o, FALSE);
+}
+
+/* GET /api/skimmers: a search (0.8 s — the main loop waits it out) */
+static char *web_skimmers(GHashTable *q, gboolean may, guint *st, const char **type,
+                          gpointer user) {
+  (void)q; (void)may; (void)st; (void)type;
+  Hd *h = user;
+  char *found = skim_hd_discovery_find(800);
+  GString *o = g_string_new("{\"self\":");
+  char *me = disco_info(h);
+  g_string_append(o, me);
+  g_free(me);
+  g_string_append_printf(o, ",\"found\":%s}", found);
+  g_free(found);
+  return g_string_free(o, FALSE);
+}
+
+/* A string or number field of one flat discovery answer ("" when absent). */
+static char *disco_field(const char *obj, const char *key) {
+  char *pat = g_strdup_printf("\"%s\":(\"((?:[^\"\\\\]|\\\\.)*)\"|(-?[0-9.]+))", key);
+  GRegex *re = g_regex_new(pat, 0, 0, NULL);
+  GMatchInfo *m = NULL;
+  char *v = NULL;
+  if (g_regex_match(re, obj, 0, &m)) {
+    v = g_match_info_fetch(m, 2);
+    if (!v || !v[0]) { g_free(v); v = g_match_info_fetch(m, 3); }
+  }
+  g_match_info_free(m);
+  g_regex_unref(re);
+  g_free(pat);
+  return v ? v : g_strdup("");
+}
+
+/* --find-skimmers */
+static int find_skimmers_cli(void) {
+  char *found = skim_hd_discovery_find(1000);
+  /* the answers are flat objects but for "bands": split at each "addr" */
+  char **objs = g_strsplit(found, "{\"addr\":", -1);
+  guint n = 0;
+  for (char **o = objs + 1; *o; o++) {
+    char *obj = g_strconcat("{\"addr\":", *o, NULL);
+    char *addr = disco_field(obj, "addr"), *name = disco_field(obj, "name");
+    char *role = disco_field(obj, "role"), *call = disco_field(obj, "call");
+    char *ver = disco_field(obj, "version"), *http = disco_field(obj, "http_port");
+    char *feed = disco_field(obj, "feed_port");
+    printf("  %-15s %-14s %-7s %-10s v%-7s web :%s  feed %s\n", addr, name, role,
+           call[0] ? call : "(no call)", ver, http, strcmp(feed, "0") ? feed : "off");
+    n++;
+    g_free(addr); g_free(name); g_free(role); g_free(call); g_free(ver); g_free(http);
+    g_free(feed); g_free(obj);
+  }
+  if (!n) {
+    printf("No skimmer answered a discovery broadcast (UDP port %u) within 1 s.\n",
+           skim_hd_discovery_port());
+  }
+  g_strfreev(objs);
+  g_free(found);
+  return 0;
+}
+
 static char *web_log(GHashTable *q, gboolean may, guint *st, const char **type,
                      gpointer user) {
   (void)q; (void)may; (void)st; (void)type; (void)user;
@@ -1282,6 +1369,7 @@ int main(int argc, char **argv) {
   char *cfg = NULL;
   gboolean list_switches = FALSE, check_config = FALSE, fetch_model = FALSE;
   gboolean install_service = FALSE, uninstall_service = FALSE, find_radios = FALSE;
+  gboolean find_skimmers = FALSE;
   GOptionEntry opts[] = {
     { "config", 'c', 0, G_OPTION_ARG_FILENAME, &cfg,
       "Config file (default ~/.config/skimmer-for-linux/headless.ini)", "FILE" },
@@ -1308,6 +1396,9 @@ int main(int argc, char **argv) {
     { "find-radios", 0, 0, G_OPTION_ARG_NONE, &find_radios,
       "List the Red Pitayas on this LAN (address, receivers, idle or busy) and exit",
       NULL },
+    { "find-skimmers", 0, 0, G_OPTION_ARG_NONE, &find_skimmers,
+      "List the skimmer-headless instances on this LAN (address, name, role, call, "
+      "ports) and exit", NULL },
     { "install-service", 0, 0, G_OPTION_ARG_NONE, &install_service,
       "Write a systemd user service that runs this program (with --config, "
       "that config) and exit — it starts nothing; the next steps are printed", NULL },
@@ -1339,6 +1430,7 @@ int main(int argc, char **argv) {
   }
   if (fetch_model) { return fetch_model_cli(); }
   if (find_radios) { return find_radios_cli(); }
+  if (find_skimmers) { return find_skimmers_cli(); }
   if (install_service || uninstall_service) {
     gboolean ok;
     if (install_service) {
@@ -1619,6 +1711,7 @@ int main(int argc, char **argv) {
   if (h->http_port > 0) {
     const SkimHdWebHooks hooks = {
       .status = web_status, .stats = web_stats, .log = web_log, .config = web_config,
+      .skimmers = web_skimmers,
       .config_post = web_config_post, .config_import = web_config_import,
       .restart = web_restart, .rollback = web_rollback,
       .deepcw = web_deepcw,
@@ -1637,6 +1730,12 @@ int main(int argc, char **argv) {
     }
   }
 
+  h->disco = skim_hd_discovery_new(disco_info, h, &err);
+  if (!h->disco) {
+    g_warning("discovery: %s — this skimmer will not be found on the LAN", err->message);
+    g_clear_error(&err);
+  }
+
   h->loop = g_main_loop_new(NULL, FALSE);
   g_unix_signal_add(SIGINT, on_signal, h);
   g_unix_signal_add(SIGTERM, on_signal, h);
@@ -1651,6 +1750,7 @@ int main(int argc, char **argv) {
   /* Teardown: the radio first (stop — only if the stream is still ours),
    * then the engines, then the feed they spot into. */
   g_clear_pointer(&web, skim_hd_web_free);
+  g_clear_pointer(&h->disco, skim_hd_discovery_free);
   g_cancellable_cancel(h->dcw_cancel);         /* a fetch in flight stops      */
   if (h->dcw_thread) { g_thread_join(h->dcw_thread); }
   g_clear_pointer(&h->src, skim_iq_source_free);

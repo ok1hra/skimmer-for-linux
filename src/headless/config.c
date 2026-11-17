@@ -109,6 +109,7 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_free(cfg->feed_gate_mode);
   g_strfreev(cfg->settings_from);
   g_strfreev(cfg->peers);
+  g_free(cfg->hub_name);
   g_strfreev(cfg->rec_bands);
   g_free(cfg->rec_dir);
   memset(cfg, 0, sizeof(*cfg));
@@ -351,6 +352,17 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->rbn_delay_s = (guint)d;
   }
 
+  h->hub_name = g_key_file_get_string(kf, "hub", "name", NULL);
+  if (h->hub_name) { g_strstrip(h->hub_name); }
+  if (!h->hub_name || !h->hub_name[0]) {
+    g_free(h->hub_name);
+    h->hub_name = g_strdup(g_get_host_name());
+  }
+  for (const char *x = h->hub_name; *x; x++) {
+    if (!g_ascii_isalnum(*x) && *x != '-' && *x != '_' && *x != '.') {
+      return bad(error, path, "[hub] name \"%s\": letters, digits, - _ . only", h->hub_name);
+    }
+  }
   {
     char *pv = g_key_file_get_string(kf, "peers", "hosts", NULL);
     GPtrArray *pl = g_ptr_array_new();
@@ -492,7 +504,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "decode.engine", "decode.log", "decode.suppress_cw_on_rtty",
   "feed.call", "feed.port", "feed.rtty",
   "rbn.enabled", "rbn.port", "rbn.delay_s",
-  "peers.hosts",
+  "peers.hosts", "hub.name",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
   NULL,

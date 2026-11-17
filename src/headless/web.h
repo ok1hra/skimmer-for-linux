@@ -8,6 +8,7 @@
  *   GET  /stats.json            per-minute history (?hours=N, default 24)
  *   GET  /api/log               the last log lines
  *   GET  /api/config            the config: the ini, what may be edited, backups
+ *   GET  /api/skimmers          the skimmer instances on the LAN (a 0.8 s search)
  *   POST /api/config            a new config (settings_from only)
  *   POST /api/config/import    an exported ini (ini=…) as the config (settings_from)
  *   POST /api/restart           restart with the config on disk (settings_from)
@@ -39,7 +40,7 @@ typedef char *(*SkimHdWebGet)(GHashTable *query, gboolean may_change, guint *sta
 typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
 typedef struct {
-  SkimHdWebGet  status, stats, log, config;
+  SkimHdWebGet  status, stats, log, config, skimmers;
   SkimHdWebPost config_post, config_import, restart, rollback, deepcw;
   gpointer      user;
 } SkimHdWebHooks;

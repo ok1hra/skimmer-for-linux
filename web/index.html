@@ -127,6 +127,8 @@
         </fieldset>
         <fieldset>
           <legend>Other skimmers (peers)</legend>
+          <label>Name on the LAN <input name="hub.name" placeholder="host name">
+            <small>how other skimmers list this one (Skimmers on the LAN, below)</small></label>
           <label class="wide">Their feeds <input name="peers.hosts" placeholder="192.168.1.30, pc2:7300">
             <small>telnet feeds of other skimmers (ours or CW Skimmer Server), host or host:port; their CQ spots go out
             on this feed and to the RBN under this call, duplicates dropped — fine for skimmers on this station's antennas,
@@ -169,6 +171,12 @@
         <span id="set-msg" class="mut"></span>
       </div>
     </form>
+    <details class="more" id="lan">
+      <summary>Skimmers on the LAN</summary>
+      <p class="mut note">Other skimmer-headless instances answer a broadcast (UDP 8075). This one is
+        <b id="lan-self"></b>. <button type="button" class="small" id="lan-find">Search</button> <span id="lan-msg" class="mut"></span></p>
+      <div class="wrap"><table class="grid" id="lan-list"></table></div>
+    </details>
     <details class="more">
       <summary>Not editable here — set in the config file or by a start switch</summary>
       <dl class="kv" id="set-ro"></dl>

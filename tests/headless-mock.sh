@@ -66,6 +66,7 @@ head -c 15139839 /dev/zero > "$T/bad/$C/model.onnx"
 # DeepCW fetch the bad mirror; no model where the engine looks
 export XDG_CONFIG_HOME=$T/cfg XDG_DATA_HOME=$T/data XDG_STATE_HOME=$T/state
 export SKIM_SCP_URL=http://127.0.0.1:9/ SKIM_DEEPCW_URL=file://$T/bad
+export SKIM_DISCOVERY_PORT=$((30000 + RANDOM % 5000))   # never the LAN's instances
 unset SKIM_DEEPCW_MODEL SKIM_CW_ENGINE
 "$HL" --config "$T/headless.ini" > "$T/log" 2>&1 &
 PID=$!
@@ -126,6 +127,8 @@ check "web: stats.json (6 h, both bands, the global series)" $?
 [[ $(curl -s "http://127.0.0.1:$HTTP/api/log") == '[{"t":'*'"text":"skimmer-headless '* ]]; check "web: the log" $?
 [[ $(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$HTTP/../headless.ini") == 404 ]]
 check "web: no path out of the page" $?
+out=$("$HL" --find-skimmers 2>&1)
+[[ $out == *" solo "*"TEST"*"web :$HTTP"*"feed $FEED"* ]]; check "--find-skimmers: this instance, its call and ports" $?
 grep -q "decode: 40m CW, engine cw-v2 + RTTY$" "$T/log" && grep -q "decode: 20m CW, engine cw-v3$" "$T/log" &&
   grep -q "decode: 40m CW stays off the RTTY stations RTTY copies" "$T/log"
 check "log: what each band decodes" $?

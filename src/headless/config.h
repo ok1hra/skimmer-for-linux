@@ -22,6 +22,7 @@
  *            default 0): a second telnet port for the RBN Aggregator, which
  *            relays to the Reverse Beacon Network — the feed's spots, each
  *            held delay_s seconds (the feed's call; needs [feed] call)
+ *   [hub]    name — this instance on the LAN (discovery; default the host name)
  *   [peers]  hosts — other skimmers' telnet feeds (host or host:port, comma
  *            separated) whose CQ spots this one sends on as its own,
  *            deduplicated (headless/peers.h)
@@ -96,6 +97,8 @@ typedef struct {
   gboolean         rbn_on;
   int              rbn_port;
   guint            rbn_delay_s;
+  /* [hub] */
+  char            *hub_name;          /* never NULL                          */
   /* [peers] */
   char           **peers;             /* NULL-terminated, maybe empty        */
   /* [status] — -1 = not in the file */

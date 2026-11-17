@@ -379,6 +379,7 @@ function fillSettings(d) {
   }
   for (const inp of f.querySelectorAll('input, select, button')) inp.disabled = !d.may_change;
   $('#set-export').disabled = false;                 // anyone may read the file
+  $('#lan-find').disabled = false;                   // a search changes nothing
   drawBands(d.bands.map((b) => ({ name: b.name, khz: String(b.centre_hz / 1000), cw: b.cw,
                                   engine: b.engine, rtty: b.rtty, on: b.on !== false })));
   const lock = $('#set-lock');
@@ -530,6 +531,46 @@ async function restore(name) {
   catch (err) { alert(`Not restored: ${err.message}`); }
 }
 $('#set-baks').addEventListener('click', (e) => { if (e.target.dataset.restore) restore(e.target.dataset.restore); });
+
+// Skimmers on the LAN: a search, and what each found one can be used for here
+async function findSkimmers() {
+  $('#lan-msg').textContent = 'searching…';
+  $('#lan-find').disabled = true;
+  try {
+    const d = await getJSON('api/skimmers');
+    $('#lan-self').textContent = `${d.self.name}${d.self.call ? ` (${d.self.call})` : ''}`;
+    const may = cfg.data && cfg.data.may_change;
+    const peersIn = $('[name="peers.hosts"]');
+    const have = new Set(peersIn.value.split(/[\s,]+/).filter(Boolean));
+    $('#lan-list').innerHTML = '<tr><th>address</th><th class="l">name</th><th class="l">role</th><th class="l">call</th>' +
+      '<th class="l">bands</th><th></th></tr>' + (d.found.length ? d.found.map((s, i) => {
+        const feed = s.feed_port ? `${s.addr}:${s.feed_port}` : '';
+        const bands = (s.bands || []).map((b) => `${b.name}${b.modes && b.modes !== 'cw' ? ` ${b.modes}` : ''}`).join(', ');
+        return `<tr><td><a href="http://${esc(s.addr)}:${esc(s.http_port)}/" target="_blank" rel="noopener">${esc(s.addr)}:${esc(s.http_port)}</a></td>` +
+          `<td class="l">${esc(s.name)}</td><td class="l">${esc(s.role)}</td><td class="l">${esc(s.call || '–')}</td>` +
+          `<td class="l">${esc(bands)}</td><td>` +
+          (feed ? `<button type="button" class="small" data-peer="${esc(feed)}"${may && !have.has(feed) ? '' : ' disabled'}>` +
+                  `${have.has(feed) ? 'a peer already' : 'Add as peer'}</button>` : '<span class="mut">no feed</span>') +
+          '</td></tr>';
+      }).join('') : '<tr><td colspan="6" class="mut">no other skimmer answered</td></tr>');
+    $('#lan-msg').textContent = `${d.found.length} found`;
+  } catch (err) {
+    $('#lan-msg').textContent = err.message;
+  } finally {
+    $('#lan-find').disabled = false;
+  }
+}
+$('#lan-find').addEventListener('click', findSkimmers);
+$('#lan').addEventListener('toggle', () => { if ($('#lan').open) findSkimmers(); });
+$('#lan-list').addEventListener('click', (e) => {
+  const peer = e.target.dataset && e.target.dataset.peer;
+  if (!peer) return;
+  const inp = $('[name="peers.hosts"]');
+  inp.value = [...inp.value.split(/[\s,]+/).filter(Boolean), peer].join(', ');
+  cfg.dirty = true;
+  e.target.disabled = true;
+  e.target.textContent = 'added — Save to apply';
+});
 
 tabs.settings = {
   enter() { this.refresh(true); },

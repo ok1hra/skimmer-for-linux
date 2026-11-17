@@ -336,6 +336,7 @@ test('scp-update', skimmer_scp_test, timeout : 180)
 headless_sources = files(
   'src/headless/config.c',          # headless.ini, parsed and checked
   'src/headless/deepcw_model.c',    # the DeepCW model: check, fetch
+  'src/headless/discovery.c',       # instances finding each other on the LAN
   'src/headless/logring.c',         # the last log lines (/api/log)
   'src/headless/peers.c',           # [peers]: other skimmers' feeds, aggregated
   'src/headless/record.c',          # [record]: a band's IQ to disk
