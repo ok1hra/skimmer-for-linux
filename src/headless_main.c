@@ -858,7 +858,10 @@ static char *web_stats(GHashTable *q, gboolean may, guint *st, const char **type
   Hd *h = user;
   const char *hv = q ? g_hash_table_lookup(q, "hours") : NULL;
   const char *sv = q ? g_hash_table_lookup(q, "step") : NULL;
-  return skim_stats_json(h->stats, g_get_real_time() / (60 * G_USEC_PER_SEC),
+  const char *ev = q ? g_hash_table_lookup(q, "end") : NULL;    /* unix s: a past window */
+  gint64 end = g_get_real_time() / (60 * G_USEC_PER_SEC);
+  if (ev) { end = MIN(end, (gint64)g_ascii_strtoll(ev, NULL, 10) / 60); }
+  return skim_stats_json(h->stats, end,
                          hv ? (guint)g_ascii_strtoull(hv, NULL, 10) : 24,
                          sv ? (guint)g_ascii_strtoull(sv, NULL, 10) : 0);
 }

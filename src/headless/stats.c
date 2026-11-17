@@ -23,6 +23,7 @@
  * /stats.json:
  *   { "now": <unix s>, "t0": <unix s of the first bucket>, "step_min": S, "n": N,
  *     "res_min": R (the ring the answer comes from),
+ *     "first": <unix s of the oldest record kept> | null,
  *     "bands": ["160m", …],
  *     "cw":   { "spots": { "160m": [v|null × N], … }, "stations": …, "active": …,
  *               "folded": …, "gate_below": …, "snr": … },
@@ -462,9 +463,19 @@ char *skim_stats_json(SkimStats *s, gint64 now_minute, guint hours, guint step) 
   const gint64 last = now_minute - now_minute % step;
   const gint64 first = last - (gint64)step * (n - 1);
   GString *o = g_string_new(NULL);
+  gint64 oldest = 0;                           /* for a time slider          */
+  for (guint u = 0; u < NTIER; u++) {
+    for (guint i = 0; i < TIER[u].len; i++) {
+      const gint64 st = s->ring[u][i].start;
+      if (st && (!oldest || st < oldest)) { oldest = st; }
+    }
+  }
   g_string_append_printf(o, "{\"now\":%" G_GINT64_FORMAT ",\"t0\":%" G_GINT64_FORMAT
-                         ",\"step_min\":%u,\"n\":%u,\"res_min\":%u,\"bands\":[",
+                         ",\"step_min\":%u,\"n\":%u,\"res_min\":%u,\"first\":",
                          now_minute * 60, first * 60, step, n, res);
+  if (oldest) { g_string_append_printf(o, "%" G_GINT64_FORMAT, oldest * 60); }
+  else { g_string_append(o, "null"); }
+  g_string_append(o, ",\"bands\":[");
   for (guint b = 0; b < s->nb; b++) {
     g_string_append_printf(o, "%s\"", b ? "," : "");
     skim_json_append(o, s->names[b]);

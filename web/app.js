@@ -207,7 +207,7 @@ tabs.status = {
 };
 
 // ---- statistics ------------------------------------------------------------------
-const stats = { hours: 24, mode: 'cw', data: null, at: 0 };
+const stats = { hours: 24, mode: 'cw', data: null, at: 0, end: null };   // end: unix s, null = now
 
 // The CW + RTTY decoders tile: every channel decoder running now, summed over
 // the bands, CW beside RTTY (live, from the status — the history has no count).
@@ -241,6 +241,7 @@ function renderStats() {
   };
   const x = { t, spanH: stats.hours, label };
   $('#mode').hidden = !d.rtty;
+  renderTimebar(d);
   const per = d.step_min % 1440 === 0 ? `${d.step_min / 1440}-day` : d.step_min % 60 === 0
     ? `${d.step_min / 60}-hour` : `${d.step_min}-minute`;
   $('#stats-note').textContent = `${per} buckets · times in UTC` +
@@ -313,16 +314,46 @@ tabs.stats = {
   enter() { this.refresh(true); },
   async refresh(force) {
     // history moves by the minute: refetch at most every 30 s
-    if (!force && Date.now() - stats.at < 30000) return;
+    if (!force && (stats.end || Date.now() - stats.at < 30000)) return;   // a past window stays
     ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-lost'].forEach((id) => $(id).classList.add('loading'));
-    stats.data = await getJSON(`stats.json?hours=${stats.hours}`);
+    stats.data = await getJSON(`stats.json?hours=${stats.hours}${stats.end ? `&end=${stats.end}` : ''}`);
     stats.at = Date.now();
     renderStats();
   },
 };
+// The time slider: shown while the range is shorter than the history kept;
+// right = now, left = as far back as the oldest record. All charts follow.
+function sliderStep() { return stats.hours <= 24 ? 1 : stats.hours <= 168 ? 6 : stats.hours <= 2160 ? 24 : 24 * 7; }
+function renderTimebar(d) {
+  const bar = $('#timebar'), inp = $('#t-end');
+  const nowS = Math.floor(Date.now() / 1000);
+  const back = d.first ? Math.floor((nowS - d.first) / 3600) - stats.hours : 0;
+  bar.hidden = back < sliderStep();
+  if (bar.hidden) return;
+  const step = sliderStep(), maxOff = Math.floor(back / step) * step;
+  inp.min = String(-maxOff); inp.max = '0'; inp.step = String(step);
+  const off = stats.end ? Math.round((nowS - stats.end) / 3600) : 0;
+  if (document.activeElement !== inp) inp.value = String(-Math.min(off, maxOff));
+  timeLabel(off);
+}
+function timeLabel(offH) {
+  const nowS = Math.floor(Date.now() / 1000), end = nowS - offH * 3600, start = end - stats.hours * 3600;
+  const f = (t) => { const x = new Date(t * 1000); return `${x.getUTCDate()}.${x.getUTCMonth() + 1}.${stats.hours > 2160 ? x.getUTCFullYear() : ''} ${String(x.getUTCHours()).padStart(2, '0')}:00`; };
+  $('#t-label').textContent = offH ? `${f(start)} – ${f(end)} UTC` : `the last ${stats.hours >= 48 ? `${stats.hours / 24} days` : `${stats.hours} h`}, up to now`;
+  $('#t-now').disabled = !offH;
+}
+$('#t-end').addEventListener('input', (e) => timeLabel(-Number(e.target.value)));
+$('#t-end').addEventListener('change', (e) => {
+  const off = -Number(e.target.value);
+  stats.end = off ? Math.floor(Date.now() / 1000) - off * 3600 : null;
+  tabs.stats.refresh(true);
+});
+$('#t-now').addEventListener('click', () => { stats.end = null; tabs.stats.refresh(true); });
+
 for (const b of document.querySelectorAll('#range button')) {
   b.addEventListener('click', () => {
     stats.hours = Number(b.dataset.h);
+    stats.end = null;
     for (const o of document.querySelectorAll('#range button')) o.classList.toggle('on', o === b);
     tabs.stats.refresh(true);
   });

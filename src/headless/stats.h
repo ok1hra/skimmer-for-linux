@@ -68,7 +68,8 @@ void skim_stats_put(SkimStats *s, gint64 unix_minute, const SkimStatsMinute *m);
  * ring (atomically) when the file is missing, old or of other bands. */
 gboolean skim_stats_save(SkimStats *s, GError **error);
 
-/* The last hours (1..17520, two years) ending at now_minute, in buckets of
+/* The hours (1..17520, two years) ending at now_minute (a later minute
+ * than the present for a window in the past: pass that window's end), in buckets of
  * step minutes (0 = automatic: at most ~720 buckets), from the finest ring
  * that covers them, as a JSON body (see stats.c). */
 char *skim_stats_json(SkimStats *s, gint64 now_minute, guint hours, guint step);

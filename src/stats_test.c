@@ -71,7 +71,11 @@ int main(void) {
     }
     char *j = skim_stats_json(s, now, 1, 3);   /* 1 h in 3-minute buckets */
     check("1 h in 3-minute buckets: n 20, step 3, both bands",
-          strstr(j, "\"step_min\":3,\"n\":20,\"res_min\":1,\"bands\":[\"20m\",\"40m\"]") != NULL);
+          strstr(j, "\"step_min\":3,\"n\":20,\"res_min\":1,") &&
+          strstr(j, "\"bands\":[\"20m\",\"40m\"]"));
+    char *fr = g_strdup_printf("\"first\":%" G_GINT64_FORMAT ",", (now - 5 - (now - 5) % 60) * 60);
+    check("the oldest record is named (for a time slider)", strstr(j, fr) != NULL);
+    g_free(fr);
     char *sp = series_of(j, "spots", "20m");
     check("counts are summed per bucket, empty buckets null (… null,6,15)",
           sp && g_str_has_suffix(sp, "null,null,6,15") && g_str_has_prefix(sp, "null,"));
@@ -224,6 +228,10 @@ int main(void) {
     g_free(sp); g_free(j);
     j = skim_stats_json(s, now, 24 * 900, 0);
     check("asked for more than two years: two years", strstr(j, "\"res_min\":60") != NULL);
+    g_free(j);
+    j = skim_stats_json(s, hb - 120, 1, 60);    /* a window in the past       */
+    check("a window ending two hours ago: that hour's 60 spots, its t0",
+          strstr(j, "\"spots\":{\"20m\":[60]}") != NULL);
     g_free(j);
     j = skim_stats_json(s, now, 3, 1);
     skim_stats_free(s);

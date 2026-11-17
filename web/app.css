@@ -116,6 +116,10 @@ h2.sect { margin: 4px 0 6px; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .legend i.ramp { width: 46px; }
+.timebar { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+.timebar input[type=range] { flex: 1 1 320px; accent-color: var(--accent); padding: 0; border: 0; background: none; }
+.timebar #t-label { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 16em; }
+.timebar button { margin-top: 0; }
 .legend i.line { width: 14px; height: 0; border-top: 2px solid var(--fg); opacity: .75; border-radius: 0; }
 .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--ln);
        border-radius: 6px; padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15);

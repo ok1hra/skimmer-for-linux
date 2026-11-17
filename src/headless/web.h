@@ -5,7 +5,8 @@
  *
  *   GET  /, /app.js, /app.css   the page
  *   GET  /status.json           the status snapshot (skimmer-compare reads it)
- *   GET  /stats.json            per-minute history (?hours=N, default 24)
+ *   GET  /stats.json            history (?hours=N, default 24; &end=<unix s>: a
+ *                               window ending then instead of now)
  *   GET  /api/log               the last log lines
  *   GET  /api/config            the config: the ini, what may be edited, backups
  *   GET  /api/skimmers          the skimmer instances on the LAN (a 0.8 s search)

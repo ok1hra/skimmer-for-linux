@@ -68,6 +68,11 @@
       <p class="sub mut">CW up, RTTY down from the same zero; each half scaled to its own highest column</p>
       <div class="legend" id="legend-spots"></div>
       <div class="chart" id="chart-spots"></div>
+      <div class="timebar" id="timebar" hidden>
+        <input type="range" id="t-end" aria-label="the window in time">
+        <span id="t-label" class="mut"></span>
+        <button type="button" class="small" id="t-now">now</button>
+      </div>
     </div>
     <div class="chart-card">
       <h2>Active decoders, by band</h2>
