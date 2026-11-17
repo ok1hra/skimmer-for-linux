@@ -75,21 +75,31 @@ function renderStatus(d) {
   ]);
   const spots = modes.reduce((a, b) => a + b.spots, 0);
   const workers = (d.hub && d.hub.workers) || [];
-  $('#tiles').innerHTML = [
-    tile('uptime', uptime(d.uptime_s)),
-    tile('CPU', fmt(d.cpu_pct), '% of a core'),
-    tile('packets', fmt(d.packets_per_s), '/s'),
-    tile('lost', fmt(d.lost_pct, 3), '%'),
-    tile('feed', d.feed_port ? fmt(d.feed_clients) : 'off', d.feed_port ? `client${d.feed_clients === 1 ? '' : 's'} · :${d.feed_port}` : ''),
-    tile('spots', fmt(spots), `${fmt(d.feed_lines)} line${d.feed_lines === 1 ? '' : 's'} to clients`),
-    ...((d.peers || []).length ? [tile('peers', `${fmt(d.peers.filter((p) => p.connected).length)}/${fmt(d.peers.length)}`,
-      `connected · ${fmt(d.peers.reduce((a, p) => a + p.spots, 0))} spots in`)] : []),
-    ...(d.rbn ? [tile('RBN', fmt(d.rbn.clients),
-      `aggregator${d.rbn.clients === 1 ? '' : 's'} · :${d.rbn.port} · ${fmt(d.rbn.lines)} sent` +
-      (d.rbn.delay_s ? ` · held ${d.rbn.delay_s} s${d.rbn.waiting ? `, ${fmt(d.rbn.waiting)} waiting` : ''}` : ''))] : []),
-    tile('MASTER.SCP', fmt(d.dict_calls), 'calls'),
-    ...(workers.length ? [tile('workers', fmt(workers.length),
-      `${fmt(workers.reduce((a, w) => a + w.mbps, 0), 1)} Mb/s out · ${fmt(workers.reduce((a, w) => a + w.spots, 0))} spots in`)] : []),
+  // beside the map: the bands as a ladder — CW and RTTY activity, the spots of
+  // the last half hour and the last call — then one line of readouts
+  const decoded = bandsDecoded(d);
+  const maxAct = Math.max(1, ...decoded.map((b) => Math.max(b.cw !== false ? b.active : 0, b.rtty ? b.rtty.active : 0)));
+  const per = (band) => window.spots ? window.spots.list.filter((s) => s.band === band) : [];
+  $('#ladder').innerHTML = decoded.map((b) => {
+    const sp = per(b.band), cwOn = b.cw !== false, rt = b.rtty;
+    const bar = (on, act, dec, cls) => on
+      ? `<td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active"><i style="width:${(100 * act / maxAct).toFixed(0)}%"></i></td><td class="n">${fmt(act)}</td>`
+      : '<td class="bar off"></td><td class="n mut">–</td>';
+    return `<tr><td class="b" style="color:${typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : ''}">${esc(b.band)}</td>` +
+      bar(cwOn, b.active, b.decoders, 'cw') + bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty') +
+      `<td class="n">${fmt(sp.length)}</td><td class="last">${sp.length ? esc(sp[0].call) : ''}</td>` +
+      `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : ''}</td></tr>`;
+  }).join('') + '<tr class="legend-row"><td></td><td colspan="2" class="mut">CW</td><td colspan="2" class="mut">RTTY</td><td class="mut n">spots</td><td colspan="2"></td></tr>';
+  const sumDec = (f) => decoded.reduce((a, b) => a + (f(b) || 0), 0);
+  const ro = (k, v) => `<span>${k} <b>${v}</b></span>`;
+  $('#readouts').innerHTML = [
+    ro('CW', `${fmt(sumDec((b) => (b.cw !== false ? b.decoders : 0)))} decoders`),
+    ro('RTTY', fmt(sumDec((b) => (b.rtty ? b.rtty.decoders : 0)))),
+    ro('spots', `${fmt(spots)}${d.feed_port ? ` · ${fmt(d.feed_lines)} lines out` : ''}`),
+    ro('packets', `${fmt(d.packets_per_s)}/s`),
+    ro('MASTER.SCP', fmt(d.dict_calls)),
+    ...(d.rbn ? [ro('RBN', `${fmt(d.rbn.clients)} on :${d.rbn.port} · ${fmt(d.rbn.lines)} sent${d.rbn.delay_s ? ` · held ${d.rbn.delay_s} s` : ''}`)] : []),
+    ro('up', uptime(d.uptime_s)),
   ].join('');
 
   const head = '<tr><th>band</th><th class="l">mode</th><th>centre kHz</th><th>engine</th><th>decoders</th><th>active</th><th>stations</th><th>spots</th><th>drops</th><th>kS/s</th></tr>';
@@ -124,15 +134,6 @@ function renderStatus(d) {
         `<td>${fmt(p.spots)}</td><td>${fmt(p.lines)}</td></tr>`).join('') +
       `<tr><td colspan="4" class="mut">${fmt(d.external_dups)} of their spots dropped as duplicates of what the feed sent already</td></tr>`;
   }
-
-  $('#recent').innerHTML = modes.map((b) => {
-    const rows = b.recent.length ? b.recent.map((s) =>
-      `<tr><td${s.cq ? ' class="cq"' : ''}>${esc(s.call)}</td><td>${fmt(s.freq_hz / 1000, 1)}</td>` +
-      `<td>${fmt(s.wpm)}</td><td>${fmt(s.snr_db)}</td><td>${age(s.age_s)}</td></tr>`).join('')
-      : '<tr><td colspan="5" class="mut">nothing yet</td></tr>';
-    return `<div class="card"><h2>${esc(b.band)}${b.mode === 'RTTY' ? ' RTTY' : ''}${b.worker ? ` <span class="mut">on ${esc(b.worker)}</span>` : ''} <span class="mut">· ${fmt(b.stations)} station${b.stations === 1 ? '' : 's'}</span></h2>` +
-      `<table><tr><th>call</th><th>kHz</th><th>${b.mode === 'RTTY' ? 'Bd' : 'wpm'}</th><th>dB</th><th>heard</th></tr>${rows}</table></div>`;
-  }).join('');
 
   const p = d.feed_policy, g = d.feed_gate;
   const sw = Object.entries(d.switches || {});
@@ -209,6 +210,7 @@ function renderDcw(dc) {
 // The map (and the DX cluster): the spots the feed sent in the last half hour,
 // fetched every 10 s while the status page is open.
 const spots = { list: [], at: 0, locator: '' };
+window.spots = spots;
 let mapMounted = false;
 async function refreshSpots(force) {
   if (!force && Date.now() - spots.at < 10000) return;

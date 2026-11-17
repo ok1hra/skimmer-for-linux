@@ -39,27 +39,29 @@
     <div class="st-top">
       <div class="st-map"><h2>Spots · last 30 min <span class="mut">azimuthal, distance and bearing true from the centre</span></h2>
         <div id="skmap"></div></div>
-      <div class="st-side" id="st-side"></div>
+      <div class="st-side">
+        <h2>Bands <span class="mut">active decoders · spots in 30 min · the last one</span></h2>
+        <table id="ladder" class="ladder"></table>
+        <div id="readouts" class="readouts"></div>
+        <div id="workers-box" hidden>
+          <h2 class="sect">Workers <span class="mut">other PCs decoding bands of this radio</span></h2>
+          <div class="wrap"><table id="workers" class="grid"></table></div>
+        </div>
+        <div id="peers-box" hidden>
+          <h2 class="sect">Peers <span class="mut">other skimmers' feeds</span></h2>
+          <div class="wrap"><table id="peers" class="grid"></table></div>
+        </div>
+      </div>
     </div>
     <div id="dxc" class="pad"></div>
     <div class="pad">
-    <div id="tiles" class="tiles"></div>
-    <div class="wrap"><table id="bands" class="grid"></table></div>
-    <p class="mut note">decoders = channel decoders in the band · active = decoding running
-      text now (noise fragments don't count) · <span class="cq">CQ</span> = heard calling</p>
-    <div id="workers-box" hidden>
-      <h2 class="sect">Workers <span class="mut">— other PCs decoding bands of this radio</span></h2>
-      <div class="wrap"><table id="workers" class="grid"></table></div>
-    </div>
-    <div id="peers-box" hidden>
-      <h2 class="sect">Other skimmers (peers)</h2>
-      <div class="wrap"><table id="peers" class="grid"></table></div>
-    </div>
-    <div id="recent" class="cards"></div>
-    <details class="more">
-      <summary>Feed policy, learned gate and switches</summary>
-      <div id="policy"></div>
-    </details>
+      <details class="more">
+        <summary>Details — every band and mode, the feed policy, the learned gate, switches</summary>
+        <div class="wrap"><table id="bands" class="grid"></table></div>
+        <p class="mut note">decoders = channel decoders in the band · active = decoding running
+          text now (noise fragments don't count)</p>
+        <div id="policy"></div>
+      </details>
     </div>
   </section>
 

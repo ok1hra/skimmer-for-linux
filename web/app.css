@@ -161,6 +161,24 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .map-foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 6px; font-size: 12px; letter-spacing: .04em; flex-wrap: wrap; }
 @media (max-width: 1000px) { .st-top { grid-template-columns: 1fr; } .st-map { border-right: 0; } }
 
+/* ---- the status page: the band ladder and readouts ---- */
+.ladder { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.ladder td { padding: 5px 6px; border-bottom: 1px solid var(--ln); white-space: nowrap; }
+.ladder td.b { font-weight: 700; font-size: 17px; width: 56px; }
+.ladder td.bar { width: 26%; min-width: 70px; }
+.ladder td.bar i { display: block; height: 7px; background: var(--hot); min-width: 1px; }
+.ladder td.bar.rtty i { background: var(--warn); }
+.ladder td.bar.cw, .ladder td.bar.rtty { background: linear-gradient(var(--deep), var(--deep)) center / 100% 7px no-repeat; }
+.ladder td.n { text-align: right; color: var(--mut); font-size: 13px; width: 44px; }
+.ladder td.last { color: var(--hot); letter-spacing: .03em; }
+.ladder td.w { font-size: 12px; }
+.ladder tr.legend-row td { border-bottom: 0; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; padding-top: 3px; }
+.readouts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 16px; color: var(--mut); font-size: 13px;
+            letter-spacing: .06em; text-transform: uppercase; }
+.readouts b { color: var(--fg); text-transform: none; letter-spacing: .02em; }
+.st-side .grid { font-size: 14px; }
+.st-side .grid th, .st-side .grid td { padding: 4px 8px; }
+
 /* ---- the status page: DX cluster ---- */
 .dxc-bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin-bottom: 8px; }
 .dxc-bar h2 { margin: 0; flex: 1 1 auto; }
