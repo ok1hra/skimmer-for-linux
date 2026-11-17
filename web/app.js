@@ -124,7 +124,7 @@ function renderDcw(dc) {
   const may = cfg.data && cfg.data.may_change;
   const f = dc.fetch || {};
   const short = (dc.commit || '').slice(0, 7);
-  let html = '<div class="k">DeepCW model</div>';
+  let html = '<div class="k">DeepCW model <span class="warn">· not tested with this skimmer</span></div>';
   if (f.state === 'running') {
     const pct = f.total ? Math.floor((100 * f.got) / f.total) : 0;
     html += `<div>fetching… ${pct} % <span class="mut">(${fmt(f.got / 1e6, 1)} of ${fmt(f.total / 1e6, 1)} MB)</span></div>` +
@@ -265,7 +265,7 @@ function bandRow(b, i, n, may, rx) {
     `<td><input data-k="name" value="${esc(b.name)}" size="6"${dis}></td>` +
     `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${dis}></td>` +
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
-    `<td><select data-k="engine"${dis}><option value="v3">v3</option><option value="v2">v2</option><option value="deepcw">DeepCW</option></select></td>` +
+    `<td><select data-k="engine"${dis}><option value="v3">v3</option><option value="v2">v2</option><option value="deepcw" title="not tested with this skimmer">DeepCW (not tested)</option></select></td>` +
     `<td><input type="checkbox" data-k="rtty"${b.rtty ? ' checked' : ''}${dis}></td>` +
     `<td><button type="button" data-a="up" title="earlier receiver"${i && may ? '' : ' disabled'}>↑</button>` +
     `<button type="button" data-a="down" title="later receiver"${i < n - 1 && may ? '' : ' disabled'}>↓</button>` +
