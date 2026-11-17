@@ -168,6 +168,8 @@ typedef struct {
   SkimHdPeers    *peers;       /* [peers]: other skimmers' feeds, aggregated  */
   SkimHdDiscovery *disco;      /* answers the LAN's "who is there"            */
   SkimHdHub      *hub;         /* [hub]: bands passed to workers              */
+  GMutex          spot_lock;   /* the spots the feed sent (the page's map, DXC) */
+  GQueue          spot_log;    /* Spot*, oldest first, SPOT_KEEP_S at most    */
   SkimScpUpdater *scp;
   GMainLoop      *loop;
   gint64          t_start;
@@ -564,7 +566,7 @@ static void status_build(Hd *h, gboolean print) {
       : g_strdup("null");
   g_string_append_printf(json,
       "{\"version\":\"%s\",\"started_us\":%" G_GINT64_FORMAT ",\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
-      "\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
+      "\"locator\":\"%s\",\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"cpu_cw_pct\":%.1f,\"cpu_rtty_pct\":%.1f,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
@@ -574,7 +576,7 @@ static void status_build(Hd *h, gboolean print) {
       "\"rbn\":%s,\"peers\":%s,\"external_dups\":%" G_GUINT64_FORMAT ","
       "\"suppress_cw_on_rtty\":%s,\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
-      SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, src->ppm, h->cfg.rate, lost_pct,
+      SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, h->cfg.locator, src->ppm, h->cfg.rate, lost_pct,
       h->pps, h->cpu_pct, h->cpu_mode_pct[M_CW], h->cpu_mode_pct[M_RTTY], engine, pol_score,
       pol_hear, pol_settle, pol_nd, pol_fresh,
       pol_fold, folded, jgate, h->switches_json, supervisor_json(), jrbn, jpeers, dups,
@@ -1363,6 +1365,10 @@ static void on_scp(const SkimScpOutcome *out, gpointer user) {
             (guint)skim_callsign_dict_size());
 }
 
+/* Who made the spot the feed is sending on this thread now: hub_spot and
+ * peer_spot set it around their call, the tap reads it. */
+static _Thread_local const char *spot_origin;
+
 /* ---- the hub (headless/hub.h) --------------------------------------------------- */
 
 /* What the worker `worker` is to decode: cut from this start's config. */
@@ -1374,7 +1380,6 @@ static char *hub_assign(const char *worker, gpointer user) {
 /* A worker's spot (its link's thread): counted on its band, out on the feed. */
 static void hub_spot(const char *worker, const char *call, const char *mode, double freq_hz,
                      double snr_db, double speed, gpointer user) {
-  (void)worker;
   Hd *h = user;
   const guint k = g_strcmp0(mode, "CW") == 0 ? M_CW : M_RTTY;
   for (guint i = 0; i < h->nb; i++) {
@@ -1386,14 +1391,88 @@ static void hub_spot(const char *worker, const char *call, const char *mode, dou
   }
   if (k == M_RTTY && !h->cfg.feed_rtty) { return; }
   SkimRbnFeed *f = h->feed ? h->feed : h->rbn;
+  spot_origin = worker;
   if (f) { skim_rbn_feed_spot_external(f, call, mode, freq_hz, snr_db, speed); }
+  spot_origin = NULL;
 }
 
-/* A worker's spot (an engine thread): up the link to its hub. */
-static void worker_tap(const char *call, const char *mode, double freq_hz, double snr_db,
-                       double speed, gpointer user) {
+/* ---- the spots the feed sent (/api/spots) ---------------------------------------- */
+
+#define SPOT_KEEP_S  (2 * 3600)
+#define SPOT_MAX     20000
+
+typedef struct {
+  gint64 t;                    /* unix s                                      */
+  char   call[16], mode[8];
+  double freq_hz, snr_db, speed;
+  char   src[64];              /* "" = this skimmer; a worker or a peer        */
+} Spot;
+
+
+static void spot_log_add(Hd *h, const char *call, const char *mode, double freq_hz,
+                         double snr_db, double speed) {
+  Spot *s = g_new0(Spot, 1);
+  s->t = g_get_real_time() / G_USEC_PER_SEC;
+  g_strlcpy(s->call, call, sizeof(s->call));
+  g_strlcpy(s->mode, mode, sizeof(s->mode));
+  s->freq_hz = freq_hz;
+  s->snr_db = snr_db;
+  s->speed = speed;
+  if (spot_origin) { g_strlcpy(s->src, spot_origin, sizeof(s->src)); }
+  g_mutex_lock(&h->spot_lock);
+  g_queue_push_tail(&h->spot_log, s);
+  Spot *o;
+  while ((o = g_queue_peek_head(&h->spot_log)) &&
+         (s->t - o->t > SPOT_KEEP_S || h->spot_log.length > SPOT_MAX)) {
+    g_free(g_queue_pop_head(&h->spot_log));
+  }
+  g_mutex_unlock(&h->spot_lock);
+}
+
+/* GET /api/spots?minutes=N: newest first, each with its band. */
+static char *web_spots(GHashTable *q, gboolean may, guint *st, const char **type, gpointer user) {
+  (void)may; (void)st; (void)type;
   Hd *h = user;
-  if (!h->src) { return; }
+  const char *mv = q ? g_hash_table_lookup(q, "minutes") : NULL;
+  const gint64 minutes = CLAMP(mv ? g_ascii_strtoll(mv, NULL, 10) : 30, 1, SPOT_KEEP_S / 60);
+  const gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+  GString *o = g_string_new(NULL);
+  g_string_append_printf(o, "{\"now\":%" G_GINT64_FORMAT ",\"minutes\":%" G_GINT64_FORMAT
+                         ",\"call\":\"", now, minutes);
+  skim_json_append(o, h->cfg.feed_call ? h->cfg.feed_call : "");
+  g_string_append_printf(o, "\",\"locator\":\"%s\",\"spots\":[", h->cfg.locator);
+  g_mutex_lock(&h->spot_lock);
+  guint n = 0;
+  for (GList *l = h->spot_log.tail; l; l = l->prev) {
+    const Spot *s = l->data;
+    if (now - s->t > minutes * 60) { break; }
+    const char *band = "";
+    for (guint i = 0; i < h->nb; i++) {
+      if (fabs(s->freq_hz - h->band[i].centre_hz) <= h->cfg.rate / 2.0) { band = h->band[i].name; break; }
+    }
+    char khz[G_ASCII_DTOSTR_BUF_SIZE];
+    g_ascii_formatd(khz, sizeof(khz), "%.1f", s->freq_hz / 1000.0);
+    g_string_append_printf(o, "%s{\"t\":%" G_GINT64_FORMAT ",\"call\":\"", n++ ? "," : "", s->t);
+    skim_json_append(o, s->call);
+    g_string_append_printf(o, "\",\"mode\":\"%s\",\"khz\":%s,\"snr\":%.0f,\"speed\":%.0f,\"band\":\"",
+                           s->mode, khz, s->snr_db, s->speed);
+    skim_json_append(o, band);
+    g_string_append(o, "\",\"src\":\"");
+    skim_json_append(o, s->src);
+    g_string_append(o, "\"}");
+  }
+  g_mutex_unlock(&h->spot_lock);
+  g_string_append(o, "]}");
+  return g_string_free(o, FALSE);
+}
+
+/* Every spot the feed sends (the spotting thread): into the log, and a
+ * worker's up the link to its hub. */
+static void feed_tap(const char *call, const char *mode, double freq_hz, double snr_db,
+                     double speed, gpointer user) {
+  Hd *h = user;
+  spot_log_add(h, call, mode, freq_hz, snr_db, speed);
+  if (h->cfg.source != SKIM_HD_SOURCE_HUB || !h->src) { return; }
   char f[G_ASCII_DTOSTR_BUF_SIZE];
   g_ascii_formatd(f, sizeof(f), "%.1f", freq_hz);
   char *line = g_strdup_printf("SPOT %s %s %s %.0f %.0f\n", call, mode, f, snr_db, speed);
@@ -1426,10 +1505,11 @@ static void worker_report(Hd *h) {
  * of what went out already (ours or another peer's). */
 static void peer_spot(const char *peer, const char *call, const char *mode, double freq_hz,
                       double snr_db, double speed, gpointer user) {
-  (void)peer;
   Hd *h = user;
   if (g_strcmp0(mode, "CW") != 0 && !h->cfg.feed_rtty) { return; }   /* CW-only feed */
+  spot_origin = peer;
   skim_rbn_feed_spot_external(h->feed ? h->feed : h->rbn, call, mode, freq_hz, snr_db, speed);
+  spot_origin = NULL;
 }
 
 static gboolean on_signal(gpointer user) {
@@ -1729,9 +1809,8 @@ int main(int argc, char **argv) {
 
   /* a worker's spots go up its hub link: through its own feed when it has
    * one, else through a feed that listens nowhere */
-  if (c->source == SKIM_HD_SOURCE_HUB && c->feed_call && c->feed_call[0]) {
-    if (!h->feed) { h->feed = skim_rbn_feed_new_sink(c->feed_call); }
-    skim_rbn_feed_set_tap(h->feed, worker_tap, h);
+  if (c->source == SKIM_HD_SOURCE_HUB && c->feed_call && c->feed_call[0] && !h->feed) {
+    h->feed = skim_rbn_feed_new_sink(c->feed_call);
   }
 
   if (c->rbn_on) {
@@ -1750,6 +1829,11 @@ int main(int argc, char **argv) {
       }
     }
   }
+
+  /* every spot that goes out, whatever made it: the page's map and DXC */
+  g_mutex_init(&h->spot_lock);
+  g_queue_init(&h->spot_log);
+  if (h->feed || h->rbn) { skim_rbn_feed_set_tap(h->feed ? h->feed : h->rbn, feed_tap, h); }
 
   if (c->peers && c->peers[0]) {
     if (!h->feed && !h->rbn) {
@@ -1891,7 +1975,7 @@ int main(int argc, char **argv) {
   if (h->http_port > 0) {
     const SkimHdWebHooks hooks = {
       .status = web_status, .stats = web_stats, .log = web_log, .config = web_config,
-      .skimmers = web_skimmers,
+      .skimmers = web_skimmers, .spots = web_spots,
       .config_post = web_config_post, .config_import = web_config_import,
       .restart = web_restart, .rollback = web_rollback,
       .deepcw = web_deepcw,

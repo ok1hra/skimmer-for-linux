@@ -107,6 +107,11 @@ v=$(py "$ws" '"streaming from the hub" in d["radio"], d["streaming"], [b["band"]
 [[ $v == "True True ['20m']" ]]; check "worker status: streaming from the hub, the one band" $? "$v"
 grep -q "hub link: 127.0.0.1:$HUB assigns 1 band to pc2" "$T/w/log"; check "worker log: the band assigned" $?
 
+v=$(py "$(curl -s "http://127.0.0.1:$HHTTP/api/spots")" '[(x["band"], x["src"]) for x in d["spots"] if x["call"] == "OK1MCK"]')
+# 20m comes from pc2 — over the link or through its feed (the peer), whichever is first
+[[ ( $v == *"('20m', 'pc2')"* || $v == *"('20m', '127.0.0.1:$WFEED')"* ) && $v == *"('40m', '')"* ]]
+check "hub /api/spots: 20m made by pc2 (link or peer), 40m here" $? "$v"
+
 out=$("$HL" --find-skimmers 2>&1)
 [[ $out == *"central"*" hub "*"OK1HUB"* && $out == *"pc2"*" worker "* ]]
 check "--find-skimmers: the hub and the worker in their roles" $?

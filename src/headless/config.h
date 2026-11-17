@@ -25,6 +25,8 @@
  *            default 0): a second telnet port for the RBN Aggregator, which
  *            relays to the Reverse Beacon Network — the feed's spots, each
  *            held delay_s seconds (the feed's call; needs [feed] call)
+ *   [station] locator — the station's Maidenhead locator (4 or 6 characters):
+ *            the centre of the page's map, the distances and bearings
  *   [hub]    name — this instance on the LAN (discovery, and the name a worker
  *            asks its hub for bands under; default the host name);
  *            port (7380, 0 = no hub), allow — who may connect as a worker
@@ -107,6 +109,8 @@ typedef struct {
   gboolean         rbn_on;
   int              rbn_port;
   guint            rbn_delay_s;
+  /* [station] */
+  char             locator[8];        /* "JO60WA", "" = not set              */
   /* [hub] */
   char            *hub_name;          /* never NULL                          */
   int              hub_port;          /* 0 = no hub server                   */

@@ -127,6 +127,9 @@ check "web: stats.json (6 h, both bands, the global series)" $?
 [[ $(curl -s "http://127.0.0.1:$HTTP/api/log") == '[{"t":'*'"text":"skimmer-headless '* ]]; check "web: the log" $?
 [[ $(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$HTTP/../headless.ini") == 404 ]]
 check "web: no path out of the page" $?
+spj=$(curl -s "http://127.0.0.1:$HTTP/api/spots?minutes=10")
+[[ $(python3 -c "import json,sys; d=json.loads(sys.argv[1]); s=[x for x in d['spots'] if x['call']=='OK1MCK']; print(d['minutes'], bool(s) and s[0]['band'] in ('20m','40m') and s[0]['mode']=='CW' and s[0]['src']=='')" "$spj" 2>&1) == "10 True" ]]
+check "web: /api/spots — the feed's spots, each with its band, made here" $?
 out=$("$HL" --find-skimmers 2>&1)
 [[ $out == *" solo "*"TEST"*"web :$HTTP"*"feed $FEED"* ]]; check "--find-skimmers: this instance, its call and ports" $?
 grep -q "decode: 40m CW, engine cw-v2 + RTTY$" "$T/log" && grep -q "decode: 20m CW, engine cw-v3$" "$T/log" &&

@@ -9,6 +9,7 @@
  *                               window ending then instead of now)
  *   GET  /api/log               the last log lines
  *   GET  /api/config            the config: the ini, what may be edited, backups
+ *   GET  /api/spots             the spots the feed sent (?minutes=N, default 30, ≤ 120)
  *   GET  /api/skimmers          the skimmer instances on the LAN (a 0.8 s search)
  *   POST /api/config            a new config (settings_from only)
  *   POST /api/config/import    an exported ini (ini=…) as the config (settings_from)
@@ -41,7 +42,7 @@ typedef char *(*SkimHdWebGet)(GHashTable *query, gboolean may_change, guint *sta
 typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
 typedef struct {
-  SkimHdWebGet  status, stats, log, config, skimmers;
+  SkimHdWebGet  status, stats, log, config, skimmers, spots;
   SkimHdWebPost config_post, config_import, restart, rollback, deepcw;
   gpointer      user;
 } SkimHdWebHooks;

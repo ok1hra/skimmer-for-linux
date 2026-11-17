@@ -77,6 +77,8 @@ static const char DEFAULT_CONFIG[] =
   "# connects to this port and relays the spots to the network. They are the\n"
   "# feed's spots under its call, each held delay_s seconds (0-99) first.\n"
   "enabled=false\nport=7550\ndelay_s=0\n"
+  "\n[station]\n# your Maidenhead locator: the centre of the web page's map, the\n"
+  "# distances and bearings of the spots\nlocator=\n"
   "\n[hub]\n# this skimmer on the LAN (default: the host name). Other PCs can decode\n"
   "# bands of this radio: [radio] type=hub on them, and @THEIRNAME after a band\n"
   "# here (20m=14045500 cw,rtty @pc2) — this one receives it and passes the IQ on\n"
@@ -373,6 +375,25 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->rbn_delay_s = (guint)d;
   }
 
+  {
+    char *loc = g_key_file_get_string(kf, "station", "locator", NULL);
+    if (loc) {
+      g_strstrip(loc);
+      for (char *x = loc; *x; x++) { *x = g_ascii_toupper(*x); }
+      const gsize n = strlen(loc);
+      const gboolean ok_loc = n == 0 ||
+          ((n == 4 || n == 6) && loc[0] >= 'A' && loc[0] <= 'R' && loc[1] >= 'A' && loc[1] <= 'R' &&
+           g_ascii_isdigit(loc[2]) && g_ascii_isdigit(loc[3]) &&
+           (n == 4 || (loc[4] >= 'A' && loc[4] <= 'X' && loc[5] >= 'A' && loc[5] <= 'X')));
+      if (!ok_loc) {
+        bad(error, path, "[station] locator \"%s\" (a Maidenhead locator: JO60 or JO60WA)", loc);
+        g_free(loc);
+        return FALSE;
+      }
+      g_strlcpy(h->locator, loc, sizeof(h->locator));
+      g_free(loc);
+    }
+  }
   h->hub_name = g_key_file_get_string(kf, "hub", "name", NULL);
   if (h->hub_name) { g_strstrip(h->hub_name); }
   if (!h->hub_name || !h->hub_name[0]) {
@@ -572,7 +593,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "decode.engine", "decode.log", "decode.suppress_cw_on_rtty",
   "feed.call", "feed.port", "feed.rtty",
   "rbn.enabled", "rbn.port", "rbn.delay_s",
-  "peers.hosts", "hub.name", "hub.port",
+  "peers.hosts", "hub.name", "hub.port", "station.locator",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
   NULL,

@@ -136,6 +136,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                       : strcmp(path, "/api/log") == 0     ? k->log
                       : strcmp(path, "/api/config") == 0  ? k->config
                       : strcmp(path, "/api/skimmers") == 0 ? k->skimmers
+                      : strcmp(path, "/api/spots") == 0    ? k->spots
                                                           : NULL;
     if (hook) {
       guint status = SOUP_STATUS_OK;
