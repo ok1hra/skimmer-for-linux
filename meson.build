@@ -379,6 +379,12 @@ skimmer_headless = executable('skimmer-headless',
 test('headless-mock', find_program('tests/headless-mock.sh'),
   args : [skimmer_headless], timeout : 120)
 
+# Hub gate: a hub and a worker on this machine (mock source) — a band
+# passed on, decoded there, spotted on the hub's feed; the peer duplicate;
+# a reassignment the worker follows by itself.
+test('hub-mock', find_program('tests/hub-mock.sh'),
+  args : [skimmer_headless], timeout : 240)
+
 # The known SKIM_* switches (src/headless/switches.c) = the ones the sources read.
 test('switches', find_program('tests/switches.sh'),
   args : [skimmer_headless, meson.project_source_root()], timeout : 30)

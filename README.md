@@ -122,6 +122,14 @@ streaming from unless told to (`--take-over`).
   **learned feed gate** (a logistic model over what the pipeline knew when it
   spotted) is built in and runs in shadow: it scores every spot and reports,
   the hand gate decides. See [The feed gate](#the-feed-gate).
+- **One station, several PCs:** a Red Pitaya streams to one client, so the
+  PC that has it can be a **hub**: it passes the IQ of the bands marked
+  `@pc2` (`20m=14045500 cw,rtty @pc2`) to a **worker** (`[radio]
+  type=hub`) that decodes them and sends its spots back, ~4.6 Mb/s a band.
+  Other skimmers' feeds (`[peers] hosts=`, also CW Skimmer Server) join in;
+  everything goes out on the hub's feed under its call, duplicates dropped.
+  Instances find each other on the LAN (`--find-skimmers`, Settings →
+  Skimmers on the LAN). [`docs/HUB.md`](docs/HUB.md).
 - **To the Reverse Beacon Network:** the RBN takes spots from the RBN
   Aggregator, which connects to a skimmer's telnet port. `[rbn]
   enabled=true` opens a second port for it (`port=7550`) with the feed's

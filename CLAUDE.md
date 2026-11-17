@@ -126,9 +126,15 @@ here; what was done and why is in git.
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 19 gates** (DeepCW skips without the model, golden skips
+- **`meson test` = 23 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).
+- **Hub, workers, peers** (`docs/HUB.md`): the PC with the radio passes the
+  IQ of `@name` bands as int24 over TCP :7380 (`src/headless/hub.c`) to
+  workers (`[radio] type=hub`, `source_hub.c`) whose bands and policy come
+  from the hub's config; `[peers]` reads other feeds (`peers.c`); all of it
+  leaves on the hub's feed under its call, deduplicated
+  (`skim_rbn_feed_spot_external`); UDP 8075 discovery (`discovery.c`).
 - **The web page** (libsoup 3, `src/headless/web.c`, static files in `web/`
   built in as a GResource, plain JS/SVG — no libraries, it must work
   offline): status, 7-day statistics (`stats.c`), settings (one parser:
@@ -186,10 +192,11 @@ src/engine/   headless, GLib-only:
   callsign     extraction + validation (RBN-grade)
   spot_out     TCI SPOT feed + RBN telnet feed
 src/headless/ the product layer: config (headless.ini, one parser), source
-              (IQ source interface) + source_hpsdr_p1 / source_mock, record
-              ([record] IQ to disk), switches (SKIM_* visibility), stats
-              (7-day history), web (libsoup server), logring, scp_update
-              (MASTER.SCP background updater)
+              (IQ source interface) + source_hpsdr_p1 / source_mock /
+              source_hub (a worker), hub (bands to workers), peers (other
+              feeds), discovery (UDP 8075), record ([record] IQ to disk),
+              switches (SKIM_* visibility), stats (7-day history), web
+              (libsoup server), logring, scp_update (MASTER.SCP updater)
 web/          the web page (HTML, CSS, JS — built in as a GResource)
 src/headless_main.c  skimmer-headless: multi-band, no GUI (HPSDR P1 → N pipelines)
 weights/      learned weights built into skimmer-headless (feed-gate.ini)
