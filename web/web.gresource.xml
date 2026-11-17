@@ -6,6 +6,10 @@
     <file>app.css</file>
     <file>app.js</file>
     <file>charts.js</file>
+    <file>map.js</file>
+    <file compressed="true">map/map50.js</file>
+    <file compressed="true">map/dxcc_prefix_aliases.js</file>
+    <file compressed="true">map/states.js</file>
     <file compressed="true">fonts/RC-R.ttf</file>
     <file compressed="true">fonts/RC-B.ttf</file>
   </gresource>

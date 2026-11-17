@@ -6,6 +6,10 @@
 <title>Skimmer for Linux</title>
 <link rel="stylesheet" href="app.css">
 <script src="charts.js" defer></script>
+<script src="map/map50.js" defer></script>
+<script src="map/dxcc_prefix_aliases.js" defer></script>
+<script src="map/states.js" defer></script>
+<script src="map.js" defer></script>
 </head>
 <body>
 <header>
@@ -26,9 +30,17 @@
 
 <div id="overlay" hidden><div><b id="overlay-text">Restarting…</b><p class="mut" id="overlay-sub"></p></div></div>
 <main>
-  <section id="tab-status" class="pad">
+  <section id="tab-status">
     <div id="rollback" class="warnbox" hidden></div>
     <div id="dcw-warn" class="warnbox" hidden></div>
+    <div id="loc-warn" class="warnbox" hidden>The station's locator is not set — the map is centred on JO60 and the
+      distances are from there. Settings → Station and feed → Locator.</div>
+    <div class="st-top">
+      <div class="st-map"><h2>Spots · last 30 min <span class="mut">azimuthal, distance and bearing true from the centre</span></h2>
+        <div id="skmap"></div></div>
+      <div class="st-side" id="st-side"></div>
+    </div>
+    <div class="pad">
     <div id="tiles" class="tiles"></div>
     <div class="wrap"><table id="bands" class="grid"></table></div>
     <p class="mut note">decoders = channel decoders in the band · active = decoding running
@@ -46,6 +58,7 @@
       <summary>Feed policy, learned gate and switches</summary>
       <div id="policy"></div>
     </details>
+    </div>
   </section>
 
   <section id="tab-stats" hidden>

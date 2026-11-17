@@ -1,0 +1,11 @@
+The map's data, as IP-rotator (OK1HRA) builds it:
+
+map50.js        LAND_OUTLINES (land, Natural Earth 1:50m countries), COUNTRY_BORDERS
+                (Natural Earth admin 0 + admin 1 lines), DXCC_PREFIX_LABELS
+                ([lat×100, lon×100, prefix, area, name]) — coordinates ×100.
+                Natural Earth is in the public domain (naturalearthdata.com).
+dxcc_prefix_aliases.js  a call's prefix → its DXCC label (canonicalizeDxccPrefixAlias).
+states.js       STATE_ABBR_LABELS — US states / VE provinces for the prefix layer.
+
+Taken from the IP-rotator web filesystem of 2026-09-13; a new copy replaces
+these files as they are.

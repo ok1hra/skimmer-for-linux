@@ -141,6 +141,26 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .tip .r b { min-width: 3.5em; text-align: right; }
 .tip .r i { width: 10px; height: 2px; display: inline-block; }
 
+/* ---- the status page: map ---- */
+.st-top { display: grid; grid-template-columns: minmax(300px, 700px) 1fr; border-bottom: 1px solid var(--ln); }
+.st-map { padding: 14px 18px; border-right: 1px solid var(--ln); min-width: 0; }
+.st-side { padding: 14px 18px; min-width: 0; }
+.map-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 8px; }
+.map-bar .seg button { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; padding: 2px 8px; }
+.map-bar .small { margin-top: 0; }
+.map-centre { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--mut); }
+.map-centre input { width: 7em; text-transform: uppercase; margin-left: 4px; }
+[data-k=zoom] { font-size: 12px; letter-spacing: .06em; font-variant-numeric: tabular-nums; }
+.map-canvas { position: relative; }
+.map-canvas canvas { display: block; cursor: crosshair; }
+.map-read { position: absolute; left: 0; top: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; max-width: 100%;
+            background: rgba(10,17,26,.88); border: 1px solid var(--ln2); padding: 4px 9px; font-size: 13px;
+            letter-spacing: .06em; color: var(--mut); pointer-events: none; }
+.map-read b { color: var(--fg); font-variant-numeric: tabular-nums; }
+.map-read .spot { flex-basis: 100%; letter-spacing: .02em; }
+.map-foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 6px; font-size: 12px; letter-spacing: .04em; flex-wrap: wrap; }
+@media (max-width: 1000px) { .st-top { grid-template-columns: 1fr; } .st-map { border-right: 0; } }
+
 /* ---- settings ---- */
 #tab-settings, #tab-stats, #tab-log, .pad { padding: 14px 18px; }
 fieldset { border: 1px solid var(--ln); background: var(--panel); margin: 0 0 12px; padding: 8px 14px 12px; min-width: 0; }

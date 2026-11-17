@@ -206,8 +206,30 @@ function renderDcw(dc) {
   if (rs) rs.addEventListener('click', () => $('#set-restart').click());
 }
 
+// The map (and the DX cluster): the spots the feed sent in the last half hour,
+// fetched every 10 s while the status page is open.
+const spots = { list: [], at: 0, locator: '' };
+let mapMounted = false;
+async function refreshSpots(force) {
+  if (!force && Date.now() - spots.at < 10000) return;
+  spots.at = Date.now();
+  const d = await getJSON('api/spots?minutes=30');
+  spots.locator = d.locator;
+  spots.list = d.spots.map((s) => ({ ...s, age: d.now - s.t }));
+  renderSpots();
+}
+function renderSpots() {
+  if (typeof SkMap === 'undefined') return;
+  if (!mapMounted) { SkMap.mount($('#skmap')); mapMounted = true; }
+  $('#loc-warn').hidden = !!spots.locator;
+  SkMap.update(spots.list, spots.locator || 'JO60');
+}
+
 tabs.status = {
-  async refresh() { renderStatus(await getJSON('status.json')); },
+  async refresh() {
+    renderStatus(await getJSON('status.json'));
+    if (tab === 'status') refreshSpots().catch(() => {});
+  },
 };
 
 // ---- statistics ------------------------------------------------------------------
