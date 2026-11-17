@@ -90,6 +90,30 @@ int main(void) {
     check("saved on free (directory created)", g_file_test(path, G_FILE_TEST_EXISTS));
   }
 
+  printf("== saving writes the new minutes in place\n");
+  {
+    const char *bands[] = { "20m", "40m" };
+    GStatBuf a, b;
+    g_stat(path, &a);
+    SkimStats *s = skim_stats_open(path, bands, 2);
+    SkimStatsMinute m = minute_of(42, 0, 1, 1);
+    skim_stats_put(s, now + 1, &m);
+    GError *err = NULL;
+    check("saved", skim_stats_save(s, &err));
+    g_stat(path, &b);
+    check("… into the same file (same inode, same size) — not a rewrite",
+          a.st_ino == b.st_ino && a.st_size == b.st_size);
+    char *j = skim_stats_json(s, now + 1, 1, 60);
+    skim_stats_free(s);
+    s = skim_stats_open(path, bands, 2);
+    char *j2 = skim_stats_json(s, now + 1, 1, 60);
+    check("… and reopened, the history is the same (the new minute in it)",
+          strcmp(j, j2) == 0 && strstr(j2, "\"20m\":[63]"));
+    g_free(j);
+    g_free(j2);
+    skim_stats_free(s);
+  }
+
   printf("== reopened with the bands re-ordered, one added, one dropped\n");
   {
     const char *bands[] = { "15m", "20m" };

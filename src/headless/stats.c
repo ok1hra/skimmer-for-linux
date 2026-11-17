@@ -4,6 +4,13 @@
  * (unix minute mod SKIM_STATS_MINUTES). Native byte order — the file never
  * leaves the machine that wrote it.
  *
+ * Saving writes only the slots put since the last save, in place (pwrite
+ * on the file kept open): a few kB every few minutes, not the whole 4 MB.
+ * The whole file is written — atomically, to a temp file renamed over it —
+ * only when there is none yet, when it is of an older version, or when the
+ * config's bands differ from the file's columns (they are matched by name
+ * and re-ordered). A slot torn by a power cut costs that one minute.
+ *
  * /stats.json:
  *   { "now": <unix s>, "t0": <unix s of the first bucket>, "step_min": S, "n": N,
  *     "bands": ["160m", …],
@@ -18,8 +25,12 @@
  */
 #include "stats.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <glib/gstdio.h>
 #include <math.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "json.h"
 
@@ -50,7 +61,10 @@ struct _SkimStats {
   char    names[SKIM_STATS_BANDS][16];
   guint   nb;
   Slot   *slot;                          /* SKIM_STATS_MINUTES              */
-  gboolean dirty;
+  gboolean dirty;                        /* something to write              */
+  gboolean full;                         /* … the whole file (see the top)  */
+  guint8  *dirty_slot;                   /* bitmap: slots put since a save  */
+  int      fd;                           /* the file, open for pwrite; -1   */
 };
 
 static void empty_minute(SkimStatsMinute *m) {
@@ -62,11 +76,12 @@ static void empty_minute(SkimStatsMinute *m) {
   for (guint j = 0; j < SKIM_SG_N; j++) { m->glob[j] = NAN; }
 }
 
-/* The file's columns, re-ordered to this config's bands by name. */
-static void load(SkimStats *s) {
+/* The file's columns, re-ordered to this config's bands by name. TRUE when
+ * the file can be written in place as it is (this version, these bands). */
+static gboolean load(SkimStats *s) {
   char *data = NULL;
   gsize len = 0;
-  if (!g_file_get_contents(s->path, &data, &len, NULL)) { return; }
+  if (!g_file_get_contents(s->path, &data, &len, NULL)) { return FALSE; }
   const Header *h = (const Header *)data;
   const gboolean v1 = len >= sizeof(Header) && h->version == 1;
   const gsize slot = v1 ? sizeof(SlotV1) : sizeof(Slot);
@@ -77,8 +92,9 @@ static void load(SkimStats *s) {
       h->sg_n != (v1 ? V1_SG_N : SKIM_SG_N)) {
     g_warning("stats: %s is not this version's history — starting a fresh one", s->path);
     g_free(data);
-    return;
+    return FALSE;
   }
+  const gboolean same = !v1 && memcmp(h->names, s->names, sizeof(s->names)) == 0;
   int from[SKIM_STATS_BANDS];
   for (guint b = 0; b < SKIM_STATS_BANDS; b++) {
     from[b] = -1;
@@ -109,7 +125,9 @@ static void load(SkimStats *s) {
               s->path);
     s->dirty = TRUE;                           /* written as version 2      */
   }
+  if (!same) { s->dirty = TRUE; }              /* re-ordered: written whole */
   g_free(data);
+  return same;
 }
 
 SkimStats *skim_stats_open(const char *path, const char *const *bands, guint nb) {
@@ -119,19 +137,50 @@ SkimStats *skim_stats_open(const char *path, const char *const *bands, guint nb)
   for (guint b = 0; b < s->nb; b++) { g_strlcpy(s->names[b], bands[b], 16); }
   s->slot = g_new0(Slot, SKIM_STATS_MINUTES);
   for (guint i = 0; i < SKIM_STATS_MINUTES; i++) { empty_minute(&s->slot[i].m); }
-  load(s);
+  s->dirty_slot = g_new0(guint8, SKIM_STATS_MINUTES / 8 + 1);
+  s->fd = -1;
+  s->full = !load(s);
+  if (!s->full) {
+    s->fd = g_open(s->path, O_RDWR | O_CLOEXEC, 0);
+    if (s->fd < 0) { s->full = TRUE; }
+  }
   return s;
 }
 
 void skim_stats_put(SkimStats *s, gint64 unix_minute, const SkimStatsMinute *m) {
-  Slot *o = &s->slot[unix_minute % SKIM_STATS_MINUTES];
+  const guint i = (guint)(unix_minute % SKIM_STATS_MINUTES);
+  Slot *o = &s->slot[i];
   o->minute = unix_minute;
   o->m = *m;
+  s->dirty_slot[i / 8] |= (guint8)(1u << (i % 8));
   s->dirty = TRUE;
+}
+
+/* The slots put since the last save, each at its place in the open file. */
+static gboolean save_slots(SkimStats *s, GError **error) {
+  for (guint i = 0; i < SKIM_STATS_MINUTES; i++) {
+    if (!(s->dirty_slot[i / 8] & (1u << (i % 8)))) { continue; }
+    const off_t at = (off_t)(sizeof(Header) + (gsize)i * sizeof(Slot));
+    if (pwrite(s->fd, &s->slot[i], sizeof(Slot), at) != (gssize)sizeof(Slot)) {
+      g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errno), "%s: %s", s->path,
+                  g_strerror(errno));
+      return FALSE;
+    }
+  }
+  return TRUE;
 }
 
 gboolean skim_stats_save(SkimStats *s, GError **error) {
   if (!s->dirty) { return TRUE; }
+  if (!s->full && s->fd >= 0) {
+    if (save_slots(s, error)) {
+      memset(s->dirty_slot, 0, SKIM_STATS_MINUTES / 8 + 1);
+      s->dirty = FALSE;
+      return TRUE;
+    }
+    s->full = TRUE;                            /* next time: the whole file */
+    return FALSE;
+  }
   const gsize len = sizeof(Header) + SKIM_STATS_MINUTES * sizeof(Slot);
   char *buf = g_malloc0(len);
   Header *h = (Header *)buf;
@@ -149,7 +198,13 @@ gboolean skim_stats_save(SkimStats *s, GError **error) {
   g_free(dir);
   const gboolean ok = g_file_set_contents(s->path, buf, (gssize)len, error);
   g_free(buf);
-  if (ok) { s->dirty = FALSE; }
+  if (ok) {                                    /* a new file: open it anew  */
+    if (s->fd >= 0) { close(s->fd); }
+    s->fd = g_open(s->path, O_RDWR | O_CLOEXEC, 0);
+    s->full = s->fd < 0;
+    memset(s->dirty_slot, 0, SKIM_STATS_MINUTES / 8 + 1);
+    s->dirty = FALSE;
+  }
   return ok;
 }
 
@@ -160,6 +215,8 @@ void skim_stats_free(SkimStats *s) {
     g_warning("stats: %s", err->message);
     g_clear_error(&err);
   }
+  if (s->fd >= 0) { close(s->fd); }
+  g_free(s->dirty_slot);
   g_free(s->slot);
   g_free(s->path);
   g_free(s);

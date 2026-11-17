@@ -7,8 +7,9 @@
  * streamed and which one.
  *
  * The ring lives in a fixed-size file (~4 MB) under
- * ~/.local/state/skimmer-for-linux/stats.bin, written every few minutes and
- * at exit, so a restart — every settings change is one — keeps the graphs.
+ * ~/.local/state/skimmer-for-linux/stats.bin; every few minutes and at exit
+ * the minutes recorded since are written into it in place, so a restart —
+ * every settings change is one — keeps the graphs.
  * Bands are matched by name: a band added later starts empty, a band
  * dropped from the config loses its history at the next save. A version 1
  * file (no CPU split) is read and carried over, its split empty.
@@ -62,7 +63,8 @@ void       skim_stats_free(SkimStats *s);      /* saves first                 */
  * slot a week back). Bands in config order, as opened. */
 void skim_stats_put(SkimStats *s, gint64 unix_minute, const SkimStatsMinute *m);
 
-/* Write the ring to its file (atomically). */
+/* Write what changed to the file: the new slots in place, or the whole
+ * ring (atomically) when the file is missing, old or of other bands. */
 gboolean skim_stats_save(SkimStats *s, GError **error);
 
 /* The last hours (1..168) ending at now_minute, in buckets of step minutes
