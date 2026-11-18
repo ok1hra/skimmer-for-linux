@@ -261,6 +261,26 @@ int main(void) {
     skim_hd_config_clear(&c);
   }
 
+  printf("== the spot archive\n");
+  {
+    SkimHdConfig c;
+    check("none: off", parse(&c, "[bands]\n20m=14045500\n[archive]\ndir=\n", NULL) && !c.archive_dir);
+    skim_hd_config_clear(&c);
+    char *home = g_build_filename(g_get_home_dir(), "spots", NULL);
+    check("~/spots: in the home", parse(&c, "[bands]\n20m=14045500\n[archive]\ndir=~/spots\n", NULL) &&
+          c.archive_dir && strcmp(c.archive_dir, home) == 0);
+    skim_hd_config_clear(&c);
+    g_free(home);
+    check("a relative path: next to the config file",
+          parse(&c, "[bands]\n20m=14045500\n[archive]\ndir=spots/../log\n", NULL) &&
+          c.archive_dir && strcmp(c.archive_dir, "/etc/skim/log") == 0);
+    skim_hd_config_clear(&c);
+    check("an absolute path as it is",
+          parse(&c, "[bands]\n20m=14045500\n[archive]\ndir=/srv/spots/\n", NULL) &&
+          c.archive_dir && strcmp(c.archive_dir, "/srv/spots") == 0);
+    skim_hd_config_clear(&c);
+  }
+
   printf("== the callsign filter\n");
   {
     SkimHdConfig c;

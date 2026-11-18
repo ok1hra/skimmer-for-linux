@@ -177,7 +177,20 @@ function renderStatus(d) {
                    : 'The model can be fetched under Settings → Decoding.');
   }
   renderDcw(dc);
+  renderArchive(d.archive);
   if (tab === 'stats') renderDecTile(d);
+}
+
+// The spot archive (Settings): where today's spots go, what was written.
+function renderArchive(a) {
+  const box = $('#archive-state');
+  if (!box) return;
+  box.innerHTML = !a ? '<span class="mut">off</span>'
+    : !a.dir ? `<span class="bad">not writing: ${esc(a.error || '')}</span>`
+    : `<span class="${a.error ? 'bad' : 'ok'}">${a.error ? 'not writing' : 'writing'}</span> ` +
+      `<span class="mut">${esc(a.dir)}/</span><b>${esc(a.file)}</b>` +
+      `<small class="mut"> · ${fmt(a.written)} spots written since the start${a.waiting ? ` · ${fmt(a.waiting)} waiting` : ''}</small>` +
+      (a.error ? `<div class="bad">${esc(a.error)}</div>` : '');
 }
 
 // The DeepCW model (Settings → Decoding): installed or not, the runtime,

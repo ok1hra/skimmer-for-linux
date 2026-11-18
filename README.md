@@ -314,8 +314,8 @@ per hour by band, active decoders, CPU, CPU temperature, IQ loss, totals), **Set
 model fetch).
 
 **Settings** edits the radio, the bands (order, centre, CW engine, RTTY), the
-feed's call and port, the callsign filter, the status ports and the IQ
-recording, and fetches the DeepCW model. *Save and
+feed's call and port, the callsign filter, the spot archive, the status
+ports and the IQ recording, and fetches the DeepCW model. *Save and
 restart* checks the new config with the same parser the start uses — a bad
 value is refused and nothing is written — keeps the previous file as
 `headless.ini.bak-<UTC>` (the last 10; *Earlier configs* restores any of
@@ -323,8 +323,16 @@ them) and restarts the skimmer. A start that does not get the radio
 streaming within a minute of a change offers the previous config back. The
 feed policy, the learned gate and `[web]` are not editable on the page.
 
-The **callsign filter** (`[filter] call=`, `regex=`) works like the DX
-cluster's DX filter: part of a call (any case), or a regular expression.
+The **spot archive** (`[archive] dir=`, empty = off) keeps every spot the
+feed sends: a gzip file a UTC day, `YYYYMMDD-spots.gz`, one tab-separated
+line a spot (time UTC, kHz, call, mode, dB, WPM or baud, band, source — local,
+or the worker or peer it came from), appended once a minute; `zcat` reads a
+day whole, and a crash loses at most the last minute.
+
+The **callsign filter** (`[filter] call=`, `regex=`) is IP-rotator's DX
+filter: part of a call (any case), or a regular expression (any case);
+ticking Regex on an empty field puts in its default, every call but the
+Russian and Belarusian ones.
 Only the calls that match go anywhere — the rest are dropped right where they
 are decoded, so they make no spot on the telnet feed or to the RBN, no dot on
 the map and no count in the statistics; peers' and workers' spots are held to

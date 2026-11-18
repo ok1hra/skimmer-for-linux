@@ -317,6 +317,14 @@ skimmer_stats_test = executable('skimmer-stats-test',
 )
 test('stats', skimmer_stats_test, timeout : 30)
 
+# The spot archive: a gzip file a UTC day, one member a flush, a refused disk.
+skimmer_archive_test = executable('skimmer-archive-test',
+  ['src/archive_test.c', 'src/headless/archive.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+)
+test('archive', skimmer_archive_test, timeout : 30)
+
 # Golden gate: real-air IQ + decode-tap slices through the whole engine with
 # no SKIM_* switches — every output byte-identical to tests/golden/
 # expected.sha256. Inputs live outside git (tests/golden/README.md); without
@@ -347,6 +355,7 @@ headless_sources = files(
   'src/headless/discovery.c',       # instances finding each other on the LAN
   'src/headless/hub.c',             # the hub: bands passed to workers on other PCs
   'src/headless/logring.c',         # the last log lines (/api/log)
+  'src/headless/archive.c',         # [archive]: every spot, a gzip file a day
   'src/headless/peers.c',           # [peers]: other skimmers' feeds, aggregated
   'src/headless/record.c',          # [record]: a band's IQ to disk
   'src/headless/scp_update.c',      # MASTER.SCP updater

@@ -59,6 +59,7 @@
 #include <glib/gstdio.h>
 #include <unistd.h>
 
+#include "headless/archive.h"
 #include "headless/config.h"
 #include "headless/deepcw_model.h"
 #include "headless/hub.h"
@@ -184,6 +185,8 @@ typedef struct {
   guint           ticks;
 
   SkimStats *stats;            /* the 7-day history (stats.h)                 */
+  SkimHdArchive *archive;      /* [archive]: every spot, a file a day; NULL   */
+  char      *archive_err;      /* the last flush error logged (no repeats)    */
   gint64    minute;            /* the unix minute being collected             */
   guint64   min_frames_prev, min_lost_prev;
   guint64   min_cpu_prev, min_mode_prev[M_N];  /* CPU at the last minute's end  */
@@ -553,6 +556,9 @@ static const char *supervisor_json(void) {
                                                           : "null";
 }
 
+/* [archive] asked for (whether it could be opened or not). */
+static gboolean c_archive_wanted(const Hd *h) { return h->cfg.archive_dir != NULL; }
+
 static void status_build(Hd *h, gboolean print) {
   const gint64 now = g_get_monotonic_time();
   const SkimIqSourceStatus *src = &h->src_st;
@@ -734,6 +740,24 @@ static void status_build(Hd *h, gboolean print) {
   } else {
     g_string_append(json, "null");
   }
+  g_string_append(json, ",\"archive\":");
+  if (h->archive) {                            /* [archive]: where, today's file */
+    char *adir = NULL, *today = NULL, *aerr = NULL;
+    guint64 written = 0;
+    guint waiting = 0;
+    skim_hd_archive_status(h->archive, &adir, &today, &written, &waiting, &aerr);
+    g_string_append(json, "{\"dir\":");
+    json_opt_str(json, adir);
+    g_string_append(json, ",\"file\":");
+    json_opt_str(json, today);
+    g_string_append_printf(json, ",\"written\":%" G_GUINT64_FORMAT ",\"waiting\":%u,\"error\":",
+                           written, waiting);
+    json_opt_str(json, aerr);
+    g_string_append_c(json, '}');
+    g_free(adir); g_free(today); g_free(aerr);
+  } else {
+    g_string_append(json, c_archive_wanted(h) ? "{\"error\":\"the directory could not be used — see the log\"}" : "null");
+  }
   g_string_append(json, ",\"deepcw\":");
   dcw_json(h, json);
   g_string_append_c(json, '}');
@@ -912,6 +936,20 @@ static gboolean tick(gpointer data) {
   }
 
   h->ticks++;
+  if (h->archive && h->ticks % 60 == 0) {      /* [archive]: a gzip member a minute */
+    GError *err = NULL;
+    if (!skim_hd_archive_flush(h->archive, &err)) {
+      if (g_strcmp0(err->message, h->archive_err) != 0) {
+        g_warning("archive: %s — the spots wait and are tried again each minute", err->message);
+      }
+      g_free(h->archive_err);
+      h->archive_err = g_strdup(err->message);
+      g_clear_error(&err);
+    } else if (h->archive_err) {
+      g_message("archive: writing again");
+      g_clear_pointer(&h->archive_err, g_free);
+    }
+  }
   const gboolean print = h->console_s > 0 && h->ticks % (guint)h->console_s == 0;
   status_build(h, print);
   if (h->cfg.source == SKIM_HD_SOURCE_HUB) {
@@ -1499,6 +1537,13 @@ static void spot_log_add(Hd *h, const char *call, const char *mode, double freq_
   s->snr_db = snr_db;
   s->speed = speed;
   if (spot_origin) { g_strlcpy(s->src, spot_origin, sizeof(s->src)); }
+  if (h->archive) {                            /* [archive]: on disk, by its day */
+    const char *band = "";
+    for (guint i = 0; i < h->nb; i++) {
+      if (fabs(freq_hz - h->band[i].centre_hz) <= h->cfg.rate / 2.0) { band = h->band[i].name; break; }
+    }
+    skim_hd_archive_add(h->archive, s->t, call, mode, freq_hz, snr_db, speed, band, s->src);
+  }
   g_mutex_lock(&h->spot_lock);
   g_queue_push_tail(&h->spot_log, s);
   Spot *o;
@@ -1882,6 +1927,18 @@ int main(int argc, char **argv) {
   skim_scp_updater_start(h->scp, 15);
   g_free(scp);
 
+  /* [archive] first: the feed's tap writes into it from the first spot */
+  if (c->archive_dir) {
+    GError *aerr = NULL;
+    h->archive = skim_hd_archive_new(c->archive_dir, &aerr);
+    if (h->archive) {
+      g_message("archive: every spot into %s, a gzip file a UTC day (YYYYMMDD-spots.gz)",
+                c->archive_dir);
+    } else {
+      g_warning("archive: %s — no spot archive", aerr->message);
+      g_clear_error(&aerr);
+    }
+  }
   if (c->feed_port > 0) {
     if (!c->feed_call || !c->feed_call[0]) {
       g_warning("feed: [feed] call is empty — telnet feed off");
@@ -2148,6 +2205,8 @@ int main(int argc, char **argv) {
     skim_rec_free(h->band[i].rec);
   }
   g_clear_pointer(&h->stats, skim_stats_free);  /* saves                       */
+  g_clear_pointer(&h->archive, skim_hd_archive_free);   /* flushes             */
+  g_clear_pointer(&h->archive_err, g_free);
   g_clear_pointer(&h->temp_paths, g_ptr_array_unref);
   g_clear_pointer(&h->peers, skim_hd_peers_free);  /* they spot into the feed */
   g_clear_pointer(&h->feed, skim_rbn_feed_free);   /* it relays to rbn: first */

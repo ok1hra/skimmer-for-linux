@@ -39,6 +39,9 @@
  *            settings from the web page (a.b.c.d, a.b.c.d/n, ::1), default
  *            127.0.0.1,::1; editable here only, never from the page
  *   [record] bands, minutes, dir, start_utc (HH:MM)
+ *   [archive] dir — every spot the feed sends, a gzip file a UTC day
+ *            (<dir>/YYYYMMDD-spots.gz, headless/archive.h); empty = off;
+ *            ~/ is the home, a relative path lies next to this file
  *   [filter] call — only the calls that match go anywhere (empty = all):
  *            part of a call, any case; regex=true: a regular expression
  *            (PCRE, any case). Dropped where they are decoded — no station,
@@ -132,6 +135,8 @@ typedef struct {
   double           rec_minutes;
   char            *rec_dir;
   gint64           rec_at_us;         /* real time to start, 0 = at once     */
+  /* [archive] */
+  char            *archive_dir;       /* absolute; NULL = off                */
   /* [filter] */
   char            *filter_call;       /* as written; NULL = no filter        */
   gboolean         filter_regex;

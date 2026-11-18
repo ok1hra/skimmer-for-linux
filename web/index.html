@@ -170,6 +170,15 @@
             DX cluster nor the statistics — peers' and workers' spots too.</small>
         </fieldset>
         <fieldset>
+          <legend>Spot archive</legend>
+          <label>Directory <input name="archive.dir" placeholder="off — e.g. ~/skimmer-spots" spellcheck="false" autocomplete="off">
+            <small>every spot the feed sends is kept here, a gzip file a UTC day: <code>YYYYMMDD-spots.gz</code>
+            (<code>zcat</code> or <code>zless</code> reads it), a tab-separated line a spot — time, kHz, call,
+            mode, dB, WPM/baud, band, source. Written once a minute. Empty = off; <code>~/</code> = the home of
+            the user the skimmer runs as</small></label>
+          <div class="arch" id="archive-state"></div>
+        </fieldset>
+        <fieldset>
           <legend>Reverse Beacon Network</legend>
           <label class="check"><input type="checkbox" name="rbn.enabled"> send the spots to the RBN</label>
           <label>Aggregator port <input name="rbn.port" inputmode="numeric" placeholder="7550">

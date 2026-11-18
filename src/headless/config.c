@@ -92,6 +92,9 @@ static const char DEFAULT_CONFIG[] =
   "\n[web]\n# who may change the settings from the web page (addresses or\n"
   "# networks, comma separated); everyone else sees them read-only\n"
   "settings_from=127.0.0.1,::1\n"
+  "\n[archive]\n# every spot the feed sends, kept in this directory: a gzip file a UTC\n"
+  "# day, YYYYMMDD-spots.gz (zcat reads it), a tab-separated line a spot;\n"
+  "# empty = off\ndir=\n"
   "\n[filter]\n# only the calls that match go anywhere — the feed, the RBN, the web page,\n"
   "# the statistics (empty = all pass): part of a call (any case), or with\n"
   "# regex=true a regular expression (any case), e.g. ^(OK|OL)|/P$\n"
@@ -124,6 +127,7 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_strfreev(cfg->hub_allow);
   g_strfreev(cfg->rec_bands);
   g_free(cfg->rec_dir);
+  g_free(cfg->archive_dir);
   g_free(cfg->filter_call);
   g_free(cfg->filter_up);
   if (cfg->filter_re) { g_regex_unref(cfg->filter_re); }
@@ -470,6 +474,22 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   }
 
   {
+    /* [archive] dir: ~/ = the home, relative = next to this file */
+    char *ad = g_key_file_get_string(kf, "archive", "dir", NULL);
+    if (ad && g_strstrip(ad)[0]) {
+      if (g_str_has_prefix(ad, "~/") || strcmp(ad, "~") == 0) {
+        h->archive_dir = g_build_filename(g_get_home_dir(), ad + 1, NULL);
+      } else if (g_path_is_absolute(ad)) {
+        h->archive_dir = g_canonicalize_filename(ad, NULL);
+      } else {
+        char *base = g_path_get_dirname(path);
+        h->archive_dir = g_canonicalize_filename(ad, base);
+        g_free(base);
+      }
+    }
+    g_free(ad);
+  }
+  {
     /* [filter]: the raw value — a regular expression keeps its backslashes */
     char *fc = g_key_file_get_value(kf, "filter", "call", NULL);
     if (fc) { g_strstrip(fc); }
@@ -639,7 +659,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "peers.hosts", "hub.name", "hub.port", "station.locator",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
-  "filter.call", "filter.regex",
+  "archive.dir", "filter.call", "filter.regex",
   NULL,
 };
 

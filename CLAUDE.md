@@ -128,7 +128,7 @@ here; what was done and why is in git.
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 23 gates** (DeepCW skips without the model, golden skips
+- **`meson test` = 24 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).
 - **Hub, workers, peers** (`docs/HUB.md`): the PC with the radio passes the
@@ -151,8 +151,13 @@ here; what was done and why is in git.
   POSTs only from `[web] settings_from`, no foreign Origin. Frequencies show
   with a space after the MHz (`fmtKhz` in app.js); the charts share one plot
   frame and one crosshair.
-- **The callsign filter** (`[filter] call=`, `regex=`; the DX cluster's DX
-  filter semantics: substring any case, or a caseless GRegex): a call that
+- **The spot archive** (`[archive] dir=`, `src/headless/archive.c`): every
+  spot the feed tap sees, a gzip file a UTC day (`YYYYMMDD-spots.gz`, TSV),
+  one more gzip member a minute from the main loop; a refused disk keeps
+  the lines for the next try.
+- **The callsign filter** (`[filter] call=`, `regex=`; IP-rotator's DX
+  filter, `data/dxc.html` of ok1hra/IP-rotator, with its RU/BY-out default
+  regex: substring any case, or a caseless GRegex): a call that
   does not match is dropped in `take_text` right after the extractor names
   it (`SkimPipelineConfig.call_pass`, NULL = byte-identical), so it never
   reaches the station table, the stats, the map or any feed; `peer_spot` and
