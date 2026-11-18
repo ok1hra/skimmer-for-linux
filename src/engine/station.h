@@ -32,6 +32,19 @@ G_BEGIN_DECLS
  * (Live-caught 2026-07-15: EA2BTN S&P listed at 14044 AND 14050.) */
 #define SKIM_STATION_QSY_SCORE 0.85
 
+/* Inside SAMECALL_HZ the stronger report positions the station as an EMA —
+ * for the ±10-20 Hz scatter of one carrier. Beyond this many Hz
+ * (skim_station_table_set_snap_hz; 0 = off, every report pulls the EMA):
+ *   - a stronger report of the station CALLING (cq, not addressed) moves
+ *     the record there at once, instead of 30 % of the way;
+ *   - any other report (an S&P answer, the call sent by a runner in its
+ *     exchange "RV6HV 5NN") changes neither the position nor the SNR — it
+ *     is somebody else's frequency.
+ * Without it a record that starts on a far ghost, or a station that QSYs
+ * within SAMECALL_HZ, crawls across in 30 % steps and the feed re-spots
+ * every step of 100 Hz or more (docs/LIVE-AIR.md, 2026-11-18). */
+#define SKIM_STATION_SNAP_HZ_DEFAULT 0.0
+
 typedef struct {
   char    call[16];
   char    mode[8];      /* "CW", "RTTY", "PSK31" ... */
@@ -60,6 +73,9 @@ typedef struct {
 typedef struct _SkimStationTable SkimStationTable;
 
 SkimStationTable *skim_station_table_new(void);
+/* See SKIM_STATION_SNAP_HZ_DEFAULT. A new table takes SKIM_ST_SNAP (Hz)
+ * from the environment when set, else the default. */
+void skim_station_table_set_snap_hz(SkimStationTable *t, double hz);
 void              skim_station_table_free(SkimStationTable *t);
 
 /* A record left the table (TTL prune, or its frequency was taken over by a

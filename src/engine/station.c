@@ -24,12 +24,20 @@ struct _SkimStationTable {
   guint       count;
   SkimStationGoneFunc gone_cb;
   gpointer            gone_user;
+  double              snap_hz;  /* SKIM_STATION_SNAP_HZ_DEFAULT; 0 = off */
 };
 
 SkimStationTable *skim_station_table_new(void) {
   SkimStationTable *t = g_new0(SkimStationTable, 1);
   t->by_call = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+  const char *e = g_getenv("SKIM_ST_SNAP");
+  skim_station_table_set_snap_hz(t, e && e[0] ? g_ascii_strtod(e, NULL)
+                                              : SKIM_STATION_SNAP_HZ_DEFAULT);
   return t;
+}
+
+void skim_station_table_set_snap_hz(SkimStationTable *t, double hz) {
+  t->snap_hz = hz > 0 ? hz : 0;
 }
 
 static void free_list(gpointer list) {
@@ -267,9 +275,23 @@ const SkimStation *skim_station_table_report(SkimStationTable *t,
       /* Merge: the stronger report positions the station — as an EMA, not a
        * replacement: single estimates scatter ±10-20 Hz around the carrier,
        * averaging converges onto it (stations sit on round frequencies;
-       * 14048.99 for a 14049.00 station bugged Richard, 2026-07-15). */
-      if (st->snr_db >= e->snr_db) {
-        e->freq_hz += 0.3 * (st->freq_hz - e->freq_hz);
+       * 14048.99 for a 14049.00 station bugged Richard, 2026-07-15).
+       * Farther than snap_hz (SKIM_STATION_SNAP_HZ_DEFAULT): the station
+       * calling moves the record at once, anything else leaves the position
+       * and the SNR alone — it is somebody else's frequency. */
+      const gboolean far   = t->snap_hz > 0 && d > t->snap_hz;
+      const gboolean own   = st->cq && !st->addressed;
+      if ((!far || own) && st->snr_db >= e->snr_db) {
+        if (far) {
+          if (st_debug()) {
+            g_printerr("station: SNAP %s %.0f -> %.0f Hz (%.1f >= %.1f dB)\n",
+                       e->call, e->freq_hz, st->freq_hz, st->snr_db, e->snr_db);
+          }
+          e->freq_hz = st->freq_hz;
+          e->pos_us  = st->last_heard;
+        } else {
+          e->freq_hz += 0.3 * (st->freq_hz - e->freq_hz);
+        }
         e->snr_db  = st->snr_db;
         e->snr2_db = st->snr2_db;
         e->speed   = st->speed;

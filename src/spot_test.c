@@ -391,6 +391,68 @@ int main(void) {
     skim_station_table_free(t);
   }
 
+  /* -- far reports inside SAMECALL_HZ: snap or keep (2026-11-18) ------------ */
+  {
+    /* live: LZ1ZF's record on 7016.7, its carrier on 7018.0 — the EMA
+     * crawled 7017.1, 7017.4, 7017.6, 7017.7, 7017.9 and the feed re-spotted
+     * every step; RV6HV calling CQ on 7010.5, a runner sending "RV6HV 5NN"
+     * on 7012.5 (2 kHz: inside SAMECALL_HZ) */
+    SkimStation lz = { .call = "LZ1ZF", .mode = "CW", .freq_hz = 7016700,
+                       .snr_db = 15, .score = 1.0, .speed = 32, .cq = TRUE,
+                       .first_heard = 1, .last_heard = 1 };
+    SkimStation lz2 = lz;
+    lz2.freq_hz = 7018000;
+    lz2.snr_db = 22;
+    lz2.last_heard = 2;
+    SkimStation rv = { .call = "RV6HV", .mode = "CW", .freq_hz = 7010500,
+                       .snr_db = 12, .score = 1.0, .speed = 39, .cq = TRUE,
+                       .first_heard = 1, .last_heard = 1 };
+    SkimStation rv2 = rv;                      /* the runner's exchange       */
+    rv2.freq_hz = 7012500;
+    rv2.snr_db = 23;
+    rv2.cq = FALSE;
+    rv2.addressed = TRUE;
+    rv2.last_heard = 2;
+    SkimStation rv3 = rv;                      /* RV6HV's own CQ, weaker than */
+    rv3.freq_hz = 7010520;                     /* the runner's 23 dB          */
+    rv3.snr_db = 14;
+    rv3.last_heard = 3;
+
+    SkimStationTable *t = skim_station_table_new();
+    skim_station_table_set_snap_hz(t, 0);      /* off: the EMA everywhere     */
+    skim_station_table_report(t, &lz);
+    const SkimStation *m = skim_station_table_report(t, &lz2);
+    check("snap off: a stronger far report pulls the EMA 30 % (7017.09 kHz)",
+          fabs(m->freq_hz - 7017090) < 1);
+    skim_station_table_report(t, &rv);
+    m = skim_station_table_report(t, &rv2);
+    check("snap off: the runner's exchange drags RV6HV too",
+          fabs(m->freq_hz - 7011100) < 1);
+    skim_station_table_free(t);
+
+    t = skim_station_table_new();
+    skim_station_table_set_snap_hz(t, 100);
+    skim_station_table_report(t, &lz);
+    m = skim_station_table_report(t, &lz2);
+    check("snap 100 Hz: the stronger CQ 1.3 kHz away moves LZ1ZF at once",
+          fabs(m->freq_hz - 7018000) < 1);
+    SkimStation lz3 = lz2;                     /* scatter on the carrier: EMA */
+    lz3.freq_hz = 7018040;
+    lz3.snr_db = 23;
+    lz3.last_heard = 3;
+    m = skim_station_table_report(t, &lz3);
+    check("snap 100 Hz: 40 Hz of scatter still averages (7018.012 kHz)",
+          fabs(m->freq_hz - 7018012) < 1);
+    skim_station_table_report(t, &rv);
+    m = skim_station_table_report(t, &rv2);
+    check("snap 100 Hz: the runner's exchange leaves RV6HV on 7010.5",
+          fabs(m->freq_hz - 7010500) < 1 && m->snr_db < 13 && m->addressed);
+    m = skim_station_table_report(t, &rv3);
+    check("snap 100 Hz: … and its own weaker CQ still positions it",
+          fabs(m->freq_hz - 7010506) < 1);
+    skim_station_table_free(t);
+  }
+
   /* -- clip or glue: which of two calls on one frequency is the station (gh#21) -- */
   {
     const gint64 S = G_USEC_PER_SEC;

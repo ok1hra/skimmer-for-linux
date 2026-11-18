@@ -49,7 +49,7 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   /* RTTY, channels, the tone splitter */
   { "SKIM_TONE_FOCUS", B }, { "SKIM_TONE_SPLIT", B }, { "SKIM_TS_RATIO", B },
   { "SKIM_TS_DEBUG", D }, { "SKIM_RTTY_DEBUG", D }, { "SKIM_FLOCK_DEBUG", D },
-  { "SKIM_ST_REPOS", B },
+  { "SKIM_ST_REPOS", B }, { "SKIM_ST_SNAP", B },
   { "SKIM_ST_DEBUG", D }, { "SKIM_DLOG_LANE", D }, { "SKIM_DUMP_DIR", D },
   { "SKIM_DUMP_CHAN", D },
   /* the RBN feed */
