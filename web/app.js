@@ -271,7 +271,7 @@ tabs.status = {
 };
 
 // ---- statistics ------------------------------------------------------------------
-const stats = { hours: 24, mode: 'cw', data: null, at: 0, end: null };   // end: unix s, null = now
+const stats = { hours: 24, data: null, at: 0, end: null };   // end: unix s, null = now
 
 // The CW + RTTY decoders tile: every channel decoder running now, summed over
 // the bands, CW beside RTTY (live, from the status — the history has no count).
@@ -293,7 +293,6 @@ function mean(a) { const v = a.filter((x) => x != null); return v.length ? sum(v
 function renderStats() {
   const d = stats.data;
   if (!d) return;
-  const m = d[stats.mode] || d.cw;
   const t = Array.from({ length: d.n }, (_, i) => d.t0 + i * d.step_min * 60);
   const stepH = d.step_min / 60;
   const label = (i) => {
@@ -304,7 +303,6 @@ function renderStats() {
       ? `${day(a)} ${f(a)} – ${day(b)} ${f(b)} UTC` : `${day(a)} ${f(a)}–${f(b)} UTC`;
   };
   const x = { t, spanH: stats.hours, label };
-  $('#mode').hidden = !d.rtty;
   renderTimebar(d);
   const per = d.step_min % 1440 === 0 ? `${d.step_min / 1440}-day` : d.step_min % 60 === 0
     ? `${d.step_min / 60}-hour` : `${d.step_min}-minute`;
@@ -353,27 +351,34 @@ function renderStats() {
       fmtV: (v) => `${fmt(v, 3)} %`, fmtTick: (v) => `${+v.toPrecision(2)} %` });
   ['#chart-spots', '#chart-active', '#chart-cpu'].forEach((id) => loading(id, false));
 
-  const totSpots = d.bands.reduce((a, b) => a + sum(m.spots[b]), 0);
+  // CW and RTTY one under the other — in the tiles and in every table cell
+  const modes = [['CW', d.cw], ...(d.rtty ? [['RTTY', d.rtty]] : [])];
+  const all = (mm, k) => d.bands.reduce((a, b) => a + sum(mm[k][b]), 0);
+  const tileM = (k, f, unit = '') => `<div class="tile"><div class="k">${esc(k)}</div>` +
+    modes.map(([l, mm]) => `<div class="v ml ${l.toLowerCase()}">${f(mm)} <small>${l}${unit ? ` · ${esc(unit)}` : ''}</small></div>`).join('') + '</div>';
   const streamed = mean(d.global.streaming);
   renderDecTile(status);
   $('#stats-tiles').innerHTML = [
-    tile('spots', fmt(totSpots), `in ${stats.hours} h`),
-    tile('stations appeared', fmt(d.bands.reduce((a, b) => a + sum(m.stations[b]), 0))),
-    tile('folded', fmt(d.bands.reduce((a, b) => a + sum(m.folded[b]), 0)), 'twins held back'),
-    tile('gate below', fmt(d.bands.reduce((a, b) => a + sum(m.gate_below[b]), 0)), 'learned gate'),
+    tileM('spots', (mm) => fmt(all(mm, 'spots')), `in ${stats.hours} h`),
+    tileM('stations appeared', (mm) => fmt(all(mm, 'stations'))),
+    tileM('folded', (mm) => fmt(all(mm, 'folded')), 'twins held back'),
+    tileM('gate below', (mm) => fmt(all(mm, 'gate_below')), 'learned gate'),
     tile('radio streamed', streamed == null ? '–' : fmt(100 * streamed),
          streamed == null ? 'no data' : '% of the recorded time'),
   ].join('');
 
-  const head = '<tr><th>band</th><th>spots</th><th>spots / h</th><th>stations appeared</th><th>active (mean)</th>' +
-    '<th>folded</th><th>gate below</th><th>SNR (mean of medians)</th></tr>';
   const hrs = (d.n * d.step_min) / 60;
-  $('#stats-table').innerHTML = head + d.bands.map((b) => {
-    const sp = sum(m.spots[b]);
-    return `<tr><td>${esc(b)}</td><td>${fmt(sp)}</td><td>${fmt(sp / hrs, 1)}</td><td>${fmt(sum(m.stations[b]))}</td>` +
-      `<td>${fmt(mean(m.active[b]), 1)}</td><td>${fmt(sum(m.folded[b]))}</td><td>${fmt(sum(m.gate_below[b]))}</td>` +
-      `<td>${mean(m.snr[b]) == null ? '–' : `${fmt(mean(m.snr[b]))} dB`}</td></tr>`;
-  }).join('');
+  const has = (mm, b) => ['spots', 'active'].some((k) => mm[k][b].some((v) => v != null));
+  const stack = (b, f) => modes.map(([l, mm]) =>
+    `<div class="ml ${l.toLowerCase()}">${has(mm, b) ? f(mm) : '–'}</div>`).join('');
+  const head = '<tr><th>band</th><th class="l">mode</th><th>spots</th><th>spots / h</th><th>stations appeared</th><th>active (mean)</th>' +
+    '<th>folded</th><th>gate below</th><th>SNR (mean of medians)</th></tr>';
+  $('#stats-table').innerHTML = head + d.bands.map((b) => `<tr><td>${esc(b)}</td>` +
+    `<td class="l">${modes.map(([l]) => `<div class="ml ${l.toLowerCase()}">${l}</div>`).join('')}</td>` +
+    `<td>${stack(b, (mm) => fmt(sum(mm.spots[b])))}</td><td>${stack(b, (mm) => fmt(sum(mm.spots[b]) / hrs, 1))}</td>` +
+    `<td>${stack(b, (mm) => fmt(sum(mm.stations[b])))}</td><td>${stack(b, (mm) => fmt(mean(mm.active[b]), 1))}</td>` +
+    `<td>${stack(b, (mm) => fmt(sum(mm.folded[b])))}</td><td>${stack(b, (mm) => fmt(sum(mm.gate_below[b])))}</td>` +
+    `<td>${stack(b, (mm) => (mean(mm.snr[b]) == null ? '–' : `${fmt(mean(mm.snr[b]))} dB`))}</td></tr>`).join('');
 }
 
 tabs.stats = {
@@ -422,13 +427,6 @@ for (const b of document.querySelectorAll('#range button')) {
     stats.end = null;
     for (const o of document.querySelectorAll('#range button')) o.classList.toggle('on', o === b);
     tabs.stats.refresh(true);
-  });
-}
-for (const b of document.querySelectorAll('#mode button')) {
-  b.addEventListener('click', () => {
-    stats.mode = b.dataset.m;
-    for (const o of document.querySelectorAll('#mode button')) o.classList.toggle('on', o === b);
-    renderStats();
   });
 }
 let resizeT = 0;
