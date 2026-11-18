@@ -66,6 +66,37 @@ to the weekdays before it): recall L 82.0 / R 71.7, bust L 1.3 / R 1.5 %;
 on the WARC bands, where nobody contests, 30 m 60 / 88 and 17 m 61 / 93
 — the gap that is left.
 
+## Spot frequency: snap, not crawl (2026-11-18)
+
+Against RBN's most frequent frequency for the call within ±5 min (same
+band, ≥ 3 RBN reports), 12.7–23.7 % of L's spots sat over 150 Hz off it,
+R's 5.6–6.5 % — on v2 and v3 alike. The station table pulled its position
+30 % of the way to every stronger report within SAMECALL_HZ (2.5 kHz), an
+EMA meant for ±10-20 Hz of scatter: a record that started on a far ghost,
+or a station that moved 2 kHz, crawled across in 30 % steps and the feed
+re-spotted every step of 100 Hz or more (LZ1ZF 7016.7, 7017.1, 7017.4,
+7017.6, 7017.7, 7017.9 within a second for a carrier on 7018.0). Reports
+of the call in a runner's exchange (`RV6HV 5NN TT3` on the runner's
+frequency) dragged it the same way.
+
+`SKIM_ST_SNAP` (Hz, station.h): beyond it a stronger report of the
+station calling (cq, not addressed) moves the record at once; any other
+report changes neither position nor SNR. Live v3.1 taps through
+skimmer-tap-replay, off-frequency share / spots / calls spotted on RBN's
+frequency at least once:
+
+| tap | off | 100 Hz |
+|---|---|---|
+| 11-17 22:39 → 11-18 16:05 (17.5 h, 7 bands) | 12.7 % / 3928 / 626 | 5.6 % / 3631 / 626 |
+| 11-18 16:42 → 22:39 (6 h, 40 m contest evening) | 23.7 % / 4195 / 454 | 11.0 % / 3597 / 458 |
+
+Not a single call lost; 200 Hz gives the same. Variants measured on the
+6 h tap: snap on any stronger report 12.6 % (but it puts RV6HV on the
+runner's frequency); snap only the calling station, others still pulling
+the EMA 17.3 %; the far-QSY branch (> 2.5 kHz) also only for the calling
+station 16.9 % — a far non-CQ report is usually a real move, so that
+branch stays as it was.
+
 ## Tried and not kept
 
 - Extractor: noise letters not ageing the CQ window, a 5-token window,

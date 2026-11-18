@@ -43,7 +43,7 @@ G_BEGIN_DECLS
  * Without it a record that starts on a far ghost, or a station that QSYs
  * within SAMECALL_HZ, crawls across in 30 % steps and the feed re-spots
  * every step of 100 Hz or more (docs/LIVE-AIR.md, 2026-11-18). */
-#define SKIM_STATION_SNAP_HZ_DEFAULT 0.0
+#define SKIM_STATION_SNAP_HZ_DEFAULT 100.0
 
 typedef struct {
   char    call[16];
