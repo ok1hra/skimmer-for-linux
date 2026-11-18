@@ -78,7 +78,7 @@ const SkMap = (() => {
 
   // ---- state ----------------------------------------------------------------------------
   const store = (() => { try { return JSON.parse(localStorage.getItem('skmap') || '{}'); } catch (e) { return {}; } })();
-  const opt = { grayline: true, borders: true, prefixes: true, lines: true, calls: true, center: '', zoom: 0, ...store };
+  const opt = { grayline: true, borders: true, prefixes: true, lines: true, calls: true, db: false, center: '', zoom: 0, ...store };
   const save = () => { try { localStorage.setItem('skmap', JSON.stringify(opt)); } catch (e) { /* private window */ } };
   let el = null, home = '', spots = [], view = null, baseKey = '', base = null, grayKey = '', gray = null;
 
@@ -266,11 +266,18 @@ const SkMap = (() => {
       if (s.hi) { g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.beginPath(); g.arc(x, y, r + 4, 0, 7); g.stroke(); }
       view.marks.push({ x, y, s });
       if (opt.calls || s.hi) {
+        // the call, and with dB its SNR behind it (the number only)
         g.font = '700 11px RC, sans-serif';
-        const w = g.measureText(s.call).width, b = [x + 5, y - 15, x + 7 + w, y - 2];
+        const wc = g.measureText(s.call).width;
+        const db = opt.db && s.snr != null ? ` ${Math.round(s.snr)}` : '';
+        g.font = '400 11px RC, sans-serif';
+        const wd = db ? g.measureText(db).width : 0;
+        const b = [x + 5, y - 15, x + 7 + wc + wd, y - 2];
         if (s.hi || !boxes.some((o) => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1])) {
           boxes.push(b);
-          g.fillStyle = s.hi ? '#fff' : col; g.fillText(s.call, x + 6, y - 5);
+          g.fillStyle = s.hi ? '#fff' : col;
+          g.font = '700 11px RC, sans-serif'; g.fillText(s.call, x + 6, y - 5);
+          if (db) { g.font = '400 11px RC, sans-serif'; g.fillText(db, x + 6 + wc, y - 5); }
         }
       }
       g.globalAlpha = 1;
@@ -312,6 +319,7 @@ const SkMap = (() => {
           <button type="button" data-o="prefixes">DXCC</button>
           <button type="button" data-o="lines">lines</button>
           <button type="button" data-o="calls">calls</button>
+          <button type="button" data-o="db" title="the spot's SNR in dB behind its call">dB</button>
         </span>
         <label class="map-centre">centre <input data-k="centre" maxlength="6" size="7" placeholder="locator"></label>
         <button type="button" class="small" data-o="home" title="centre the map on the station's locator again" hidden>back to the station</button>
@@ -319,7 +327,7 @@ const SkMap = (() => {
       </div>
       <div class="map-canvas"><canvas></canvas><div class="map-read" hidden></div></div>
       <div class="map-foot"><span class="map-count mut"></span><span class="mut">wheel: zoom · auto: 2,000 km or out to the farthest spot</span></div>`;
-    for (const k of ['grayline', 'borders', 'prefixes', 'lines', 'calls']) {
+    for (const k of ['grayline', 'borders', 'prefixes', 'lines', 'calls', 'db']) {
       el.querySelector(`[data-o=${k}]`).classList.toggle('on', !!opt[k]);
     }
     el.querySelector('[data-k=centre]').value = opt.center;
