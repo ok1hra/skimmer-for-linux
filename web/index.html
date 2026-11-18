@@ -165,6 +165,15 @@
           <small class="note-s">Without Regex, this matches plain text. With Regex enabled, it is a regular
             expression and ignores letter case; ticking Regex on an empty field puts in the default — every
             call but the Russian and Belarusian ones (R…, UA–UI, EU–EW).</small>
+          <div class="filter-row mycall">
+            <label class="check"><input type="checkbox" name="filter.mycall" id="filter-mycall">
+              <span>drop my call <b id="filter-mycall-call"></b> and the calls up to</span></label>
+            <input name="filter.mycall_diff" id="filter-mycall-diff" inputmode="numeric" placeholder="2" size="2" maxlength="1">
+            <span class="mut">characters off it</span>
+          </div>
+          <small class="note-s">A character other, missing or extra counts one — the busts the skimmer makes of
+            this station's own signal. Two characters off a short call reach real neighbours too (for OK1HRA:
+            OK1HRB, OK1HR, OK2HRB, but also OK1BR, OK1RR); 0 = the call itself. My call = Station and feed → Call.</small>
           <small class="note-s">Only the calls that pass go anywhere; empty = all. The rest are dropped right
             where they are decoded: no spot on the telnet feed or to the RBN, no dot on the map, not in the
             DX cluster nor the statistics — peers' and workers' spots too.</small>

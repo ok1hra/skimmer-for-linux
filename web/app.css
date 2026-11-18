@@ -280,3 +280,5 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 .fmenu .fm-note { font-size: 12px; color: var(--mut); max-width: 300px; }
 .arch { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--ln); font-size: 13px; word-break: break-all; }
 #settings code { font-family: var(--mono); color: var(--fg); }
+.filter-row.mycall { margin-top: 10px; flex-wrap: wrap; gap: 6px; font-size: 14px; }
+.filter-row.mycall input:not([type=checkbox]) { width: 2.6em; text-align: center; }

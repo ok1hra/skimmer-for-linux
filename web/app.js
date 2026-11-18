@@ -664,6 +664,17 @@ $('#filter-regex').addEventListener('change', (e) => {
   if (e.target.checked && !$('#filter-call').value.trim()) $('#filter-call').value = DX_FILTER_DEFAULT;
   filterCheck();
 });
+// the own call's filter names the call it compares with (Station and feed → Call)
+function mycallShow() {
+  const c = $('[name="feed.call"]').value.trim().toUpperCase();
+  $('#filter-mycall-call').textContent = c ? `(${c})` : '(no call set)';
+  const d = $('#filter-mycall-diff').value.trim();
+  const ok = d === '' || /^[0-3]$/.test(d);
+  $('#filter-mycall-diff').classList.toggle('bad', !ok);
+  return ok;
+}
+$('[name="feed.call"]').addEventListener('input', mycallShow);
+$('#filter-mycall-diff').addEventListener('input', mycallShow);
 $('#filter-clear').addEventListener('click', () => {
   $('#filter-call').value = '';
   $('#filter-regex').checked = false;
@@ -710,6 +721,7 @@ function fillSettings(d) {
     : '<tr><td colspan="3" class="mut">none yet — every save keeps the previous file</td></tr>');
   $('#set-msg').textContent = '';
   filterCheck();
+  mycallShow();
   if (status) renderDcw(status.deepcw);
 }
 
@@ -773,6 +785,12 @@ $('#settings').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!cfg.data || !cfg.data.may_change) return;
   const body = formBody();
+  if (!mycallShow()) {
+    const box = $('#set-error');
+    box.hidden = false;
+    box.textContent = 'Not saved: the characters off my call are 0 to 3.';
+    return;
+  }
   if (!filterCheck()) {
     const box = $('#set-error');
     box.hidden = false;

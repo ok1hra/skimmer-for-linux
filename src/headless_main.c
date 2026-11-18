@@ -1689,7 +1689,7 @@ static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const c
     .band = b->name,
     /* RTTY publishes what it copies; CW stays off it only when told to */
     .rtty_pairs = rtty || c->suppress_cw_on_rtty ? b->pairs : NULL,
-    .call_pass = c->filter_call ? call_pass : NULL,
+    .call_pass = skim_hd_config_filter_on(c) ? call_pass : NULL,
     .call_pass_user = h,
   };
   d->p = skim_pipeline_new(&pc);
@@ -1869,6 +1869,10 @@ int main(int argc, char **argv) {
     printf("  gate   %s, %s (CW)\n", h->gate_id ? h->gate_id : "none", h->feed_gate_mode);
     if (c->filter_call) {
       printf("  filter only calls %s %s\n", c->filter_regex ? "matching" : "containing", c->filter_call);
+    }
+    if (c->filter_mycall && c->feed_call && c->feed_call[0]) {
+      printf("  filter not %s nor calls within %u characters of it\n", c->feed_call,
+             c->filter_mycall_diff);
     }
     gboolean dcw = FALSE;
     for (guint i = 0; i < c->nb; i++) {
@@ -2068,6 +2072,14 @@ int main(int argc, char **argv) {
   if (h->cfg.filter_call) {
     g_message("filter: only calls %s \"%s\" go anywhere — the rest are dropped where they "
               "are decoded", h->cfg.filter_regex ? "matching" : "containing", h->cfg.filter_call);
+  }
+  if (h->cfg.filter_mycall) {
+    if (h->cfg.feed_call && h->cfg.feed_call[0]) {
+      g_message("filter: %s and the calls within %u characters of it are dropped where they "
+                "are decoded", h->cfg.feed_call, h->cfg.filter_mycall_diff);
+    } else {
+      g_warning("filter: mycall=true, but [feed] call is empty — nothing to compare with");
+    }
   }
   for (guint i = 0; i < h->nb; i++) {
     const Band *b = &h->band[i];

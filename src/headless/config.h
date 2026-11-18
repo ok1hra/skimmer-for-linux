@@ -47,6 +47,10 @@
  *            (PCRE, any case). Dropped where they are decoded — no station,
  *            spot, feed line, RBN line, map dot or count; peers' and
  *            workers' spots are held to it too
+ *            mycall=true also drops this station's own call ([feed] call)
+ *            and every call within mycall_diff edits of it (default 2: a
+ *            character other, missing or extra counts one) — the busts the
+ *            skimmer makes of its own transmissions
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -142,6 +146,8 @@ typedef struct {
   gboolean         filter_regex;
   GRegex          *filter_re;         /* compiled (regex=true); else NULL    */
   char            *filter_up;         /* the text upper-cased (regex=false)  */
+  gboolean         filter_mycall;     /* drop [feed] call and its near calls */
+  guint            filter_mycall_diff;/* … within this many edits (0–3)      */
 } SkimHdConfig;
 
 /* Write the commented default ini to path (its directory is created).
@@ -211,6 +217,13 @@ char *skim_hd_config_worker_merge(const char *own, gsize own_len, const char *fr
 
 /* "cw", "cw:deepcw,rtty", "cw,off" … — the band's modes as the ini writes them. */
 char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt);
+
+/* [filter] in force at all (a pattern, or the own call's filter on with a
+ * call to compare with). */
+gboolean skim_hd_config_filter_on(const SkimHdConfig *cfg);
+
+/* Edit distance (Levenshtein) of two calls, any case. */
+guint skim_hd_call_distance(const char *a, const char *b);
 
 /* Does the call pass [filter]? (TRUE without one.) Thread-safe. */
 gboolean skim_hd_config_call_pass(const SkimHdConfig *cfg, const char *call);

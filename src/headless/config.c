@@ -99,6 +99,10 @@ static const char DEFAULT_CONFIG[] =
   "# the statistics (empty = all pass): part of a call (any case), or with\n"
   "# regex=true a regular expression (any case), e.g. ^(OK|OL)|/P$\n"
   "call=\nregex=false\n"
+  "# mycall=true drops this station's own call ([feed] call) and the calls\n"
+  "# within mycall_diff characters of it (other, missing or extra) — the\n"
+  "# busts of its own transmissions\n"
+  "mycall=false\nmycall_diff=2\n"
   "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
   "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
   "bands=\nminutes=10\ndir=/var/tmp/skimmer-iq\nstart_utc=\n";
@@ -134,7 +138,50 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   memset(cfg, 0, sizeof(*cfg));
 }
 
+guint skim_hd_call_distance(const char *a, const char *b) {
+  const gsize n = strlen(a), m = strlen(b);
+  guint row[64], prev;
+  if (n >= G_N_ELEMENTS(row) || m >= G_N_ELEMENTS(row)) { return G_MAXUINT; }
+  for (gsize j = 0; j <= m; j++) { row[j] = (guint)j; }
+  for (gsize i = 1; i <= n; i++) {
+    prev = row[0];
+    row[0] = (guint)i;
+    for (gsize j = 1; j <= m; j++) {
+      const guint cur = row[j];
+      const guint sub = prev + (g_ascii_toupper(a[i - 1]) != g_ascii_toupper(b[j - 1]));
+      row[j] = MIN(MIN(row[j] + 1, row[j - 1] + 1), sub);
+      prev = cur;
+    }
+  }
+  return row[m];
+}
+
+/* The own call's filter: the call, or any of its /-parts (OK1HRA/P, F/OK1HRA),
+ * within the distance of the own call's base (its longest part). */
+static gboolean near_mycall(const SkimHdConfig *cfg, const char *call) {
+  char **mine = g_strsplit(cfg->feed_call, "/", -1);
+  const char *base = mine[0];
+  for (char **p = mine; *p; p++) {
+    if (strlen(*p) > strlen(base)) { base = *p; }
+  }
+  gboolean near = skim_hd_call_distance(call, base) <= cfg->filter_mycall_diff;
+  char **parts = g_strsplit(call, "/", -1);
+  for (char **p = parts; !near && *p; p++) {
+    near = strlen(*p) >= 3 && skim_hd_call_distance(*p, base) <= cfg->filter_mycall_diff;
+  }
+  g_strfreev(parts);
+  g_strfreev(mine);
+  return near;
+}
+
+gboolean skim_hd_config_filter_on(const SkimHdConfig *cfg) {
+  return cfg->filter_call || (cfg->filter_mycall && cfg->feed_call && cfg->feed_call[0]);
+}
+
 gboolean skim_hd_config_call_pass(const SkimHdConfig *cfg, const char *call) {
+  if (cfg->filter_mycall && cfg->feed_call && cfg->feed_call[0] && near_mycall(cfg, call)) {
+    return FALSE;
+  }
   if (cfg->filter_re) { return g_regex_match(cfg->filter_re, call, 0, NULL); }
   if (!cfg->filter_up) { return TRUE; }
   char *up = g_ascii_strup(call, -1);
@@ -514,6 +561,19 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
       }
     }
     g_free(fc);
+    if (!opt_bool(kf, "filter", "mycall", FALSE, &h->filter_mycall, path, error)) { return FALSE; }
+    h->filter_mycall_diff = 2;
+    char *dv = g_key_file_get_value(kf, "filter", "mycall_diff", NULL);
+    if (dv && g_strstrip(dv)[0]) {                     /* empty = the default */
+      char *end = NULL;
+      const gint64 d = g_ascii_strtoll(dv, &end, 10);
+      if (*end || d < 0 || d > 3) {
+        g_free(dv);
+        return bad(error, path, "[filter] mycall_diff: 0 to 3 characters");
+      }
+      h->filter_mycall_diff = (guint)d;
+    }
+    g_free(dv);
   }
 
   h->console_s = g_key_file_has_key(kf, "status", "console_s", NULL)
@@ -659,7 +719,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "peers.hosts", "hub.name", "hub.port", "station.locator",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
-  "archive.dir", "filter.call", "filter.regex",
+  "archive.dir", "filter.call", "filter.regex", "filter.mycall", "filter.mycall_diff",
   NULL,
 };
 
