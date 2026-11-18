@@ -19,6 +19,7 @@ const Dxc = (() => {
                 src: { here: true, worker: true, peer: true }, age: 30, hidden: { src: true } };
   const load = () => { try { return JSON.parse(localStorage.getItem('skdxc') || '{}'); } catch (e) { return {}; } };
   const F = { ...JSON.parse(JSON.stringify(DEF)), ...load() };
+  if (!(F.age > 0 && F.age <= 30)) F.age = 30;            // the status page keeps half an hour
   const save = () => { try { localStorage.setItem('skdxc', JSON.stringify(F)); } catch (e) { /* private window */ } };
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   let el = null, rows = [], bandsKnown = [], workers = new Set(), onChange = () => {}, marked = '', menu = null;

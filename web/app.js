@@ -222,17 +222,28 @@ function renderDcw(dc) {
 }
 
 // The map (and the DX cluster): the spots the feed sent in the last half hour,
-// fetched every 10 s while the status page is open.
-const spots = { list: [], at: 0, locator: '' };
+// fetched every 10 s while the status page is open. Their age runs on between
+// fetches (on the skimmer's clock), and a spot older than 30 min leaves the
+// map, the cluster and the ladder at the next poll — also when a fetch fails
+// or the page was in another tab for a while.
+const SPOT_MAX_AGE_S = 30 * 60;
+const spots = { raw: [], list: [], at: 0, skew: 0, locator: '' };
 window.spots = spots;
 let mapMounted = false;
+function ageSpots(fresh) {
+  const now = Date.now() / 1000 + spots.skew;
+  const n = spots.list.length;
+  spots.list = spots.raw.map((s) => ({ ...s, age: now - s.t })).filter((s) => s.age <= SPOT_MAX_AGE_S);
+  if (fresh || spots.list.length !== n) renderSpots();
+}
 async function refreshSpots(force) {
-  if (!force && Date.now() - spots.at < 10000) return;
+  if (!force && Date.now() - spots.at < 10000) { ageSpots(false); return; }
   spots.at = Date.now();
-  const d = await getJSON('api/spots?minutes=30');
+  const d = await getJSON(`api/spots?minutes=${SPOT_MAX_AGE_S / 60}`);
   spots.locator = d.locator;
-  spots.list = d.spots.map((s) => ({ ...s, age: d.now - s.t }));
-  renderSpots();
+  spots.skew = d.now - Date.now() / 1000;
+  spots.raw = d.spots;
+  ageSpots(true);
 }
 // The DX cluster filters the spots; the map draws what the filters leave, the
 // row clicked marked on it.
@@ -252,9 +263,10 @@ function renderSpots() {
 }
 
 tabs.status = {
+  enter() { if (status) refreshSpots(true).catch(() => ageSpots(false)); },
   async refresh() {
     renderStatus(await getJSON('status.json'));
-    if (tab === 'status') refreshSpots().catch(() => {});
+    if (tab === 'status') refreshSpots().catch(() => ageSpots(false));
   },
 };
 
