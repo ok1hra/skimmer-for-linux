@@ -259,6 +259,10 @@ const SkMap = (() => {
     g.fillStyle = '#39d98a'; g.beginPath(); g.arc(view.cx, view.cy, 4, 0, 7); g.fill();
     el.querySelector('[data-k=zoom]').textContent = opt.zoom ? `${fmtKm(zoom)}` : `auto · ${fmtKm(zoom)}`;
     el.querySelector('[data-o=auto]').classList.toggle('on', !opt.zoom);
+    // HOME only means something while another centre is typed in
+    const back = el.querySelector('[data-o=home]');
+    back.hidden = !opt.center || opt.center === home;
+    back.textContent = `back to ${home || 'the station'}`;
     el.querySelector('.map-count').textContent = `${spots.length} spot${spots.length === 1 ? '' : 's'} · ${spots.filter((s) => !s.where).length ? `${spots.filter((s) => !s.where).length} unplaced · ` : ''}centre ${opt.center || home || '—'}`;
   }
   const fmtKm = (km) => `${Math.round(km).toLocaleString('en-US')} km`;
@@ -290,7 +294,7 @@ const SkMap = (() => {
           <button type="button" data-o="calls">calls</button>
         </span>
         <label class="map-centre">centre <input data-k="centre" maxlength="6" size="7" placeholder="locator"></label>
-        <button type="button" class="small" data-o="home" title="back to the station's locator">home</button>
+        <button type="button" class="small" data-o="home" title="centre the map on the station's locator again" hidden>back to the station</button>
         <span class="mut" data-k="zoom"></span>
       </div>
       <div class="map-canvas"><canvas></canvas><div class="map-read" hidden></div></div>
