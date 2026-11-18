@@ -143,10 +143,20 @@ here; what was done and why is in git.
   status = an azimuthal map of the last 30 min of spots (`web/map.js`, data
   `web/map/` from IP-rotator) + the DX cluster with column filters
   (`web/dxc.js`), both from `/api/spots`; statistics (`stats.c`, three
-  rings: 1 min × 7 d, 15 min × 90 d, 1 h × 2 y, saved in place), settings (one parser:
+  rings: 1 min × 7 d, 15 min × 90 d, 1 h × 2 y, saved in place; file
+  version 4 = with the CPU temperature, a version 3 file is carried over and
+  kept as `stats.bin.v3` for an older build), settings (one parser:
   `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
   backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
-  POSTs only from `[web] settings_from`, no foreign Origin.
+  POSTs only from `[web] settings_from`, no foreign Origin. Frequencies show
+  with a space after the MHz (`fmtKhz` in app.js); the charts share one plot
+  frame and one crosshair.
+- **The callsign filter** (`[filter] call=`, `regex=`; the DX cluster's DX
+  filter semantics: substring any case, or a caseless GRegex): a call that
+  does not match is dropped in `take_text` right after the extractor names
+  it (`SkimPipelineConfig.call_pass`, NULL = byte-identical), so it never
+  reaches the station table, the stats, the map or any feed; `peer_spot` and
+  `hub_spot` hold peers' and workers' spots to it.
 - **Exit codes are the service contract:** 0 stopped, 2 bad config, 3 no
   free radio / stream lost, 75 restart for a `SKIM_SUPERVISED=1`
   supervisor. `--install-service` (`src/headless/service.c`) writes the
