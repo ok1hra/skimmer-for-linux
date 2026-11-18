@@ -377,14 +377,22 @@ function renderStats() {
   const has = (mm, b) => ['spots', 'active'].some((k) => mm[k][b].some((v) => v != null));
   const stack = (b, f) => modes.map(([l, mm]) =>
     `<div class="ml ${l.toLowerCase()}">${has(mm, b) ? f(mm) : '–'}</div>`).join('');
-  const head = '<tr><th>band</th><th class="l">mode</th><th>spots</th><th>spots / h</th><th>stations appeared</th><th>active (mean)</th>' +
-    '<th>folded</th><th>gate below</th><th>SNR (mean of medians)</th></tr>';
-  $('#stats-table').innerHTML = head + d.bands.map((b) => `<tr><td>${esc(b)}</td>` +
-    `<td class="l">${modes.map(([l]) => `<div class="ml ${l.toLowerCase()}">${l}</div>`).join('')}</td>` +
-    `<td>${stack(b, (mm) => fmt(sum(mm.spots[b])))}</td><td>${stack(b, (mm) => fmt(sum(mm.spots[b]) / hrs, 1))}</td>` +
-    `<td>${stack(b, (mm) => fmt(sum(mm.stations[b])))}</td><td>${stack(b, (mm) => fmt(mean(mm.active[b]), 1))}</td>` +
-    `<td>${stack(b, (mm) => fmt(sum(mm.folded[b])))}</td><td>${stack(b, (mm) => fmt(sum(mm.gate_below[b])))}</td>` +
-    `<td>${stack(b, (mm) => (mean(mm.snr[b]) == null ? '–' : `${fmt(mean(mm.snr[b]))} dB`))}</td></tr>`).join('');
+  // the columns, each with what it counts (the note under the table too)
+  const cols = [
+    ['spots', 'spots sent to the telnet feed in the range', (b, mm) => fmt(sum(mm.spots[b]))],
+    ['spots per hour', 'the spots divided by the hours of the range', (b, mm) => fmt(sum(mm.spots[b]) / hrs, 1)],
+    ['calls decoded', 'calls that came into the band\'s station list — read and validated, spotted or not',
+      (b, mm) => fmt(sum(mm.stations[b]))],
+    ['busy decoders', 'channel decoders reading running text, on average over the range', (b, mm) => fmt(mean(mm.active[b]), 1)],
+    ['SNR', 'the typical SNR of the spots: the median of each minute\'s spots, averaged',
+      (b, mm) => (mean(mm.snr[b]) == null ? '–' : `${fmt(mean(mm.snr[b]))} dB`)],
+  ];
+  $('#stats-table').innerHTML = '<tr><th>band</th><th class="l">mode</th>' +
+    `${cols.map(([n, t]) => `<th title="${esc(t)}">${n}</th>`).join('')}</tr>` +
+    d.bands.map((b) => `<tr><td>${esc(b)}</td>` +
+      `<td class="l">${modes.map(([l]) => `<div class="ml ${l.toLowerCase()}">${l}</div>`).join('')}</td>` +
+      cols.map(([, , f]) => `<td>${stack(b, (mm) => f(b, mm))}</td>`).join('') + '</tr>').join('');
+  $('#stats-cols').innerHTML = cols.map(([n, t]) => `<b>${n}</b> = ${esc(t)}`).join(' · ');
 }
 
 tabs.stats = {
