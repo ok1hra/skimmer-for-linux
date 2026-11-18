@@ -48,9 +48,11 @@
  *            spot, feed line, RBN line, map dot or count; peers' and
  *            workers' spots are held to it too
  *            mycall=true also drops this station's own call ([feed] call)
- *            and every call within mycall_diff edits of it (default 2: a
- *            character other, missing or extra counts one) — the busts the
- *            skimmer makes of its own transmissions
+ *            and every call with up to mycall_diff changes against it
+ *            (default 2), compared place by place: a letter other, or one
+ *            missing at the end (a cut call), counts one — the letters keep
+ *            their places, so a call read backwards differs in all; the
+ *            busts the skimmer makes of its own transmissions
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -222,7 +224,8 @@ char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt);
  * call to compare with). */
 gboolean skim_hd_config_filter_on(const SkimHdConfig *cfg);
 
-/* Edit distance (Levenshtein) of two calls, any case. */
+/* Changes between two calls, any case, place by place (a letter other, or
+ * missing at the end, counts one). */
 guint skim_hd_call_distance(const char *a, const char *b);
 
 /* Does the call pass [filter]? (TRUE without one.) Thread-safe. */

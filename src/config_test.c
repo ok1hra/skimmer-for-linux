@@ -312,21 +312,24 @@ int main(void) {
           skim_hd_config_call_pass(&c, "OK1HRA") && !skim_hd_config_call_pass(&c, "OKAB"));
     skim_hd_config_clear(&c);
     /* the own call's filter: [feed] call and the calls within mycall_diff edits */
-    check("distance: OK1HRA–OK1HRB 1, –OK1HR 1, –OK1BR 2, –OK2HRB 2, –DL1ABC 5",
+    check("changes place by place: OK1HRA–OK1HRB 1, –OK1HR (cut) 1, –OK1H 2, –OK2HRB 2, –OK1BR 2, "
+          "–OK1RA 3, backwards ARH1KO 6, –DL1ABC 5",
           skim_hd_call_distance("OK1HRA", "OK1HRB") == 1 && skim_hd_call_distance("OK1HRA", "ok1hr") == 1 &&
-          skim_hd_call_distance("OK1HRA", "OK1BR") == 2 && skim_hd_call_distance("OK1HRA", "OK2HRB") == 2 &&
-          skim_hd_call_distance("OK1HRA", "DL1ABC") == 5);
+          skim_hd_call_distance("OK1HRA", "OK1H") == 2 && skim_hd_call_distance("OK1HRA", "OK2HRB") == 2 &&
+          skim_hd_call_distance("OK1HRA", "OK1BR") == 2 && skim_hd_call_distance("OK1HRA", "OK1RA") == 3 &&
+          skim_hd_call_distance("OK1HRA", "ARH1KO") == 6 && skim_hd_call_distance("OK1HRA", "DL1ABC") == 5);
     check("mycall on: not in force without a [feed] call",
           parse(&c, "[bands]\n20m=14045500\n[filter]\nmycall=true\n", NULL) &&
           !skim_hd_config_filter_on(&c) && skim_hd_config_call_pass(&c, "OK1HRA"));
     skim_hd_config_clear(&c);
-    check("mycall on, OK1HRA, default 2: drops OK1HRA OK1HRB OK1HR OK2HRB OK1HRA/P (and OK1RR, OK1BR: 2 off), passes OK2ABC DL1ABC",
+    check("mycall on, OK1HRA, default 2: drops OK1HRA OK1HRB OK1HR OK2HRB OK1HRA/P (and OK1RR, OK1BR: 2 off), passes OK2ABC DL1ABC ARH1KO OK1RA",
           parse(&c, "[bands]\n20m=14045500\n[feed]\ncall=OK1HRA\n[filter]\nmycall=true\n", NULL) &&
           c.filter_mycall_diff == 2 && skim_hd_config_filter_on(&c) &&
           !skim_hd_config_call_pass(&c, "OK1HRA") && !skim_hd_config_call_pass(&c, "OK1HRB") &&
           !skim_hd_config_call_pass(&c, "OK1HR") && !skim_hd_config_call_pass(&c, "OK2HRB") &&
           !skim_hd_config_call_pass(&c, "OK1HRA/P") && !skim_hd_config_call_pass(&c, "OK1RR") &&
           !skim_hd_config_call_pass(&c, "OK1BR") && skim_hd_config_call_pass(&c, "OK2ABC") &&
+          skim_hd_config_call_pass(&c, "ARH1KO") && skim_hd_config_call_pass(&c, "OK1RA") &&
           skim_hd_config_call_pass(&c, "DL1ABC"));
     skim_hd_config_clear(&c);
     check("mycall_diff=0: only the call itself (and with a /suffix)",

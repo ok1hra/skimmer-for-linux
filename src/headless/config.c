@@ -100,8 +100,8 @@ static const char DEFAULT_CONFIG[] =
   "# regex=true a regular expression (any case), e.g. ^(OK|OL)|/P$\n"
   "call=\nregex=false\n"
   "# mycall=true drops this station's own call ([feed] call) and the calls\n"
-  "# within mycall_diff characters of it (other, missing or extra) — the\n"
-  "# busts of its own transmissions\n"
+  "# with up to mycall_diff changes against it, place by place (a letter\n"
+  "# other, or missing from a cut call) — the busts of its own transmissions\n"
   "mycall=false\nmycall_diff=2\n"
   "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
   "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
@@ -138,26 +138,20 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   memset(cfg, 0, sizeof(*cfg));
 }
 
+/* Position by position: each place where the two differ counts one, and so
+ * does each letter one of them lacks at the end (a cut call) — the letters
+ * keep their places, so a call read backwards differs in all of them. */
 guint skim_hd_call_distance(const char *a, const char *b) {
   const gsize n = strlen(a), m = strlen(b);
-  guint row[64], prev;
-  if (n >= G_N_ELEMENTS(row) || m >= G_N_ELEMENTS(row)) { return G_MAXUINT; }
-  for (gsize j = 0; j <= m; j++) { row[j] = (guint)j; }
-  for (gsize i = 1; i <= n; i++) {
-    prev = row[0];
-    row[0] = (guint)i;
-    for (gsize j = 1; j <= m; j++) {
-      const guint cur = row[j];
-      const guint sub = prev + (g_ascii_toupper(a[i - 1]) != g_ascii_toupper(b[j - 1]));
-      row[j] = MIN(MIN(row[j] + 1, row[j - 1] + 1), sub);
-      prev = cur;
-    }
+  guint d = 0;
+  for (gsize i = 0; i < MAX(n, m); i++) {
+    d += i >= n || i >= m || g_ascii_toupper(a[i]) != g_ascii_toupper(b[i]);
   }
-  return row[m];
+  return d;
 }
 
 /* The own call's filter: the call, or any of its /-parts (OK1HRA/P, F/OK1HRA),
- * within the distance of the own call's base (its longest part). */
+ * within mycall_diff changes of the own call's base (its longest part). */
 static gboolean near_mycall(const SkimHdConfig *cfg, const char *call) {
   char **mine = g_strsplit(cfg->feed_call, "/", -1);
   const char *base = mine[0];
