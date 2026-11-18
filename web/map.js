@@ -3,8 +3,9 @@
 // data): an azimuthal equidistant projection — distance and bearing true from
 // the centre — land, borders, DXCC prefixes, the grey line, range rings.
 //
-// The zoom fits the spots shown (the farthest but the last tenth); the wheel
-// takes over, AUTO gives it back. The centre is the station's locator unless
+// AUTO zooms to about 2000 km and widens as far as the farthest spot shown,
+// so the end stations stay on the map (a ladder of steps, so it does not
+// twitch at every refresh); the wheel takes over, AUTO gives it back. The centre is the station's locator unless
 // another is typed in. The cursor reads azimuth, distance and locator.
 // Per-viewer choices (layers, centre, zoom) are kept in localStorage.
 'use strict';
@@ -205,10 +206,12 @@ const SkMap = (() => {
   }
 
   // ---- drawing ---------------------------------------------------------------------------
+  const ZOOM_STEPS = [2000, 2500, 3000, 3500, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 14000, 16000, 18000, 20000];
   function autoZoom() {
     const c = centerLL();
-    const ds = spots.filter((s) => s.where).map((s) => geo(c, s.where.lat, s.where.lon).km).sort((a, b) => a - b);
-    return ds.length ? Math.min(20000, Math.max(2000, ds[Math.floor(ds.length * 0.9)] * 1.25)) : 12000;
+    const far = Math.max(0, ...spots.filter((s) => s.where).map((s) => geo(c, s.where.lat, s.where.lon).km));
+    const want = far * 1.1 + 200;                   // the farthest dot and its call inside the rim
+    return ZOOM_STEPS.find((z) => z >= want) || 20000;
   }
   function draw() {
     if (!el) return;
@@ -279,7 +282,7 @@ const SkMap = (() => {
     el.innerHTML = `
       <div class="map-bar">
         <span class="seg">
-          <button type="button" data-o="auto" title="fit the spots shown">auto</button>
+          <button type="button" data-o="auto" title="about 2,000 km, wider as far as the farthest spot shown">auto</button>
           <button type="button" data-o="grayline">grayline</button>
           <button type="button" data-o="borders">borders</button>
           <button type="button" data-o="prefixes">DXCC</button>
@@ -291,7 +294,7 @@ const SkMap = (() => {
         <span class="mut" data-k="zoom"></span>
       </div>
       <div class="map-canvas"><canvas></canvas><div class="map-read" hidden></div></div>
-      <div class="map-foot"><span class="map-count mut"></span><span class="mut">wheel: zoom · auto: fit the spots</span></div>`;
+      <div class="map-foot"><span class="map-count mut"></span><span class="mut">wheel: zoom · auto: 2,000 km or out to the farthest spot</span></div>`;
     for (const k of ['grayline', 'borders', 'prefixes', 'lines', 'calls']) {
       el.querySelector(`[data-o=${k}]`).classList.toggle('on', !!opt[k]);
     }
