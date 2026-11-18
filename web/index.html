@@ -86,7 +86,10 @@
       <div class="legend" id="legend-spots"></div>
       <div class="chart" id="chart-spots"></div>
       <div class="timebar" id="timebar" hidden>
-        <input type="range" id="t-end" aria-label="the window in time">
+        <div class="t-track">
+          <div id="t-over" class="t-over" title="the whole history — the frame is the window the charts show; drag it or click"></div>
+          <input type="range" id="t-end" aria-label="the window in time">
+        </div>
         <span id="t-label" class="mut"></span>
         <button type="button" class="small" id="t-now">now</button>
       </div>

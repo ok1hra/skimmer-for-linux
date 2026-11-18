@@ -137,7 +137,11 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .legend i.ramp { width: 46px; }
 .legend i.line { width: 14px; height: 0; border-top: 2px solid var(--fg); opacity: .75; }
 .timebar { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
-.timebar input[type=range] { flex: 1 1 320px; accent-color: var(--hot); padding: 0; border: 0; background: none; }
+.timebar .t-track { flex: 1 1 320px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.timebar input[type=range] { width: 100%; accent-color: var(--hot); padding: 0; border: 0; background: none; margin: 0; }
+.t-over { padding: 0 8px; cursor: ew-resize; touch-action: none; user-select: none; }
+.t-over svg { display: block; width: 100%; background: var(--deep); }
+.t-over .win { fill: rgba(57,217,138,.10); stroke: var(--hot); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .timebar #t-label { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 16em; }
 .timebar button { margin-top: 0; }
 .tip { position: absolute; pointer-events: none; background: var(--deep); border: 1px solid var(--ln2);

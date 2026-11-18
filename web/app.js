@@ -408,7 +408,11 @@ tabs.stats = {
 };
 // The time slider: shown while the range is shorter than the history kept;
 // right = now, left = as far back as the oldest record. All charts follow.
+// Above it, the whole history in small (spots per bucket, CW + RTTY) with the
+// window the charts show as a frame that moves with the slider while it is
+// dragged — and the frame can be dragged (or the history clicked) directly.
 function sliderStep() { return stats.hours <= 24 ? 1 : stats.hours <= 168 ? 6 : stats.hours <= 2160 ? 24 : 24 * 7; }
+const over = { key: '', at: 0, data: null, maxOff: 0, busy: false };
 function renderTimebar(d) {
   const bar = $('#timebar'), inp = $('#t-end');
   const nowS = Math.floor(Date.now() / 1000);
@@ -418,8 +422,58 @@ function renderTimebar(d) {
   const step = sliderStep(), maxOff = Math.floor(back / step) * step;
   inp.min = String(-maxOff); inp.max = '0'; inp.step = String(step);
   const off = stats.end ? Math.round((nowS - stats.end) / 3600) : 0;
-  if (document.activeElement !== inp) inp.value = String(-Math.min(off, maxOff));
-  timeLabel(off);
+  if (document.activeElement !== inp && !over.drag) inp.value = String(-Math.min(off, maxOff));
+  over.maxOff = maxOff;
+  timeLabel(-Number(inp.value));
+  // the history the slider spans: fetched once per range, again after 5 min
+  const key = `${maxOff + stats.hours}`;
+  if ((over.key !== key || Date.now() - over.at > 300000) && !over.busy) {
+    over.busy = true;
+    getJSON(`stats.json?hours=${Math.min(17520, maxOff + stats.hours)}`)
+      .then((o) => { over.data = o; over.key = key; over.at = Date.now(); drawOver(); })
+      .catch(() => {})
+      .finally(() => { over.busy = false; });
+  }
+  drawOver();
+}
+// the overview's time axis: from the slider's leftmost window start to now
+function overSpan() {
+  const nowS = Math.floor(Date.now() / 1000);
+  return { t0: nowS - (over.maxOff + stats.hours) * 3600, t1: nowS };
+}
+function drawOver() {
+  const box = $('#t-over');
+  if (!box || $('#timebar').hidden) return;
+  const W = Math.max(200, box.clientWidth), H = 40;
+  const { t0, t1 } = overSpan(), xt = (t) => ((t - t0) / (t1 - t0)) * W;
+  let bars = '';
+  const o = over.data;
+  if (o) {
+    const tot = Array.from({ length: o.n }, (_, i) => {
+      let v = 0, any = false;
+      for (const mm of [o.cw, o.rtty]) {
+        if (!mm) continue;
+        for (const b of o.bands) { const x = mm.spots[b][i]; if (x != null) { v += x; any = true; } }
+      }
+      return any ? v : null;
+    });
+    const mx = Math.max(1, ...tot.filter((v) => v != null));
+    const bw = Math.max(1, xt(o.t0 + o.step_min * 60) - xt(o.t0));
+    tot.forEach((v, i) => {
+      if (!v) return;
+      const x = xt(o.t0 + i * o.step_min * 60), h = Math.max(1, (H - 4) * Math.sqrt(v / mx));
+      if (x + bw < 0 || x > W) return;
+      bars += `M${x.toFixed(1)},${H}v${(-h).toFixed(1)}h${bw.toFixed(1)}v${h.toFixed(1)}Z`;
+    });
+  }
+  const off = -Number($('#t-end').value), end = t1 - off * 3600, start = end - stats.hours * 3600;
+  const a = Math.max(0, xt(start)), b = Math.min(W, xt(end));
+  box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" preserveAspectRatio="none">` +
+    `<path d="${bars}" fill="var(--axis)"/>` +
+    `<rect x="0" y="0" width="${a.toFixed(1)}" height="${H}" fill="var(--panel)" opacity=".55"/>` +
+    `<rect x="${b.toFixed(1)}" y="0" width="${(W - b).toFixed(1)}" height="${H}" fill="var(--panel)" opacity=".55"/>` +
+    `<rect class="win" x="${a.toFixed(1)}" y="0.5" width="${Math.max(2, b - a).toFixed(1)}" height="${H - 1}"/>` +
+    `${o ? '' : `<text x="${W / 2}" y="${H / 2 + 4}" text-anchor="middle" font-size="11" fill="var(--tick)">loading the history…</text>`}</svg>`;
 }
 function timeLabel(offH) {
   const nowS = Math.floor(Date.now() / 1000), end = nowS - offH * 3600, start = end - stats.hours * 3600;
@@ -427,12 +481,35 @@ function timeLabel(offH) {
   $('#t-label').textContent = offH ? `${f(start)} – ${f(end)} UTC` : `the last ${stats.hours >= 48 ? `${stats.hours / 24} days` : `${stats.hours} h`}, up to now`;
   $('#t-now').disabled = !offH;
 }
-$('#t-end').addEventListener('input', (e) => timeLabel(-Number(e.target.value)));
+$('#t-end').addEventListener('input', (e) => { timeLabel(-Number(e.target.value)); drawOver(); });
 $('#t-end').addEventListener('change', (e) => {
   const off = -Number(e.target.value);
   stats.end = off ? Math.floor(Date.now() / 1000) - off * 3600 : null;
   tabs.stats.refresh(true);
 });
+// the overview: press or drag puts the window's middle under the pointer
+function overPick(e) {
+  const box = $('#t-over'), r = box.getBoundingClientRect(), { t0, t1 } = overSpan();
+  const t = t0 + ((e.clientX - r.left) / r.width) * (t1 - t0) + (stats.hours * 3600) / 2;
+  const step = sliderStep();
+  const off = Math.min(over.maxOff, Math.max(0, Math.round((t1 - t) / 3600 / step) * step));
+  $('#t-end').value = String(-off);
+  timeLabel(off);
+  drawOver();
+}
+$('#t-over').addEventListener('pointerdown', (e) => {
+  over.drag = true;
+  e.currentTarget.setPointerCapture(e.pointerId);
+  overPick(e);
+});
+$('#t-over').addEventListener('pointermove', (e) => { if (over.drag) overPick(e); });
+const overDone = () => {
+  if (!over.drag) return;
+  over.drag = false;
+  $('#t-end').dispatchEvent(new Event('change'));
+};
+$('#t-over').addEventListener('pointerup', overDone);
+$('#t-over').addEventListener('pointercancel', overDone);
 $('#t-now').addEventListener('click', () => { stats.end = null; tabs.stats.refresh(true); });
 
 for (const b of document.querySelectorAll('#range button')) {
