@@ -156,6 +156,18 @@ gboolean skim_spot_out_emit(SkimSpotOut *s, const char *call, const char *mode,
   return TRUE;
 }
 
+void skim_spot_out_prune(SkimSpotOut *s) {
+  const gint64 now = so_now(s);
+  const gint64 keep = (gint64)s->respot_s * G_USEC_PER_SEC;
+  GHashTableIter it;
+  gpointer val;
+  g_hash_table_iter_init(&it, s->memo);
+  while (g_hash_table_iter_next(&it, NULL, &val)) {
+    const SpotMemo *m = val;
+    if (now - m->at >= keep || now < m->at) { g_hash_table_iter_remove(&it); }
+  }
+}
+
 void skim_spot_out_delete(SkimSpotOut *s, const char *call) {
   if (!call || !call[0])
     return;

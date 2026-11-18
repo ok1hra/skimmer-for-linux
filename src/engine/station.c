@@ -25,6 +25,7 @@ struct _SkimStationTable {
   SkimStationGoneFunc gone_cb;
   gpointer            gone_user;
   double              snap_hz;  /* SKIM_STATION_SNAP_HZ_DEFAULT; 0 = off */
+  gint64              hold_us;  /* SKIM_STATION_HOLD_S_DEFAULT; 0 = off  */
 };
 
 SkimStationTable *skim_station_table_new(void) {
@@ -33,7 +34,14 @@ SkimStationTable *skim_station_table_new(void) {
   const char *e = g_getenv("SKIM_ST_SNAP");
   skim_station_table_set_snap_hz(t, e && e[0] ? g_ascii_strtod(e, NULL)
                                               : SKIM_STATION_SNAP_HZ_DEFAULT);
+  const char *h = g_getenv("SKIM_ST_HOLD");
+  skim_station_table_set_hold_s(t, h && h[0] ? g_ascii_strtod(h, NULL)
+                                             : SKIM_STATION_HOLD_S_DEFAULT);
   return t;
+}
+
+void skim_station_table_set_hold_s(SkimStationTable *t, double s) {
+  t->hold_us = s > 0 ? (gint64)(s * G_USEC_PER_SEC) : 0;
 }
 
 void skim_station_table_set_snap_hz(SkimStationTable *t, double hz) {
@@ -311,7 +319,18 @@ const SkimStation *skim_station_table_report(SkimStationTable *t,
     /* Same call far away — the transmitter MOVED (S&P hop / QSY). A
      * confident report relocates the record; a one-off garble does not. */
     SkimStation *e = list->data;
-    if (st->score >= SKIM_STATION_QSY_SCORE) {
+    if (st->score >= SKIM_STATION_QSY_SCORE && t->hold_us > 0 &&
+        st->last_heard - e->pos_us <= t->hold_us) {
+      /* its place spoke within the hold: the station is still there, this
+       * is it answering elsewhere (or its call in somebody's exchange) */
+      if (st_debug()) {
+        g_printerr("station: HOLD %s at %.0f Hz, not %.0f (%.0f s ago)\n",
+                   e->call, e->freq_hz, st->freq_hz,
+                   (st->last_heard - e->pos_us) / 1e6);
+      }
+      e->last_heard = MAX(e->last_heard, st->last_heard);
+      e->reports++;
+    } else if (st->score >= SKIM_STATION_QSY_SCORE) {
       if (st_debug()) {
         g_printerr("station: QSY %s %.0f -> %.0f Hz\n", e->call, e->freq_hz,
                    st->freq_hz);

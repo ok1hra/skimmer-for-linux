@@ -57,6 +57,9 @@ gboolean skim_spot_out_emit(SkimSpotOut *s, const char *call, const char *mode,
 /* The station is gone (TTL / takeover): pull its label off the panadapter
  * (SPOT_DELETE) and forget its dedup memo, so a comeback re-spots at once. */
 void skim_spot_out_delete(SkimSpotOut *s, const char *call);
+/* Forget memo entries older than the re-spot interval — they no longer
+ * hold anything back (a feed that keeps its memo past the station table). */
+void skim_spot_out_prune(SkimSpotOut *s);
 
 /* Spots actually emitted since creation. */
 guint64 skim_spot_out_count(const SkimSpotOut *s);

@@ -19,6 +19,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -76,6 +77,14 @@
  * SPOT_DELETEd). 120 s rides out one side of a QSO; the old 600 s kept a
  * contest band map full of stations long gone (Richard, 2026-07-15). */
 #define STATION_TTL_US (120u * G_USEC_PER_SEC)
+/* The RBN feed's dedup memo outlives the station table (SKIM_RBN_MEMO=1/0):
+ * the 120 s TTL above is about panadapter labels. Forgetting the memo with
+ * the record re-spotted a station that merely paused for two minutes on the
+ * frequency it was spotted on minutes before — live 2026-11-17, 260 of 828
+ * spots in 3 h against CW Skimmer Server's 68 of 1991, median gap between
+ * spots of a call 5 min against its 10. With the memo kept, a comeback
+ * re-spots only after RBN_RESPOT_S or a move of RBN_QSY_HZ. */
+#define RBN_MEMO_KEEP_DEFAULT FALSE
 /* Per-signal frequency lock. The per-decode tone estimate breathes (noise
  * pulls a band-edge estimate toward the channel centre, arbitration swaps
  * between overlapped channels) and every consumer downstream — decode log,
@@ -189,6 +198,7 @@ struct _SkimPipeline {
   SkimStationTable *stations;
   SkimSpotOut      *spots;
   SkimSpotOut      *rbn_spots;                 /* RBN policy → cfg.rbn feed  */
+  gboolean          rbn_memo_keep;             /* RBN_MEMO_KEEP_DEFAULT      */
   double            rbn_min;
   guint             rbn_hearings;              /* feed gate: copies read     */
   gint64            rbn_settle_us;             /* feed hold-back; 0 = none   */
@@ -462,6 +472,8 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     /* Lives for the pipeline's whole life (not per-connection like the TCI
      * sink): the dedup memo rides out reconnects, no re-spot burst. */
     p->rbn_spots = skim_spot_out_new(NULL);
+    const char *mk = g_getenv("SKIM_RBN_MEMO");
+    p->rbn_memo_keep = mk && mk[0] ? atoi(mk) != 0 : RBN_MEMO_KEEP_DEFAULT;
     skim_spot_out_set_clock(p->rbn_spots, pipe_clock_cb, p);
     skim_spot_out_set_policy(p->rbn_spots, RBN_RESPOT_S, RBN_QSY_HZ,
                              RBN_MAX_PER_S);
@@ -626,7 +638,9 @@ static void station_gone_fwd(const SkimStation *st, gpointer user) {
   if (p->spots) { skim_spot_out_delete(p->spots, st->call); }
   /* No delete on the cluster wire — just forget the memo, so a comeback
    * after the TTL re-spots to the RBN at once. */
-  if (p->rbn_spots) { skim_spot_out_delete(p->rbn_spots, st->call); }
+  if (p->rbn_spots && !p->rbn_memo_keep) {
+    skim_spot_out_delete(p->rbn_spots, st->call);
+  }
   /* A call still held back dies with its record — that is the point of the
    * hold: a torn "IZ3N" evicted by "IZ3NYG" never reaches the wire. */
   if (p->rbn_pending && g_hash_table_remove(p->rbn_pending, st->call) &&
@@ -1738,6 +1752,7 @@ static gpointer engine_thread(gpointer data) {
     if (now - p->last_prune > PRUNE_EVERY_US) {
       p->last_prune = now;
       skim_station_table_prune(p->stations, now, STATION_TTL_US);
+      if (p->rbn_spots && p->rbn_memo_keep) { skim_spot_out_prune(p->rbn_spots); }
     }
     rbn_settle_tick(p, now);
     tap_clock(p);
@@ -1864,6 +1879,7 @@ void skim_pipeline_feed(SkimPipeline *p, const float *iq, guint nframes,
   if (p->stream_us - p->last_prune > PRUNE_EVERY_US) {
     p->last_prune = p->stream_us;
     skim_station_table_prune(p->stations, p->stream_us, STATION_TTL_US);
+    if (p->rbn_spots && p->rbn_memo_keep) { skim_spot_out_prune(p->rbn_spots); }
   }
   rbn_settle_tick(p, p->stream_us);
   tap_clock(p);

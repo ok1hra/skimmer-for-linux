@@ -453,6 +453,44 @@ int main(void) {
     skim_station_table_free(t);
   }
 
+  /* -- a transmitter is in one place at a time: the hold (2026-11-18) ------- */
+  {
+    /* live, CWT: PA3AAV calling on 3540.9, its call also read 4.9 kHz down
+     * on SP3FSM's frequency ("PA3AAV GE GERT" after "CQ CWT SP3FSM", taken
+     * for a CQ) — the record and the feed flipped every second */
+    const gint64 S = G_USEC_PER_SEC;
+    SkimStation run = { .call = "PA3AAV", .mode = "CW", .freq_hz = 3540900,
+                        .snr_db = 20, .score = 1.0, .speed = 30, .cq = TRUE };
+    SkimStation sp = run;
+    sp.freq_hz = 3536000;
+    sp.snr_db = 23;
+#define AT(r, sec) ((r).first_heard = (r).last_heard = (r).heard_us = (sec) * S, &(r))
+    SkimStationTable *t = skim_station_table_new();
+    skim_station_table_set_hold_s(t, 0);       /* off: every far report moves */
+    skim_station_table_report(t, AT(run, 1));
+    const SkimStation *m = skim_station_table_report(t, AT(sp, 5));
+    check("hold off: the far report 4 s later relocates the record",
+          fabs(m->freq_hz - 3536000) < 1);
+    skim_station_table_free(t);
+
+    t = skim_station_table_new();
+    skim_station_table_set_hold_s(t, 30);
+    skim_station_table_report(t, AT(run, 1));
+    m = skim_station_table_report(t, AT(sp, 5));
+    check("hold 30 s: read on its run 4 s ago — the far report leaves it there",
+          fabs(m->freq_hz - 3540900) < 1);
+    skim_station_table_report(t, AT(run, 20));  /* its run confirms again     */
+    m = skim_station_table_report(t, AT(sp, 45));
+    check("hold 30 s: confirmed 25 s ago — still held",
+          fabs(m->freq_hz - 3540900) < 1);
+    m = skim_station_table_report(t, AT(sp, 51));
+    check("hold 30 s: its run silent 31 s — a real QSY relocates it",
+          fabs(m->freq_hz - 3536000) < 1);
+    check("hold: still one record for the call", skim_station_table_size(t) == 1);
+#undef AT
+    skim_station_table_free(t);
+  }
+
   /* -- clip or glue: which of two calls on one frequency is the station (gh#21) -- */
   {
     const gint64 S = G_USEC_PER_SEC;
@@ -629,6 +667,26 @@ int main(void) {
     check("Exact (grid off) follows the raw estimate, no hysteresis",
           skim_spot_out_emit(so, "OK1BR", "CW", 7032063, 25, 20) &&
               u_hz[u_spots - 1] == 7032063.0);
+    skim_spot_out_free(so);
+  }
+
+  /* -- the RBN memo kept past the station table: prune keeps what holds back -- */
+  {
+    static gint64 t_us;
+    t_us = G_USEC_PER_SEC;
+    SkimSpotOut *so = skim_spot_out_new(NULL);
+    skim_spot_out_set_sink(so, u_sink, NULL);
+    skim_spot_out_set_policy(so, 600, 100.0, 100);
+    skim_spot_out_set_clock(so, u_now, &t_us);
+    skim_spot_out_emit(so, "OK1BR", "CW", 7032000, 25, 20);
+    t_us += 300 * (gint64)G_USEC_PER_SEC;
+    skim_spot_out_prune(so);
+    check("prune keeps a memo younger than the re-spot interval",
+          !skim_spot_out_emit(so, "OK1BR", "CW", 7032040, 25, 20));
+    t_us += 301 * (gint64)G_USEC_PER_SEC;
+    skim_spot_out_prune(so);
+    check("past the interval the call goes out again",
+          skim_spot_out_emit(so, "OK1BR", "CW", 7032040, 25, 20));
     skim_spot_out_free(so);
   }
 

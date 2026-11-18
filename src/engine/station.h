@@ -45,6 +45,16 @@ G_BEGIN_DECLS
  * every step of 100 Hz or more (docs/LIVE-AIR.md, 2026-11-18). */
 #define SKIM_STATION_SNAP_HZ_DEFAULT 100.0
 
+/* A transmitter is in one place at a time. Beyond SAMECALL_HZ a confident
+ * report relocates the record only once its current place has gone this
+ * long without a fresh read (pos_us; skim_station_table_set_hold_s, 0 =
+ * off: every confident far report relocates). In a contest a station runs
+ * on one frequency and answers others elsewhere — and a runner sending its
+ * call there ("PA3AAV GE GERT" after "CQ CWT SP3FSM") can even look like a
+ * CQ: without the hold the record and the feed ping-pong between the two
+ * every second (live 2026-11-18, CWT). A real QSY waits out the hold. */
+#define SKIM_STATION_HOLD_S_DEFAULT 0.0
+
 typedef struct {
   char    call[16];
   char    mode[8];      /* "CW", "RTTY", "PSK31" ... */
@@ -76,6 +86,8 @@ SkimStationTable *skim_station_table_new(void);
 /* See SKIM_STATION_SNAP_HZ_DEFAULT. A new table takes SKIM_ST_SNAP (Hz)
  * from the environment when set, else the default. */
 void skim_station_table_set_snap_hz(SkimStationTable *t, double hz);
+/* See SKIM_STATION_HOLD_S_DEFAULT; a new table takes SKIM_ST_HOLD (s). */
+void skim_station_table_set_hold_s(SkimStationTable *t, double s);
 void              skim_station_table_free(SkimStationTable *t);
 
 /* A record left the table (TTL prune, or its frequency was taken over by a
