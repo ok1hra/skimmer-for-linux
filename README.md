@@ -308,10 +308,21 @@ core for every channel it is decoding.
 feed, every band with its newest stations, the feed policy, the learned gate
 and the `SKIM_*` switches), **Statistics** (seven days, one record a minute,
 kept across restarts in `~/.local/state/skimmer-for-linux/stats.bin`: spots
-per hour by band, active decoders, CPU, CPU temperature, IQ loss, totals), **Settings** and
+per hour by band, active decoders, CPU, CPU temperature, IQ loss, totals), **Waterfall**,
+**Settings** and
 **Log**. It needs no internet; the JSON behind it is `/status.json`,
 `/stats.json`, `/api/log` and `/api/config` (and `POST /api/deepcw`, the
 model fetch).
+
+**Waterfall** shows one received band, live, the height of the page: the
+whole band (96 kHz) or zoomed in (the span, the mouse wheel around the
+cursor, a drag to move), at 1 to 20 rows a second, with a frequency scale,
+the spectrum's envelope as an option, and the spotted calls upright where
+they were heard. The skimmer computes a band only while someone watches it
+(about 0.3 % of a core) and sends each viewer just its window, a byte a
+pixel (about 7 kB/s at 1,400 px and 5 rows a second, less with the
+WebSocket's compression); each row is acknowledged, so a slow link over
+the internet gets fewer rows rather than a backlog. Eight viewers at most.
 
 **Settings** edits the radio, the bands (order, centre, CW engine, RTTY), the
 feed's call and port, the callsign filter, the spot archive, the status

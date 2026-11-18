@@ -325,6 +325,15 @@ skimmer_archive_test = executable('skimmer-archive-test',
 )
 test('archive', skimmer_archive_test, timeout : 30)
 
+# The waterfall's DSP: a tone lands in its pixel at its level, zoom, edges.
+skimmer_waterfall_test = executable('skimmer-waterfall-test',
+  ['src/waterfall_test.c', 'src/headless/waterfall.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps + [soup_dep],
+  link_with : engine_lib,
+)
+test('waterfall', skimmer_waterfall_test, timeout : 30)
+
 # Golden gate: real-air IQ + decode-tap slices through the whole engine with
 # no SKIM_* switches — every output byte-identical to tests/golden/
 # expected.sha256. Inputs live outside git (tests/golden/README.md); without
@@ -366,6 +375,7 @@ headless_sources = files(
   'src/headless/source_mock.c',     # … synthetic CW (the headless gate)
   'src/headless/stats.c',           # the 7-day per-minute history
   'src/headless/switches.c',        # the SKIM_* switches a start runs with
+  'src/headless/waterfall.c',       # the page's waterfall (only while watched)
   'src/headless/web.c',             # the web page (libsoup 3)
 )
 

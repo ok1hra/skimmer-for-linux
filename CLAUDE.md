@@ -128,7 +128,7 @@ here; what was done and why is in git.
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 24 gates** (DeepCW skips without the model, golden skips
+- **`meson test` = 25 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).
 - **Hub, workers, peers** (`docs/HUB.md`): the PC with the radio passes the
@@ -151,6 +151,12 @@ here; what was done and why is in git.
   POSTs only from `[web] settings_from`, no foreign Origin. Frequencies show
   with a space after the MHz (`fmtKhz` in app.js); the charts share one plot
   frame and one crosshair.
+- **The waterfall** (`src/headless/waterfall.c`, `web/waterfall.js`, WS
+  `/ws/waterfall`): `rx_iq_cb` pushes every band's IQ, which returns at once
+  while nobody watches it; a watched band runs FFTs of 8192 (16384 at
+  192 kHz), half overlapping, into a 32-frame ring; each viewer asks for
+  band/lo/hi/w/rate and gets bytes (0.5 dB from -160 dBFS), acks each row
+  (no ack → fewer rows). Gate `waterfall`: a tone's pixel and level.
 - **The spot archive** (`[archive] dir=`, `src/headless/archive.c`): every
   spot the feed tap sees, a gzip file a UTC day (`YYYYMMDD-spots.gz`, TSV),
   one more gzip member a minute from the main loop; a refused disk keeps

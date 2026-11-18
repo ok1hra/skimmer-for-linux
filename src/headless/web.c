@@ -181,6 +181,22 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
   reply_error(msg, SOUP_STATUS_METHOD_NOT_ALLOWED, "method not allowed");
 }
 
+static void ws_waterfall(SoupServer *srv, SoupServerMessage *msg, const char *path,
+                         SoupWebsocketConnection *conn, gpointer user) {
+  (void)srv; (void)path;
+  SkimHdWeb *w = user;
+  GSocketAddress *sa = soup_server_message_get_remote_address(msg);
+  char *peer = G_IS_INET_SOCKET_ADDRESS(sa)
+      ? g_inet_address_to_string(g_inet_socket_address_get_address(G_INET_SOCKET_ADDRESS(sa)))
+      : g_strdup("a viewer");
+  if (w->hooks.waterfall) {
+    w->hooks.waterfall(conn, peer, w->hooks.user);
+  } else {
+    soup_websocket_connection_close(conn, SOUP_WEBSOCKET_CLOSE_NORMAL, "no waterfall");
+  }
+  g_free(peer);
+}
+
 SkimHdWeb *skim_hd_web_new(guint16 port, const char *const *settings_from,
                            const SkimHdWebHooks *hooks, GError **error) {
   SkimHdWeb *w = g_new0(SkimHdWeb, 1);
@@ -188,6 +204,8 @@ SkimHdWeb *skim_hd_web_new(guint16 port, const char *const *settings_from,
   w->nets = nets_parse(settings_from);
   w->srv = soup_server_new("server-header", "skimmer-headless", NULL);
   soup_server_add_handler(w->srv, NULL, handler, w, NULL);
+  /* the waterfall's rows; permessage-deflate is on by default */
+  soup_server_add_websocket_handler(w->srv, "/ws/waterfall", NULL, NULL, ws_waterfall, w, NULL);
   if (!soup_server_listen_all(w->srv, port, 0, error)) {
     skim_hd_web_free(w);
     return NULL;

@@ -29,6 +29,7 @@ async function getJSON(url) {
 const tabs = {};
 let tab = 'status';
 function show(name) {
+  if (tab !== name && tabs[tab] && tabs[tab].leave) tabs[tab].leave();
   tab = name;
   for (const b of document.querySelectorAll('nav button')) b.classList.toggle('on', b.dataset.tab === name);
   for (const s of document.querySelectorAll('main > section')) s.hidden = s.id !== `tab-${name}`;
@@ -951,6 +952,18 @@ async function checkRollback(d) {
     if (go) go.addEventListener('click', () => restore(b.name));
   } catch (e) { /* the next poll tries again */ }
 }
+
+// ---- waterfall -------------------------------------------------------------------
+// waterfall.js loads after this file (deferred): reach it when the tab opens.
+tabs.waterfall = {
+  enter() { if (typeof Wf !== 'undefined') Wf.enter(); else setTimeout(() => tab === 'waterfall' && Wf.enter(), 300); },
+  leave() { if (typeof Wf !== 'undefined') Wf.leave(); },
+};
+// a hidden window watches nothing: the skimmer stops computing for it
+document.addEventListener('visibilitychange', () => {
+  if (tab !== 'waterfall' || typeof Wf === 'undefined') return;
+  if (document.hidden) Wf.leave(); else Wf.enter();
+});
 
 // ---- log -------------------------------------------------------------------------
 tabs.log = {

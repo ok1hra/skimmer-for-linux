@@ -287,3 +287,18 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 #settings code { font-family: var(--mono); color: var(--fg); }
 .filter-row.mycall { margin-top: 10px; flex-wrap: wrap; gap: 6px; font-size: 14px; }
 .filter-row.mycall input:not([type=checkbox]) { width: 2.6em; text-align: center; }
+
+/* ---- waterfall ---- */
+#tab-waterfall { padding: 8px 18px 0; }
+.wf-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 6px 0 8px; font-size: 12px;
+          letter-spacing: .08em; text-transform: uppercase; color: var(--mut); }
+.wf-bar label { display: inline-flex; align-items: center; gap: 6px; }
+.wf-bar select { font-size: 13px; text-transform: none; letter-spacing: 0; padding: 2px 5px; }
+.wf-bar input[type=range] { width: 90px; accent-color: var(--hot); padding: 0; border: 0; background: none; }
+.wf-bar .wf-read { text-transform: none; letter-spacing: .02em; font-size: 13px; min-width: 14em; font-variant-numeric: tabular-nums; }
+.wf-bar .wf-read b { color: var(--fg); }
+.wf-bar .wf-net { margin-left: auto; text-transform: none; font-variant-numeric: tabular-nums; }
+.wf-spec { display: block; width: 100%; height: 110px; border: 1px solid var(--ln); border-bottom: 0; }
+.wf-scale { display: block; width: 100%; height: 22px; border: 1px solid var(--ln); border-bottom: 0; cursor: ew-resize; }
+.wf-box { border: 1px solid var(--ln); background: #00000c; }
+.wf-box canvas { display: block; width: 100%; cursor: crosshair; touch-action: none; image-rendering: auto; }

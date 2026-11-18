@@ -11,6 +11,7 @@
 <script src="map/states.js" defer></script>
 <script src="map.js" defer></script>
 <script src="dxc.js" defer></script>
+<script src="waterfall.js" defer></script>
 </head>
 <body>
 <header>
@@ -24,6 +25,7 @@
   <nav>
     <button data-tab="status" class="on">Status</button>
     <button data-tab="stats">Statistics</button>
+    <button data-tab="waterfall">Waterfall</button>
     <button data-tab="settings">Settings</button>
     <button data-tab="log">Log</button>
   </nav>
@@ -109,6 +111,25 @@
       <div class="wrap"><table id="stats-table" class="grid"></table></div>
       <p class="mut note" id="stats-cols"></p>
     </details>
+  </section>
+
+  <section id="tab-waterfall" hidden>
+    <div class="wf-bar">
+      <label>band <select id="wf-band"></select></label>
+      <label>span <select id="wf-span" title="the width shown — or the mouse wheel over the waterfall"></select></label>
+      <label>speed <select id="wf-rate" title="rows a second: how fast it flows (and the data it takes)"></select></label>
+      <label title="the dB from black to white">range <input type="range" id="wf-range" min="20" max="90" step="5"></label>
+      <label title="brightness: the floor above or below the noise">floor <input type="range" id="wf-floor" min="-20" max="30" step="1"></label>
+      <label class="chk"><input type="checkbox" id="wf-spec"> spectrum</label>
+      <label class="chk"><input type="checkbox" id="wf-calls"> calls</label>
+      <span class="wf-read" id="wf-read"></span>
+      <span class="wf-net mut" id="wf-net"></span>
+    </div>
+    <canvas id="wf-spec-cv" class="wf-spec" hidden></canvas>
+    <canvas id="wf-scale" class="wf-scale"></canvas>
+    <div id="wf-box" class="wf-box"><canvas id="wf-cv"></canvas></div>
+    <p class="mut note">wheel: zoom around the cursor · drag: move · double click: centre · computed by the skimmer
+      only while this tab is open, and sent at the speed chosen</p>
   </section>
 
   <section id="tab-settings" hidden>

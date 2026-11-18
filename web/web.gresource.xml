@@ -8,6 +8,7 @@
     <file>charts.js</file>
     <file>map.js</file>
     <file>dxc.js</file>
+    <file>waterfall.js</file>
     <file compressed="true">map/map50.js</file>
     <file compressed="true">map/dxcc_prefix_aliases.js</file>
     <file compressed="true">map/states.js</file>

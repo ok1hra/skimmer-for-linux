@@ -74,6 +74,7 @@
 #include "engine/hpsdr_p1.h"
 #include "headless/stats.h"
 #include "headless/switches.h"
+#include "headless/waterfall.h"
 #include "headless/web.h"
 #include "engine/callsign.h"
 #include "engine/decode_deepcw.h"
@@ -186,6 +187,7 @@ typedef struct {
 
   SkimStats *stats;            /* the 7-day history (stats.h)                 */
   SkimHdArchive *archive;      /* [archive]: every spot, a file a day; NULL   */
+  SkimHdWaterfall *wf;         /* the page's waterfall (idle while unwatched) */
   char      *archive_err;      /* the last flush error logged (no repeats)    */
   gint64    minute;            /* the unix minute being collected             */
   guint64   min_frames_prev, min_lost_prev;
@@ -337,6 +339,7 @@ static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double cent
   Band *b = &h->band[i];
   b->frames += n;
   if (b->rec) { skim_rec_push(b->rec, iq, n, rate, centre); }
+  skim_hd_waterfall_push(h->wf, i, iq, n, rate, centre);   /* nothing unless watched */
   if (b->worker) {                             /* decoded on another PC     */
     if (h->hub) { skim_hd_hub_push(h->hub, i, iq, n, rate, centre); }
     return;
@@ -740,6 +743,7 @@ static void status_build(Hd *h, gboolean print) {
   } else {
     g_string_append(json, "null");
   }
+  g_string_append_printf(json, ",\"waterfall_viewers\":%u", skim_hd_waterfall_viewers(h->wf));
   g_string_append(json, ",\"archive\":");
   if (h->archive) {                            /* [archive]: where, today's file */
     char *adir = NULL, *today = NULL, *aerr = NULL;
@@ -1468,6 +1472,10 @@ static int find_skimmers_cli(void) {
   return 0;
 }
 
+static void web_waterfall(SoupWebsocketConnection *conn, const char *peer, gpointer user) {
+  skim_hd_waterfall_add(((Hd *)user)->wf, conn, peer);
+}
+
 static char *web_log(GHashTable *q, gboolean may, guint *st, const char **type,
                      gpointer user) {
   (void)q; (void)may; (void)st; (void)type; (void)user;
@@ -2135,12 +2143,16 @@ int main(int argc, char **argv) {
 
   SkimHdWeb *web = NULL;
   if (h->http_port > 0) {
+    double centres[SKIM_HD_MAX_BANDS];
+    for (guint i = 0; i < h->nb; i++) { centres[i] = h->band[i].centre_hz; }
+    h->wf = skim_hd_waterfall_new(h->nb, names, centres, c->rate);
     const SkimHdWebHooks hooks = {
       .status = web_status, .stats = web_stats, .log = web_log, .config = web_config,
       .skimmers = web_skimmers, .spots = web_spots,
       .config_post = web_config_post, .config_import = web_config_import,
       .restart = web_restart, .rollback = web_rollback,
       .deepcw = web_deepcw,
+      .waterfall = web_waterfall,
       .user = h,
     };
     web = skim_hd_web_new((guint16)h->http_port, (const char *const *)c->settings_from,
@@ -2210,6 +2222,7 @@ int main(int argc, char **argv) {
   g_cancellable_cancel(h->dcw_cancel);         /* a fetch in flight stops      */
   if (h->dcw_thread) { g_thread_join(h->dcw_thread); }
   g_clear_pointer(&h->src, skim_iq_source_free);
+  g_clear_pointer(&h->wf, skim_hd_waterfall_free);   /* nothing pushes into it */
   g_clear_pointer(&h->hub, skim_hd_hub_free);     /* nothing pushes any more   */
   for (guint i = 0; i < h->nb; i++) {
     for (guint k = 0; k < M_N; k++) { skim_pipeline_free(h->band[i].dec[k].p); }

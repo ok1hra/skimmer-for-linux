@@ -16,6 +16,7 @@
  *   POST /api/restart           restart with the config on disk (settings_from)
  *   POST /api/rollback          the previous config back, restart (settings_from)
  *   POST /api/deepcw            fetch the DeepCW model (settings_from)
+ *   WS   /ws/waterfall          a band's spectrum, live (waterfall.h)
  *
  * Every body comes from the owner's hooks — this module only routes, checks
  * who may change things and answers. A POST is refused (403) unless the
@@ -28,6 +29,7 @@
 #pragma once
 
 #include <gio/gio.h>
+#include <libsoup/soup.h>
 
 G_BEGIN_DECLS
 
@@ -44,6 +46,9 @@ typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 typedef struct {
   SkimHdWebGet  status, stats, log, config, skimmers, spots;
   SkimHdWebPost config_post, config_import, restart, rollback, deepcw;
+  /* a WebSocket viewer of the waterfall (peer: its address, for the log);
+   * the hook takes its own reference */
+  void        (*waterfall)(SoupWebsocketConnection *conn, const char *peer, gpointer user);
   gpointer      user;
 } SkimHdWebHooks;
 
