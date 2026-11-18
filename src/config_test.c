@@ -23,6 +23,11 @@ static void check(const char *what, int ok) {
   printf("  %s %s\n", ok ? "ok  " : "FAIL", what);
 }
 
+/* the known calls of the own call's filter case */
+static gboolean known_test(const char *k) {
+  return !strcmp(k, "OK1BR") || !strcmp(k, "OK1RR") || !strcmp(k, "OK1HRA");
+}
+
 static gboolean parse(SkimHdConfig *c, const char *text, GError **err) {
   return skim_hd_config_parse(c, text, strlen(text), "/etc/skim/test.ini", err);
 }
@@ -332,6 +337,16 @@ int main(void) {
           skim_hd_config_call_pass(&c, "ARH1KO") && skim_hd_config_call_pass(&c, "OK1RA") &&
           skim_hd_config_call_pass(&c, "DL1ABC"));
     skim_hd_config_clear(&c);
+    /* with the known calls: a real neighbour passes, a bust and the own call do not */
+    skim_hd_config_set_known(known_test);
+    check("known calls: OK1BR, OK1RR, OK1BR/P pass; OK1HRB, OK1HR stay out; OK1HRA (known) itself too",
+          parse(&c, "[bands]\n20m=14045500\n[feed]\ncall=OK1HRA\n[filter]\nmycall=true\n", NULL) &&
+          skim_hd_config_call_pass(&c, "OK1BR") && skim_hd_config_call_pass(&c, "OK1RR") &&
+          skim_hd_config_call_pass(&c, "OK1BR/P") && !skim_hd_config_call_pass(&c, "OK1HRB") &&
+          !skim_hd_config_call_pass(&c, "OK1HR") && !skim_hd_config_call_pass(&c, "OK1HRA") &&
+          !skim_hd_config_call_pass(&c, "OK1HRA/P"));
+    skim_hd_config_clear(&c);
+    skim_hd_config_set_known(NULL);
     check("mycall_diff=0: only the call itself (and with a /suffix)",
           parse(&c, "[bands]\n20m=14045500\n[feed]\ncall=OK1HRA\n[filter]\nmycall=true\nmycall_diff=0\n", NULL) &&
           !skim_hd_config_call_pass(&c, "OK1HRA") && !skim_hd_config_call_pass(&c, "OK1HRA/P") &&

@@ -52,7 +52,8 @@
  *            (default 2), compared place by place: a letter other, or one
  *            missing at the end (a cut call), counts one — the letters keep
  *            their places, so a call read backwards differs in all; the
- *            busts the skimmer makes of its own transmissions
+ *            busts the skimmer makes of its own transmissions; a call
+ *            MASTER.SCP knows passes all the same (but the own call itself)
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -227,6 +228,11 @@ gboolean skim_hd_config_filter_on(const SkimHdConfig *cfg);
 /* Changes between two calls, any case, place by place (a letter other, or
  * missing at the end, counts one). */
 guint skim_hd_call_distance(const char *a, const char *b);
+
+/* The known calls (MASTER.SCP) for the own call's filter: a call a few
+ * changes off it that they know is a real neighbour and passes. Set once,
+ * before the pipelines run; NULL (the default) = none known. */
+void skim_hd_config_set_known(gboolean (*known)(const char *call));
 
 /* Does the call pass [filter]? (TRUE without one.) Thread-safe. */
 gboolean skim_hd_config_call_pass(const SkimHdConfig *cfg, const char *call);

@@ -1929,7 +1929,9 @@ int main(int argc, char **argv) {
               "restart re-executes in place%s", h->console_s ? "" : "; console table off");
   }
 
-  /* Callsign dictionary: loaded once for every pipeline, kept current. */
+  /* Callsign dictionary: loaded once for every pipeline, kept current; the
+   * own call's filter lets the calls it knows through */
+  skim_hd_config_set_known(skim_callsign_dict_has);
   char *scp = g_build_filename(g_get_user_config_dir(), "skimmer-for-linux", "master.scp", NULL);
   if (g_file_test(scp, G_FILE_TEST_EXISTS) && !skim_callsign_dict_load(scp, &err)) {
     g_warning("MASTER.SCP %s not loaded: %s", scp, err->message);

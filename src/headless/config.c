@@ -101,7 +101,8 @@ static const char DEFAULT_CONFIG[] =
   "call=\nregex=false\n"
   "# mycall=true drops this station's own call ([feed] call) and the calls\n"
   "# with up to mycall_diff changes against it, place by place (a letter\n"
-  "# other, or missing from a cut call) — the busts of its own transmissions\n"
+  "# other, or missing from a cut call) — the busts of its own transmissions;\n"
+  "# a call MASTER.SCP knows passes all the same\n"
   "mycall=false\nmycall_diff=2\n"
   "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
   "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
@@ -152,20 +153,31 @@ guint skim_hd_call_distance(const char *a, const char *b) {
 
 /* The own call's filter: the call, or any of its /-parts (OK1HRA/P, F/OK1HRA),
  * within mycall_diff changes of the own call's base (its longest part). */
+static gboolean (*call_known)(const char *call);
+
+void skim_hd_config_set_known(gboolean (*known)(const char *call)) { call_known = known; }
+
+/* Is the call one of the own call's busts? The own call itself (or with a
+ * /part: OK1HRA/P) always; a call a few changes off it only while the known
+ * calls (MASTER.SCP) do not have it — a real neighbour passes. */
 static gboolean near_mycall(const SkimHdConfig *cfg, const char *call) {
   char **mine = g_strsplit(cfg->feed_call, "/", -1);
   const char *base = mine[0];
   for (char **p = mine; *p; p++) {
     if (strlen(*p) > strlen(base)) { base = *p; }
   }
-  gboolean near = skim_hd_call_distance(call, base) <= cfg->filter_mycall_diff;
+  guint d = skim_hd_call_distance(call, base);
+  const char *closest = call;
   char **parts = g_strsplit(call, "/", -1);
-  for (char **p = parts; !near && *p; p++) {
-    near = strlen(*p) >= 3 && skim_hd_call_distance(*p, base) <= cfg->filter_mycall_diff;
+  for (char **p = parts; *p; p++) {
+    const guint dp = strlen(*p) >= 3 ? skim_hd_call_distance(*p, base) : G_MAXUINT;
+    if (dp < d) { d = dp; closest = *p; }
   }
+  gboolean bust = d <= cfg->filter_mycall_diff;
+  if (bust && d > 0 && call_known && (call_known(call) || call_known(closest))) { bust = FALSE; }
   g_strfreev(parts);
   g_strfreev(mine);
-  return near;
+  return bust;
 }
 
 gboolean skim_hd_config_filter_on(const SkimHdConfig *cfg) {
