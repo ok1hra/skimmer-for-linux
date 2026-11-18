@@ -354,15 +354,21 @@ function renderStats() {
   // CW and RTTY one under the other — in the tiles and in every table cell
   const modes = [['CW', d.cw], ...(d.rtty ? [['RTTY', d.rtty]] : [])];
   const all = (mm, k) => d.bands.reduce((a, b) => a + sum(mm[k][b]), 0);
-  const tileM = (k, f, unit = '') => `<div class="tile"><div class="k">${esc(k)}</div>` +
+  const tileM = (k, f, unit = '', title = '') => `<div class="tile"${title ? ` title="${esc(title)}"` : ''}><div class="k">${esc(k)}</div>` +
     modes.map(([l, mm]) => `<div class="v ml ${l.toLowerCase()}">${f(mm)} <small>${l}${unit ? ` · ${esc(unit)}` : ''}</small></div>`).join('') + '</div>';
   const streamed = mean(d.global.streaming);
   renderDecTile(status);
+  // telnet clients: now (live), and the range's mean and busiest bucket
+  const cl = d.global.clients.filter((v) => v != null);
+  const clNow = status && status.feed_port ? status.feed_clients : null;
   $('#stats-tiles').innerHTML = [
     tileM('spots', (mm) => fmt(all(mm, 'spots')), `in ${stats.hours} h`),
-    tileM('stations appeared', (mm) => fmt(all(mm, 'stations'))),
-    tileM('folded', (mm) => fmt(all(mm, 'folded')), 'twins held back'),
-    tileM('gate below', (mm) => fmt(all(mm, 'gate_below')), 'learned gate'),
+    tileM('calls decoded', (mm) => fmt(all(mm, 'stations')), '',
+          'calls that came into a band\'s station list in the range — every call the decoder read and ' +
+          'validated, spotted or not (a call heard again after it dropped out counts again)'),
+    `<div class="tile" title="clients on the telnet feed (the skimmer server's port)"><div class="k">telnet clients</div>` +
+      `<div class="v">${clNow == null ? '<span class="mut">feed off</span>' : fmt(clNow)} <small>now</small></div>` +
+      `<div class="v ml">${cl.length ? fmt(mean(cl), 1) : '–'} <small>mean · busiest ${cl.length ? fmt(Math.max(...cl), 1) : '–'}</small></div></div>`,
     tile('radio streamed', streamed == null ? '–' : fmt(100 * streamed),
          streamed == null ? 'no data' : '% of the recorded time'),
   ].join('');
