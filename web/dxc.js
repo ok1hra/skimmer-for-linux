@@ -130,7 +130,7 @@ const Dxc = (() => {
   function cell(c, s) {
     switch (c) {
       case 'time': return `<td class="c-time">${utc(s.t)}</td>`;
-      case 'khz': return `<td class="c-khz">${s.khz.toFixed(1)}</td>`;
+      case 'khz': return `<td class="c-khz">${fmtKhz(s.khz)}</td>`;
       case 'call': return `<td class="c-call">${esc(s.call)}</td>`;
       case 'km': return `<td class="c-km">${s.km != null ? Math.round(s.km).toLocaleString('en-US') : ''}</td>`;
       case 'az': return `<td class="c-az" title="${s.az != null ? `${Math.round(s.az)}°` : ''}">${s.az != null ? `${ARR[Math.round(s.az / 45) % 8]} ${Math.round(s.az)}` : ''}</td>`;

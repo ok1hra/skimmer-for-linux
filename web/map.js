@@ -304,7 +304,7 @@ const SkMap = (() => {
     const near = (view.marks || []).find((m) => Math.hypot(m.x - x, m.y - y) < 8);
     out.hidden = false;
     out.innerHTML = `<span>AZ <b>${Math.round(d.az)}°</b></span><span>QRB <b>${fmtKm(d.km)}</b></span><span>LOC <b>${llToLoc(q.lat, q.lon)}</b></span>` +
-      (near ? `<span class="spot" style="color:${bandColor(near.s.band)}"><b>${near.s.call}</b> ${near.s.khz.toFixed(1)} ${near.s.mode} ${near.s.snr} dB${near.s.where ? ` · ${near.s.where.name}` : ''}</span>` : '');
+      (near ? `<span class="spot" style="color:${bandColor(near.s.band)}"><b>${near.s.call}</b> ${fmtKhz(near.s.khz)} ${near.s.mode} ${near.s.snr} dB${near.s.where ? ` · ${near.s.where.name}` : ''}</span>` : '');
   }
 
   // ---- mounting --------------------------------------------------------------------------

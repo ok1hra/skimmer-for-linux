@@ -10,6 +10,15 @@ const esc = (s) => String(s).replace(/[&<>"']/g,
 const fmt = (v, d = 0) => (v === undefined || v === null || Number.isNaN(v)) ? '–'
   : Number(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 
+// A frequency in kHz the way the shack reads it: a space after the MHz
+// ("14 025.3"), everywhere on the page (map.js and dxc.js use it too).
+// sep: a no-break space for display, a plain one for an input to edit.
+function fmtKhz(khz, d = 1, sep = '\u00a0') {
+  if (khz === undefined || khz === null || !Number.isFinite(Number(khz))) return '–';
+  const [i, f] = (d === null ? String(Number(khz)) : Number(khz).toFixed(d)).split('.');
+  return `${i.replace(/\B(?=(\d{3})+(?!\d))/g, sep)}${f !== undefined ? `.${f}` : ''}`;
+}
+
 async function getJSON(url) {
   const r = await fetch(url, { cache: 'no-store' });
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
@@ -117,7 +126,7 @@ function renderStatus(d) {
     ? `<td class="bad" title="DeepCW not available: ${esc(dc.fallback || '')}">${esc(b.engine)} · DeepCW not available</td>`
     : `<td>${esc(b.engine || d.engine)}</td>`;
   $('#bands').innerHTML = head + modes.map((b) =>
-    `<tr><td>${esc(b.band)}</td><td class="l">${b.mode}</td><td>${fmt(b.centre_hz / 1000, 1)}</td>${engineCell(b)}` +
+    `<tr><td>${esc(b.band)}</td><td class="l">${b.mode}</td><td>${fmtKhz(b.centre_hz / 1000, 1)}</td>${engineCell(b)}` +
     `<td>${fmt(b.decoders)}</td><td>${fmt(b.active)}</td><td>${fmt(b.stations)}</td>` +
     `<td>${fmt(b.spots)}</td><td>${fmt(b.drops)}</td><td>${fmt(b.ksps)}</td></tr>`).join('');
 
@@ -502,7 +511,7 @@ function fillSettings(d) {
   for (const inp of f.querySelectorAll('input, select, button')) inp.disabled = !d.may_change;
   $('#set-export').disabled = false;                 // anyone may read the file
   $('#lan-find').disabled = false;                   // a search changes nothing
-  drawBands(d.bands.map((b) => ({ name: b.name, khz: String(b.centre_hz / 1000), cw: b.cw,
+  drawBands(d.bands.map((b) => ({ name: b.name, khz: fmtKhz(b.centre_hz / 1000, null, ' '), cw: b.cw,
                                   engine: b.engine, rtty: b.rtty, on: b.on !== false,
                                   worker: b.worker || '' })));
   const lock = $('#set-lock');
@@ -539,7 +548,7 @@ function formBody() {
   const lines = [];
   for (const b of readBands()) {
     if (!b.name && !b.khz) continue;
-    const hz = Math.round(parseFloat(b.khz.replace(',', '.')) * 1000);
+    const hz = Math.round(parseFloat(b.khz.replace(/\s/g, '').replace(',', '.')) * 1000);
     const modes = [];
     if (b.cw) modes.push(b.engine === dflt ? 'cw' : `cw:${b.engine}`);
     if (b.rtty) modes.push('rtty');
