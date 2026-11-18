@@ -5,8 +5,12 @@
 //
 // AUTO zooms to about 2000 km and widens as far as the farthest spot shown,
 // so the end stations stay on the map (a ladder of steps, so it does not
-// twitch at every refresh); the wheel takes over, AUTO gives it back. The centre is the station's locator unless
-// another is typed in. The cursor reads azimuth, distance and locator.
+// twitch at every refresh); the wheel takes over, AUTO gives it back. The
+// centre is the station's locator unless another is typed in; "back to
+// <locator>" (shown only then) returns to it. A spot is placed by its DXCC
+// (the prefix's label point), so the spots of one country share a point:
+// they are fanned out around it, a dot each. The cursor reads azimuth,
+// distance and locator.
 // Per-viewer choices (layers, centre, zoom) are kept in localStorage.
 'use strict';
 
@@ -233,9 +237,25 @@ const SkMap = (() => {
     g.save(); g.beginPath(); g.arc(view.cx, view.cy, view.rr, 0, Math.PI * 2); g.clip();
     const boxes = [];
     view.marks = [];
+    // the spots of one DXCC share its point: fan them out on a sunflower
+    // spiral around it (the strongest in the middle), a dot each
+    const at = new Map(), groups = new Map();
+    for (const s of spots) {
+      if (!s.where) continue;
+      const k = `${s.where.lat},${s.where.lon}`;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(s);
+    }
+    for (const g of groups.values()) {
+      const [px, py] = view.P(g[0].where.lat, g[0].where.lon);
+      g.sort((a, b) => b.snr - a.snr).forEach((s, k) => {
+        const r = 8 * Math.sqrt(k), th = k * 2.39996;      // the golden angle
+        at.set(s, [px + r * Math.cos(th), py + r * Math.sin(th)]);
+      });
+    }
     for (const s of [...spots].sort((a, b) => b.snr - a.snr)) {
       if (!s.where) continue;
-      const [x, y] = view.P(s.where.lat, s.where.lon), col = bandColor(s.band);
+      const [x, y] = at.get(s), col = bandColor(s.band);
       g.globalAlpha = 1 - Math.min(1, s.age / 1800) * 0.65;
       if (opt.lines) {
         g.strokeStyle = col; g.lineWidth = 0.6;
