@@ -308,20 +308,27 @@ core for every channel it is decoding.
 feed, every band with its newest stations, the feed policy, the learned gate
 and the `SKIM_*` switches), **Statistics** (seven days, one record a minute,
 kept across restarts in `~/.local/state/skimmer-for-linux/stats.bin`: spots
-per hour by band, active decoders, CPU, IQ loss, totals), **Settings** and
+per hour by band, active decoders, CPU, CPU temperature, IQ loss, totals), **Settings** and
 **Log**. It needs no internet; the JSON behind it is `/status.json`,
 `/stats.json`, `/api/log` and `/api/config` (and `POST /api/deepcw`, the
 model fetch).
 
 **Settings** edits the radio, the bands (order, centre, CW engine, RTTY), the
-feed's call and port, the status ports and the IQ recording, and fetches the
-DeepCW model. *Save and
+feed's call and port, the callsign filter, the status ports and the IQ
+recording, and fetches the DeepCW model. *Save and
 restart* checks the new config with the same parser the start uses — a bad
 value is refused and nothing is written — keeps the previous file as
 `headless.ini.bak-<UTC>` (the last 10; *Earlier configs* restores any of
 them) and restarts the skimmer. A start that does not get the radio
 streaming within a minute of a change offers the previous config back. The
 feed policy, the learned gate and `[web]` are not editable on the page.
+
+The **callsign filter** (`[filter] call=`, `regex=`) works like the DX
+cluster's DX filter: part of a call (any case), or a regular expression.
+Only the calls that match go anywhere — the rest are dropped right where they
+are decoded, so they make no spot on the telnet feed or to the RBN, no dot on
+the map and no count in the statistics; peers' and workers' spots are held to
+it too. Empty = every call passes.
 
 Only the addresses in `[web] settings_from` (default `127.0.0.1,::1`) may
 change settings; everyone else sees them read-only. From another machine

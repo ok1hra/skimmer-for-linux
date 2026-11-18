@@ -264,6 +264,12 @@ static gboolean gate_load(Hd *h, GError **error) {
   return h->gate != NULL;
 }
 
+/* [filter] for the pipelines (engine threads): the config never changes
+ * while they run. */
+static gboolean call_pass(const char *call, gpointer user) {
+  return skim_hd_config_call_pass(&((Hd *)user)->cfg, call);
+}
+
 static void text_cb(double freq_hz, const char *text, gpointer user) {
   Dec *b = user;
   guint chars = 0;
@@ -1454,6 +1460,7 @@ static char *hub_assign(const char *worker, gpointer user) {
 static void hub_spot(const char *worker, const char *call, const char *mode, double freq_hz,
                      double snr_db, double speed, gpointer user) {
   Hd *h = user;
+  if (!skim_hd_config_call_pass(&h->cfg, call)) { return; }   /* [filter] */
   const guint k = g_strcmp0(mode, "CW") == 0 ? M_CW : M_RTTY;
   for (guint i = 0; i < h->nb; i++) {
     Band *b = &h->band[i];
@@ -1580,6 +1587,7 @@ static void peer_spot(const char *peer, const char *call, const char *mode, doub
                       double snr_db, double speed, gpointer user) {
   Hd *h = user;
   if (g_strcmp0(mode, "CW") != 0 && !h->cfg.feed_rtty) { return; }   /* CW-only feed */
+  if (!skim_hd_config_call_pass(&h->cfg, call)) { return; }           /* [filter] */
   spot_origin = peer;
   skim_rbn_feed_spot_external(h->feed ? h->feed : h->rbn, call, mode, freq_hz, snr_db, speed);
   spot_origin = NULL;
@@ -1636,6 +1644,8 @@ static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const c
     .band = b->name,
     /* RTTY publishes what it copies; CW stays off it only when told to */
     .rtty_pairs = rtty || c->suppress_cw_on_rtty ? b->pairs : NULL,
+    .call_pass = c->filter_call ? call_pass : NULL,
+    .call_pass_user = h,
   };
   d->p = skim_pipeline_new(&pc);
   g_free(dlog);
@@ -1812,6 +1822,9 @@ int main(int argc, char **argv) {
            c->feed_port, c->feed_rtty ? "CW and RTTY" : "CW only");
     if (c->rbn_on) { printf("  rbn    port %d, spots held %u s\n", c->rbn_port, c->rbn_delay_s); }
     printf("  gate   %s, %s (CW)\n", h->gate_id ? h->gate_id : "none", h->feed_gate_mode);
+    if (c->filter_call) {
+      printf("  filter only calls %s %s\n", c->filter_regex ? "matching" : "containing", c->filter_call);
+    }
     gboolean dcw = FALSE;
     for (guint i = 0; i < c->nb; i++) {
       dcw |= c->band[i].cw && c->band[i].cw_engine == SKIM_CW_ENGINE_DEEPCW;
@@ -1994,6 +2007,10 @@ int main(int argc, char **argv) {
       g_free(ts);
       g_date_time_unref(t);
     }
+  }
+  if (h->cfg.filter_call) {
+    g_message("filter: only calls %s \"%s\" go anywhere — the rest are dropped where they "
+              "are decoded", h->cfg.filter_regex ? "matching" : "containing", h->cfg.filter_call);
   }
   for (guint i = 0; i < h->nb; i++) {
     const Band *b = &h->band[i];

@@ -92,6 +92,10 @@ static const char DEFAULT_CONFIG[] =
   "\n[web]\n# who may change the settings from the web page (addresses or\n"
   "# networks, comma separated); everyone else sees them read-only\n"
   "settings_from=127.0.0.1,::1\n"
+  "\n[filter]\n# only the calls that match go anywhere — the feed, the RBN, the web page,\n"
+  "# the statistics (empty = all pass): part of a call (any case), or with\n"
+  "# regex=true a regular expression (any case), e.g. ^(OK|OL)|/P$\n"
+  "call=\nregex=false\n"
   "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
   "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
   "bands=\nminutes=10\ndir=/var/tmp/skimmer-iq\nstart_utc=\n";
@@ -120,7 +124,19 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_strfreev(cfg->hub_allow);
   g_strfreev(cfg->rec_bands);
   g_free(cfg->rec_dir);
+  g_free(cfg->filter_call);
+  g_free(cfg->filter_up);
+  if (cfg->filter_re) { g_regex_unref(cfg->filter_re); }
   memset(cfg, 0, sizeof(*cfg));
+}
+
+gboolean skim_hd_config_call_pass(const SkimHdConfig *cfg, const char *call) {
+  if (cfg->filter_re) { return g_regex_match(cfg->filter_re, call, 0, NULL); }
+  if (!cfg->filter_up) { return TRUE; }
+  char *up = g_ascii_strup(call, -1);
+  const gboolean ok = strstr(up, cfg->filter_up) != NULL;
+  g_free(up);
+  return ok;
 }
 
 static gboolean bad(GError **error, const char *path, const char *fmt, ...) G_GNUC_PRINTF(3, 4);
@@ -453,6 +469,33 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->peers = (char **)g_ptr_array_free(pl, FALSE);
   }
 
+  {
+    /* [filter]: the raw value — a regular expression keeps its backslashes */
+    char *fc = g_key_file_get_value(kf, "filter", "call", NULL);
+    if (fc) { g_strstrip(fc); }
+    if (!opt_bool(kf, "filter", "regex", FALSE, &h->filter_regex, path, error)) {
+      g_free(fc);
+      return FALSE;
+    }
+    if (fc && fc[0]) {
+      h->filter_call = fc;
+      fc = NULL;
+      if (h->filter_regex) {
+        GError *e = NULL;
+        h->filter_re = g_regex_new(h->filter_call, G_REGEX_CASELESS | G_REGEX_OPTIMIZE, 0, &e);
+        if (!h->filter_re) {
+          bad(error, path, "[filter] call \"%s\" is not a regular expression: %s", h->filter_call,
+              e->message);
+          g_clear_error(&e);
+          return FALSE;
+        }
+      } else {
+        h->filter_up = g_ascii_strup(h->filter_call, -1);
+      }
+    }
+    g_free(fc);
+  }
+
   h->console_s = g_key_file_has_key(kf, "status", "console_s", NULL)
                      ? g_key_file_get_integer(kf, "status", "console_s", NULL) : -1;
   h->http_port = g_key_file_has_key(kf, "status", "http_port", NULL)
@@ -596,6 +639,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "peers.hosts", "hub.name", "hub.port", "station.locator",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
+  "filter.call", "filter.regex",
   NULL,
 };
 

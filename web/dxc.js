@@ -123,7 +123,10 @@ const Dxc = (() => {
     draw();
     if (t.dataset.flag || (t.dataset.f === 'call')) {     // the regex state shows at once
       const inp = menu.querySelector('[data-f=call]');
-      if (inp) inp.classList.toggle('bad', callRe() === false);
+      if (inp) {
+        inp.classList.toggle('bad', callRe() === false);
+        inp.placeholder = F.regex ? '^(OK|OL)|/P$' : 'part of a call';
+      }
     }
   }
 

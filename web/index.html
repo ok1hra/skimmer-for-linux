@@ -155,6 +155,15 @@
           <label class="check"><input type="checkbox" name="feed.rtty" data-default="true"> RTTY spots on the feed too</label>
         </fieldset>
         <fieldset>
+          <legend>Callsign filter</legend>
+          <label>DX call <input name="filter.call" id="filter-call" placeholder="part of a call" spellcheck="false">
+            <small class="bad" id="filter-bad" hidden>not a valid expression</small>
+            <small>only the calls that match go anywhere; empty = all. The rest are dropped right where
+            they are decoded: no spot on the telnet feed or to the RBN, no dot on the map, not in the DX
+            cluster nor the statistics — peers' and workers' spots too</small></label>
+          <label class="check"><input type="checkbox" name="filter.regex" id="filter-regex"> regular expression</label>
+        </fieldset>
+        <fieldset>
           <legend>Reverse Beacon Network</legend>
           <label class="check"><input type="checkbox" name="rbn.enabled"> send the spots to the RBN</label>
           <label>Aggregator port <input name="rbn.port" inputmode="numeric" placeholder="7550">

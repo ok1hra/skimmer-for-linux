@@ -39,6 +39,11 @@
  *            settings from the web page (a.b.c.d, a.b.c.d/n, ::1), default
  *            127.0.0.1,::1; editable here only, never from the page
  *   [record] bands, minutes, dir, start_utc (HH:MM)
+ *   [filter] call — only the calls that match go anywhere (empty = all):
+ *            part of a call, any case; regex=true: a regular expression
+ *            (PCRE, any case). Dropped where they are decoded — no station,
+ *            spot, feed line, RBN line, map dot or count; peers' and
+ *            workers' spots are held to it too
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -127,6 +132,11 @@ typedef struct {
   double           rec_minutes;
   char            *rec_dir;
   gint64           rec_at_us;         /* real time to start, 0 = at once     */
+  /* [filter] */
+  char            *filter_call;       /* as written; NULL = no filter        */
+  gboolean         filter_regex;
+  GRegex          *filter_re;         /* compiled (regex=true); else NULL    */
+  char            *filter_up;         /* the text upper-cased (regex=false)  */
 } SkimHdConfig;
 
 /* Write the commented default ini to path (its directory is created).
@@ -196,5 +206,8 @@ char *skim_hd_config_worker_merge(const char *own, gsize own_len, const char *fr
 
 /* "cw", "cw:deepcw,rtty", "cw,off" … — the band's modes as the ini writes them. */
 char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt);
+
+/* Does the call pass [filter]? (TRUE without one.) Thread-safe. */
+gboolean skim_hd_config_call_pass(const SkimHdConfig *cfg, const char *call);
 
 G_END_DECLS

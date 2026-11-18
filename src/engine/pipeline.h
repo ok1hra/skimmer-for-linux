@@ -147,6 +147,14 @@ typedef struct {
    * no pane text, no extractor, no candidates (the decode log keeps them).
    * NULL = neither: the CW pipeline is byte-for-byte what it was. */
   SkimRttyPairs *rtty_pairs;
+
+  /* The operator's callsign filter (skimmer-headless [filter]): a call it
+   * turns down is dropped where the extractor names it — before the station
+   * table, so it makes no station, no spot, no feed line and no count, as if
+   * it had not been read. Engine thread; must be thread-safe if shared.
+   * NULL = no filter: the pipeline is byte-for-byte what it was. */
+  gboolean   (*call_pass)(const char *call, gpointer user);
+  gpointer     call_pass_user;
 } SkimPipelineConfig;
 
 typedef struct _SkimPipeline SkimPipeline;

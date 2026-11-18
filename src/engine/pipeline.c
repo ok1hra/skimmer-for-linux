@@ -1259,6 +1259,11 @@ static void take_text(SkimPipeline *p, guint ix, double sig_hz,
     gatelog_cand(p, ix, sig_hz, d, contested, NULL);
     return;
   }
+  /* the operator's filter: a call it turns down goes no further */
+  if (p->cfg.call_pass && !p->cfg.call_pass(call, p->cfg.call_pass_user)) {
+    gatelog_cand(p, ix, sig_hz, d, contested, NULL);
+    return;
+  }
 
   SkimStation st;
   memset(&st, 0, sizeof(st));

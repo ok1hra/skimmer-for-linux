@@ -633,6 +633,20 @@ $('#band-add').addEventListener('click', () => {
 });
 $('#settings').addEventListener('input', () => { cfg.dirty = true; });
 
+// The callsign filter, as the DX cluster's DX filter: part of a call, or a
+// regular expression (any case) — the example and the check follow the tick.
+function filterCheck() {
+  const inp = $('#filter-call'), re = $('#filter-regex').checked;
+  inp.placeholder = re ? '^(OK|OL)|/P$' : 'part of a call';
+  let ok = true;
+  if (re && inp.value.trim()) { try { new RegExp(inp.value.trim(), 'i'); } catch (e) { ok = false; } }
+  inp.classList.toggle('bad', !ok);
+  $('#filter-bad').hidden = ok;
+  return ok;
+}
+$('#filter-call').addEventListener('input', filterCheck);
+$('#filter-regex').addEventListener('change', filterCheck);
+
 function fillSettings(d) {
   cfg.data = d;
   cfg.dirty = false;
@@ -671,6 +685,7 @@ function fillSettings(d) {
     `<td><button type="button" class="small" data-restore="${esc(b.name)}"${d.may_change ? '' : ' disabled'}>Restore</button></td></tr>`).join('')
     : '<tr><td colspan="3" class="mut">none yet — every save keeps the previous file</td></tr>');
   $('#set-msg').textContent = '';
+  filterCheck();
   if (status) renderDcw(status.deepcw);
 }
 
@@ -734,6 +749,12 @@ $('#settings').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!cfg.data || !cfg.data.may_change) return;
   const body = formBody();
+  if (!filterCheck()) {
+    const box = $('#set-error');
+    box.hidden = false;
+    box.textContent = 'Not saved: the callsign filter is not a valid regular expression.';
+    return;
+  }
   const delay = body.get('rbn.delay_s');
   if (delay !== '' && !(/^\d+$/.test(delay) && Number(delay) <= 99)) {
     const box = $('#set-error');
