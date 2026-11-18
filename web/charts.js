@@ -4,7 +4,8 @@
 // order (CSS --s1…--s8, colour follows the band, never its rank); 2 px surface
 // gap between stacked segments, ≤ 24 px columns with a 4 px rounded data end;
 // 2 px lines; hairline recessive grid; one y-axis per chart; text in text
-// colours only; every mark has a hover/focus tooltip, values lead.
+// colours only; every mark has a hover/focus tooltip, values lead; one
+// crosshair runs through all the charts at the bucket under the cursor.
 'use strict';
 
 const Charts = (() => {
@@ -17,6 +18,26 @@ const Charts = (() => {
     return e;
   };
   const seriesColor = (i) => css(`--s${(i % 8) + 1}`);
+  // one plot frame for every chart: their time axes line up under each other
+  // (the right margin holds the CPU chart's second axis)
+  const ML = 48, MR = 46;
+
+  // ---- one crosshair for every chart -------------------------------------------------
+  // The charts share their buckets (one time axis). The cursor over any of them
+  // puts a vertical line at its bucket in all of them, moving together; the
+  // tooltip stays with the chart under the cursor.
+  const sync = new Map();                        // box → { at(i), off() }
+  function syncAt(i) { for (const [box, h] of sync) { if (box.isConnected) h.at(i); else sync.delete(box); } }
+  function syncOff() { for (const h of sync.values()) h.off(); }
+  // a hairline at bucket centre x(i), above the marks, never in the way of the pointer
+  function crossLine(box, svg, y1, y2, xOf) {
+    const ln = el('line', { y1, y2, stroke: css('--fg'), 'stroke-opacity': 0.45, 'stroke-width': 1,
+                            visibility: 'hidden', 'pointer-events': 'none', 'shape-rendering': 'crispEdges' }, svg);
+    sync.set(box, {
+      at(i) { const x = xOf(i); ln.setAttribute('x1', x); ln.setAttribute('x2', x); ln.setAttribute('visibility', 'visible'); },
+      off() { ln.setAttribute('visibility', 'hidden'); },
+    });
+  }
 
   // ---- scales and axes -------------------------------------------------------------
   function niceMax(v) {
@@ -91,7 +112,7 @@ const Charts = (() => {
   // halves: [{ name, series }, …] — the first grows up, the second (if any) down.
   // Each half has its own scale, its tallest column reaching 100 % of the half.
   function mirror(box, x, halves, fmtV, halfH = 160) {
-    const m = { l: 44, r: 8, t: 8, b: 22 };
+    const m = { l: ML, r: MR, t: 8, b: 22 };
     const two = halves.length > 1;
     const { svg, W, H } = frame(box, m.t + halfH * (two ? 2 : 1) + m.b);
     const n = x.t.length, pw = W - m.l - m.r;
@@ -154,6 +175,7 @@ const Charts = (() => {
     // hit targets: the whole slot, both halves
     const tt = tip(box);
     const plotH = halfH * (two ? 2 : 1);
+    crossLine(box, svg, m.t, m.t + plotH, (i) => Math.round(m.l + (i + 0.5) * slot) + 0.5);
     for (let i = 0; i < n; i++) {
       const r = el('rect', { x: m.l + i * slot, y: m.t, width: slot, height: plotH, fill: 'transparent',
                              tabindex: -1 }, svg);
@@ -167,10 +189,11 @@ const Charts = (() => {
         });
         tt.show(m.l + (i + 1) * slot, zero - (halfH * tot[0][i]) / max[0], x.label(i), rows);
         r.setAttribute('fill', 'rgba(127,127,127,.08)');
+        syncAt(i);
       };
       r.addEventListener('pointerenter', show);
       r.addEventListener('focus', show);
-      r.addEventListener('pointerleave', () => { tt.hide(); r.setAttribute('fill', 'transparent'); });
+      r.addEventListener('pointerleave', () => { tt.hide(); r.setAttribute('fill', 'transparent'); syncOff(); });
     }
   }
 
@@ -188,7 +211,7 @@ const Charts = (() => {
     const np = Math.max(1, ...rows.map((r) => r.parts.length));
     const blockH = partH * np;
     const { svg, W, H } = frame(box, rows.length * (blockH + bandGap) + 26);
-    const m = { l: 48, r: 8, t: 2 };
+    const m = { l: ML, r: MR, t: 2 };
     const n = x.t.length, pw = W - m.l - m.r, cw = pw / n;
     const max = {};
     for (const r of rows) for (const p of r.parts) {
@@ -227,6 +250,15 @@ const Charts = (() => {
                              fill: css('--tick') }, svg);
       t.textContent = timeLabel(x.t[i], x.spanH);
     }
+    // the shared crosshair: the bucket under the cursor anywhere in the rows
+    const plotB = m.t + rows.length * (blockH + bandGap) - bandGap;
+    crossLine(box, svg, m.t, plotB, (i) => Math.round(m.l + (i + 0.5) * cw) + 0.5);
+    svg.addEventListener('pointermove', (e) => {
+      const r = svg.getBoundingClientRect(), mx = ((e.clientX - r.left) * W) / r.width;
+      if (mx < m.l || mx > m.l + pw) { syncOff(); return; }
+      syncAt(Math.min(n - 1, Math.max(0, Math.floor((mx - m.l) / cw))));
+    });
+    svg.addEventListener('pointerleave', syncOff);
     return max;
   }
 
@@ -237,7 +269,7 @@ const Charts = (() => {
   function area(box, x, layers, total, fmtV, totalName, right) {
     const { svg, W, H } = frame(box, 180);
     const yMax = niceMax(Math.max(0, ...total.filter((v) => v != null)));
-    const a = axes(svg, W, H, x, yMax, 36, right ? 46 : 8);
+    const a = axes(svg, W, H, x, yMax, ML, MR);
     const n = x.t.length, px = (i) => a.l + ((i + 0.5) * a.pw) / n,
       py = (v) => a.t + a.ph - (a.ph * Math.min(v, yMax)) / yMax;
     const ok = (i) => layers.every((l) => l.values[i] != null);
@@ -292,23 +324,21 @@ const Charts = (() => {
       el('path', { d: rd, fill: 'none', stroke: right.color, 'stroke-width': 2, 'stroke-linejoin': 'round',
                    'stroke-linecap': 'round' }, svg);
     }
-    const cross = el('line', { y1: a.t, y2: a.t + a.ph, stroke: css('--axis'), 'stroke-width': 1,
-                               visibility: 'hidden' }, svg);
+    crossLine(box, svg, a.t, a.t + a.ph, (i) => Math.round(px(i)) + 0.5);
     const tt = tip(box);
     const hit = el('rect', { x: a.l, y: a.t, width: a.pw, height: a.ph, fill: 'transparent' }, svg);
     hit.addEventListener('pointermove', (e) => {
       const r = svg.getBoundingClientRect();
       const mx = ((e.clientX - r.left) * W) / r.width;
       const i = Math.min(n - 1, Math.max(0, Math.floor(((mx - a.l) * n) / a.pw)));
-      cross.setAttribute('x1', px(i)); cross.setAttribute('x2', px(i));
-      cross.setAttribute('visibility', 'visible');
+      syncAt(i);
       const rows = [{ value: total[i] == null ? 'no data' : fmtV(total[i]), label: totalName }];
       if (ok(i)) for (const l of [...layers].reverse()) rows.push({ value: fmtV(l.values[i]), label: l.name, color: l.color });
       else if (total[i] != null) rows.push({ value: '–', label: 'no split recorded' });
       if (right) rows.push({ value: right.values[i] == null ? '–' : right.fmtV(right.values[i]), label: right.name, color: right.color });
       tt.show((px(i) * r.width) / W, (py(total[i] ?? 0) * r.height) / H, x.label(i), rows);
     });
-    hit.addEventListener('pointerleave', () => { tt.hide(); cross.setAttribute('visibility', 'hidden'); });
+    hit.addEventListener('pointerleave', () => { tt.hide(); syncOff(); });
   }
 
   return { mirror, heat, area, seriesColor };
