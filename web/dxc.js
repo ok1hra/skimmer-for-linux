@@ -70,9 +70,12 @@ const Dxc = (() => {
           '<div class="fm-act"><button type="button" data-all="bands">all</button><button type="button" data-none="bands">none</button></div>';
       case 'call': {
         const bad = callRe() === false;
-        return `<div class="fm-t">DX call</div><input data-f="call" value="${esc(F.call)}" placeholder="${F.regex ? '^(OK|OL)|/P$' : 'part of a call'}" class="${bad ? 'bad' : ''}">` +
-          `<label><input type="checkbox" data-flag="regex"${F.regex ? ' checked' : ''}> regular expression</label>` +
-          (bad ? '<div class="bad">not a valid expression — ignored</div>' : '');
+        return `<div class="fm-t">DX filter</div><input data-f="call" value="${esc(F.call)}" placeholder="Callsign, text, or regex" spellcheck="false" autocomplete="off" class="${bad ? 'bad' : ''}">` +
+          `<label><input type="checkbox" data-flag="regex"${F.regex ? ' checked' : ''}> Regex</label>` +
+          (bad ? '<div class="bad">not a valid expression — ignored</div>' : '') +
+          '<div class="fm-note">Without Regex, this matches plain text. With Regex enabled, it uses a JavaScript ' +
+          'regular expression and ignores letter case; ticking it on an empty field puts in the default — every ' +
+          'call but the Russian and Belarusian ones.</div>';
       }
       case 'km': return `<div class="fm-t">Distance</div>${range('kmMin', 'kmMax', 0, 20000, 100, 'km')}`;
       case 'az': return `<div class="fm-t">Bearing (a sector; 300 to 60 crosses north)</div>${range('azMin', 'azMax', 0, 360, 5, '°')}`;
@@ -113,7 +116,15 @@ const Dxc = (() => {
     if (t.dataset.none) bandsKnown.forEach((b) => { F.bands[b] = false; });
     if (t.dataset.age) F.age = Number(t.dataset.age);
     if (t.dataset.obj) F[t.dataset.obj][t.dataset.key] = t.checked;
-    if (t.dataset.flag) F[t.dataset.flag] = t.checked;
+    if (t.dataset.flag) {
+      F[t.dataset.flag] = t.checked;
+      // IP-rotator's DX filter: Regex ticked on an empty field puts in its default
+      if (t.dataset.flag === 'regex' && t.checked && !F.call) {
+        F.call = DX_FILTER_DEFAULT;
+        const inp = menu.querySelector('[data-f=call]');
+        if (inp) inp.value = F.call;
+      }
+    }
     if (t.dataset.f) F[t.dataset.f] = t.type === 'number' ? Number(t.value) : t.value.trim();
     save();
     if (e.type === 'click' && (t.dataset.reset || t.dataset.all || t.dataset.none || t.dataset.age)) {
@@ -123,10 +134,7 @@ const Dxc = (() => {
     draw();
     if (t.dataset.flag || (t.dataset.f === 'call')) {     // the regex state shows at once
       const inp = menu.querySelector('[data-f=call]');
-      if (inp) {
-        inp.classList.toggle('bad', callRe() === false);
-        inp.placeholder = F.regex ? '^(OK|OL)|/P$' : 'part of a call';
-      }
+      if (inp) inp.classList.toggle('bad', callRe() === false);
     }
   }
 

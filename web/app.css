@@ -274,3 +274,7 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 #legend-temp { margin-top: 12px; }
 #settings.locked input:read-only:not([type=checkbox]) { opacity: .7; }
 #settings.locked select { opacity: .8; }
+.filter-row { display: flex; align-items: center; gap: 14px; }
+.filter-row .small { margin-top: 0; }
+#settings small.note-s { display: block; margin: 6px 0 0; }
+.fmenu .fm-note { font-size: 12px; color: var(--mut); max-width: 300px; }

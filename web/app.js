@@ -633,11 +633,13 @@ $('#band-add').addEventListener('click', () => {
 });
 $('#settings').addEventListener('input', () => { cfg.dirty = true; });
 
-// The callsign filter, as the DX cluster's DX filter: part of a call, or a
-// regular expression (any case) — the example and the check follow the tick.
+// The callsign filter, as IP-rotator's DX filter (its DXC page): plain text
+// (part of a call, any case) or, with Regex, a regular expression ignoring
+// case; ticking Regex on an empty field puts in its default — every call but
+// the Russian and Belarusian ones. dxc.js's DX menu does the same.
+const DX_FILTER_DEFAULT = '^(?!^(?:R[A-Z]?|U[A-I0]|E[UVW])[0-9]{1,3}[A-Z]{1,4}(?:/[A-Z0-9]+)?$).+';
 function filterCheck() {
   const inp = $('#filter-call'), re = $('#filter-regex').checked;
-  inp.placeholder = re ? '^(OK|OL)|/P$' : 'part of a call';
   let ok = true;
   if (re && inp.value.trim()) { try { new RegExp(inp.value.trim(), 'i'); } catch (e) { ok = false; } }
   inp.classList.toggle('bad', !ok);
@@ -645,7 +647,16 @@ function filterCheck() {
   return ok;
 }
 $('#filter-call').addEventListener('input', filterCheck);
-$('#filter-regex').addEventListener('change', filterCheck);
+$('#filter-regex').addEventListener('change', (e) => {
+  if (e.target.checked && !$('#filter-call').value.trim()) $('#filter-call').value = DX_FILTER_DEFAULT;
+  filterCheck();
+});
+$('#filter-clear').addEventListener('click', () => {
+  $('#filter-call').value = '';
+  $('#filter-regex').checked = false;
+  cfg.dirty = true;
+  filterCheck();
+});
 
 function fillSettings(d) {
   cfg.data = d;

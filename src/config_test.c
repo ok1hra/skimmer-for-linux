@@ -261,6 +261,43 @@ int main(void) {
     skim_hd_config_clear(&c);
   }
 
+  printf("== the callsign filter\n");
+  {
+    SkimHdConfig c;
+    check("none: every call passes",
+          parse(&c, "[bands]\n20m=14045500\n", NULL) && !c.filter_call &&
+          skim_hd_config_call_pass(&c, "RA3AA"));
+    skim_hd_config_clear(&c);
+    check("plain text: part of a call, any case",
+          parse(&c, "[bands]\n20m=14045500\n[filter]\ncall=ok1\n", NULL) &&
+          skim_hd_config_call_pass(&c, "OK1HRA") && !skim_hd_config_call_pass(&c, "DL1ABC"));
+    skim_hd_config_clear(&c);
+    /* IP-rotator's default DX filter: every call but the Russian and Belarusian ones */
+    const gboolean ok = parse(&c, "[bands]\n20m=14045500\n[filter]\nregex=true\n"
+                              "call=^(?!^(?:R[A-Z]?|U[A-I0]|E[UVW])[0-9]{1,3}[A-Z]{1,4}(?:/[A-Z0-9]+)?$).+\n",
+                              NULL);
+    gboolean pass = ok, drop = ok;
+    for (const char *const *k = (const char *const[]){ "OK1HRA", "DL1ABC", "UR5A", "K1AR", "ok1hra", NULL }; ok && *k; k++) {
+      pass = pass && skim_hd_config_call_pass(&c, *k);
+    }
+    for (const char *const *k = (const char *const[]){ "RA3AA", "R7AB", "UA9XYZ", "UI8A", "EW1AB", "EU7A", "RK3A/P", NULL }; ok && *k; k++) {
+      drop = drop && !skim_hd_config_call_pass(&c, *k);
+    }
+    check("IP-rotator's default regex parses (lookahead, backslash-free, raw value)", ok);
+    check("… it passes OK1HRA DL1ABC UR5A K1AR (any case)", pass);
+    check("… it drops RA3AA R7AB UA9XYZ UI8A EW1AB EU7A RK3A/P", drop);
+    skim_hd_config_clear(&c);
+    check("a backslash stays in the expression (\\d)",
+          parse(&c, "[bands]\n20m=14045500\n[filter]\nregex=true\ncall=^OK\\d\n", NULL) &&
+          skim_hd_config_call_pass(&c, "OK1HRA") && !skim_hd_config_call_pass(&c, "OKAB"));
+    skim_hd_config_clear(&c);
+    GError *err = NULL;
+    check("a bad expression is refused with the reason",
+          !parse(&c, "[bands]\n20m=14045500\n[filter]\nregex=true\ncall=(OK\n", &err) &&
+          err && strstr(err->message, "not a regular expression"));
+    g_clear_error(&err);
+  }
+
   printf("== refused, with the reason\n");
   {
     static const struct { const char *what, *text, *says; } BAD[] = {

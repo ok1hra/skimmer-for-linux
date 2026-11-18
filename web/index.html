@@ -156,12 +156,18 @@
         </fieldset>
         <fieldset>
           <legend>Callsign filter</legend>
-          <label>DX call <input name="filter.call" id="filter-call" placeholder="part of a call" spellcheck="false">
-            <small class="bad" id="filter-bad" hidden>not a valid expression</small>
-            <small>only the calls that match go anywhere; empty = all. The rest are dropped right where
-            they are decoded: no spot on the telnet feed or to the RBN, no dot on the map, not in the DX
-            cluster nor the statistics — peers' and workers' spots too</small></label>
-          <label class="check"><input type="checkbox" name="filter.regex" id="filter-regex"> regular expression</label>
+          <label>DX filter <input name="filter.call" id="filter-call" placeholder="Callsign, text, or regex" spellcheck="false" autocomplete="off">
+            <small class="bad" id="filter-bad" hidden>not a valid regular expression</small></label>
+          <div class="filter-row">
+            <label class="check"><input type="checkbox" name="filter.regex" id="filter-regex"> Regex</label>
+            <button type="button" class="small" id="filter-clear">Clear</button>
+          </div>
+          <small class="note-s">Without Regex, this matches plain text. With Regex enabled, it is a regular
+            expression and ignores letter case; ticking Regex on an empty field puts in the default — every
+            call but the Russian and Belarusian ones (R…, UA–UI, EU–EW).</small>
+          <small class="note-s">Only the calls that pass go anywhere; empty = all. The rest are dropped right
+            where they are decoded: no spot on the telnet feed or to the RBN, no dot on the map, not in the
+            DX cluster nor the statistics — peers' and workers' spots too.</small>
         </fieldset>
         <fieldset>
           <legend>Reverse Beacon Network</legend>
