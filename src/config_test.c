@@ -245,9 +245,9 @@ int main(void) {
           parse(&c, "[bands]\n20m=14045500\n[peers]\nhosts=192.168.1.30, pc2:7302\n", NULL) &&
           g_strv_length(c.peers) == 2 && strcmp(c.peers[1], "pc2:7302") == 0);
     skim_hd_config_clear(&c);
-    check("[station] locator jo60wa → JO60WA",
-          parse(&c, "[bands]\n20m=14045500\n[station]\nlocator=jo60wa\n", NULL) &&
-          strcmp(c.locator, "JO60WA") == 0);
+    check("[station] locator jn18eu → JN18EU",
+          parse(&c, "[bands]\n20m=14045500\n[station]\nlocator=jn18eu\n", NULL) &&
+          strcmp(c.locator, "JN18EU") == 0);
     skim_hd_config_clear(&c);
     check("[station] locator refused when it is none (JO6)",
           !parse(&c, "[bands]\n20m=14045500\n[station]\nlocator=JO6\n", NULL));

@@ -447,7 +447,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
            g_ascii_isdigit(loc[2]) && g_ascii_isdigit(loc[3]) &&
            (n == 4 || (loc[4] >= 'A' && loc[4] <= 'X' && loc[5] >= 'A' && loc[5] <= 'X')));
       if (!ok_loc) {
-        bad(error, path, "[station] locator \"%s\" (a Maidenhead locator: JO60 or JO60WA)", loc);
+        bad(error, path, "[station] locator \"%s\" (a Maidenhead locator: JN18 or JN18EU)", loc);
         g_free(loc);
         return FALSE;
       }

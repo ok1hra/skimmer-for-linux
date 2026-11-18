@@ -265,9 +265,9 @@ function renderSpots() {
   if (!mapMounted) {
     SkMap.mount($('#skmap'));
     Dxc.mount($('#dxc'), (shown, marked) =>
-      SkMap.update(shown.map((s) => ({ ...s, hi: s.call === marked })), spots.locator || 'JO60'));
+      SkMap.update(shown.map((s) => ({ ...s, hi: s.call === marked })), spots.locator || 'JN18'));
     mapMounted = true;
-    SkMap.update([], spots.locator || 'JO60');              // the centre before the rows
+    SkMap.update([], spots.locator || 'JN18');              // the centre before the rows
   }
   $('#loc-warn').hidden = !!spots.locator;
   const bands = status ? status.bands.map((b) => b.band) : [];

@@ -124,7 +124,7 @@ typedef struct {
   int              rbn_port;
   guint            rbn_delay_s;
   /* [station] */
-  char             locator[8];        /* "JO60WA", "" = not set              */
+  char             locator[8];        /* "JN18EU", "" = not set              */
   /* [hub] */
   char            *hub_name;          /* never NULL                          */
   int              hub_port;          /* 0 = no hub server                   */

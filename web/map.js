@@ -83,7 +83,7 @@ const SkMap = (() => {
   let el = null, home = '', spots = [], view = null, baseKey = '', base = null, grayKey = '', gray = null;
 
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-  function centerLL() { return locToLL(opt.center) || locToLL(home) || { lat: 50, lon: 15 }; }
+  function centerLL() { return locToLL(opt.center) || locToLL(home) || locToLL('JN18'); }
 
   // ---- projection for the current view ----------------------------------------------------
   function makeView(size, zoom) {
