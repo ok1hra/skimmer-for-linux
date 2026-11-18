@@ -537,6 +537,34 @@ const cfg = { data: null, dirty: false };
 const MAX_BANDS = 8;          // receivers: the bands on
 const MAX_LISTED = 16;        // [bands] lines, the ones off included
 
+// Read-only settings (an address outside [web] settings_from) stay readable:
+// a choice list still opens to show its options, a text field can be selected
+// and copied — only nothing takes a change. Ticks and buttons are disabled.
+function applyLock(root, may) {
+  for (const inp of root.querySelectorAll('input, select, button')) {
+    if (inp.tagName === 'SELECT') {
+      inp.disabled = false;
+      inp.dataset.locked = may ? '' : '1';
+      inp.dataset.v = inp.value;
+    } else if (inp.tagName === 'BUTTON' || inp.type === 'checkbox' || inp.type === 'file') {
+      inp.disabled = !may;
+    } else {
+      inp.disabled = false;
+      inp.readOnly = !may;
+    }
+  }
+}
+// a locked list snaps back to its value before anything sees the change
+for (const ev of ['input', 'change']) {
+  $('#settings').addEventListener(ev, (e) => {
+    const t = e.target;
+    if (t.tagName === 'SELECT' && t.dataset.locked === '1') {
+      t.value = t.dataset.v;
+      e.stopImmediatePropagation();
+    }
+  }, true);
+}
+
 function bandRow(b, i, n, may, rx) {
   const tr = document.createElement('tr');
   const dis = may ? '' : ' disabled';
@@ -554,6 +582,7 @@ function bandRow(b, i, n, may, rx) {
     `<button type="button" data-a="down" title="later receiver"${i < n - 1 && may ? '' : ' disabled'}>↓</button>` +
     `<button type="button" data-a="del" title="remove"${n > 1 && may ? '' : ' disabled'}>✕</button></td>`;
   tr.querySelector('select').value = b.engine;
+  if (!may) applyLock(tr, false);               // the ↑ ↓ ✕ keep their own limits when may
   return tr;
 }
 function readBands() {
@@ -615,7 +644,8 @@ function fillSettings(d) {
     else if (inp.tagName === 'SELECT') inp.value = v || inp.dataset.default || inp.options[0].value;
     else inp.value = v;
   }
-  for (const inp of f.querySelectorAll('input, select, button')) inp.disabled = !d.may_change;
+  applyLock(f, d.may_change);
+  f.classList.toggle('locked', !d.may_change);
   $('#set-export').disabled = false;                 // anyone may read the file
   $('#lan-find').disabled = false;                   // a search changes nothing
   drawBands(d.bands.map((b) => ({ name: b.name, khz: fmtKhz(b.centre_hz / 1000, null, ' '), cw: b.cw,

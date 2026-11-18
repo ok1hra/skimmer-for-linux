@@ -272,3 +272,5 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 .dcw .k { font-size: 12px; color: var(--mut); }
 .dcw progress { width: 100%; max-width: 280px; accent-color: var(--hot); }
 #legend-temp { margin-top: 12px; }
+#settings.locked input:read-only:not([type=checkbox]) { opacity: .7; }
+#settings.locked select { opacity: .8; }
