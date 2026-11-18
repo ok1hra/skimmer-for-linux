@@ -132,7 +132,7 @@ const Charts = (() => {
         t.textContent = compact(max[k] * f);
       }
       const lab = el('text', { x: m.l + 6, y: k ? zero + halfH - 6 : m.t + 12, 'font-size': 11,
-                               'font-weight': 600, fill: css('--mut'), stroke: css('--panel'),
+                               'font-weight': 700, fill: h.color || css('--mut'), stroke: css('--panel'),
                                'stroke-width': 3, 'paint-order': 'stroke' }, svg);
       lab.textContent = h.name;
       h.lab = lab;

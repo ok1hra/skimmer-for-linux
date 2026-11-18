@@ -301,6 +301,8 @@ function renderDecTile(d) {
     part('CW', 'cw', cw, (b) => b) + part('RTTY', 'rtty', rt, (b) => b.rtty) + '</div>';
 }
 function sum(a) { return a.reduce((x, v) => x + (v || 0), 0); }
+// CW and RTTY keep one colour each across Statistics (CSS --cw, --rtty)
+function modeColor(m) { return getComputedStyle(document.documentElement).getPropertyValue(`--${m}`).trim(); }
 function mean(a) { const v = a.filter((x) => x != null); return v.length ? sum(v) / v.length : null; }
 
 function renderStats() {
@@ -334,7 +336,8 @@ function renderStats() {
   }));
   const loading = (id, on) => $(id).classList.toggle('loading', on);
   Charts.mirror($('#chart-spots'), x,
-    [{ name: 'CW', series }, ...(d.rtty ? [{ name: 'RTTY', series: perHour(d.rtty) }] : [])],
+    [{ name: 'CW', series, color: modeColor('cw') },
+     ...(d.rtty ? [{ name: 'RTTY', series: perHour(d.rtty), color: modeColor('rtty') }] : [])],
     (v) => fmt(v, v < 10 && v % 1 ? 1 : 0));
   // a band's block: CW over RTTY (a mode the band does not decode: an empty strip)
   const decoded = (mm, b) => mm && mm.active[b] && mm.active[b].some((v) => v != null) ? mm.active[b] : null;
@@ -350,8 +353,8 @@ function renderStats() {
   const g = d.global, cpuCw = g.cpu_cw || g.cpu.map(() => null), cpuRt = g.cpu_rtty || g.cpu.map(() => null);
   const anyRt = cpuRt.some((v) => v != null);
   const layers = [
-    { name: 'CW decoders', color: Charts.seriesColor(0), values: cpuCw },
-    ...(anyRt ? [{ name: 'RTTY decoders', color: Charts.seriesColor(1), values: cpuRt }] : []),
+    { name: 'CW decoders', color: modeColor('cw'), values: cpuCw },
+    ...(anyRt ? [{ name: 'RTTY decoders', color: modeColor('rtty'), values: cpuRt }] : []),
     { name: 'rest (IQ in, feed, web)', color: getComputedStyle(document.documentElement).getPropertyValue('--axis').trim(),
       values: g.cpu.map((v, i) => v == null || cpuCw[i] == null ? null
         : Math.max(0, v - cpuCw[i] - (anyRt ? cpuRt[i] || 0 : 0))) },
