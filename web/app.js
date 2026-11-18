@@ -92,14 +92,19 @@ function renderStatus(d) {
   }).join('') + '<tr class="legend-row"><td></td><td colspan="2" class="mut">CW</td><td colspan="2" class="mut">RTTY</td><td class="mut n">spots</td><td colspan="2"></td></tr>';
   const sumDec = (f) => decoded.reduce((a, b) => a + (f(b) || 0), 0);
   const ro = (k, v) => `<span>${k} <b>${v}</b></span>`;
+  // every number says over what: now, the last half hour, or since the start
+  const anyRtty = decoded.some((b) => b.rtty);
+  const in30 = window.spots ? window.spots.list.length : 0;
   $('#readouts').innerHTML = [
-    ro('CW', `${fmt(sumDec((b) => (b.cw !== false ? b.decoders : 0)))} decoders`),
-    ro('RTTY', fmt(sumDec((b) => (b.rtty ? b.rtty.decoders : 0)))),
-    ro('spots', `${fmt(spots)}${d.feed_port ? ` · ${fmt(d.feed_lines)} lines out` : ''}`),
+    ro('decoders now', `${fmt(sumDec((b) => (b.cw !== false ? b.decoders : 0)))} CW` +
+       `${anyRtty ? ` · ${fmt(sumDec((b) => (b.rtty ? b.rtty.decoders : 0)))} RTTY` : ''}`),
+    ro('spots in 30 min', fmt(in30)),
+    ro(`since the start ${uptime(d.uptime_s)} ago`, `${fmt(spots)} spots` +
+       `${d.feed_port ? ` · ${fmt(d.feed_lines)} telnet lines out` : ''}`),
+    ...(d.feed_port ? [ro('telnet now', `${fmt(d.feed_clients)} client${d.feed_clients === 1 ? '' : 's'} on :${d.feed_port}`)] : []),
     ro('packets', `${fmt(d.packets_per_s)}/s`),
-    ro('MASTER.SCP', fmt(d.dict_calls)),
-    ...(d.rbn ? [ro('RBN', `${fmt(d.rbn.clients)} on :${d.rbn.port} · ${fmt(d.rbn.lines)} sent${d.rbn.delay_s ? ` · held ${d.rbn.delay_s} s` : ''}`)] : []),
-    ro('up', uptime(d.uptime_s)),
+    ro('MASTER.SCP', `${fmt(d.dict_calls)} calls`),
+    ...(d.rbn ? [ro('RBN now', `${fmt(d.rbn.clients)} on :${d.rbn.port} · ${fmt(d.rbn.lines)} sent since the start${d.rbn.delay_s ? ` · held ${d.rbn.delay_s} s` : ''}`)] : []),
   ].join('');
 
   const head = '<tr><th>band</th><th class="l">mode</th><th>centre kHz</th><th>engine</th><th>decoders</th><th>active</th><th>stations</th><th>spots</th><th>drops</th><th>kS/s</th></tr>';
