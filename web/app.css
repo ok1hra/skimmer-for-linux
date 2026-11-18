@@ -15,7 +15,7 @@
   --s1: #4f8dff; --s2: #ff7a2f; --s3: #27c26b; --s4: #ffb21f;
   --s5: #e24fd8; --s6: #18b0c9; --s7: #8e6cff; --s8: #ff5d5d;
   --seq-lo: #142235; --seq-hi: #7fb4ff;
-  --seq2-lo: #2a1d14; --seq2-hi: #ffb06b;
+  --seq2-lo: #0f2429; --seq2-hi: #66d2d6;      /* RTTY: a teal beside the CW blue */
   --grid: #1a283a; --axis: #2f4560; --tick: #6a7d96;
 }
 * { box-sizing: border-box; }
