@@ -14,10 +14,17 @@
  *     real receiver does (live-measured 2026-09-29); after ingest it must
  *     sit at +12 kHz with the −12 kHz image down > 40 dB,
  *   - a sequence gap of 3 packets is zero-filled exactly (3 × 126 frames),
+ *   - control words are repeated only in the first 3 s after a start: a
+ *     client streaming longer sends no EP2 at all,
  *   - a busy radio refuses a start without take_over; with take_over the
- *     stream moves, the first client's watchdog fires, and from then on it
- *     sends NOTHING (no EP2 refresh, no stop on free) — the new owner's
- *     stream keeps going,
+ *     stream moves and the first client sends NOTHING — not between the
+ *     take-over and its watchdog (the window in which, live 2026-11-17/18,
+ *     one refresh left CW Skimmer Server parsing the wrong layout for a
+ *     day), and not after it (no EP2, no stop on free); a client freed
+ *     0.2 s after a take-over, before its watchdog, sends no stop either —
+ *     the new owner's stream keeps going,
+ *   - a foreign EP2 that changes our receiver count while the stream still
+ *     comes to us is noticed from the packet rate and undone,
  *   - stop sends EF FE 04 00 and no IQ callback fires after it,
  *   - a mock that goes silent fires the closed callback once,
  *   - bad rate and an unanswered discovery fail with the right codes,
@@ -69,15 +76,23 @@ static guint    m_ep2_from[2];          /* EP2 packets per watched port      */
 static guint16  m_watch_port[2];
 static guint    m_stops;
 static guint16  m_last_stop_port;
+static gint64   m_t0;                   /* stream clock: start or layout change */
+static guint64  m_sent;                 /* packets due since m_t0 (incl. skipped) */
 
 static guint rate_of(guint code) { return code == 1 ? 96000 : code == 2 ? 192000 : 48000; }
 
 static void mock_ep2_frame(const guint8 *f) {
   switch (f[0]) {
-    case 0: case 1:
-      m_nrx = ((f[4] >> 3) & 7) + 1;
-      m_rate_code = f[1] & 3;
+    case 0: case 1: {
+      const guint nrx = ((f[4] >> 3) & 7) + 1, rc = f[1] & 3;
+      if (nrx != m_nrx || rc != m_rate_code) {   /* new layout: new pacing  */
+        m_t0 = g_get_monotonic_time();
+        m_sent = 0;
+      }
+      m_nrx = nrx;
+      m_rate_code = rc;
       break;
+    }
     default: {
       /* RX1..RX7 at C0 0x04..0x10 (MOX bit ignored), RX8 at 0x24 */
       const guint a = f[0] & 0xFE;
@@ -104,8 +119,6 @@ static gpointer mock_serve(gpointer user) {
   (void)user;
   guint32 seq = 0;
   double  phase = 0;
-  gint64  t0 = 0;
-  guint64 sent_pkts = 0;                 /* incl. skipped, since start       */
   while (g_atomic_int_get(&m_run)) {
     struct pollfd pfd = { .fd = m_fd, .events = POLLIN };
     if (poll(&pfd, 1, 2) > 0) {
@@ -136,8 +149,8 @@ static gpointer mock_serve(gpointer user) {
             m_dst = from;
             m_active = TRUE;
             seq = 0;
-            sent_pkts = 0;
-            t0 = g_get_monotonic_time();
+            m_sent = 0;
+            m_t0 = g_get_monotonic_time();
           }
         }
         g_mutex_unlock(&m_lock);
@@ -148,9 +161,9 @@ static gpointer mock_serve(gpointer user) {
     if (m_active) {
       const guint rate = rate_of(m_rate_code);
       const guint slot = 6 * m_nrx + 2, per_frame = 504 / slot;
-      const guint64 due = (guint64)((g_get_monotonic_time() - t0) * 1e-6 *
+      const guint64 due = (guint64)((g_get_monotonic_time() - m_t0) * 1e-6 *
                                     rate / (2.0 * per_frame)) + 4;
-      while (sent_pkts < due) {
+      while (m_sent < due) {
         guint8 pkt[1032] = { 0xEF, 0xFE, 0x01, 0x06 };
         const guint32 s = htonl(seq++);
         memcpy(pkt + 4, &s, 4);
@@ -171,7 +184,7 @@ static gpointer mock_serve(gpointer user) {
         }
         phase = fmod(phase, 2 * G_PI * 6);      /* 6 = TONE_HZ/2 kHz: every
                                                   * RX's phase wraps cleanly */
-        sent_pkts++;
+        m_sent++;
         if (m_skip) { m_skip--; continue; }            /* lost on the "wire" */
         if (!m_mute) {
           sendto(m_fd, pkt, sizeof(pkt), 0, (struct sockaddr *)&m_dst,
@@ -245,6 +258,18 @@ static gboolean pred_fill(gpointer d) {
   return v;
 }
 static gboolean pred_closed(gpointer d) { return g_atomic_int_get(&((Sink *)d)->closed) > 0; }
+static gboolean pred_nrx(gpointer d) {
+  g_mutex_lock(&m_lock);
+  const gboolean ok = m_nrx == GPOINTER_TO_UINT(d);
+  g_mutex_unlock(&m_lock);
+  return ok;
+}
+static guint ep2_from(int w) {
+  g_mutex_lock(&m_lock);
+  const guint v = m_ep2_from[w];
+  g_mutex_unlock(&m_lock);
+  return v;
+}
 
 static guint16 client_port_guess(void) {
   /* The client's ephemeral port is private; the mock learns it from the
@@ -308,6 +333,7 @@ int main(void) {
   skim_hpsdr_client_set_iq_cb(ca, sink_iq, &sa);
   skim_hpsdr_client_set_closed_cb(ca, sink_closed, &sa);
   ok = skim_hpsdr_client_start(ca, 48000, 14080000, 2.5, FALSE, &err);
+  const gint64 a_started = g_get_monotonic_time();
   CHECK(ok, "start (%s)", err ? err->message : "streaming");
   g_clear_error(&err);
   const guint32 want = (guint32)llround(14080000 / (1 + 2.5e-6));
@@ -337,6 +363,15 @@ int main(void) {
   CHECK(lost == 3 * 126, "3 lost packets zero-filled as %" G_GUINT64_FORMAT
         " frames (want 378)", lost);
 
+  printf("client A — no control repeats after its first 3 s:\n");
+  const gint64 wait_us = a_started + 3300000 - g_get_monotonic_time();
+  if (wait_us > 0) { g_usleep((gulong)wait_us); }
+  const guint ep2_late0 = ep2_from(0);
+  g_usleep(1500000);
+  const guint ep2_late1 = ep2_from(0);
+  CHECK(ep2_late1 == ep2_late0, "streaming 3.3…4.8 s: A sent no EP2 (%u→%u)",
+        ep2_late0, ep2_late1);
+
   printf("client B — busy radio, take-over:\n");
   Sink sb = { .skip = 0 };
   g_mutex_init(&sb.lock);
@@ -351,14 +386,15 @@ int main(void) {
   g_mutex_unlock(&m_lock);
   CHECK(fw_after == want, "the refused start sent no EP2 (word still %u)", fw_after);
 
+  const guint ep2_a0 = ep2_from(0);
   ok = skim_hpsdr_client_start(cb, 48000, 7050000, 0, TRUE, &err);
   CHECK(ok, "take_over start (%s)", err ? err->message : "streaming");
   g_clear_error(&err);
   m_watch_port[1] = client_port_guess();
   CHECK(wait_for(pred_closed, &sa, 3500), "client A's watchdog fired (stream gone)");
-  g_mutex_lock(&m_lock);
-  const guint ep2_a = m_ep2_from[0];
-  g_mutex_unlock(&m_lock);
+  const guint ep2_a = ep2_from(0);
+  CHECK(ep2_a == ep2_a0, "between the take-over and its watchdog A sent no EP2 "
+        "(%u→%u) — B's configuration stands", ep2_a0, ep2_a);
   g_usleep(1500000);                             /* > one refresh period     */
   g_mutex_lock(&m_lock);
   const guint ep2_a2 = m_ep2_from[0], ep2_b = m_ep2_from[1];
@@ -366,7 +402,7 @@ int main(void) {
   const guint stops0 = m_stops;
   g_mutex_unlock(&m_lock);
   CHECK(ep2_a2 == ep2_a && ep2_b > 0 && fw_b == 7050000,
-        "after losing the stream A sends no EP2 (%u→%u), B refreshes (%u), "
+        "after losing the stream A sends no EP2 (%u→%u), B repeats in its start window (%u), "
         "word %u", ep2_a, ep2_a2, ep2_b, fw_b);
   skim_hpsdr_client_free(ca);
   g_usleep(100000);
@@ -444,6 +480,15 @@ int main(void) {
     }
   }
   CHECK(demux_ok, "each RX gets only its own tone, true orientation");
+  g_usleep(1000000);                           /* past D's start window      */
+  g_mutex_lock(&m_lock);                       /* a foreign EP2: 8 receivers */
+  m_nrx = 8;
+  m_t0 = g_get_monotonic_time();
+  m_sent = 0;
+  g_mutex_unlock(&m_lock);
+  CHECK(wait_for(pred_nrx, GUINT_TO_POINTER(6), 6000),
+        "a foreign EP2 (8 RX) on our receiver noticed from the packet rate and "
+        "undone (back to 6 RX)");
   skim_hpsdr_client_free(cd);
   SkimHpsdrClient *ce = skim_hpsdr_client_new("127.0.0.1", m_port);
   const double nine[9] = { 0 };
@@ -451,6 +496,45 @@ int main(void) {
   CHECK(!ok, "9 receivers refused (%s)", err ? err->message : "started!");
   g_clear_error(&err);
   skim_hpsdr_client_free(ce);
+
+  printf("clients E, F — E freed 0.2 s after F took over (before E's watchdog):\n");
+  g_mutex_lock(&m_lock);
+  m_active = FALSE;
+  g_mutex_unlock(&m_lock);
+  Sink se = { .skip = 0 }, sf = { .skip = 0 };
+  g_mutex_init(&se.lock);
+  g_mutex_init(&sf.lock);
+  SkimHpsdrClient *cx = skim_hpsdr_client_new("127.0.0.1", m_port);
+  skim_hpsdr_client_set_iq_cb(cx, sink_iq, &se);
+  ok = skim_hpsdr_client_start(cx, 48000, 10120000, 0, FALSE, &err);
+  CHECK(ok, "E starts (%s)", err ? err->message : "streaming");
+  g_clear_error(&err);
+  SkimHpsdrClient *cy = skim_hpsdr_client_new("127.0.0.1", m_port);
+  skim_hpsdr_client_set_iq_cb(cy, sink_iq, &sf);
+  ok = skim_hpsdr_client_start(cy, 48000, 18080000, 0, TRUE, &err);
+  CHECK(ok, "F takes over (%s)", err ? err->message : "streaming");
+  g_clear_error(&err);
+  g_usleep(200000);
+  g_mutex_lock(&m_lock);
+  const guint stops_e0 = m_stops;
+  g_mutex_unlock(&m_lock);
+  skim_hpsdr_client_stop(cx);
+  const guint64 ff0 = sink_frames(&sf);
+  g_usleep(300000);
+  g_mutex_lock(&m_lock);
+  const guint stops_e1 = m_stops;
+  const gboolean f_on = m_active;
+  g_mutex_unlock(&m_lock);
+  CHECK(stops_e1 == stops_e0 && f_on && sink_frames(&sf) > ff0,
+        "E sent no stop — F's stream goes on (stops %u→%u)", stops_e0, stops_e1);
+  skim_hpsdr_client_free(cx);
+  skim_hpsdr_client_stop(cy);
+  g_usleep(200000);
+  g_mutex_lock(&m_lock);
+  const gboolean f_off = !m_active;
+  g_mutex_unlock(&m_lock);
+  CHECK(f_off, "F's own stop still works — radio idle");
+  skim_hpsdr_client_free(cy);
 
   g_atomic_int_set(&m_run, 0);
   g_thread_join(mt);

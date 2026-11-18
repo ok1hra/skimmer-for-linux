@@ -15,10 +15,28 @@
  *              sample and receiver I[3] Q[3] (24-bit BE, signed), then a
  *              16-bit mic word: 504 / (6·nrx + 2) samples per frame.
  *
- * The server has no watchdog and takes EP2 and stop from ANY address. So
- * the control refresh (1 Hz, against UDP loss) and the final stop go out
- * only while the stream is still ours; after a take-over by another client
- * we go quiet.
+ * The server has no watchdog and takes EP2 and stop from ANY address, and
+ * its receiver count, rate and DDC frequencies are simply whatever the LAST
+ * EP2 frame from anyone said. So nothing goes to the radio unless the
+ * stream is flowing to us right now — judged by the kernel's arrival time
+ * of the newest EP6 packet, never by when we got round to processing it
+ * (the socket can hold a second of backlog):
+ *   - the control words are repeated (1 Hz, against UDP loss) only in the
+ *     first REFRESH_WINDOW_US after the start, never later. A client that
+ *     takes the radio over — CW Skimmer Server's HermesIntf sends its
+ *     configuration ONCE, at start — must not get it overwritten by our
+ *     refresh while our 2 s watchdog has not yet noticed the take-over.
+ *     Live 2026-11-17/18: one such refresh left SkimSrv parsing our 7-RX
+ *     frames as its 8-RX layout for a day (every call on every band, WPM
+ *     ×1.1, all of it sent to RBN);
+ *   - the layout is checked instead: the packet rate (sequence numbers over
+ *     kernel arrival time) must match our rate and receiver count. A stream
+ *     that still comes to us in another layout means someone else's EP2
+ *     reached our receiver: we say so and send our control words again;
+ *   - the final stop goes out only when the newest packet in the socket is
+ *     fresh. A stop sent after a take-over would end the new owner's
+ *     stream.
+ * After the watchdog fires we go quiet for good.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -30,6 +48,8 @@
 #include <poll.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
+#include <time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -40,6 +60,11 @@
 #define BLOCK_FRAMES     2048     /* per IQ callback — the TCI block size     */
 #define POLL_MS          200
 #define REFRESH_US       (1 * G_USEC_PER_SEC)
+#define REFRESH_WINDOW_US (3 * G_USEC_PER_SEC) /* control repeats only so long */
+#define FRESH_US         (50 * 1000)  /* newest packet younger: stream is ours  */
+#define LAYOUT_CHECK_US  (2 * G_USEC_PER_SEC)
+#define LAYOUT_TOL       0.03         /* 7 vs 8 RX differ by 10 %, 6 vs 7 by 9 % */
+#define LAYOUT_LOG_US    (60 * G_USEC_PER_SEC)
 #define WATCHDOG_US      (2 * G_USEC_PER_SEC)
 #define FIRST_IQ_US      (2 * G_USEC_PER_SEC)
 #define LOST_LOG_US      (10 * G_USEC_PER_SEC)
@@ -87,8 +112,15 @@ struct _SkimHpsdrClient {
   guint32  next_seq;
   gboolean have_seq;
   gint64   last_refresh_us;
+  gint64   started_us;           /* monotonic: the start command went out    */
   gint64   last_lost_log_us;
   guint64  lost_since_log;
+  gint64   arrival_us;           /* real time: kernel arrival, newest EP6    */
+  gboolean chk_have;             /* layout check: window start below is set  */
+  guint32  chk_seq;
+  gint64   chk_arrival_us;
+  gint64   last_layout_log_us;
+  guint64  layout_resends;
 
   GMutex   lock;                 /* guards everything below                  */
   GCond    cond;
@@ -129,7 +161,39 @@ static int open_socket(GError **error) {
   /* ~1500 packets/s at 192 kHz: a deep buffer rides out scheduling hiccups. */
   int rcvbuf = 4 * 1024 * 1024;
   setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+  /* Kernel arrival times: "is the stream still ours?" must not be fooled
+   * by a backlog we are still working through. */
+  int one = 1;
+  setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &one, sizeof(one));
   return fd;
+}
+
+/* One datagram and its kernel arrival time (real time, µs; the time of the
+ * call when the kernel gave none). */
+static gssize recv_stamped(int fd, guint8 *buf, gsize len, int flags,
+                           struct sockaddr_in *from, gint64 *arrival_us) {
+  struct iovec iov = { .iov_base = buf, .iov_len = len };
+  union {
+    char           b[CMSG_SPACE(sizeof(struct timespec))];
+    struct cmsghdr align;
+  } ctl;
+  struct msghdr mh = {
+    .msg_name = from, .msg_namelen = sizeof(*from),
+    .msg_iov = &iov, .msg_iovlen = 1,
+    .msg_control = ctl.b, .msg_controllen = sizeof(ctl.b),
+  };
+  const gssize n = recvmsg(fd, &mh, flags);
+  if (n < 0) { return n; }
+  *arrival_us = 0;
+  for (struct cmsghdr *cm = CMSG_FIRSTHDR(&mh); cm; cm = CMSG_NXTHDR(&mh, cm)) {
+    if (cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SCM_TIMESTAMPNS) {
+      struct timespec ts;
+      memcpy(&ts, CMSG_DATA(cm), sizeof(ts));
+      *arrival_us = (gint64)ts.tv_sec * G_USEC_PER_SEC + ts.tv_nsec / 1000;
+    }
+  }
+  if (*arrival_us == 0) { *arrival_us = g_get_real_time(); }
+  return n;
 }
 
 static void send_cmd(int fd, const struct sockaddr_in *dst, guint8 b2, guint8 b3) {
@@ -354,6 +418,49 @@ static void handle_ep6(SkimHpsdrClient *c, const guint8 *pkt) {
   }
 }
 
+static gboolean is_ep6(const SkimHpsdrClient *c, const guint8 *buf, gssize n,
+                       const struct sockaddr_in *from) {
+  return n == PKT_BYTES && from->sin_addr.s_addr == c->dst.sin_addr.s_addr &&
+         buf[0] == 0xEF && buf[1] == 0xFE && buf[2] == 0x01 && buf[3] == 0x06;
+}
+
+/* Packets per second the server sends for our rate and receiver count. */
+static double expected_pps(const SkimHpsdrClient *c) {
+  const guint per_frame = FRAME_PAYLOAD / (6 * c->nrx + 2);
+  return (double)c->rate / (2.0 * per_frame);
+}
+
+/* The stream still comes to us, but in another layout: someone else's EP2
+ * reached our receiver (the server takes it from anyone). Measured over
+ * kernel arrival times, so a backlog cannot fake it. */
+static void check_layout(SkimHpsdrClient *c, gint64 now, gboolean fresh) {
+  if (!c->have_seq) { return; }
+  if (!c->chk_have) {
+    c->chk_have = TRUE;
+    c->chk_seq = c->next_seq;
+    c->chk_arrival_us = c->arrival_us;
+    return;
+  }
+  const gint64 dt = c->arrival_us - c->chk_arrival_us;
+  if (dt < LAYOUT_CHECK_US) { return; }
+  const double got = (double)(guint32)(c->next_seq - c->chk_seq) *
+                     G_USEC_PER_SEC / (double)dt;
+  const double want = expected_pps(c);
+  c->chk_seq = c->next_seq;
+  c->chk_arrival_us = c->arrival_us;
+  if (!fresh || fabs(got / want - 1.0) <= LAYOUT_TOL) { return; }
+  c->layout_resends++;
+  if (now - c->last_layout_log_us > LAYOUT_LOG_US) {
+    g_message("hpsdr: %s — %.0f packets/s where %u RX × %u Hz send %.0f: "
+              "another client reconfigured our receiver; sending our control "
+              "words again (%" G_GUINT64_FORMAT " time(s) so far)", c->device,
+              got, c->nrx, c->rate, want, c->layout_resends);
+    c->last_layout_log_us = now;
+  }
+  send_ep2(c);
+  c->last_refresh_us = now;
+}
+
 static gpointer rx_thread(gpointer data) {
   SkimHpsdrClient *c = data;
   guint8 buf[PKT_BYTES + 16];
@@ -361,12 +468,11 @@ static gpointer rx_thread(gpointer data) {
     struct pollfd pfd = { .fd = c->fd, .events = POLLIN };
     if (poll(&pfd, 1, POLL_MS) > 0) {
       struct sockaddr_in from;
-      socklen_t flen = sizeof(from);
-      const gssize n = recvfrom(c->fd, buf, sizeof(buf), 0,
-                                (struct sockaddr *)&from, &flen);
-      if (n == PKT_BYTES && from.sin_addr.s_addr == c->dst.sin_addr.s_addr &&
-          buf[0] == 0xEF && buf[1] == 0xFE && buf[2] == 0x01 && buf[3] == 0x06) {
+      gint64 arrival;
+      const gssize n = recv_stamped(c->fd, buf, sizeof(buf), 0, &from, &arrival);
+      if (is_ep6(c, buf, n, &from)) {
         handle_ep6(c, buf);
+        c->arrival_us = arrival;
       }
     }
 
@@ -384,12 +490,35 @@ static gpointer rx_thread(gpointer data) {
       g_message("hpsdr: %s — stream stopped (another client, or the radio "
                 "left the network)", c->device);
       if (c->closed_cb) { c->closed_cb(c->closed_cb_data); }
-    } else if (ours && now - c->last_refresh_us > REFRESH_US) {
+      continue;
+    }
+    if (!ours || c->arrival_us == 0) { continue; }
+    const gboolean fresh = g_get_real_time() - c->arrival_us < FRESH_US;
+    if (fresh && now - c->started_us < REFRESH_WINDOW_US &&
+        now - c->last_refresh_us > REFRESH_US) {
       send_ep2(c);
       c->last_refresh_us = now;
     }
+    check_layout(c, now, fresh);
   }
   return NULL;
+}
+
+/* After the receive thread has stopped: does the stream still come to us?
+ * Drain what the socket holds and judge by the newest packet's kernel
+ * arrival time — old means another client has the stream now. */
+static gboolean stream_still_ours(SkimHpsdrClient *c) {
+  gint64 newest = c->arrival_us;
+  guint8 buf[PKT_BYTES + 16];
+  for (;;) {
+    struct sockaddr_in from;
+    gint64 arrival;
+    const gssize n = recv_stamped(c->fd, buf, sizeof(buf), MSG_DONTWAIT,
+                                  &from, &arrival);
+    if (n < 0) { break; }
+    if (is_ep6(c, buf, n, &from) && arrival > newest) { newest = arrival; }
+  }
+  return newest != 0 && g_get_real_time() - newest < FRESH_US;
 }
 
 /* ---- public API ------------------------------------------------------------- */
@@ -500,6 +629,10 @@ gboolean skim_hpsdr_client_start_multi(SkimHpsdrClient *c, guint rate,
   c->have_seq = FALSE;
   c->lost_since_log = 0;
   c->last_lost_log_us = 0;
+  c->arrival_us = 0;
+  c->chk_have = FALSE;
+  c->last_layout_log_us = 0;
+  c->layout_resends = 0;
   g_mutex_lock(&c->lock);
   c->got_iq = FALSE;
   c->ours = TRUE;
@@ -511,7 +644,7 @@ gboolean skim_hpsdr_client_start_multi(SkimHpsdrClient *c, guint rate,
   send_ep2(c);
   send_ep2(c);
   send_cmd(c->fd, &c->dst, 0x04, 0x01);
-  c->last_refresh_us = g_get_monotonic_time();
+  c->last_refresh_us = c->started_us = g_get_monotonic_time();
 
   g_atomic_int_set(&c->run, 1);
   c->thread = g_thread_new("skim-hpsdr", rx_thread, c);
@@ -556,7 +689,14 @@ void skim_hpsdr_client_stop(SkimHpsdrClient *c) {
   const gboolean ours = c->ours;
   c->ours = FALSE;
   g_mutex_unlock(&c->lock);
-  if (ours) { send_cmd(c->fd, &c->dst, 0x04, 0x00); }
+  if (ours) {
+    if (stream_still_ours(c)) {
+      send_cmd(c->fd, &c->dst, 0x04, 0x00);
+    } else {
+      g_message("hpsdr: %s — the stream no longer comes to us (taken over?): "
+                "no stop sent", c->device);
+    }
+  }
   close(c->fd);
   c->fd = -1;
 }
