@@ -341,5 +341,61 @@ const Charts = (() => {
     hit.addEventListener('pointerleave', () => { tt.hide(); syncOff(); });
   }
 
-  return { mirror, heat, area, seriesColor };
+  // ---- one quantity as a line on its own scale (not from zero) ---------------------
+  // opts: { name, color, fmtV, fmtTick, height, minSpan } — the scale spans the
+  // values' range rounded out to tens, at least minSpan wide.
+  function line(box, x, values, opts) {
+    const { svg, W, H } = frame(box, opts.height || 110);
+    const v = values.filter((y) => y != null);
+    const span = opts.minSpan || 20;
+    let lo = v.length ? Math.floor(Math.min(...v) / 10) * 10 : 0;
+    let hi = v.length ? Math.ceil(Math.max(...v) / 10) * 10 : span;
+    if (hi - lo < span) { const c = (hi + lo) / 2; lo = Math.floor((c - span / 2) / 10) * 10; hi = lo + span; }
+    const m = { l: ML, r: MR, t: 6, b: 22 };
+    const pw = W - m.l - m.r, ph = H - m.t - m.b, n = x.t.length;
+    const px = (i) => m.l + ((i + 0.5) * pw) / n, py = (y) => m.t + ph - (ph * (y - lo)) / (hi - lo);
+    for (let i = 0; i <= 2; i++) {
+      const y = lo + ((hi - lo) * i) / 2, yy = py(y);
+      el('line', { x1: m.l, x2: W - m.r, y1: yy, y2: yy, stroke: i ? css('--grid') : css('--axis'),
+                   'stroke-width': 1, 'shape-rendering': 'crispEdges' }, svg);
+      const t = el('text', { x: m.l - 6, y: yy + 4, 'text-anchor': 'end', 'font-size': 11, fill: opts.color }, svg);
+      t.textContent = opts.fmtTick(y);
+    }
+    const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(pw / 90))));
+    for (let i = 0; i < n; i += every) {
+      const t = el('text', { x: px(i), y: H - 6, 'text-anchor': 'middle', 'font-size': 11, fill: css('--tick') }, svg);
+      t.textContent = timeLabel(x.t[i], x.spanH);
+    }
+    let d = '', pen = false;
+    values.forEach((y, i) => {
+      if (y == null) { pen = false; return; }
+      d += `${pen ? 'L' : 'M'}${px(i).toFixed(1)},${py(y).toFixed(1)}`;
+      pen = true;
+    });
+    el('path', { d, fill: 'none', stroke: opts.color, 'stroke-width': 2, 'stroke-linejoin': 'round',
+                 'stroke-linecap': 'round' }, svg);
+    values.forEach((y, i) => {                     // a bucket alone between gaps: a dot
+      if (y != null && values[i - 1] == null && values[i + 1] == null) {
+        el('circle', { cx: px(i), cy: py(y), r: 2, fill: opts.color }, svg);
+      }
+    });
+    if (!v.length) {
+      const t = el('text', { x: m.l + pw / 2, y: m.t + ph / 2 + 4, 'text-anchor': 'middle', 'font-size': 12,
+                             fill: css('--tick') }, svg);
+      t.textContent = 'not recorded in this range';
+    }
+    crossLine(box, svg, m.t, m.t + ph, (i) => Math.round(px(i)) + 0.5);
+    const tt = tip(box);
+    const hit = el('rect', { x: m.l, y: m.t, width: pw, height: ph, fill: 'transparent' }, svg);
+    hit.addEventListener('pointermove', (e) => {
+      const r = svg.getBoundingClientRect(), mx = ((e.clientX - r.left) * W) / r.width;
+      const i = Math.min(n - 1, Math.max(0, Math.floor(((mx - m.l) * n) / pw)));
+      syncAt(i);
+      tt.show((px(i) * r.width) / W, (py(values[i] ?? lo) * r.height) / H, x.label(i),
+              [{ value: values[i] == null ? '–' : opts.fmtV(values[i]), label: opts.name, color: opts.color }]);
+    });
+    hit.addEventListener('pointerleave', () => { tt.hide(); syncOff(); });
+  }
+
+  return { mirror, heat, area, line, seriesColor };
 })();

@@ -4,16 +4,17 @@
  * Per band and mode (CW, RTTY): spots sent, stations that appeared, active
  * decoders, calls the fold held back, spots the learned gate scored below
  * its threshold, the median SNR of the spots. Globally: CPU (all, and the
- * CW and RTTY pipelines' share), lost IQ, feed clients, whether the radio
- * streamed and which one.
+ * CW and RTTY pipelines' share), the CPU temperature (peak), lost IQ, feed
+ * clients, whether the radio streamed and which one.
  *
  * The three rings live in a fixed-size file (~19 MB, held in memory too)
  * under ~/.local/state/skimmer-for-linux/stats.bin; every few minutes and at
  * exit the slots changed since are written into it in place (a few kB), so
  * a restart — every settings change is one — keeps the graphs.
  * Bands are matched by name: a band added later starts empty, a band
- * dropped from the config loses its history at the next save. A version 1
- * file (no CPU split) is read and carried over, its split empty.
+ * dropped from the config loses its history at the next save. Older files
+ * are read and carried over: version 1 (no CPU split) and 3 (no CPU
+ * temperature) with those empty.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -45,6 +46,7 @@ typedef enum {
   SKIM_SG_RADIO,           /* which [radio] host, 1-based (0 = none)         */
   SKIM_SG_CPU_CW,          /* % of one core: the CW pipelines' threads       */
   SKIM_SG_CPU_RTTY,        /* % of one core: the RTTY pipelines' threads     */
+  SKIM_SG_CPU_TEMP,        /* °C: the hottest CPU sensor, the minute's peak  */
   SKIM_SG_N,
 } SkimStatsGlobalMetric;
 

@@ -178,6 +178,9 @@ typedef struct {
   double          cpu_pct;
   guint64         cpu_mode_prev[M_N];   /* ns, the pipelines' engine threads */
   double          cpu_mode_pct[M_N];    /* CW, RTTY: % of one core           */
+  GPtrArray      *temp_paths;  /* the CPU's temperature sensors (°C × 1000)  */
+  double          temp_c;      /* the hottest of them now; NAN = none        */
+  float           temp_peak;   /* … the minute's hottest (the history)       */
   guint           ticks;
 
   SkimStats *stats;            /* the 7-day history (stats.h)                 */
@@ -352,6 +355,68 @@ static guint64 cpu_ticks(void) {
   return (guint64)ut + st;
 }
 
+/* The CPU's temperature sensors, found once at start: the inputs of a CPU's
+ * hwmon chip (coretemp, k10temp, zenpower, cpu_thermal …), else a CPU's
+ * thermal zone (x86_pkg_temp, cpu…, soc…). Empty when the machine has none
+ * — no temperature, not a wrong one (acpitz and the disks are not the CPU). */
+static GPtrArray *temp_sensors(void) {
+  static const char *const CHIPS[] = { "coretemp", "k10temp", "zenpower", "cpu_thermal",
+                                       "cpu-thermal", "soc_thermal", "cpu", NULL };
+  GPtrArray *out = g_ptr_array_new_with_free_func(g_free);
+  GDir *d = g_dir_open("/sys/class/hwmon", 0, NULL);
+  for (const char *e; d && (e = g_dir_read_name(d));) {
+    char *np = g_build_filename("/sys/class/hwmon", e, "name", NULL), *name = NULL;
+    if (g_file_get_contents(np, &name, NULL, NULL) && g_strv_contains(CHIPS, g_strstrip(name))) {
+      char *dir = g_build_filename("/sys/class/hwmon", e, NULL);
+      GDir *hd = g_dir_open(dir, 0, NULL);
+      for (const char *f; hd && (f = g_dir_read_name(hd));) {
+        if (g_str_has_prefix(f, "temp") && g_str_has_suffix(f, "_input")) {
+          g_ptr_array_add(out, g_build_filename(dir, f, NULL));
+        }
+      }
+      if (hd) { g_dir_close(hd); }
+      g_free(dir);
+    }
+    g_free(name);
+    g_free(np);
+  }
+  if (d) { g_dir_close(d); }
+  if (out->len) { return out; }
+  d = g_dir_open("/sys/class/thermal", 0, NULL);
+  for (const char *e; d && (e = g_dir_read_name(d));) {
+    if (!g_str_has_prefix(e, "thermal_zone")) { continue; }
+    char *tp = g_build_filename("/sys/class/thermal", e, "type", NULL), *type = NULL;
+    if (g_file_get_contents(tp, &type, NULL, NULL)) {
+      g_strstrip(type);
+      if (strcmp(type, "x86_pkg_temp") == 0 || g_str_has_prefix(type, "cpu") ||
+          g_str_has_prefix(type, "soc")) {
+        g_ptr_array_add(out, g_build_filename("/sys/class/thermal", e, "temp", NULL));
+      }
+    }
+    g_free(type);
+    g_free(tp);
+  }
+  if (d) { g_dir_close(d); }
+  return out;
+}
+
+/* The hottest of them now, °C (NAN: none, or none readable). */
+static double cpu_temp_c(const GPtrArray *paths) {
+  double hot = NAN;
+  for (guint i = 0; paths && i < paths->len; i++) {
+    char buf[32];
+    FILE *f = fopen(paths->pdata[i], "r");
+    if (!f) { continue; }
+    const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    char *end = NULL;
+    const double v = g_ascii_strtod(buf, &end) / 1000.0;
+    if (end != buf && v > -50 && v < 200 && !(v <= hot)) { hot = v; }
+  }
+  return hot;
+}
+
 typedef struct {
   guint   channels, active, stations;
   guint64 spots, drops;
@@ -507,6 +572,8 @@ static void status_build(Hd *h, gboolean print) {
       up_s / 3600, (int)(up_s / 60 % 60));
 
 
+  char temp[G_ASCII_DTOSTR_BUF_SIZE] = "null";       /* the CPU temperature now */
+  if (!isnan(h->temp_c)) { g_ascii_formatd(temp, sizeof(temp), "%.1f", h->temp_c); }
   char *jstate = skim_json_str(src->state);
   char *jcall = skim_json_str(h->cfg.feed_call ? h->cfg.feed_call : "");
   char *jhost = skim_json_str(src->host);
@@ -568,7 +635,7 @@ static void status_build(Hd *h, gboolean print) {
   g_string_append_printf(json,
       "{\"version\":\"%s\",\"started_us\":%" G_GINT64_FORMAT ",\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
       "\"call\":\"%s\",\"locator\":\"%s\",\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
-      "\"cpu_cw_pct\":%.1f,\"cpu_rtty_pct\":%.1f,"
+      "\"cpu_cw_pct\":%.1f,\"cpu_rtty_pct\":%.1f,\"cpu_temp_c\":%s,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
       "\"settle_nodict_s\":%.1f,"
@@ -578,7 +645,7 @@ static void status_build(Hd *h, gboolean print) {
       "\"suppress_cw_on_rtty\":%s,\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
       "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
       SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, jcall, h->cfg.locator, src->ppm, h->cfg.rate, lost_pct,
-      h->pps, h->cpu_pct, h->cpu_mode_pct[M_CW], h->cpu_mode_pct[M_RTTY], engine, pol_score,
+      h->pps, h->cpu_pct, h->cpu_mode_pct[M_CW], h->cpu_mode_pct[M_RTTY], temp, engine, pol_score,
       pol_hear, pol_settle, pol_nd, pol_fresh,
       pol_fold, folded, jgate, h->switches_json, supervisor_json(), jrbn, jpeers, dups,
       h->cfg.suppress_cw_on_rtty ? "true" : "false",
@@ -766,6 +833,8 @@ static void stats_minute(Hd *h) {
                              ? (float)(100.0 * (double)dl / (double)(df + dl)) : 0;
   m.glob[SKIM_SG_CLIENTS] = h->feed ? (float)skim_rbn_feed_clients(h->feed) : 0;
   m.glob[SKIM_SG_STREAMING] = src->streaming ? 1 : 0;
+  m.glob[SKIM_SG_CPU_TEMP] = h->temp_peak;            /* NAN: no sensor        */
+  h->temp_peak = NAN;
   m.glob[SKIM_SG_RADIO] = 0;
   for (guint i = 0; src->streaming && h->cfg.hosts[i]; i++) {
     if (strcmp(h->cfg.hosts[i], src->host) == 0) { m.glob[SKIM_SG_RADIO] = (float)(i + 1); }
@@ -827,6 +896,8 @@ static gboolean tick(gpointer data) {
   memcpy(h->cpu_mode_prev, mode_ns, sizeof(mode_ns));
   h->cpu_prev = cpu;
   h->cpu_prev_us = now;
+  h->temp_c = cpu_temp_c(h->temp_paths);              /* and the minute's peak */
+  if (!isnan(h->temp_c) && !(h->temp_c <= h->temp_peak)) { h->temp_peak = (float)h->temp_c; }
 
   const gint64 minute = g_get_real_time() / (60 * G_USEC_PER_SEC);
   if (minute != h->minute) {
@@ -1775,6 +1846,9 @@ int main(int argc, char **argv) {
   }
   h->t_start = g_get_monotonic_time();
   h->started_us = g_get_real_time();
+  h->temp_paths = temp_sensors();
+  h->temp_c = NAN;
+  h->temp_peak = NAN;
   g_message("skimmer-headless %s — %s %s, %u band%s × %u kHz, config %s", SKIMMER_VERSION,
             c->source == SKIM_HD_SOURCE_MOCK ? "mock source" : "HPSDR P1",
             c->source == SKIM_HD_SOURCE_MOCK ? "(no radio)" : c->hosts_text, c->nb,
@@ -2057,6 +2131,7 @@ int main(int argc, char **argv) {
     skim_rec_free(h->band[i].rec);
   }
   g_clear_pointer(&h->stats, skim_stats_free);  /* saves                       */
+  g_clear_pointer(&h->temp_paths, g_ptr_array_unref);
   g_clear_pointer(&h->peers, skim_hd_peers_free);  /* they spot into the feed */
   g_clear_pointer(&h->feed, skim_rbn_feed_free);   /* it relays to rbn: first */
   g_clear_pointer(&h->rbn, skim_rbn_feed_free);

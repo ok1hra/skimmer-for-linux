@@ -70,7 +70,7 @@ function renderStatus(d) {
   status = d;
   $('#call').textContent = d.call || 'SKIMMER';
   $('#version').textContent = d.locator || (d.version ? `v${d.version}` : '');
-  $('#hdr-stats').innerHTML = `<span>CPU <b>${fmt(d.cpu_pct)}%</b></span> <span>lost <b>${fmt(d.lost_pct, 3)}%</b></span> ` +
+  $('#hdr-stats').innerHTML = `<span>CPU <b>${fmt(d.cpu_pct)}%</b>${d.cpu_temp_c != null ? ` <b>${fmt(d.cpu_temp_c)} °C</b>` : ''}</span> <span>lost <b>${fmt(d.lost_pct, 3)}%</b></span> ` +
     `<span>feed <b>${d.feed_port ? fmt(d.feed_clients) : 'off'}</b></span> <span>${esc(d.engine || '')}</span> <span>v${esc(d.version || '')}</span>`;
   document.title = `${d.call ? `${d.call} · ` : ''}Skimmer for Linux`;
   const dot = $('#radio .dot');
@@ -349,7 +349,13 @@ function renderStats() {
   Charts.area($('#chart-cpu'), x, layers, g.cpu, (v) => `${fmt(v)} %`, 'CPU, all, % of a core',
     { name: 'IQ lost, worst minute', values: g.lost, color: lostColor,
       fmtV: (v) => `${fmt(v, 3)} %`, fmtTick: (v) => `${+v.toPrecision(2)} %` });
-  ['#chart-spots', '#chart-active', '#chart-cpu'].forEach((id) => loading(id, false));
+  // the CPU temperature: the hottest minute of each bucket (from v0.8.2 on)
+  const tempColor = Charts.seriesColor(4);             // magenta: apart from the CPU layers
+  $('#legend-temp').innerHTML = `<span><i class="line" style="border-color:${tempColor};opacity:1"></i>CPU temperature, the hottest minute${status && status.cpu_temp_c != null ? ` · now <b>${fmt(status.cpu_temp_c)} °C</b>` : ''}</span>`;
+  Charts.line($('#chart-temp'), x, g.cpu_temp || g.cpu.map(() => null),
+    { name: 'CPU temperature, the hottest minute', color: tempColor, fmtV: (v) => `${fmt(v)} °C`,
+      fmtTick: (v) => `${fmt(v)} °C`, height: 110, minSpan: 20 });
+  ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-temp'].forEach((id) => loading(id, false));
 
   // CW and RTTY one under the other — in the tiles and in every table cell
   const modes = [['CW', d.cw], ...(d.rtty ? [['RTTY', d.rtty]] : [])];
@@ -400,7 +406,7 @@ tabs.stats = {
   async refresh(force) {
     // history moves by the minute: refetch at most every 30 s
     if (!force && (stats.end || Date.now() - stats.at < 30000)) return;   // a past window stays
-    ['#chart-spots', '#chart-active', '#chart-cpu'].forEach((id) => $(id).classList.add('loading'));
+    ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-temp'].forEach((id) => $(id).classList.add('loading'));
     stats.data = await getJSON(`stats.json?hours=${stats.hours}${stats.end ? `&end=${stats.end}` : ''}`);
     stats.at = Date.now();
     renderStats();

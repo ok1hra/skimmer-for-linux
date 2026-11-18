@@ -5,7 +5,8 @@
  * summed or averaged per bucket; the file survives a reopen, with the bands
  * matched by name when the config re-orders, adds or drops them; a file of
  * another size starts a fresh ring instead of being misread; a version 1
- * file (before the CPU split) is carried over.
+ * file (before the CPU split) and a version 3 file (before the CPU
+ * temperature) are carried over; the temperature keeps each bucket's peak.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -182,18 +183,103 @@ int main(void) {
     m.glob[SKIM_SG_CPU_CW] = 80;
     m.glob[SKIM_SG_CPU_RTTY] = 20;
     skim_stats_put(s, now + 1, &m);
-    skim_stats_free(s);                          /* written as version 3     */
+    skim_stats_free(s);                          /* written as version 4     */
     s = skim_stats_open(path, bands, 1);
     j = skim_stats_json(s, now + 1, 2, 120);    /* one bucket: both minutes */
     char *jt = skim_stats_json(s, now, 720, 0);
     check("its week merged into the coarser rings (the old minute's 7 + the new one's 1)",
           strstr(jt, "\"res_min\":15") && strstr(jt, "\"20m\":[null") && strstr(jt, ",8]") != NULL);
     g_free(jt);
-    check("saved as version 3 and read back: the old minute and the split",
+    check("saved as version 4 and read back: the old minute and the split",
           strstr(j, "\"cpu\":[81.5]") && strstr(j, "\"cpu_cw\":[80]") &&
           strstr(j, "\"cpu_rtty\":[20]") && strstr(j, "\"spots\":{\"20m\":[8]}"));
     g_free(j);
     skim_stats_free(s);
+  }
+
+  printf("== a version 3 file (the rings, no CPU temperature)\n");
+  {
+    /* stats.c's version 3 layout, written by hand: three rings of slots */
+    typedef struct {
+      char    magic[8];
+      guint32 version, minutes, bands, modes, sm_n, sg_n;
+      char    names[SKIM_STATS_BANDS][16];
+      guint32 ntier, tier_res[3], tier_len[3], pad;
+    } H3;
+    enum { G3 = 7, N3 = SKIM_STATS_BANDS * SKIM_STATS_MODES * SKIM_SM_N + G3 };
+    typedef struct {
+      gint64 start;
+      float  band[SKIM_STATS_BANDS][SKIM_STATS_MODES][SKIM_SM_N];
+      float  glob[G3];
+      guint8 n[N3];
+    } S3;
+    const guint res[3] = { 1, 15, 60 }, tl[3] = { SKIM_STATS_MINUTES, 90 * 24 * 4, 2 * 365 * 24 };
+    gsize len = sizeof(H3);
+    for (int t = 0; t < 3; t++) { len += tl[t] * sizeof(S3); }
+    char *buf = g_malloc0(len);
+    H3 *h = (H3 *)buf;
+    memcpy(h->magic, "SKIMSTAT", 8);
+    h->version = 3;
+    h->bands = SKIM_STATS_BANDS;
+    h->modes = SKIM_STATS_MODES;
+    h->sm_n = SKIM_SM_N;
+    h->sg_n = G3;
+    h->ntier = 3;
+    for (int t = 0; t < 3; t++) { h->tier_res[t] = res[t]; h->tier_len[t] = tl[t]; }
+    g_strlcpy(h->names[0], "20m", 16);
+    gsize off = sizeof(H3);
+    for (int t = 0; t < 3; t++) {
+      S3 *sl = (S3 *)(buf + off);
+      for (guint i = 0; i < tl[t]; i++) {
+        for (guint b = 0; b < SKIM_STATS_BANDS; b++)
+          for (guint k = 0; k < SKIM_STATS_MODES; k++)
+            for (guint j = 0; j < SKIM_SM_N; j++) sl[i].band[b][k][j] = NAN;
+        for (guint j = 0; j < G3; j++) sl[i].glob[j] = NAN;
+      }
+      /* the minute now, in each ring's slot that holds it */
+      S3 *one = &sl[(now / res[t]) % tl[t]];
+      one->start = now - now % res[t];
+      one->band[0][0][SKIM_SM_SPOTS] = 9;
+      one->n[SKIM_SM_SPOTS] = 1;
+      one->glob[SKIM_SG_CPU] = 55;
+      one->n[SKIM_STATS_BANDS * SKIM_STATS_MODES * SKIM_SM_N + SKIM_SG_CPU] = 1;
+      one->glob[SKIM_SG_CPU_RTTY] = 11;
+      one->n[SKIM_STATS_BANDS * SKIM_STATS_MODES * SKIM_SM_N + SKIM_SG_CPU_RTTY] = 1;
+      off += tl[t] * sizeof(S3);
+    }
+    g_file_set_contents(path, buf, (gssize)len, NULL);
+    g_free(buf);
+    const char *bands[] = { "20m" };
+    SkimStats *s = skim_stats_open(path, bands, 1);
+    char *j = skim_stats_json(s, now, 1, 60);
+    check("its spots, CPU and split carried over",
+          strstr(j, "\"spots\":{\"20m\":[9]}") && strstr(j, "\"cpu\":[55]") &&
+          strstr(j, "\"cpu_rtty\":[11]"));
+    check("… the CPU temperature empty (null)", strstr(j, "\"cpu_temp\":[null]") != NULL);
+    g_free(j);
+    j = skim_stats_json(s, now, 720, 0);
+    check("… in the 15-minute ring too", strstr(j, "\"res_min\":15") && strstr(j, ",9]"));
+    g_free(j);
+    /* the temperature: a bucket keeps its hottest minute */
+    const float temps[] = { 50, 71.5f, 60 };
+    for (int i = 0; i < 3; i++) {
+      SkimStatsMinute m = minute_of(1, 0, 1, 1);
+      m.glob[SKIM_SG_CPU_TEMP] = temps[i];
+      skim_stats_put(s, now + 1 + i, &m);
+    }
+    skim_stats_free(s);                          /* written as version 4     */
+    s = skim_stats_open(path, bands, 1);
+    j = skim_stats_json(s, now + 3, 1, 60);
+    check("saved as version 4: the old minute kept, the temperature's peak per bucket (71.5)",
+          strstr(j, "\"spots\":{\"20m\":[12]}") && strstr(j, "\"cpu_temp\":[71.5]"));
+    g_free(j);
+    skim_stats_free(s);
+    char *keep = g_strconcat(path, ".v3", NULL);
+    GStatBuf kb;
+    check("… the version 3 file kept beside it, as it was (for an older build)",
+          g_stat(keep, &kb) == 0 && (gsize)kb.st_size == len);
+    g_remove(keep);
+    g_free(keep);
   }
 
   printf("== the 15-minute and hour rings\n");
