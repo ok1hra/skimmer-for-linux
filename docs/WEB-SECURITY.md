@@ -40,9 +40,10 @@ The waterfall's WebSocket refuses a page from another origin. At most
   skimmer then sees each visitor's own address, and they are viewers.
 - **A reverse proxy is fine as long as it sends `X-Forwarded-For`** —
   Caddy and Apache's `mod_proxy` do by default; **nginx does not**: add
-  `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` (and,
-  for the waterfall, `proxy_http_version 1.1;` with the `Upgrade` and
-  `Connection` headers). The skimmer then treats every request through it
+  `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` and
+  `proxy_set_header Host $host;` (the waterfall's socket compares the
+  page's origin with the Host), and for the socket `proxy_http_version
+  1.1;` with the `Upgrade` and `Connection` headers. The skimmer then treats every request through it
   as a viewer, the manager's own included. Manage the skimmer
   on the machine itself, or through an SSH tunnel:
   `ssh -L 8073:127.0.0.1:8073 <host>`, then `http://localhost:8073/`.
