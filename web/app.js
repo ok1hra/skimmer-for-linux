@@ -401,15 +401,16 @@ function renderStats() {
     [{ name: 'CW', series, color: modeColor('cw') },
      ...(d.rtty ? [{ name: 'RTTY', series: perHour(d.rtty), color: modeColor('rtty') }] : [])],
     (v) => fmt(v, v < 10 && v % 1 ? 1 : 0));
-  // a band's block: CW over RTTY (a mode the band does not decode: an empty strip)
+  // a band's block: CW over RTTY (a mode the band does not decode: an empty
+  // strip), both in one ramp — the strip's place says the mode, each its own scale
   const decoded = (mm, b) => mm && mm.active[b] && mm.active[b].some((v) => v != null) ? mm.active[b] : null;
   const amax = Charts.heat($('#chart-active'), x, d.bands.map((b) => ({ name: b, parts: [
     { label: 'CW', values: decoded(d.cw, b), lo: '--seq-lo', hi: '--seq-hi' },
-    ...(d.rtty ? [{ label: 'RTTY', values: decoded(d.rtty, b), lo: '--seq2-lo', hi: '--seq2-hi' }] : []),
+    ...(d.rtty ? [{ label: 'RTTY', values: decoded(d.rtty, b), lo: '--seq-lo', hi: '--seq-hi' }] : []),
   ] })), (v) => fmt(v, 1), 'active decoders');
-  $('#legend-active').innerHTML = [['CW', '--seq'], ...(d.rtty ? [['RTTY', '--seq2']] : [])].map(([l, v]) =>
-    `<span><i class="ramp" style="background:linear-gradient(90deg,var(${v}-lo),var(${v}-hi))"></i>` +
-    `${l}${amax[l] ? ` <span class="mut">0–${fmt(amax[l], amax[l] < 10 ? 1 : 0)}</span>` : ''}</span>`).join('');
+  const span = (l) => (amax[l] ? ` <span class="mut">0–${fmt(amax[l], amax[l] < 10 ? 1 : 0)}</span>` : '');
+  $('#legend-active').innerHTML = '<span><i class="ramp" style="background:linear-gradient(90deg,var(--seq-lo),var(--seq-hi))"></i>' +
+    `${d.rtty ? 'upper strip ' : ''}CW${span('CW')}${d.rtty ? ` · lower strip RTTY${span('RTTY')}` : ''}</span>`;
   // CPU: the CW and RTTY pipelines' threads and the rest of the process, stacked
   // under the total (history before the split has the total line only)
   const g = d.global, cpuCw = g.cpu_cw || g.cpu.map(() => null), cpuRt = g.cpu_rtty || g.cpu.map(() => null);
