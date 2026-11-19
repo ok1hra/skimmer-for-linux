@@ -158,7 +158,9 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 
 /* ---- the status page: map ---- */
 .st-top { display: grid; grid-template-columns: minmax(300px, 700px) 1fr; border-bottom: 1px solid var(--ln); }
-.st-map { padding: 14px 18px; border-right: 1px solid var(--ln); min-width: 0; }
+.st-map { padding: 14px 18px; border-right: 1px solid var(--ln); min-width: 0; position: relative; }
+.st-split { position: absolute; top: 0; bottom: 0; right: -5px; width: 9px; cursor: col-resize; z-index: 3; touch-action: none; }
+.st-split:hover, .st-split.on { background: linear-gradient(90deg, transparent 3px, var(--hot) 3px, var(--hot) 6px, transparent 6px); opacity: .7; }
 .st-side { padding: 14px 18px; min-width: 0; }
 .map-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 8px; }
 .map-bar .seg { gap: 4px; }
@@ -178,7 +180,7 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .map-read b { color: var(--fg); font-variant-numeric: tabular-nums; }
 .map-read .spot { flex-basis: 100%; letter-spacing: .02em; }
 .map-foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 6px; font-size: 12px; letter-spacing: .04em; flex-wrap: wrap; }
-@media (max-width: 1000px) { .st-top { grid-template-columns: 1fr; } .st-map { border-right: 0; } }
+@media (max-width: 1000px) { .st-top { grid-template-columns: 1fr !important; } .st-map { border-right: 0; } .st-split { display: none; } }
 
 /* ---- the status page: the band ladder and readouts ---- */
 .ladder { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }

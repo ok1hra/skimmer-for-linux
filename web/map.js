@@ -272,7 +272,7 @@ const SkMap = (() => {
   function draw() {
     if (!el) return;
     const box = el.querySelector('.map-canvas');
-    const size = Math.max(260, Math.min(680, box.clientWidth));
+    const size = Math.max(260, Math.min(1600, box.clientWidth));
     const cv = box.querySelector('canvas'), dpr = devicePixelRatio || 1;
     if (cv.width !== size * dpr) { cv.width = cv.height = size * dpr; cv.style.width = cv.style.height = `${size}px`; }
     const zoom = opt.zoom || autoZoom();
@@ -412,5 +412,5 @@ const SkMap = (() => {
     draw();
   }
 
-  return { mount, update, noLocator, locate, geo, locToLL, llToLoc, bandColor, center: centerLL };
+  return { mount, update, noLocator, redraw: () => draw(), locate, geo, locToLL, llToLoc, bandColor, center: centerLL };
 })();

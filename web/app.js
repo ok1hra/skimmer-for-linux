@@ -288,6 +288,37 @@ function placeDxc() {
 wideDxc.addEventListener('change', placeDxc);
 placeDxc();
 
+// The line between the map and the rest: dragged, it sets the map's width
+// (kept in the browser).
+(() => {
+  const top = $('.st-top'), handle = $('#st-split');
+  const set = (px) => {
+    const w = Math.round(Math.max(300, Math.min(top.clientWidth - 360, px)));
+    top.style.gridTemplateColumns = `${w}px 1fr`;
+    return w;
+  };
+  let kept = 0;
+  try { kept = Number(localStorage.getItem('skimmer-mapw')) || 0; } catch (e) { /* private */ }
+  if (kept) set(kept);
+  let dragging = false, raf = 0;
+  handle.addEventListener('pointerdown', (e) => { dragging = true; handle.classList.add('on'); handle.setPointerCapture(e.pointerId); e.preventDefault(); });
+  handle.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const w = set(e.clientX - top.getBoundingClientRect().left);
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => { if (typeof SkMap !== 'undefined') SkMap.redraw(); });
+    try { localStorage.setItem('skimmer-mapw', String(w)); } catch (err) { /* private */ }
+  });
+  const end = () => { dragging = false; handle.classList.remove('on'); };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+  handle.addEventListener('dblclick', () => {                   // back to the default
+    top.style.gridTemplateColumns = '';
+    try { localStorage.removeItem('skimmer-mapw'); } catch (err) { /* private */ }
+    if (typeof SkMap !== 'undefined') SkMap.redraw();
+  });
+})();
+
 function renderSpots() {
   if (typeof SkMap === 'undefined' || typeof Dxc === 'undefined') return;
   if (!mapMounted) {
