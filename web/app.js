@@ -525,7 +525,7 @@ function overSpan() {
 function drawOver() {
   const box = $('#t-over');
   if (!box || $('#timebar').hidden) return;
-  const W = Math.max(200, box.clientWidth), H = 40;
+  const W = Math.max(200, box.clientWidth), H = 48;
   const { t0, t1 } = overSpan(), xt = (t) => ((t - t0) / (t1 - t0)) * W;
   let bars = '';
   const o = over.data;
@@ -549,11 +549,12 @@ function drawOver() {
   }
   const off = -Number($('#t-end').value), end = t1 - off * 3600, start = end - stats.hours * 3600;
   const a = Math.max(0, xt(start)), b = Math.min(W, xt(end));
+  // the history dim, the charts' window bright inside a green frame
   box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" preserveAspectRatio="none">` +
-    `<path d="${bars}" fill="var(--axis)"/>` +
-    `<rect x="0" y="0" width="${a.toFixed(1)}" height="${H}" fill="var(--panel)" opacity=".55"/>` +
-    `<rect x="${b.toFixed(1)}" y="0" width="${(W - b).toFixed(1)}" height="${H}" fill="var(--panel)" opacity=".55"/>` +
-    `<rect class="win" x="${a.toFixed(1)}" y="0.5" width="${Math.max(2, b - a).toFixed(1)}" height="${H - 1}"/>` +
+    `<defs><clipPath id="t-win"><rect x="${a.toFixed(1)}" y="0" width="${Math.max(2, b - a).toFixed(1)}" height="${H}"/></clipPath></defs>` +
+    `<path d="${bars}" fill="var(--axis)" opacity=".7"/>` +
+    `<rect class="win" x="${a.toFixed(1)}" y="1" width="${Math.max(3, b - a).toFixed(1)}" height="${H - 2}"/>` +
+    `<path d="${bars}" fill="var(--fg)" opacity=".8" clip-path="url(#t-win)"/>` +
     `${o ? '' : `<text x="${W / 2}" y="${H / 2 + 4}" text-anchor="middle" font-size="11" fill="var(--tick)">loading the history…</text>`}</svg>`;
 }
 function timeLabel(offH) {
