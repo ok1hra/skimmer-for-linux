@@ -26,7 +26,7 @@ const Wf = (() => {
   let W = 0, H = 0, cv, g, sc, sg, sp, spg, rowCv, rowG;
   let view = { lo: 0, hi: 0 };                        // what the canvas shows now
   let floorB = null, envelope = null, rowTimes = [];
-  let spots = [], drawn = new Set(), spotsAt = 0;
+  let spots = [], spotsAt = 0;
   let bytes = 0, bytesAt = Date.now(), sendT = 0;
 
   // ---- colours: dark → blue → cyan → yellow → red → white ----------------------
@@ -69,7 +69,7 @@ const Wf = (() => {
     const v = wanted();
     if (clear || !view.hi) {
       g.fillStyle = '#00000c'; g.fillRect(0, 0, W, H);
-      drawn.clear(); rowTimes = []; envelope = null;
+      rowTimes = []; envelope = null;
     } else if (v.lo !== view.lo || v.hi !== view.hi) {
       const tmp = document.createElement('canvas'); tmp.width = W; tmp.height = H;
       tmp.getContext('2d').drawImage(cv, 0, 0);
@@ -80,6 +80,7 @@ const Wf = (() => {
     }
     view = v;
     drawScale();
+    drawTop();
     clearTimeout(sendT);
     sendT = setTimeout(send, 60);
     save();
@@ -105,31 +106,40 @@ const Wf = (() => {
       sg.beginPath(); sg.moveTo(x + 0.5, 19); sg.lineTo(x + 0.5, 22); sg.stroke();
     }
   }
-  function drawSpectrum(dbFloor) {
-    if (!opt.spec || !envelope) return;
-    const dpr = devicePixelRatio || 1, w = sp.clientWidth, h = 110;
-    if (sp.width !== w * dpr) { sp.width = w * dpr; sp.height = h * dpr; }
+  // The strip over the scale: the spectrum's envelope (an option) and the
+  // calls spotted on the band in the last 15 minutes, small, upright at their
+  // frequency, hanging from the top edge (each fades and goes 15 min after
+  // its last spot). Shown while either is on.
+  let lastFloor = -130;
+  function topShown() { return opt.spec || opt.calls; }
+  function drawTop(dbFloor) {
+    if (dbFloor != null) lastFloor = dbFloor;
+    if (!topShown()) return;
+    const dpr = devicePixelRatio || 1, w = sp.clientWidth, h = opt.spec ? 110 : 64;
+    if (sp.width !== Math.round(w * dpr) || sp.height !== Math.round(h * dpr)) {
+      sp.width = Math.round(w * dpr); sp.height = Math.round(h * dpr); sp.style.height = `${h}px`;
+    }
     spg.setTransform(dpr, 0, 0, dpr, 0, 0);
     spg.fillStyle = '#05090e'; spg.fillRect(0, 0, w, h);
-    const lo = dbFloor - 10, hi = dbFloor + opt.range + 10, y = (db) => h - ((db - lo) / (hi - lo)) * h;
-    spg.strokeStyle = '#1a283a'; spg.fillStyle = '#6a7d96'; spg.font = '10px RC, sans-serif'; spg.lineWidth = 1;
-    for (let db = Math.ceil(lo / 10) * 10; db < hi; db += 10) {
-      spg.beginPath(); spg.moveTo(0, y(db) + 0.5); spg.lineTo(w, y(db) + 0.5); spg.stroke();
-      spg.fillText(`${db}`, 2, y(db) - 2);
+    if (opt.spec && envelope) {
+      const lo = lastFloor - 10, hi = lastFloor + opt.range + 10, y = (db) => h - ((db - lo) / (hi - lo)) * h;
+      spg.strokeStyle = '#1a283a'; spg.fillStyle = '#6a7d96'; spg.font = '10px RC, sans-serif'; spg.lineWidth = 1;
+      for (let db = Math.ceil(lo / 10) * 10; db < hi; db += 10) {
+        spg.beginPath(); spg.moveTo(0, y(db) + 0.5); spg.lineTo(w, y(db) + 0.5); spg.stroke();
+        spg.fillText(`${db}`, 2, y(db) - 2);
+      }
+      const path = () => {
+        spg.beginPath();
+        for (let i = 0; i < envelope.length; i++) {
+          const x = (i / envelope.length) * w;
+          if (i) spg.lineTo(x, y(envelope[i])); else spg.moveTo(x, y(envelope[i]));
+        }
+      };
+      path(); spg.lineTo(w, h); spg.lineTo(0, h); spg.closePath();
+      spg.fillStyle = 'rgba(57,217,138,.18)'; spg.fill();
+      path(); spg.strokeStyle = '#39d98a'; spg.lineWidth = 1.2; spg.stroke();
     }
-    spg.beginPath();
-    for (let i = 0; i < envelope.length; i++) {
-      const x = (i / envelope.length) * w;
-      if (i) spg.lineTo(x, y(envelope[i])); else spg.moveTo(x, y(envelope[i]));
-    }
-    spg.lineTo(w, h); spg.lineTo(0, h); spg.closePath();
-    spg.fillStyle = 'rgba(57,217,138,.18)'; spg.fill();
-    spg.beginPath();
-    for (let i = 0; i < envelope.length; i++) {
-      const x = (i / envelope.length) * w;
-      if (i) spg.lineTo(x, y(envelope[i])); else spg.moveTo(x, y(envelope[i]));
-    }
-    spg.strokeStyle = '#39d98a'; spg.lineWidth = 1.2; spg.stroke();
+    if (opt.calls) drawCalls(w);
   }
 
   // ---- a row -------------------------------------------------------------------
@@ -166,50 +176,55 @@ const Wf = (() => {
     if (opt.spec && lo === view.lo && hi === view.hi) {
       if (!envelope || envelope.length !== w) envelope = Array.from(px, (v) => v / 2 - 160);
       else for (let i = 0; i < w; i++) envelope[i] = envelope[i] * 0.6 + (px[i] / 2 - 160) * 0.4;
-      drawSpectrum(dbFloor);
     }
-    if (opt.calls) drawCalls();
+    drawTop(dbFloor);
     bytes += buf.byteLength;
   }
 
   // ---- the calls ------------------------------------------------------------------
-  async function fetchSpots() {
-    if (Date.now() - spotsAt < 5000) return;
+  const CALL_KEEP_S = 15 * 60;
+  let skew = 0;                                      // the skimmer's clock − ours (s)
+  async function fetchSpots(force) {
+    if (!force && Date.now() - spotsAt < 5000) return;
     spotsAt = Date.now();
     try {
-      const r = await fetch('api/spots?minutes=30', { cache: 'no-store' });
-      spots = (await r.json()).spots;
+      const r = await fetch(`api/spots?minutes=${CALL_KEEP_S / 60}`, { cache: 'no-store' });
+      const d = await r.json();
+      skew = d.now - Date.now() / 1000;
+      spots = d.spots;
+      drawTop();
     } catch (e) { /* the next try */ }
   }
-  function drawCalls() {
+  // the band's calls of the last 15 min, the newest spot of each, left to
+  // right; a call too close to its neighbour moves right of it (a tick
+  // marks its true frequency)
+  function drawCalls(w) {
     const b = bandInfo();
-    if (!b || !rowTimes.length) return;
-    g.save();
-    g.font = '700 12px RC, sans-serif'; g.textBaseline = 'middle';
-    g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,.85)';
+    if (!b || !view.hi) return;
+    const now = Date.now() / 1000 + skew, last = new Map();
     for (const s of spots) {
-      if (s.band !== b.name) continue;
-      const key = `${s.call}|${s.khz}|${s.t}`;
-      if (drawn.has(key)) continue;
-      const hz = s.khz * 1000;
-      if (hz < view.lo || hz > view.hi) continue;
-      // the row of the spot's time (the newest row is 0)
-      let y = rowTimes.findIndex((rt) => rt <= s.t);
-      if (y < 0) continue;                               // older than the picture
-      drawn.add(key);
-      const x = Math.round(xOf(hz));
-      g.fillStyle = '#ffffff';
-      g.fillRect(x - 3, y, 7, 1);                        // the spot's row, on its trace
-      // upright beside the trace, from the spot's row down into the older
-      // rows (they are there already; it flows down with them)
-      g.translate(x + 9, y + 2);
-      g.rotate(Math.PI / 2);
-      g.strokeText(s.call, 0, 0);
-      g.fillStyle = s.mode === 'RTTY' ? '#7ff0ec' : '#ffffff';
-      g.fillText(s.call, 0, 0);
-      g.setTransform(1, 0, 0, 1, 0, 0);
+      if (s.band !== b.name || now - s.t > CALL_KEEP_S) continue;
+      const k = s.call;
+      if (!last.has(k) || last.get(k).t < s.t) last.set(k, s);
     }
-    g.restore();
+    const list = [...last.values()].map((s) => ({ s, x: ((s.khz * 1000 - view.lo) / (view.hi - view.lo)) * w }))
+      .filter((c) => c.x >= 0 && c.x <= w).sort((a, b) => a.x - b.x);
+    spg.font = '600 10px RC, sans-serif'; spg.textAlign = 'right'; spg.textBaseline = 'middle';
+    let prev = -100;
+    for (const c of list) {
+      const x = Math.max(c.x, prev + 11);
+      if (x > w - 4) break;
+      prev = x;
+      spg.globalAlpha = 1 - 0.6 * Math.min(1, (now - c.s.t) / CALL_KEEP_S);
+      spg.fillStyle = c.s.mode === 'RTTY' ? '#ffb88a' : '#e8eef6';
+      spg.fillRect(Math.round(c.x), 0, 1, 3);           // its frequency
+      spg.save();
+      spg.translate(Math.round(x) + 0.5, 4);
+      spg.rotate(-Math.PI / 2);                         // reading upward, its end at the top edge
+      spg.fillText(c.s.call, 0, 0);
+      spg.restore();
+    }
+    spg.globalAlpha = 1; spg.textAlign = 'start'; spg.textBaseline = 'alphabetic';
   }
 
   // ---- the socket -----------------------------------------------------------------
@@ -272,7 +287,7 @@ const Wf = (() => {
     $('#wf-floor-auto').classList.toggle('on', opt.floor === DEF.floor);
     $('#wf-spec').checked = opt.spec;
     $('#wf-calls').checked = opt.calls;
-    $('#wf-spec-cv').hidden = !opt.spec;
+    $('#wf-spec-cv').hidden = !topShown();
   }
   let mounted = false;
   function mount() {
@@ -298,9 +313,9 @@ const Wf = (() => {
     $('#wf-range-auto').addEventListener('click', () => { opt.range = DEF.range; save(); bar(); });
     $('#wf-floor-auto').addEventListener('click', () => { opt.floor = DEF.floor; save(); bar(); });
     $('#wf-spec').addEventListener('change', (e) => {
-      opt.spec = e.target.checked; $('#wf-spec-cv').hidden = !opt.spec; envelope = null; save(); size(); send();
+      opt.spec = e.target.checked; envelope = null; save(); bar(); size(); drawTop(); send();
     });
-    $('#wf-calls').addEventListener('change', (e) => { opt.calls = e.target.checked; save(); });
+    $('#wf-calls').addEventListener('change', (e) => { opt.calls = e.target.checked; save(); bar(); size(); drawTop(); });
     // the wheel zooms around the cursor, a drag pans, a double click centres
     const zoomAt = (x, dir) => {
       const b = bandInfo();
@@ -349,7 +364,7 @@ const Wf = (() => {
     active = true;
     size();
     drawScale();
-    fetchSpots();
+    fetchSpots(true);                                // the last 15 min at once
     connect();
     if (ws && ws.readyState === 1) send();
   }
