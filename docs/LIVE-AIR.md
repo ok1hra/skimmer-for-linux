@@ -133,6 +133,48 @@ calls lost there. What is left in the CWT evening is the misread CQ itself
 (a call on a runner's frequency that the hold does not catch when the
 station never called on its own).
 
+## A caller is not calling (2026-11-19)
+
+What the hold leaves in a CWT evening is a call read as CQ on another
+station's frequency. The extractor gives a call the calling context when
+it falls within CQ_WINDOW (3) tokens after a CQ; a caller answering
+right after the runner's CQ is decoded in the same channel and lands in
+it ("CQ CWT SP3FSM PA3AAV"). The report rule that takes it back needs an
+RST, and a name-and-number exchange has none ("PA3AAV GE GERT 2624").
+
+- `SKIM_CALL_CQNAMED`: the window belongs to the call it names first; a
+  different call later in it does not inherit it (its torn head or longer
+  reading does).
+- `SKIM_CALL_NAMEEXCH`: a call followed by a name and a number or a short
+  state is being worked — addressed, so a window reaching it across an
+  over break ("CQ CWT · PA3AAV GE GERT 2624", the runner's call not read)
+  is withdrawn.
+
+Live taps, both against the feed with the snap, the hold and the memo:
+
+| window | spots | calls | over 150 Hz off RBN | vs R: recall L / bust L |
+|---|---|---|---|---|
+| weekday afternoon 3 h | 605 → 597 | 318 → 311 | 14 → 14 | 69.4 / 4.5 % → 69.2 / 4.4 % |
+| 17.5 h, 7 bands | 2478 → 2356 | 907 → 876 | 92 → 86 | (R down) |
+| CWT evening 3.3 h | 1011 → 923 | 431 → 399 | 68 → 56 | 81.5 / 2.9 % → 79.7 / 3.1 % |
+
+The calls the rules drop (CWT 32, 17.5 h 34, afternoon 7): RBN had them
+only elsewhere 19 / 13 / 4, never spotted them 6 / 13 / 2, and also on
+that frequency 7 / 8 / 1 — read in the decodes, nearly all of those
+answered a runner too (other skimmers fell for the same; MX4U was a bust
+of 3X4U in "CQ 3X4U MX4U UP"); a real loss is OK7PZ, whose window named a
+garbled OK7W first. Against R the CWT recall falls only because L stops
+finding stations R does not spot either (L-only 196 → 157); of R's
+stations L finds 263 → 260. Alone: CQNAMED drops 24 calls in the CWT
+evening (1 on RBN's frequency lost), NAMEEXCH 9 (3).
+
+What is left off frequency is no longer one thing: QSYs inside RBN's
+±5 min, a station read 2 kHz from its carrier (SM5ACQ "CQ CWT SM5ACQ" on
+7029.4, RBN 7031.4), garbled exchanges ("N7US GEORGE 3T33"). A first
+count put 87 % of the CWT evening's off spots on a runner's frequency;
+on a band that full almost every frequency has somebody within 150 Hz, so
+that count was too generous.
+
 ## Tried and not kept
 
 - Extractor: noise letters not ageing the CQ window, a 5-token window,
