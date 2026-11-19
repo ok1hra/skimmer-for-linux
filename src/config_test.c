@@ -510,6 +510,24 @@ int main(void) {
     g_free(dir);
   }
 
+  printf("== a blank value is the default (what the web form sends for an empty field)\n");
+  {
+    static const char BL[] =
+        "[bands]\n20m=14045500\n[feed]\nport=\n[hub]\nport= \n[rbn]\nport=\ndelay_s=\n"
+        "[status]\nconsole_s=\nhttp_port=\n[radio]\nclock_ppm=\nrate=\n[record]\nminutes=\n"
+        "[decode]\nlog=\n";
+    SkimHdConfig c;
+    GError *e = NULL;
+    const gboolean ok = skim_hd_config_parse(&c, BL, strlen(BL), "/tmp/blank.ini", &e);
+    check(e ? e->message : "parses", ok);
+    check("feed 7300, hub 7380, RBN 7550 delay 0, web/console unset (-1)",
+          ok && c.feed_port == 7300 && c.hub_port == SKIM_HD_HUB_PORT && c.rbn_port == 7550 &&
+          c.rbn_delay_s == 0 && c.http_port == -1 && c.console_s == -1);
+    check("clock 0 ppm, rate 96 kHz, no decode log", ok && c.ppm == 0 && c.rate == 96000 && !c.decode_log);
+    if (ok) { skim_hd_config_clear(&c); }
+    g_clear_error(&e);
+  }
+
   printf("\n%s (%d of %d checks failed)\n", fails ? "FAIL" : "PASS", fails, checks);
   return fails ? 1 : 0;
 }

@@ -343,3 +343,7 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 .wf-spk { font-size: 17px; line-height: 1; border: 1px solid var(--ln2); background: var(--deep); padding: 2px 6px; cursor: pointer;
           filter: grayscale(1); opacity: .7; }
 .wf-spk.on { filter: none; opacity: 1; border-color: #ffc440; }
+/* a field the save refused: red, with what is wrong under it */
+#settings small.ferr { color: var(--bad); font-weight: 700; letter-spacing: 0; }
+.bands-edit input.bad { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--deep)); }
+#settings input.bad, #settings select.bad { background: color-mix(in srgb, var(--bad) 12%, var(--deep)); }

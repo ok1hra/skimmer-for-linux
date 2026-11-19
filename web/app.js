@@ -847,29 +847,111 @@ async function waitRestart(what, newPort) {
   $('#overlay-sub').innerHTML = 'Check its log on the machine; an earlier config can be restored under Settings once it answers.';
 }
 
+// Saving: every field checked first. A wrong one turns red with what is
+// wrong under it (and the bar on top says how many); a refusal from the
+// skimmer names its key ("[hub] port: …") or its band, and that field turns
+// red the same way. An empty field whose hint is the default takes the hint
+// (the skimmer reads a blank value as the default too), so a part that is
+// not used — the hub, the RBN — never asks to be filled in.
+const HINT_IS_DEFAULT = ['radio.host', 'radio.clock_ppm', 'feed.port', 'rbn.port', 'rbn.delay_s',
+  'hub.port', 'status.http_port', 'filter.mycall_diff', 'record.minutes'];
+const int = (lo, hi, what) => (v) => (/^\d+$/.test(v) && +v >= lo && +v <= hi ? '' : what);
+const FIELD_CHECK = {
+  'radio.clock_ppm': (v) => (/^[+-]?\d+([.,]\d+)?$/.test(v) && Math.abs(parseFloat(v.replace(',', '.'))) <= 200
+    ? '' : 'ppm: a number, e.g. 3.81 or -1.2'),
+  'feed.port': int(0, 65535, '0 (off) to 65535'),
+  'rbn.port': int(1, 65535, '1 to 65535'),
+  'rbn.delay_s': int(0, 99, 'whole seconds, 0 to 99'),
+  'hub.port': int(0, 65535, '0 (no hub) to 65535'),
+  'status.console_s': int(0, 86400, 'whole seconds, 0 = quiet'),
+  'status.http_port': int(1, 65535, '1 to 65535'),
+  'filter.mycall_diff': int(0, 3, '0 to 3'),
+  'station.locator': (v) => (/^[A-Ra-r]{2}[0-9]{2}([A-Xa-x]{2})?$/.test(v) ? '' : 'a Maidenhead locator: JN18 or JN18EU'),
+  'hub.name': (v) => (/^[A-Za-z0-9._-]+$/.test(v) ? '' : 'letters, digits, - _ . only'),
+  'record.minutes': (v) => (/^\d+([.,]\d+)?$/.test(v) && parseFloat(v.replace(',', '.')) > 0 ? '' : 'minutes, more than 0'),
+  'record.start_utc': (v) => (/^([01]?\d|2[0-3]):[0-5]\d$/.test(v) ? '' : 'HH:MM in UTC'),
+};
+function fieldBad(inp, msg) {
+  const lab = inp.closest('label, .filter-row') || inp.parentNode;
+  let note = lab.querySelector(':scope > .ferr');
+  inp.classList.toggle('bad', !!msg);
+  if (!msg) { if (note) note.remove(); return; }
+  if (!note) { note = document.createElement('small'); note.className = 'ferr'; lab.appendChild(note); }
+  note.textContent = msg;
+}
+function clearBad() {
+  for (const n of document.querySelectorAll('#settings .ferr')) n.remove();
+  for (const i of document.querySelectorAll('#settings .bad')) if (i.tagName === 'INPUT' || i.tagName === 'SELECT') i.classList.remove('bad');
+}
+// the form's own checks: the wrong fields, marked
+function checkFields() {
+  const f = $('#settings'), wrong = [];
+  for (const [k, test] of Object.entries(FIELD_CHECK)) {
+    const inp = f.elements[k];
+    if (!inp) continue;
+    const v = inp.value.trim(), msg = v === '' ? '' : test(v);
+    fieldBad(inp, msg);
+    if (msg) wrong.push(inp);
+  }
+  for (const tr of document.querySelectorAll('#band-rows tr')) {
+    const name = tr.querySelector('[data-k=name]'), khz = tr.querySelector('[data-k=khz]');
+    if (!name.value.trim() && !khz.value.trim()) continue;
+    const kv = parseFloat(khz.value.replace(/\s/g, '').replace(',', '.'));
+    const nm = name.value.trim() ? '' : 'a name';
+    const km = Number.isFinite(kv) && kv > 0 ? '' : 'kHz';
+    name.classList.toggle('bad', !!nm); khz.classList.toggle('bad', !!km);
+    if (nm) wrong.push(name);
+    if (km) wrong.push(khz);
+  }
+  return wrong;
+}
+// the skimmer's refusal names a key or a band: mark that field
+function markRefusal(msg) {
+  const f = $('#settings');
+  const b = /band (\S+?):/.exec(msg);             // a band's line first ("band 20m: … [hub] port is 0")
+  if (b) {
+    const tr = [...document.querySelectorAll('#band-rows tr')]
+      .find((r) => r.querySelector('[data-k=name]').value.trim() === b[1]);
+    if (tr) { for (const i of tr.querySelectorAll('input:not([type=checkbox])')) i.classList.add('bad'); return tr; }
+  }
+  const k = /\[(\w+)\] (\w+)/.exec(msg);
+  if (k && f.elements[`${k[1]}.${k[2]}`]) {
+    const inp = f.elements[`${k[1]}.${k[2]}`];
+    fieldBad(inp, msg.slice(k.index + k[0].length).replace(/^[:\s]+/, '') || 'refused');
+    return inp;
+  }
+  return null;
+}
+function notSaved(text, first) {
+  const box = $('#set-error');
+  box.hidden = false;
+  box.textContent = `Not saved: ${text}`;
+  $('#set-msg').textContent = '';
+  if (first) { first.scrollIntoView({ block: 'center', behavior: 'smooth' }); if (first.focus) first.focus({ preventScroll: true }); }
+}
+on('#settings', 'input', (e) => {                 // typing in a red field clears it
+  const t = e.target;
+  if (t.classList && t.classList.contains('bad') && t.name) fieldBad(t, '');
+  else if (t.classList) t.classList.remove('bad');
+});
+
 on('#settings', 'submit', async (e) => {
   e.preventDefault();
   if (!cfg.data || !cfg.data.may_change) return;
+  clearBad();
+  $('#set-error').hidden = true;
+  const wrong = checkFields();
+  if (!filterCheck()) wrong.push($('#filter-call'));      // its own note under it
+  if (wrong.length) {
+    notSaved(`${wrong.length === 1 ? 'one field is' : `${wrong.length} fields are`} not right — marked red below.`, wrong[0]);
+    return;
+  }
+  const f = $('#settings');
+  for (const k of HINT_IS_DEFAULT) {              // an empty field takes its hint
+    const inp = f.elements[k];
+    if (inp && !inp.value.trim() && inp.placeholder) inp.value = inp.placeholder;
+  }
   const body = formBody();
-  if (!mycallShow()) {
-    const box = $('#set-error');
-    box.hidden = false;
-    box.textContent = 'Not saved: the characters off my call are 0 to 3.';
-    return;
-  }
-  if (!filterCheck()) {
-    const box = $('#set-error');
-    box.hidden = false;
-    box.textContent = 'Not saved: the callsign filter is not a valid regular expression.';
-    return;
-  }
-  const delay = body.get('rbn.delay_s');
-  if (delay !== '' && !(/^\d+$/.test(delay) && Number(delay) <= 99)) {
-    const box = $('#set-error');
-    box.hidden = false;
-    box.textContent = 'Not saved: the RBN delay is whole seconds, 0 to 99.';
-    return;
-  }
   $('#set-msg').textContent = 'checking…';
   try {
     const j = await post('api/config', body);
@@ -877,10 +959,8 @@ on('#settings', 'submit', async (e) => {
     const port = body.get('status.http_port');
     await waitRestart('Saved', port || '8073');
   } catch (err) {
-    $('#set-msg').textContent = '';
-    const box = $('#set-error');
-    box.hidden = false;
-    box.textContent = `Not saved: ${err.message}`;
+    const at = markRefusal(err.message);
+    notSaved(`${err.message}${at ? ' — marked red below' : ''}`, at && at.tagName === 'TR' ? at.querySelector('input') : at);
   }
 });
 on('#set-reset', 'click', () => tabs.settings.refresh(true));

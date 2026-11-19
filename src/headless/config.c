@@ -207,11 +207,21 @@ static gboolean bad(GError **error, const char *path, const char *fmt, ...) {
   return FALSE;
 }
 
-/* A boolean key: dflt when absent, an error when it is no boolean. */
+/* A key with a value: present and not blank. A blank value ("port=", what the
+ * web form sends for an empty field) is the default, as if the key were absent. */
+static gboolean given(GKeyFile *kf, const char *group, const char *key, GError **unused) {
+  (void)unused;
+  char *v = g_key_file_get_value(kf, group, key, NULL);
+  const gboolean ok = v && *g_strstrip(v);
+  g_free(v);
+  return ok;
+}
+
+/* A boolean key: dflt when absent or blank, an error when it is no boolean. */
 static gboolean opt_bool(GKeyFile *kf, const char *group, const char *key, gboolean dflt,
                          gboolean *out, const char *path, GError **error) {
   *out = dflt;
-  if (!g_key_file_has_key(kf, group, key, NULL)) { return TRUE; }
+  if (!given(kf, group, key, NULL)) { return TRUE; }
   GError *e = NULL;
   *out = g_key_file_get_boolean(kf, group, key, &e);
   if (e) {
@@ -306,7 +316,7 @@ static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
 /* A positive value, or the file's 0 meaning "off" (-1); absent = 0 (the
  * pipeline's default). */
 static double opt_secs(GKeyFile *kf, const char *key) {
-  if (!g_key_file_has_key(kf, "feed", key, NULL)) { return 0; }
+  if (!given(kf, "feed", key, NULL)) { return 0; }
   const double v = g_key_file_get_double(kf, "feed", key, NULL);
   return v > 0 ? v : -1;
 }
@@ -327,7 +337,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     return FALSE;
   }
   g_free(type);
-  h->ppm = g_key_file_has_key(kf, "radio", "clock_ppm", NULL)
+  h->ppm = given(kf, "radio", "clock_ppm", NULL)
                ? g_key_file_get_double(kf, "radio", "clock_ppm", NULL) : 0;
   /* host[@ppm], …: each radio has its own sampling clock; "auto" = every
    * radio a broadcast discovery finds (none given = auto) */
@@ -374,7 +384,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   if (!ok) { return FALSE; }
   h->hosts_text = g_strjoinv(", ", h->hosts);
   h->rate = 96000;
-  if (g_key_file_has_key(kf, "radio", "rate", NULL)) {
+  if (given(kf, "radio", "rate", NULL)) {
     h->rate = (guint)g_key_file_get_integer(kf, "radio", "rate", NULL);
   }
   if (h->rate != 48000 && h->rate != 96000 && h->rate != 192000) {
@@ -390,7 +400,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     return FALSE;
   }
   g_free(eng);
-  h->decode_log = g_key_file_has_key(kf, "decode", "log", NULL) &&
+  h->decode_log = given(kf, "decode", "log", NULL) &&
                   g_key_file_get_boolean(kf, "decode", "log", NULL);
   if (!opt_bool(kf, "decode", "suppress_cw_on_rtty", FALSE, &h->suppress_cw_on_rtty, path,
                 error)) {
@@ -399,17 +409,17 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
 
   h->feed_call = g_key_file_get_string(kf, "feed", "call", NULL);
   if (h->feed_call) { g_strstrip(h->feed_call); }
-  h->feed_port = g_key_file_has_key(kf, "feed", "port", NULL)
+  h->feed_port = given(kf, "feed", "port", NULL)
                      ? g_key_file_get_integer(kf, "feed", "port", NULL) : 7300;
-  h->feed_min_score = g_key_file_has_key(kf, "feed", "min_score", NULL)
+  h->feed_min_score = given(kf, "feed", "min_score", NULL)
                           ? g_key_file_get_double(kf, "feed", "min_score", NULL) : 0;
-  h->feed_min_hearings = g_key_file_has_key(kf, "feed", "min_hearings", NULL)
+  h->feed_min_hearings = given(kf, "feed", "min_hearings", NULL)
       ? (guint)MAX(1, g_key_file_get_integer(kf, "feed", "min_hearings", NULL)) : 0;
   h->feed_settle_s = opt_secs(kf, "settle_s");               /* 0 = off      */
   h->feed_settle_nodict_s = opt_secs(kf, "settle_nodict_s"); /* 0 = settle_s */
   h->feed_fresh_s = opt_secs(kf, "fresh_s");                 /* 0 = off      */
   h->feed_fold_s = opt_secs(kf, "fold_s");                   /* 0 = off      */
-  h->feed_learn = g_key_file_has_key(kf, "feed", "learn", NULL) &&
+  h->feed_learn = given(kf, "feed", "learn", NULL) &&
                   g_key_file_get_boolean(kf, "feed", "learn", NULL);
   if (!opt_bool(kf, "feed", "rtty", TRUE, &h->feed_rtty, path, error)) { return FALSE; }
   char *gate = g_key_file_get_string(kf, "feed", "gate", NULL);
@@ -427,7 +437,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
 
   if (!opt_bool(kf, "rbn", "enabled", FALSE, &h->rbn_on, path, error)) { return FALSE; }
   h->rbn_port = 7550;
-  if (g_key_file_has_key(kf, "rbn", "port", NULL)) {
+  if (given(kf, "rbn", "port", NULL)) {
     GError *e = NULL;
     h->rbn_port = g_key_file_get_integer(kf, "rbn", "port", &e);
     if (e || h->rbn_port < 1 || h->rbn_port > 65535) {
@@ -438,7 +448,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   if (h->rbn_on && h->feed_port > 0 && h->rbn_port == h->feed_port) {
     return bad(error, path, "[rbn] port %d is the [feed] port too", h->rbn_port);
   }
-  if (g_key_file_has_key(kf, "rbn", "delay_s", NULL)) {
+  if (given(kf, "rbn", "delay_s", NULL)) {
     GError *e = NULL;
     const int d = g_key_file_get_integer(kf, "rbn", "delay_s", &e);
     if (e || d < 0 || d > 99) {
@@ -479,7 +489,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     }
   }
   h->hub_port = SKIM_HD_HUB_PORT;
-  if (g_key_file_has_key(kf, "hub", "port", NULL)) {
+  if (given(kf, "hub", "port", NULL)) {
     GError *e = NULL;
     h->hub_port = g_key_file_get_integer(kf, "hub", "port", &e);
     if (e || h->hub_port < 0 || h->hub_port > 65535) {
@@ -582,9 +592,9 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     g_free(dv);
   }
 
-  h->console_s = g_key_file_has_key(kf, "status", "console_s", NULL)
+  h->console_s = given(kf, "status", "console_s", NULL)
                      ? g_key_file_get_integer(kf, "status", "console_s", NULL) : -1;
-  h->http_port = g_key_file_has_key(kf, "status", "http_port", NULL)
+  h->http_port = given(kf, "status", "http_port", NULL)
                      ? g_key_file_get_integer(kf, "status", "http_port", NULL) : -1;
 
   char *sf = g_key_file_get_string(kf, "web", "settings_from", NULL);
@@ -614,7 +624,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   if (rb && g_strstrip(rb)[0]) {
     h->rec_bands = g_strsplit(rb, ",", -1);
     for (char **x = h->rec_bands; *x; x++) { g_strstrip(*x); }
-    h->rec_minutes = g_key_file_has_key(kf, "record", "minutes", NULL)
+    h->rec_minutes = given(kf, "record", "minutes", NULL)
                          ? g_key_file_get_double(kf, "record", "minutes", NULL) : 10;
     if (h->rec_minutes <= 0) { h->rec_minutes = 10; }
     h->rec_dir = g_key_file_get_string(kf, "record", "dir", NULL);
