@@ -171,6 +171,15 @@ function renderStatus(d) {
     `<dt>switches</dt><dd>${sw.length ? sw.map(([k, v]) => `${esc(k)}=${esc(v)}`).join('<br>') : 'none'}</dd>` +
     '</dl>';
   $('#updated').textContent = `updated ${d.time}`;
+  // the RBN upload on: this skimmer's spots as reversebeacon.net shows them
+  const rl = $('#rbn-link');
+  rl.hidden = !(d.rbn && d.call);
+  if (!rl.hidden) {
+    const url = `https://beta.reversebeacon.net/main.php?max_age=10,hours&rows=100&spotter_call=${encodeURIComponent(d.call)}&hide=distance_mi,time,speed,type`;
+    const html = `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(d.call)} on the Reverse Beacon Network ↗</a>` +
+      ` <span class="mut">the last 10 hours of this skimmer's spots there${d.rbn.clients ? '' : ' · no Aggregator connected now'}</span>`;
+    if (rl.dataset.html !== html) { rl.dataset.html = html; rl.innerHTML = html; }
+  }
 
   const fb = d.bands.filter((b) => b.cw !== false && b.engine_wanted === 'deepcw' && b.engine !== 'deepcw');
   const warn = $('#dcw-warn');
@@ -288,7 +297,7 @@ function renderSpots() {
     mapMounted = true;
     SkMap.update([], spots.locator || 'JN18');              // the centre before the rows
   }
-  $('#loc-warn').hidden = !!spots.locator;
+  SkMap.noLocator(!spots.locator);
   const bands = status ? status.bands.map((b) => b.band) : [];
   const workers = status && status.hub ? status.hub.workers.map((w) => w.name) : [];
   Dxc.update(spots.list, bands, workers);

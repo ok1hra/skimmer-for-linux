@@ -329,7 +329,7 @@ const SkMap = (() => {
     const back = el.querySelector('[data-o=home]');
     back.hidden = !opt.center || opt.center === home;
     back.textContent = `back to ${home || 'the station'}`;
-    el.querySelector('.map-count').textContent = `${spots.length} spot${spots.length === 1 ? '' : 's'} · ${spots.filter((s) => !s.where).length ? `${spots.filter((s) => !s.where).length} unplaced · ` : ''}centre ${opt.center || home || '—'}`;
+    el.querySelector('.map-count').textContent = `${spots.length} spot${spots.length === 1 ? '' : 's'} · ${spots.filter((s) => !s.where).length ? `${spots.filter((s) => !s.where).length} unplaced · ` : ''}centre ${opt.center || home || '—'}${noLoc && !opt.center ? ' (Paris — no station locator: Settings → Station and feed)' : ''}`;
   }
   const fmtKm = (km) => `${Math.round(km).toLocaleString('en-US')} km`;
 
@@ -402,11 +402,15 @@ const SkMap = (() => {
   }
 
   // spots: [{ call, khz, mode, snr, band, age, hi }] — placed here by their DXCC
+  // no station locator: the centre is a stand-in, the footer says so
+  let noLoc = false;
+  function noLocator(on) { if (on !== noLoc) { noLoc = on; draw(); } }
+
   function update(list, station) {
     home = station || home;
     spots = list.map((s) => ({ ...s, where: s.where !== undefined ? s.where : locate(s.call) }));
     draw();
   }
 
-  return { mount, update, locate, geo, locToLL, llToLoc, bandColor, center: centerLL };
+  return { mount, update, noLocator, locate, geo, locToLL, llToLoc, bandColor, center: centerLL };
 })();

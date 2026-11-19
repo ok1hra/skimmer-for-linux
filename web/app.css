@@ -311,3 +311,6 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 .strip b.temp.cool { color: var(--ok); } .strip b.temp.warm { color: var(--warn); } .strip b.temp.hot { color: var(--bad); }
 #dxc.side { margin-top: 18px; }
 #dxc.side .dxc td { font-size: 15px; }
+.rbn-link { padding: 8px 18px 0; font-size: 13px; letter-spacing: .02em; }
+.rbn-link a { color: var(--cq); text-decoration: none; font-weight: 700; }
+.rbn-link a:hover { text-decoration: underline; }
