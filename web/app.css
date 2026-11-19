@@ -337,9 +337,6 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot { color: var(--bad); }
 #dxc.side { margin-top: 18px; }
 #dxc.side .dxc td { font-size: 15px; }
-.rbn-link { padding: 8px 0 0; font-size: 13px; letter-spacing: .02em; line-height: 1.5; }
-.rbn-link a { color: var(--cq); text-decoration: none; font-weight: 700; }
-.rbn-link a:hover { text-decoration: underline; }
 .wf-auto { font: inherit; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; border: 0; border-bottom: 2px solid transparent;
            background: transparent; color: var(--faint); padding: 1px 3px; cursor: pointer; }
 .wf-auto:hover { color: var(--fg); }

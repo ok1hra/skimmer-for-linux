@@ -9,8 +9,8 @@ reads the `DX de CALL-#:` lines and uploads them to reversebeacon.net.
 `[rbn] enabled=true` makes skimmer-headless offer its feed's spots on a
 second telnet port for it (`src/engine/rbn_feed.c`, `[rbn] port`,
 optionally held `delay_s` seconds). Nothing else leaves for the RBN — with
-no Aggregator connected (`status.json` `rbn.clients` = 0) no spot reaches
-it, and the status page says so under the map.
+no Aggregator connected (`status.json` `rbn.clients` = 0, "RBN now" on the
+status page) no spot reaches it.
 
 Facts from hra2 (2026-11-19, Aggregator v6.4):
 

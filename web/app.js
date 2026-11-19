@@ -192,19 +192,6 @@ function renderStatus(d) {
     `<dt>switches</dt><dd>${sw.length ? sw.map(([k, v]) => `${esc(k)}=${esc(v)}`).join('<br>') : 'none'}</dd>` +
     '</dl>';
   $('#updated').textContent = `updated ${d.time}`;
-  // under the map, the RBN on: this skimmer's spots as reversebeacon.net
-  // shows them — and plainly, when nothing takes them there
-  const rl = $('#rbn-link');
-  rl.hidden = !(d.rbn && d.call);
-  if (!rl.hidden) {
-    const url = `https://beta.reversebeacon.net/main.php?max_age=10,hours&rows=100&spotter_call=${encodeURIComponent(d.call)}&hide=distance_mi,time,speed,type`;
-    const html = `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(d.call)} on the Reverse Beacon Network ↗</a>` +
-      ` <span class="mut">the last 10 hours of this skimmer's spots there</span>` +
-      (d.rbn.clients ? ''
-        : `<br><b class="bad">No spots go to the RBN now:</b> <span class="mut">nothing is connected to port ${esc(d.rbn.port)} — ` +
-          'the RBN takes spots only through the RBN Aggregator, connected to this port (Settings → RBN).</span>');
-    if (rl.dataset.html !== html) { rl.dataset.html = html; rl.innerHTML = html; }
-  }
 
   const fb = d.bands.filter((b) => b.cw !== false && b.engine_wanted === 'deepcw' && b.engine !== 'deepcw');
   const warn = $('#dcw-warn');
