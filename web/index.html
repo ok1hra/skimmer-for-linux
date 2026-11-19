@@ -117,8 +117,10 @@
       <label>band <select id="wf-band"></select></label>
       <label>span <select id="wf-span" title="the width shown — or the mouse wheel over the waterfall"></select></label>
       <label>speed <select id="wf-rate" title="rows a second: how fast it flows (and the data it takes)"></select></label>
-      <label title="the dB from black to white">range <input type="range" id="wf-range" min="20" max="90" step="5"></label>
-      <label title="brightness: the floor above or below the noise">floor <input type="range" id="wf-floor" min="-20" max="30" step="1"></label>
+      <label title="the dB from black to white">range <input type="range" id="wf-range" min="20" max="90" step="5">
+        <button type="button" class="wf-auto" id="wf-range-auto" title="back to 50 dB">auto</button></label>
+      <label title="brightness: the floor above or below the noise">floor <input type="range" id="wf-floor" min="-20" max="30" step="1">
+        <button type="button" class="wf-auto" id="wf-floor-auto" title="back to the noise floor">auto</button></label>
       <label class="chk"><input type="checkbox" id="wf-spec"> spectrum</label>
       <label class="chk"><input type="checkbox" id="wf-calls"> calls</label>
       <span class="wf-read" id="wf-read"></span>

@@ -15,8 +15,9 @@
 const Wf = (() => {
   const SPANS = [0, 48000, 24000, 12000, 6000, 3000, 1500];   // 0 = the whole band
   const RATES = [1, 2, 5, 10, 20];
-  const DEF = { band: '', span: 0, centre: 0, rate: 5, range: 50, floor: 0, spec: false, calls: true };
+  const DEF = { band: '', span: 0, centre: 0, rate: 5, range: 50, floor: 0, spec: true, calls: true };
   const store = (() => { try { return JSON.parse(localStorage.getItem('skwf') || '{}'); } catch (e) { return {}; } })();
+  if (store.v !== 2) { store.spec = true; store.v = 2; }        // v2: the spectrum on by default
   const opt = { ...DEF, ...store };
   const save = () => { try { localStorage.setItem('skwf', JSON.stringify(opt)); } catch (e) { /* private */ } };
   const $ = (s) => document.querySelector(s);
@@ -267,6 +268,8 @@ const Wf = (() => {
     $('#wf-rate').value = String(opt.rate);
     $('#wf-range').value = String(opt.range);
     $('#wf-floor').value = String(opt.floor);
+    $('#wf-range-auto').classList.toggle('on', opt.range === DEF.range);
+    $('#wf-floor-auto').classList.toggle('on', opt.floor === DEF.floor);
     $('#wf-spec').checked = opt.spec;
     $('#wf-calls').checked = opt.calls;
     $('#wf-spec-cv').hidden = !opt.spec;
@@ -289,8 +292,11 @@ const Wf = (() => {
     });
     $('#wf-span').addEventListener('change', (e) => { opt.span = Number(e.target.value); reframe(false); });
     $('#wf-rate').addEventListener('change', (e) => { opt.rate = Number(e.target.value); save(); send(); });
-    $('#wf-range').addEventListener('input', (e) => { opt.range = Number(e.target.value); save(); });
-    $('#wf-floor').addEventListener('input', (e) => { opt.floor = Number(e.target.value); save(); });
+    $('#wf-range').addEventListener('input', (e) => { opt.range = Number(e.target.value); save(); bar(); });
+    $('#wf-floor').addEventListener('input', (e) => { opt.floor = Number(e.target.value); save(); bar(); });
+    // auto: back to the default — 50 dB from black to white, the floor on the noise
+    $('#wf-range-auto').addEventListener('click', () => { opt.range = DEF.range; save(); bar(); });
+    $('#wf-floor-auto').addEventListener('click', () => { opt.floor = DEF.floor; save(); bar(); });
     $('#wf-spec').addEventListener('change', (e) => {
       opt.spec = e.target.checked; $('#wf-spec-cv').hidden = !opt.spec; envelope = null; save(); size(); send();
     });

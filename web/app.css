@@ -318,3 +318,7 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 .rbn-link { padding: 8px 18px 0; font-size: 13px; letter-spacing: .02em; }
 .rbn-link a { color: var(--cq); text-decoration: none; font-weight: 700; }
 .rbn-link a:hover { text-decoration: underline; }
+.wf-auto { font: inherit; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; border: 0; border-bottom: 2px solid transparent;
+           background: transparent; color: var(--faint); padding: 1px 3px; cursor: pointer; }
+.wf-auto:hover { color: var(--fg); }
+.wf-auto.on { color: var(--hot); border-bottom-color: var(--hot); }
