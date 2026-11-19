@@ -355,7 +355,8 @@ int main(void) {
           m1 == m2 && fabs(m2->freq_hz - 7032018) < 1);
     SkimStation qsy = a;                       /* one call = one record:     */
     qsy.freq_hz = 7040000;                     /* a confident far report is  */
-    qsy.last_heard = 2;                        /* a QSY and MOVES the record */
+    qsy.last_heard = 40 * G_USEC_PER_SEC;      /* a QSY and MOVES the record,*/
+                                               /* its old place quiet > hold */
     const SkimStation *m3 = skim_station_table_report(t, &qsy);
     check("confident far report is a QSY — still 1 station, moved",
           skim_station_table_size(t) == 1 && m3 == m1 &&
@@ -363,7 +364,7 @@ int main(void) {
     SkimStation garble = a;                    /* one-off garble of the call */
     garble.freq_hz = 7010000;                  /* elsewhere must NOT move it */
     garble.score   = 0.70;
-    garble.last_heard = 3;
+    garble.last_heard = 80 * G_USEC_PER_SEC;
     const SkimStation *m4 = skim_station_table_report(t, &garble);
     check("weak far report does not move the station",
           m4 == m1 && fabs(m4->freq_hz - 7040000) < 1 &&

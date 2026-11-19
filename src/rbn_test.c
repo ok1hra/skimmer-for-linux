@@ -35,7 +35,9 @@
  * OK1BR is still its best candidate and gets reported again — with the
  * freshness gate (fresh_s 120) it must not go out a second time (it was
  * last READ 140 s ago); the old policy and hearings + settle alone (today's
- * default: the freshness gate is opt-in) do send it.
+ * default: the freshness gate is opt-in) do send it — with the RBN memo off
+ * (SKIM_RBN_MEMO=0): the memo kept past the station table stops a
+ * same-frequency comeback inside the re-spot interval by itself.
  *
  * Learning logs (gatelog.h): the same band with the decode tap and the gate
  * rows on. The rows must hold what a learned gate needs (a station record
@@ -833,6 +835,9 @@ int main(void) {
   {
     printf("  feed policy (one pass: SM7XYZ once, IZ3N YG torn, OK1BR control)\n");
     build_policy_band();
+    /* the controls run with the RBN memo off (SKIM_RBN_MEMO=0): a kept
+     * memo stops the same-frequency ghost by itself — checked below */
+    g_setenv("SKIM_RBN_MEMO", "0", TRUE);
     PolicyOut old = policy_run(1, -1, -1, -1);         /* the old policy     */
     check("old policy: the band does carry both garbles (SM7XYZ, IZ3N out)",
           old.sm7xyz >= 1 && old.iz3n >= 1);
@@ -841,6 +846,10 @@ int main(void) {
     PolicyOut bare = policy_run(0, 0, -1, -1);         /* no fresh, no fold  */
     check("hearings + settle alone do not stop the ghost",
           bare.ok1br_ghost >= 1);
+    g_unsetenv("SKIM_RBN_MEMO");
+    PolicyOut memo = policy_run(0, 0, -1, -1);         /* + the kept memo    */
+    check("the RBN memo kept past the table stops it too (same frequency, "
+          "inside the re-spot interval)", memo.ok1br_ghost == 0);
     PolicyOut now = policy_run(0, 0, 0, 0);            /* defaults (v0.6.0)  */
     check("defaults: the ghost of OK1BR (last read 140 s ago) stays off the "
           "wire", now.ok1br_ghost == 0);

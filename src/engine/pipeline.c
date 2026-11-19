@@ -84,7 +84,7 @@
  * spots in 3 h against CW Skimmer Server's 68 of 1991, median gap between
  * spots of a call 5 min against its 10. With the memo kept, a comeback
  * re-spots only after RBN_RESPOT_S or a move of RBN_QSY_HZ. */
-#define RBN_MEMO_KEEP_DEFAULT FALSE
+#define RBN_MEMO_KEEP_DEFAULT TRUE
 /* Per-signal frequency lock. The per-decode tone estimate breathes (noise
  * pulls a band-edge estimate toward the channel centre, arbitration swaps
  * between overlapped channels) and every consumer downstream — decode log,

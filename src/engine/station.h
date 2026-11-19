@@ -53,7 +53,7 @@ G_BEGIN_DECLS
  * call there ("PA3AAV GE GERT" after "CQ CWT SP3FSM") can even look like a
  * CQ: without the hold the record and the feed ping-pong between the two
  * every second (live 2026-11-18, CWT). A real QSY waits out the hold. */
-#define SKIM_STATION_HOLD_S_DEFAULT 0.0
+#define SKIM_STATION_HOLD_S_DEFAULT 30.0
 
 typedef struct {
   char    call[16];

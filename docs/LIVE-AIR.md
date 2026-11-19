@@ -69,8 +69,9 @@ on the WARC bands, where nobody contests, 30 m 60 / 88 and 17 m 61 / 93
 ## Spot frequency: snap, not crawl (2026-11-18)
 
 Against RBN's most frequent frequency for the call within ±5 min (same
-band, ≥ 3 RBN reports), 12.7–23.7 % of L's spots sat over 150 Hz off it,
-R's 5.6–6.5 % — on v2 and v3 alike. The station table pulled its position
+band, ≥ 3 RBN reports, OK1HRA's own spots left out — R feeds RBN under
+that call), 12.7–23.7 % of L's spots sat over 150 Hz off it, R's
+4.3–4.4 % — on v2 and v3 alike. The station table pulled its position
 30 % of the way to every stronger report within SAMECALL_HZ (2.5 kHz), an
 EMA meant for ±10-20 Hz of scatter: a record that started on a far ghost,
 or a station that moved 2 kHz, crawled across in 30 % steps and the feed
@@ -96,6 +97,41 @@ runner's frequency); snap only the calling station, others still pulling
 the EMA 17.3 %; the far-QSY branch (> 2.5 kHz) also only for the calling
 station 16.9 % — a far non-CQ report is usually a real move, so that
 branch stays as it was.
+
+## One place at a time, one spot per run (2026-11-18)
+
+With the snap L still spotted unlike R in two ways:
+
+- **Ping-pong between two places.** One record per call per band follows
+  the last confident report. In a contest a station runs on one frequency
+  and answers others elsewhere; its call on a runner's frequency can even
+  read as a CQ (CWT: "CQ CWT SP3FSM … PA3AAV GE GERT", no 5NN to mark it
+  addressed). PA3AAV flipped 3540.9 ↔ 3536.0 every second, each flip a
+  spot. `SKIM_ST_HOLD` (s): beyond SAMECALL_HZ the record moves only once
+  its place has gone that long without a fresh read.
+- **A pause re-spots.** The station table's 120 s TTL (panadapter labels)
+  took the RBN dedup memo with it: a station silent for two minutes was
+  spotted again on the same frequency — median gap between spots of a call
+  5 min, R's 10. `SKIM_RBN_MEMO`: the memo outlives the table (pruned past
+  RBN_RESPOT_S).
+
+Live taps, snap on; spots per call / over 150 Hz off / re-spots within 60 s
+/ median gap between spots of a call:
+
+| window | R | L snap | L snap + memo + hold 30 s |
+|---|---|---|---|
+| 11-17 14:20–17:20, weekday afternoon | 1.77 / 4.4 % / 3.8 % / 9.7 min | 2.27 / 2.2 % / 4.0 % / 5.4 min | 1.67 / 2.8 % / 0.5 % / 10.8 min |
+| 11-17 22:40 → 11-18 16:05 (R down) | — | 3.24 / 5.7 % / 15.0 % / 4.6 min | 2.21 / 5.0 % / 2.3 % / 10.7 min |
+| 11-18 19:21–22:39, CWT evening | 2.09 / 4.3 % / 5.8 % / 10.1 min | 3.04 / 8.8 % / 15.2 % / 3.6 min | 2.01 / 9.1 % / 4.1 % / 10.0 min |
+
+The off share rises a little with the memo only because the re-spots it
+drops were on the right frequency: off spots 99 → 92 (long) and 74 → 68
+(CWT). Calls ever spotted on RBN's frequency unchanged — the 1–3 "lost"
+were spotted minutes before the window and, rightly, not again inside it.
+Hold 15 s: re-spots within 60 s 3.4 % on the long tap; 60 s: 1.7 %, but two
+calls lost there. What is left in the CWT evening is the misread CQ itself
+(a call on a runner's frequency that the hold does not catch when the
+station never called on its own).
 
 ## Tried and not kept
 
