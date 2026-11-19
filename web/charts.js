@@ -111,7 +111,10 @@ const Charts = (() => {
   // ---- mirrored stacked columns: CW up, RTTY down from one zero line -----------------
   // halves: [{ name, series }, …] — the first grows up, the second (if any) down.
   // Each half has its own scale, its tallest column reaching 100 % of the half.
-  function mirror(box, x, halves, fmtV, halfH = 160) {
+  // log: the column's height is log10(1 + total) — the quiet hours readable
+  // beside a contest peak; its bands share the column in proportion as before,
+  // the grid at the powers of ten.
+  function mirror(box, x, halves, fmtV, halfH = 160, log = false) {
     const m = { l: ML, r: MR, t: 8, b: 22 };
     const two = halves.length > 1;
     const { svg, W, H } = frame(box, m.t + halfH * (two ? 2 : 1) + m.b);
@@ -120,16 +123,22 @@ const Charts = (() => {
     const slot = pw / n, bw = Math.min(24, Math.max(1, slot - (slot > 4 ? 2 : 0)));
     const tot = halves.map((h) => x.t.map((_, i) => h.series.reduce((a, s) => a + (s.values[i] || 0), 0)));
     const max = tot.map((t) => Math.max(0, ...t) || 1);
+    // a column's length in px for a total v of half k
+    const len = (k, v) => (log ? (halfH * Math.log10(1 + Math.max(0, v))) / Math.log10(1 + max[k])
+      : (halfH * v) / max[k]);
     halves.forEach((h, k) => {
       const dir = k ? 1 : -1;                                   // up for the first
-      const yv = (v) => zero + dir * (halfH * v) / max[k];
-      // grid: 0, 50 %, 100 % of this half's maximum
-      for (const f of [0.5, 1]) {
-        const y = yv(max[k] * f);
+      const yv = (v) => zero + dir * len(k, v);
+      // grid: 0, 50 %, 100 % of this half's maximum — or the powers of ten
+      const marks = [];
+      if (log) { for (let p = 1; p <= max[k]; p *= 10) marks.push(p); if (max[k] / marks[marks.length - 1] > 3) marks.push(max[k]); }
+      else marks.push(max[k] * 0.5, max[k]);
+      for (const v of marks) {
+        const y = yv(v);
         el('line', { x1: m.l, x2: W - m.r, y1: y, y2: y, stroke: css('--grid'), 'stroke-width': 1,
                      'shape-rendering': 'crispEdges' }, svg);
         const t = el('text', { x: m.l - 6, y: y + 4, 'text-anchor': 'end', 'font-size': 11, fill: css('--tick') }, svg);
-        t.textContent = compact(max[k] * f);
+        t.textContent = compact(v);
       }
       const lab = el('text', { x: m.l + 6, y: k ? zero + halfH - 6 : m.t + 12, 'font-size': 11,
                                'font-weight': 700, fill: h.color || css('--mut'), stroke: css('--panel'),
@@ -139,14 +148,15 @@ const Charts = (() => {
       for (let i = 0; i < n; i++) {
         let acc = 0;
         const x0 = m.l + i * slot + (slot - bw) / 2;
+        const col = len(k, tot[k][i]);                         // the whole column; bands share it
         const top = h.series.reduce((q, s, j) => (s.values[i] > 0 ? j : q), -1);
         h.series.forEach((s, j) => {
           const v = s.values[i] || 0;
           if (v <= 0) return;
-          const len = (halfH * v) / max[k];
-          const gap = j === top ? 0 : Math.min(2, len / 2);      // surface gap before the next one
-          const ll = Math.max(0.5, len - gap);
-          const inner = zero + dir * (halfH * acc) / max[k];      // the end nearer zero
+          const sl = (col * v) / tot[k][i];
+          const gap = j === top ? 0 : Math.min(2, sl / 2);       // surface gap before the next one
+          const ll = Math.max(0.5, sl - gap);
+          const inner = zero + dir * (col * acc) / tot[k][i];     // the end nearer zero
           acc += v;
           const y0 = k ? inner : inner - ll;                      // top edge of the segment
           if (j === top && ll > 4 && bw >= 6) {                   // 4 px rounded data end
@@ -187,7 +197,7 @@ const Charts = (() => {
             if (s.values[i] != null && s.values[i] > 0) rows.push({ value: fmtV(s.values[i]), label: `${h.name} ${s.name}`, color: s.color });
           }
         });
-        tt.show(m.l + (i + 1) * slot, zero - (halfH * tot[0][i]) / max[0], x.label(i), rows);
+        tt.show(m.l + (i + 1) * slot, zero - len(0, tot[0][i]), x.label(i), rows);
         r.setAttribute('fill', 'rgba(127,127,127,.08)');
         syncAt(i);
       };

@@ -347,6 +347,20 @@ tabs.status = {
 
 // ---- statistics ------------------------------------------------------------------
 const stats = { hours: 24, data: null, at: 0, end: null };   // end: unix s, null = now
+// the spots chart's y-axis, linear or log (kept in the browser)
+stats.logY = (() => { try { return localStorage.getItem('skimmer-spots-y') === 'log'; } catch (e) { return false; } })();
+function spotsYButtons() {
+  for (const b of document.querySelectorAll('#spots-y button')) b.classList.toggle('on', (b.dataset.y === 'log') === stats.logY);
+}
+spotsYButtons();
+on('#spots-y', 'click', (e) => {
+  const y = e.target.dataset && e.target.dataset.y;
+  if (!y) return;
+  stats.logY = y === 'log';
+  try { localStorage.setItem('skimmer-spots-y', y); } catch (err) { /* private window */ }
+  spotsYButtons();
+  renderStats();
+});
 
 // The CW + RTTY decoders tile: every channel decoder running now, summed over
 // the bands, CW beside RTTY (live, from the status — the history has no count).
@@ -400,7 +414,7 @@ function renderStats() {
   Charts.mirror($('#chart-spots'), x,
     [{ name: 'CW', series, color: modeColor('cw') },
      ...(d.rtty ? [{ name: 'RTTY', series: perHour(d.rtty), color: modeColor('rtty') }] : [])],
-    (v) => fmt(v, v < 10 && v % 1 ? 1 : 0));
+    (v) => fmt(v, v < 10 && v % 1 ? 1 : 0), 160, stats.logY);
   // a band's block: CW over RTTY (a mode the band does not decode: an empty
   // strip), both in one ramp — the strip's place says the mode, each its own scale
   const decoded = (mm, b) => mm && mm.active[b] && mm.active[b].some((v) => v != null) ? mm.active[b] : null;

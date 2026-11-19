@@ -84,7 +84,9 @@
       <div id="stats-tiles" class="contents"></div>
     </div>
     <div class="chart-card">
-      <h2>Spots per hour, by band</h2>
+      <div class="chart-h"><h2>Spots per hour, by band</h2>
+        <span class="seg" id="spots-y" title="the y-axis: linear, or logarithmic — the quiet hours readable beside a busy one">
+          <button type="button" data-y="lin">linear</button><button type="button" data-y="log">log</button></span></div>
       <p class="sub mut">CW up, RTTY down from the same zero; each half scaled to its own highest column</p>
       <div class="legend" id="legend-spots"></div>
       <div class="chart" id="chart-spots"></div>

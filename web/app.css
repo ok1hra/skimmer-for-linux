@@ -343,3 +343,6 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 #settings small.ferr { color: var(--bad); font-weight: 700; letter-spacing: 0; }
 .bands-edit input.bad { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--deep)); }
 #settings input.bad, #settings select.bad { background: color-mix(in srgb, var(--bad) 12%, var(--deep)); }
+/* a chart's title with its switch at the right */
+.chart-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.chart-h .seg button { font-size: 12px; padding: 1px 8px; }
