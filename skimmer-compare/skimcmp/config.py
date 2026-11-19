@@ -1,8 +1,8 @@
 """config.py — compare.ini and the matching parameters.
 
-The parameters have defaults here, compare.ini may override them, and every
-request from the page may override them again (query string). Out-of-range
-or malformed values fall back to the base value instead of failing.
+The parameters have defaults here and compare.ini may override them
+([match]); the public page cannot. Out-of-range or malformed values fall back
+to the base value instead of failing.
 """
 import configparser
 import os
@@ -82,6 +82,8 @@ class Config:
                         cp.get("rbn", "exclude", fallback="").replace(",", " ").split()]
         self.listen = cp.get("web", "listen", fallback="0.0.0.0")
         self.port = cp.getint("web", "port", fallback=8074)
+        # how often the page's numbers (data.json) are recomputed, seconds
+        self.every = max(15, cp.getint("web", "every_s", fallback=60))
         base = {k: v[0] for k, v in PARAMS.items()}
         self.params = clamp_params(dict(cp.items("match")) if cp.has_section("match") else {},
                                    base)

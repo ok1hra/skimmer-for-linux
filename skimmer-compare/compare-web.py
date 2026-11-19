@@ -1,78 +1,94 @@
 #!/usr/bin/env python3
-"""compare-web.py — live comparison of two CW skimmers in a browser.
+"""compare-web.py — the public page comparing two CW skimmers, live.
 
-Reads what capture-spots.sh records (logs/: local, remote and RBN feeds,
-events, local status), follows the running session, and serves one page
-with the comparison: recall + McNemar, bust rate, latency, sensitivity by
-SNR/WPM, per band, over time, and the list of every difference.
+Follows the current recording session (what capture-spots.sh records in
+logs/: the two skimmers' feeds, RBN, events, the local status) and serves one
+page about it: L, the Linux skimmer (skimmer-headless), against W, the
+Windows skimmer (CW Skimmer Server) — recall and bust rate by SNR, recall and
+bust rate with their confidence intervals, recall over time.
 
   compare-web.py [-c compare.ini] [--listen ADDR] [--port N]
 
-Read-only: it never writes into logs/. Python 3 standard library only.
+The page is static. The server answers GET and HEAD of five fixed paths and
+nothing else; it reads no query parameter, no body, no cookie:
 
-  GET /                   the page (web/)
-  GET /api/summary?…      statistics for a range and matching parameters
-  GET /api/events?…       every compared event in the range
-  GET /api/raw?…          raw L/R/RBN lines around one event
-  GET /events             Server-Sent Events: "the data changed"
+  /, /index.html, /app.js, /style.css   the page (web/, read once at start)
+  /data.json                            the numbers of the current session
+  /download/events.csv                  every compared station of the session
+  /download/spots-L.tsv, spots-W.tsv    each skimmer's spot lines as received
+  /download/rbn.tsv.gz                  the RBN spots the referee used (gzip)
 
-Range: range=session|session:<T>|1h|6h|24h|today|custom|all (&from=&to=,
-ISO UTC or Unix seconds; default: the current session). Parameters: any
-name from skimcmp/config.py.
-
-Only the sessions the range needs are read (all of logs/ was 2.7 GB of
-text: minutes to start and 1.5 GB of memory). A range that needs other
-sessions starts loading them in the background; until they are in, the API
-answers {"loading": {...}} and the page shows how far the load has come.
+data.json and the downloads are computed in the background every [web]
+every_s seconds (the RBN file every RBN_EVERY_S) — never because of a
+request. data.json is a whitelist: numbers only, no calls, no addresses, no
+paths. The downloads carry calls (they are spots, public like RBN's) and
+nothing else: no connection lines, no status snapshots. Read-only on logs/. Python 3 standard
+library only.
 """
 import argparse
-import calendar
+import csv
+import gzip
+import io
 import json
 import math
 import os
+import re
+import socket
 import sys
 import threading
 import time
 import traceback
 import urllib.parse
-from bisect import bisect_left, bisect_right
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from skimcmp.arbiter import RbnIndex, load_scp          # noqa: E402
-from skimcmp.logs import Cancelled, Store, catalog       # noqa: E402
-from skimcmp.config import PARAMS, Config, clamp_params  # noqa: E402
+from skimcmp.config import Config                       # noqa: E402
+from skimcmp.logs import Cancelled, Store, catalog      # noqa: E402
 from skimcmp.match import analyze, compared_time, engine_summary  # noqa: E402
-from skimcmp.rtty import analyze_rtty                     # noqa: E402
-from skimcmp.stats import overview, summarize            # noqa: E402
-from skimcmp.windows import loose_bands                  # noqa: E402
+from skimcmp.stats import summarize                     # noqa: E402
+from skimcmp.windows import loose_bands                 # noqa: E402
 
 WEB = os.path.join(HERE, "web")
 POLL_S = 2            # how often the logs are re-read
-MIN_RECOMPUTE_S = 5   # new data recomputes at most this often
-LIVE_RECOMPUTE_S = 30 # a live session's common time grows even with no spots
 CATALOG_S = 2         # the session catalog is re-read at most this often
+LOADING_S = 1         # while a session loads, data.json is rewritten this often
 RBN_MARGIN_KHZ = 2.0  # RBN spots kept this far outside the local windows
-TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-         ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
+MAX_CONN = 64         # connections served at once; more are closed at once
+MAX_PER_IP = 8        # … and at most this many from one address
+CONN_TIMEOUT_S = 10   # a connection that sends nothing for this long is closed
+CONN_DEADLINE_S = 20  # a request must have arrived whole within this, however it trickles
+SEND_DEADLINE_S = 600 # the answer must be sent within this (a large download, a slow link);
+                      # each 64 kB of it within CONN_TIMEOUT_S
+CHUNK = 65536
+RBN_EVERY_S = 600     # the RBN download (MBs) is rebuilt at most this often
 
-
-def parse_time(s):
-    if s is None or s == "":
-        return None
-    try:
-        return float(s)
-    except ValueError:
-        pass
-    s = s.strip().rstrip("Z").replace(" ", "T")
-    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d"):
-        try:
-            return calendar.timegm(time.strptime(s, fmt))
-        except ValueError:
-            pass
-    return None
+# path → (file in web/ or None for data.json, content type)
+ROUTES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/data.json": (None, "application/json; charset=utf-8"),
+}
+# the downloads: path → (what, content type, file name suffix)
+DOWNLOADS = {
+    "/download/events.csv": ("every compared station: time, band, kHz, kind, both calls, "
+                             "referee, SNR, WPM", "text/csv; charset=utf-8", "events.csv"),
+    "/download/spots-L.tsv": ("the Linux skimmer's CW spots as received",
+                              "text/tab-separated-values; charset=utf-8", "spots-L.tsv"),
+    "/download/spots-W.tsv": ("the Windows skimmer's spots as received (all comments)",
+                              "text/tab-separated-values; charset=utf-8", "spots-W.tsv"),
+    "/download/rbn.tsv.gz": ("the RBN spots of other skimmers on the compared bands — the referee",
+                             "application/gzip", "rbn.tsv.gz"),
+}
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+       "img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+HEADERS = (("Content-Security-Policy", CSP), ("X-Content-Type-Options", "nosniff"),
+           ("X-Frame-Options", "DENY"), ("Referrer-Policy", "no-referrer"),
+           ("Cross-Origin-Resource-Policy", "same-origin"), ("Cache-Control", "no-cache"))
 
 
 def clean(o):
@@ -86,21 +102,134 @@ def clean(o):
     return o
 
 
+# ---- the public projection: L and W, numbers only ----------------------------------
+def lw(s):
+    """The analysis names the sides L and R; the page L and W."""
+    return re.sub(r"\bR\b", "W", s)
+
+
+def prop(d):
+    return {k: d.get(k) for k in ("k", "n", "p", "lo", "hi")}
+
+
+def view(cfg, S, feeds, engine, T_name, live, scp_n):
+    """What data.json holds of one summarize() result — a whitelist."""
+    label, what = cfg.engines.get(engine, (engine, ""))
+    rec, bust, lat, T = S["recall"], S["bust"], S["latency"], S["timeline"]
+    side = {"L": "L", "R": "W"}
+    C = S["counts"]
+    return {
+        "state": "ok",
+        "session": {"T": T_name, "start": S["range"]["from"], "end": S["range"]["to"],
+                    "live": live, "stopped": bool(feeds.get("stopped"))},
+        "feeds": {k: bool((feeds.get(src) or {}).get("up"))
+                  for k, src in (("L", "local"), ("W", "remote"), ("RBN", "rbn"))},
+        "names": {"L_about": cfg.local_about, "W_about": cfg.remote_about,
+                  "decoder": label, "decoder_what": what},
+        "time": {k: S["time"][k] for k in ("span_s", "common_s", "common_from", "common_to",
+                                            "rbn_s")},
+        "counts": {"spots_L": C["spots_L"], "spots_W": C["spots_R"], "spots_W_all": C["spots_R_all"],
+                   "events": C["events"], "rbn_spots": C["rbn_spots"], "rbn_own": C["rbn_own"],
+                   "scp_calls": scp_n},
+        "bands": [{"band": b["band"], "lo": b["lo"], "hi": b["hi"], "n": b["n"],
+                   "L": prop(b["L"]), "W": prop(b["R"]), "only_L": b["onlyL"], "only_W": b["onlyR"],
+                   "bust_L": b["bustL"], "eps_L": b["epsL"], "bust_W": b["bustR"], "eps_W": b["epsR"],
+                   "nonCQ": b["nonCQ"], "p": b["p"],
+                   "median_W_minus_L": b["lat"]} for b in S["bands"]],
+        "recall": {"L": prop(rec["L"]), "W": prop(rec["R"]), "n": rec["n"],
+                   "only_L": rec["b"], "only_W": rec["c"], "p": rec["p"]},
+        "bust": {"L": prop(bust["L"]), "W": prop(bust["R"]), "p": bust["p"]},
+        "latency": {"n": lat["n"], "median_W_minus_L": lat["median"],
+                    "L_first": lat["L_first"], "W_first": lat["R_first"], "ties": lat["ties"]},
+        "verdicts": [{"metric": v["metric"], "winner": side.get(v["winner"]),
+                      "text": lw(v["text"])} for v in S["verdicts"]],
+        "snr": {"pairs": S["snr"]["offset_n"],
+                "bins": [{"lo": b["lo"], "hi": b["hi"], "n": b["n"],
+                          "L": prop(b["L"]), "W": prop(b["R"]),
+                          "bustL": prop(b["bustL"]), "bustW": prop(b["bustR"])}
+                         for b in S["snr"]["bins"]]},
+        "timeline": {
+            "step": T["step"],
+            "rows": [{"t": r["t"], "n": r["n"], "L": r["L"], "W": r["R"],
+                      "bustL": r["bustL"], "bustW": r["bustR"], "common_s": r["common_s"]}
+                     for r in T["rows"]],
+            "outages": T["outages"], "other": T["other"],
+            "dead": [{"side": side[d["side"]], "t0": d["t0"], "t1": d["t1"]} for d in T["dead"]],
+            "silences": [{"side": side[s["side"]], "band": s["band"], "t0": s["t0"],
+                          "t1": s["t1"], "other": s["other"]} for s in T["silences"]]},
+    }
+
+
+def iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+KIND = {"match": "match", "only-L": "only L", "only-R": "only W", "bust": "bust pair",
+        "nonCQ": "W heard it not as CQ"}
+
+
+def cell(v):
+    """No cell a spreadsheet would run as a formula."""
+    v = str(v)
+    return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") and not _NUM.match(v) else v
+
+
+_NUM = re.compile(r"^-?\d+(\.\d+)?$")
+
+
+def events_csv(evs):
+    out = io.StringIO()
+    w = csv.writer(out, lineterminator="\n")
+    w.writerow(["first_utc", "last_utc", "band", "khz", "kind", "real", "L_call", "W_call",
+                "L_found", "W_found", "L_busted", "W_busted", "referee", "rbn_spotters",
+                "snr_db_W_scale", "wpm", "first_spot_W_minus_L_s", "note"])
+    for e in evs:
+        w.writerow([cell(x) for x in [iso(e["t0"]), iso(e["t1"]), e["band"], e["f"], KIND.get(e["cat"], e["cat"]),
+                    int(e["inU"]), (e["L"] or {}).get("call", ""), (e["R"] or {}).get("call", ""),
+                    int(e["cL"]), int(e["cR"]), int(e["bL"]), int(e["bR"]), e["v"], e["rbn"],
+                    "" if e["snr"] is None else e["snr"], "" if e["wpm"] is None else e["wpm"],
+                    "" if e["lat"] is None else round(e["lat"]), lw(e["note"] or "")]])
+    return out.getvalue().encode()
+
+
+def spots_tsv(spots, what):
+    lines = ["# %s — received_utc<TAB>the line as the skimmer sent it\n" % what]
+    lines += ["%s\t%s\n" % (iso(sp.t), sp.line.replace("\t", " ")) for sp in spots]
+    return "".join(lines).encode()
+
+
+def rbn_gz(rbn):
+    rows = []
+    for band in rbn.t:
+        T, F, Cc, Ss, N = rbn.t[band], rbn.f[band], rbn.c[band], rbn.s[band], rbn.snr[band]
+        for p in range(len(T)):
+            rows.append((T[p], band, rbn.spotters[Ss[p]], round(F[p], 1), rbn.calls[Cc[p]], N[p]))
+    rows.sort()
+    buf = io.StringIO()
+    buf.write("# RBN spots of other skimmers on the compared bands (our own spotter left out)\n"
+              "utc\tband\tspotter\tkhz\tcall\tsnr_db\n")
+    for t, band, sp, f, c, snr in rows:
+        buf.write("%s\t%s\t%s\t%.1f\t%s\t%d\n" % (iso(t), band, sp, f, c, snr))
+    return gzip.compress(buf.getvalue().encode(), 6, mtime=0)
+
+
+# ---- the current session, followed in the background -----------------------------------
 class App:
     def __init__(self, cfg):
         self.cfg = cfg
         bands = loose_bands(cfg.local_windows, RBN_MARGIN_KHZ)
         self.rbn_factory = lambda: RbnIndex(bands, cfg.exclude)
         self.scp = load_scp(cfg.scp)
-        self.cache = {}
-        self.rcache = {}
-        self.clock = threading.Lock()
-        # the loaded sessions: self.store holds exactly self.sel; gen counts
-        # the swaps (analysis caches and the SSE version follow it)
+        # self.store holds exactly the sessions self.sel; a new current
+        # session is loaded beside it and swapped in when complete
         self.lock = threading.Lock()
-        self.store, self.sel, self.gen = None, None, 0
+        self.store, self.sel = None, None
         self.loader = None       # {"sel", "store", "cancel", "t0", "error"}
         self._cat = (0.0, [])
+        self.data = b'{"state":"starting"}'
+        self.downloads = {}      # path → bytes
+        self.session_name = ""
+        self.rbn_built = (None, 0.0)   # (session, when) of the RBN download
 
     def catalog(self):
         now = time.time()
@@ -110,18 +239,13 @@ class App:
             self._cat = (now, cat)
         return cat
 
-    def snapshot(self):
-        with self.lock:
-            return self.store, self.gen
-
-    def version(self):
-        st, gen = self.snapshot()
-        return "%d.%d" % (gen, st.version if st else 0)
+    def current(self):
+        """The current session (frozenset of its <T>): the one recording."""
+        return frozenset(s["T"] for s in self.catalog() if s["current"])
 
     def want(self, sel):
         """True when exactly the sessions sel are loaded; else start (or keep)
-        loading them in the background — a different load still running is
-        cancelled — and return False."""
+        loading them in the background and return False."""
         with self.lock:
             L = self.loader
             if L is not None and L["sel"] == sel and L["error"] is None:
@@ -152,29 +276,21 @@ class App:
                 return
             st.cancel = None
             self.store, self.sel, self.loader = st, L["sel"], None
-            self.gen += 1
-        with self.clock:
-            self.cache.clear()
-            self.rcache.clear()
         print("compare-web: loaded %s in %.0f s (%d L, %d R, %d RBN spots)" % (
             ", ".join(sorted(L["sel"])) or "no session", time.time() - L["t0"],
             len(st.L), len(st.R), st.rbn.n), flush=True)
 
-    def loading(self):
-        """How far the running load has come, or None."""
+    def progress(self):
         with self.lock:
             L = self.loader
-        if L is None:
-            return None
-        done, total = L["store"].progress() if L["store"] else (0, 0)
-        want = sum(s["bytes"] for s in self.catalog() if s["T"] in L["sel"])
-        return {"sessions": sorted(L["sel"]), "read": done, "total": max(total, want),
-                "since": L["t0"], "error": L["error"]}
+        if L is None or L["store"] is None:
+            return 0, 0
+        return L["store"].progress()
 
     def poller(self):
         while True:
             time.sleep(POLL_S)
-            st = self.snapshot()[0]
+            st = self.store
             if st is None:
                 continue
             try:
@@ -182,299 +298,208 @@ class App:
             except Exception:
                 traceback.print_exc()
 
-    def needed(self, q, now):
-        """The sessions the range in q needs (frozenset of <T>)."""
-        cat = self.catalog()
-        r = q.get("range", "session")
-        if r == "all":
-            return frozenset(s["T"] for s in cat)
-        if r == "session" or r.startswith("session:"):
-            T = r.partition(":")[2]
-            if T and any(s["T"] == T for s in cat):
-                return frozenset([T])
-            return frozenset(s["T"] for s in cat if s["current"])
-        hours = {"1h": 1, "6h": 6, "24h": 24}
-        ta, tb = (cat[0]["start"] if cat else now), now
-        if r in hours:
-            ta = now - hours[r] * 3600
-        elif r == "today":
-            ta = now - now % 86400
-        elif r == "custom":
-            a, b = parse_time(q.get("from")), parse_time(q.get("to"))
-            ta = a if a is not None else ta
-            tb = b if b is not None else tb
-        else:
-            return frozenset(s["T"] for s in cat if s["current"])
-        return frozenset(s["T"] for s in cat
-                         if s["start"] <= tb and (s["live"] and now or s["end"]) >= ta)
-
-    def sessions_list(self, A):
-        """Every session for the page: the catalog, with the analysis's
-        numbers for the loaded ones."""
-        info = {s["T"]: s for s in (A.sessions if A else [])}
-        out = []
-        for c in self.catalog():
-            a = info.get(c["T"])
-            out.append({"T": c["T"], "start": c["start"],
-                        "end": a["end"] if a else c["end"],
-                        "live": a["live"] if a else c["live"], "current": c["current"],
-                        "loaded": a is not None, "bytes": c["bytes"],
-                        "common_s": a["common_s"] if a else None,
-                        "has_rbn": "rbn" in c["files"], "engine": c["engine"]})
-        return out
-
-    def params(self, q):
-        return clamp_params(q, self.cfg.params)
-
-    def engines(self, st, P):
-        """{engine: {"s", "last"}} over the loaded data, and the default
-        choice: the decoder of the newest compared time."""
-        with st.lock:
-            segs = compared_time(st, P, time.time(), self.cfg.default_engine)[3]
-        E = engine_summary(segs)
-        default = max(E, key=lambda e: E[e]["last"]) if E else self.cfg.default_engine
-        return E, default
-
-    def engine(self, st, q, P):
-        E, default = self.engines(st, P)
-        e = q.get("engine")
-        return (e if e in E else default), E
-
-    def analysis(self, st, gen, P, engine):
-        key = (gen, engine) + tuple(sorted(P.items()))
-        with self.clock:
-            now = time.time()
-            A = self.cache.get(key)
-            live = A is not None and any(s["live"] for s in A.sessions)
-            if (A is None
-                    or (A.version != st.version and now - A.computed >= MIN_RECOMPUTE_S)
-                    or (live and now - A.computed >= LIVE_RECOMPUTE_S)):
-                A = analyze(st, self.cfg.local_windows, self.cfg.remote_windows,
-                            self.scp, P, now, engine, self.cfg.default_engine)
-                self.cache[key] = A
-                while len(self.cache) > 8:
-                    self.cache.pop(min(self.cache, key=lambda k: self.cache[k].computed))
-            return A
-
-    def rtty(self, st, gen, P, ta, tb):
-        """RTTY against RBN over [ta, tb] (rtty.py), recomputed like the CW
-        analysis: on new data at most every MIN_RECOMPUTE_S."""
-        key = (gen, ta, tb) + tuple(sorted(P.items()))
-        with self.clock:
-            now = time.time()
-            hit = self.rcache.get(key)
-            if hit is None or (hit[0] != st.version and now - hit[1] >= MIN_RECOMPUTE_S):
-                with st.lock:
-                    hit = (st.version, now, analyze_rtty(st, self.scp, P, now, ta, tb))
-                self.rcache[key] = hit
-                while len(self.rcache) > 8:
-                    self.rcache.pop(min(self.rcache, key=lambda k: self.rcache[k][1]))
-            return hit[2]
-
-    def range(self, q, A):
-        now = A.computed
-        r = q.get("range", "session")
-        first = A.spans[0][0] if A.spans else now
-        ta, tb, label = first, now, "all data"
-        hours = {"1h": 1, "6h": 6, "24h": 24}
-        if r in hours:
-            ta, label = now - hours[r] * 3600, "last %s" % r
-        elif r == "today":
-            ta, label = now - now % 86400, "today (UTC)"
-        elif r == "session" or r.startswith("session:"):
-            T = r.partition(":")[2]
-            ss = ([s for s in A.sessions if s["T"] == T] if T else
-                  [s for s in A.sessions if s["live"]] or A.sessions[-1:])
-            if not ss and A.sessions:      # an unknown T: the session loaded for it
-                ss = A.sessions[-1:]
-            if ss:
-                ta, tb, label = ss[0]["start"], ss[0]["end"], "session " + ss[0]["T"]
-        elif r == "custom":
-            a, b = parse_time(q.get("from")), parse_time(q.get("to"))
-            ta = a if a is not None else first
-            tb = b if b is not None else now
-            label = "custom"
-        return ta, tb + 1, label
-
     def feeds(self, st):
-        """Is each feed of the current session connected right now? From the
-        loaded data when the current session is loaded, else from the
-        catalog (its events log's last minute line)."""
+        """Is each feed of the current session connected right now?"""
         cur = next((c for c in self.catalog() if c["current"]), None)
-        if cur is None:
-            return {}
-        if st is None or cur["T"] not in st.sessions:
-            eng = cur["engine"] or self.cfg.default_engine
-            return {"session": cur["T"], "stopped": cur["stopped"], "engine": eng,
-                    "engine_label": self.label(eng),
-                    **{k: {"recorded": k in cur["files"],
-                           "up": bool(cur["feeds"].get(k)) and cur["live"],
-                           "since": None} for k in ("local", "remote", "rbn")}}
+        out = {}
+        if cur is None or cur["T"] not in st.sessions:
+            return out
         with st.lock:
             s = st.sessions[cur["T"]]
-            out = {}
             for kind in ("local", "remote", "rbn"):
                 ev = s.conn[kind]
-                out[kind] = {"recorded": kind in s.tails,
-                             "up": bool(ev and ev[-1][1]) and s.stopped is None,
-                             "since": ev[-1][0] if ev else None}
-            eng = next((h[3] for h in reversed(s.health) if h[3]), None)
-            out["engine"] = eng or (None if any(h[3] for h in s.health)
-                                    else self.cfg.default_engine)
-            out["engine_label"] = self.label(out["engine"]) if out["engine"] else None
-            out["session"] = s.T
+                out[kind] = {"up": bool(ev and ev[-1][1]) and s.stopped is None}
             out["stopped"] = s.stopped
-            return out
-
-    def label(self, engine):
-        return self.cfg.engines.get(engine, (engine, ""))[0]
-
-    def busy(self, q):
-        """The reply while the range's sessions are still loading."""
-        r = q.get("range", "session")
-        return {"loading": self.loading(), "sessions": self.sessions_list(None),
-                "feeds": self.feeds(self.snapshot()[0]), "now": time.time(),
-                "range": {"key": r, "label": r}}
-
-    def summary(self, q):
-        if not self.want(self.needed(q, time.time())):
-            return self.busy(q)
-        st, gen = self.snapshot()
-        P = self.params(q)
-        engine, E = self.engine(st, q, P)
-        A = self.analysis(st, gen, P, engine)
-        ta, tb, label = self.range(q, A)
-        S = summarize(A, ta, tb)
-        S["engine"] = engine
-        S["names"] = {"local": self.cfg.local_name, "remote": self.cfg.remote_name,
-                      "local_about": self.cfg.local_about,
-                      "remote_about": self.cfg.remote_about}
-        S["engines"] = [{"key": e, "label": self.label(e),
-                         "what": self.cfg.engines.get(e, ("", ""))[1],
-                         "compared_s": E[e]["s"], "last": E[e]["last"]}
-                        for e in sorted(E, key=lambda e: -E[e]["last"])]
-        S["overview"] = []
-        for e in S["engines"]:
-            o = overview(A if e["key"] == engine else self.analysis(st, gen, P, e["key"]), ta, tb)
-            o.update(key=e["key"], label=e["label"])
-            S["overview"].append(o)
-        S["rtty"] = self.rtty(st, gen, P, ta, tb)
-        S["range"]["label"] = label
-        S["range"]["key"] = q.get("range", "session")
-        S["now"] = A.computed
-        S["version"] = A.version
-        S["sessions"] = self.sessions_list(A)
-        S["loaded"] = sorted(self.sel or ())
-        S["feeds"] = self.feeds(st)
-        S["param_defs"] = {k: {"default": self.cfg.params[k], "min": v[1], "max": v[2],
-                               "help": v[3]} for k, v in PARAMS.items()}
-        S["scp_calls"] = len(self.scp)
-        return S
-
-    def events(self, q):
-        if not self.want(self.needed(q, time.time())):
-            return {"events": [], "loading": True}
-        st, gen = self.snapshot()
-        P = self.params(q)
-        A = self.analysis(st, gen, P, self.engine(st, q, P)[0])
-        ta, tb, _ = self.range(q, A)
-        return {"events": [e for e in A.events if ta <= e["t0"] < tb]}
-
-    def raw(self, q):
-        P = self.params(q)
-        band = q.get("band", "")
-        f = float(q.get("f", 0) or 0)
-        t0, t1 = int(float(q.get("t0", 0))), int(float(q.get("t1", 0)))
-        calls = [c for c in q.get("calls", "").upper().split(",") if c]
-        pad = 900
-        out = {"L": [], "R": [], "rbn": []}
-        st = self.snapshot()[0]
-        if st is None:
-            return out
-        with st.lock:
-            for side, lst in (("L", st.L), ("R", st.R)):
-                i = bisect_left(lst, t0 - pad, key=lambda s: s.t)
-                j = bisect_right(lst, t1 + pad, key=lambda s: s.t)
-                for sp in lst[i:j]:
-                    mine = sp.call in calls
-                    if mine or abs(sp.f - f) <= 1.0:
-                        out[side].append([sp.t, sp.line, mine])
-            seen = set()
-            win = P["rbn_win_min"] * 60
-            for c in calls:
-                for x in st.rbn.of_call(c, band, t0 - win, t1 + win):
-                    seen.add(x)
-            for x in st.rbn.near(band, t0 - P["bust_dt_s"], t1 + P["bust_dt_s"], f,
-                                 P["rbn_df_khz"]):
-                seen.add(x)
-            out["rbn"] = sorted(seen)[:300]
         return out
 
+    def snapshot(self):
+        """data.json now: the current session's numbers, or "loading"."""
+        if not self.want(self.current()):
+            done, total = self.progress()
+            return {"state": "loading", "read": done, "total": total}
+        st, now, P = self.store, time.time(), dict(self.cfg.params)
+        with st.lock:
+            segs = compared_time(st, P, now, self.cfg.default_engine)[3]
+            E = engine_summary(segs)
+            # the decoder of the newest compared time
+            engine = max(E, key=lambda e: E[e]["last"]) if E else self.cfg.default_engine
+            A = analyze(st, self.cfg.local_windows, self.cfg.remote_windows, self.scp, P,
+                        now, engine, self.cfg.default_engine)
+        live = [s for s in A.sessions if s["live"]] or A.sessions[-1:]
+        ta, tb = (live[0]["start"], live[0]["end"]) if live else (now, now)
+        T_name = live[0]["T"] if live else ""
+        S = summarize(A, ta, tb + 1)
+        D = view(self.cfg, S, self.feeds(st), engine, T_name, bool(live and live[0]["live"]),
+                 len(self.scp))
+        self.build_downloads(st, A, ta, tb + 1, T_name, now)
+        self.session_name = re.sub(r"[^0-9A-Za-z-]", "", T_name)
+        D["downloads"] = [{"path": p.lstrip("/"), "what": DOWNLOADS[p][0],
+                           "bytes": len(self.downloads[p])}
+                          for p in DOWNLOADS if p in self.downloads]
+        return D
 
+    def build_downloads(self, st, A, ta, tb, T_name, now):
+        d = dict(self.downloads)
+        with st.lock:
+            d["/download/events.csv"] = events_csv([e for e in A.events if ta <= e["t0"] < tb])
+            d["/download/spots-L.tsv"] = spots_tsv(st.L, "Linux skimmer (L) CW spots, session " + T_name)
+            d["/download/spots-W.tsv"] = spots_tsv(st.R, "Windows skimmer (W) spots, session " + T_name)
+            sess, when = self.rbn_built
+            if sess != T_name or now - when >= RBN_EVERY_S or "/download/rbn.tsv.gz" not in d:
+                d["/download/rbn.tsv.gz"] = rbn_gz(st.rbn)
+                self.rbn_built = (T_name, now)
+        self.downloads = d
+
+    def publisher(self):
+        while True:
+            wait = self.cfg.every
+            try:
+                D = self.snapshot()
+                if D["state"] == "loading":
+                    wait = LOADING_S
+                D["generated"] = time.time()
+                D["every_s"] = self.cfg.every
+                self.data = json.dumps(clean(D), separators=(",", ":")).encode()
+            except Exception:
+                traceback.print_exc()
+            time.sleep(wait)
+
+
+# ---- the server: five fixed paths, GET and HEAD -------------------------------------------
 class Handler(BaseHTTPRequestHandler):
     app = None
-    protocol_version = "HTTP/1.1"
+    files = {}                       # web/ file → bytes, read once at start
+    server_version = "skimmer-compare"
+    sys_version = ""
+    protocol_version = "HTTP/1.0"    # one request per connection
+    timeout = CONN_TIMEOUT_S
 
     def log_message(self, *a):
         pass
 
-    def send(self, code, body, ctype="application/json; charset=utf-8"):
-        if isinstance(body, str):
-            body = body.encode()
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+    def version_string(self):
+        return self.server_version
 
-    def do_GET(self):
-        u = urllib.parse.urlsplit(self.path)
-        q = dict(urllib.parse.parse_qsl(u.query))
-        try:
-            if u.path == "/events":
-                return self.sse()
-            api = {"/api/summary": self.app.summary, "/api/events": self.app.events,
-                   "/api/raw": self.app.raw}.get(u.path)
-            if api:
-                return self.send(200, json.dumps(clean(api(q)), separators=(",", ":")))
-            name = "index.html" if u.path in ("/", "") else u.path.lstrip("/")
-            path = os.path.normpath(os.path.join(WEB, name))
-            ext = os.path.splitext(path)[1]
-            if not path.startswith(WEB + os.sep) or ext not in TYPES or not os.path.isfile(path):
-                return self.send(404, "not found", "text/plain")
-            with open(path, "rb") as fh:
-                return self.send(200, fh.read(), TYPES[ext])
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        except Exception as e:
-            traceback.print_exc()
+    def setup(self):
+        super().setup()
+        # a client that trickles its request byte by byte resets the idle
+        # timeout each time: cut every connection at a hard deadline
+        self.deadline = None
+        self.arm(CONN_DEADLINE_S)
+
+    def arm(self, seconds):
+        conn = self.connection
+
+        def cut():
             try:
-                self.send(500, json.dumps({"error": str(e)}))
+                conn.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+        if self.deadline is not None:
+            self.deadline.cancel()
+        self.deadline = threading.Timer(seconds, cut)
+        self.deadline.daemon = True
+        self.deadline.start()
 
-    def sse(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        v, last = None, 0
+    def finish(self):
+        self.deadline.cancel()
         try:
-            while True:
-                cur = self.app.version()
-                now = time.time()
-                if cur != v:
-                    self.wfile.write(b"data: %s\n\n" % cur.encode())
-                    v, last = cur, now
-                elif now - last >= 15:
-                    self.wfile.write(b": ping\n\n")
-                    last = now
-                self.wfile.flush()
-                time.sleep(POLL_S)
-        except (BrokenPipeError, ConnectionResetError, OSError):
+            super().finish()
+        except OSError:
             pass
+
+    def send_error(self, code, message=None, explain=None):
+        """Malformed requests, unknown methods: a bare status, no HTML."""
+        self.close_connection = True
+        try:
+            self.reply(code, b"%d\n" % code, "text/plain; charset=utf-8",
+                       getattr(self, "command", None) == "HEAD")
+        except OSError:
+            pass
+
+    def reply(self, code, body, ctype, head, disposition=None):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        if disposition:
+            self.send_header("Content-Disposition", disposition)
+        self.send_header("Content-Length", str(len(body)))
+        for k, v in HEADERS:
+            self.send_header(k, v)
+        self.end_headers()
+        if not head:
+            for i in range(0, len(body), CHUNK):     # CONN_TIMEOUT_S for each
+                self.wfile.write(body[i:i + CHUNK])
+
+    def answer(self, head):
+        self.arm(SEND_DEADLINE_S)        # the request is in: now the time to send
+        path = urllib.parse.urlsplit(self.path).path
+        route = ROUTES.get(path)
+        try:
+            if path in DOWNLOADS:
+                body = self.app.downloads.get(path)
+                if body is None:
+                    return self.reply(503, b"not ready yet\n", "text/plain; charset=utf-8", head)
+                _, ctype, suffix = DOWNLOADS[path]
+                T = self.app.session_name or "session"
+                return self.reply(200, body, ctype, head,
+                                  'attachment; filename="skimmer-compare-%s-%s"' % (T, suffix))
+            if route is None:
+                return self.reply(404, b"not found\n", "text/plain; charset=utf-8", head)
+            name, ctype = route
+            body = self.app.data if name is None else self.files[name]
+            self.reply(200, body, ctype, head)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def do_GET(self):
+        self.answer(False)
+
+    def do_HEAD(self):
+        self.answer(True)
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 32
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.count_lock = threading.Lock()
+        self.total, self.per_ip = 0, {}
+
+    def _take(self, ip):
+        with self.count_lock:
+            if self.total >= MAX_CONN or self.per_ip.get(ip, 0) >= MAX_PER_IP:
+                return False
+            self.total += 1
+            self.per_ip[ip] = self.per_ip.get(ip, 0) + 1
+            return True
+
+    def _give(self, ip):
+        with self.count_lock:
+            self.total -= 1
+            n = self.per_ip[ip] - 1
+            if n:
+                self.per_ip[ip] = n
+            else:
+                del self.per_ip[ip]
+
+    def process_request(self, request, client_address):
+        ip = client_address[0]
+        if not self._take(ip):
+            self.shutdown_request(request)       # full: close, do not queue
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._give(ip)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._give(client_address[0])
 
 
 def main():
@@ -484,15 +509,17 @@ def main():
     ap.add_argument("--port", type=int)
     a = ap.parse_args()
     cfg = Config(a.config)
-    app = App(cfg)
+    for name, _ in set(ROUTES.values()):
+        if name:
+            with open(os.path.join(WEB, name), "rb") as fh:
+                Handler.files[name] = fh.read()
+    app = Handler.app = App(cfg)
     threading.Thread(target=app.poller, daemon=True).start()
-    Handler.app = app
-    listen, port = a.listen or cfg.listen, a.port or cfg.port
-    srv = ThreadingHTTPServer((listen, port), Handler)
-    srv.daemon_threads = True
-    print("compare-web: http://%s:%d/  logs %s  (%d sessions; loading the current one)" % (
-        listen, port, cfg.logs, len(app.catalog())), flush=True)
-    app.want(app.needed({}, time.time()))
+    threading.Thread(target=app.publisher, daemon=True).start()
+    listen, port = a.listen or cfg.listen, a.port if a.port is not None else cfg.port
+    srv = Server((listen, port), Handler)
+    print("compare-web: http://%s:%d/  logs %s  (the current session, every %d s)" % (
+        listen, srv.server_address[1], cfg.logs, cfg.every), flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -206,11 +206,14 @@ def latency_block(evs):
 
 def bins_block(evs, key, edges):
     U = [e for e in evs if e["inU"] and e[key] is not None]
+    every = [e for e in evs if e[key] is not None]
     edges = [-math.inf] + edges + [math.inf]
     out = []
     for i in range(len(edges) - 1):
         lo, hi = edges[i], edges[i + 1]
         g = [e for e in U if lo <= e[key] < hi]
+        # the bust rate in the bin: every episode of a side, as bust_block
+        a = [e for e in every if lo <= e[key] < hi]
         b = sum(e["cL"] and not e["cR"] for e in g)
         c = sum(e["cR"] and not e["cL"] for e in g)
         out.append({"lo": None if lo == -math.inf else lo,
@@ -222,6 +225,8 @@ def bins_block(evs, key, edges):
                     # side's SNR estimate can bias
                     "LofR": prop(sum(e["cL"] and e["cR"] for e in g),
                                  sum(e["cR"] for e in g)),
+                    "bustL": prop(sum(e["bL"] for e in a), sum(e["L"] is not None for e in a)),
+                    "bustR": prop(sum(e["bR"] for e in a), sum(e["R"] is not None for e in a)),
                     "b": b, "c": c, "p": binom_two_sided(b, b + c)})
     return out
 

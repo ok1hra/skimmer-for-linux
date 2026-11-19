@@ -1,10 +1,10 @@
-# systemd --user unit for compare-web.py — the live skimmer comparison page.
+# systemd --user unit for compare-web.py — the public L/W skimmer comparison page.
 #   ln -s "$PWD/skimmer-compare-web.service" ~/.config/systemd/user/
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now skimmer-compare-web
 # Read-only on logs/; listens where compare.ini [web] says (0.0.0.0:8074).
 [Unit]
-Description=Skimmer compare — live L/R CW skimmer comparison (web)
+Description=Skimmer compare — public L/W CW skimmer comparison (web)
 
 [Service]
 ExecStart=/usr/bin/python3 %h/inst/skimmer-for-linux/skimmer-compare/compare-web.py

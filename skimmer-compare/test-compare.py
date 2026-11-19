@@ -53,6 +53,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -288,7 +289,7 @@ def core(root, logs, A_T, B_T):
 
 
 def web(root, A_T, B_T):
-    print("=== web — the server answers")
+    print("=== web — the public page and nothing else")
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -303,68 +304,86 @@ def web(root, A_T, B_T):
                 break
             except OSError:
                 time.sleep(0.1)
-        get = lambda path: urllib.request.urlopen(base + path, timeout=5)
+        get = lambda path, **kw: urllib.request.urlopen(
+            urllib.request.Request(base + path, **kw), timeout=5)
 
-        def ready(path):
-            """The summary once the range's sessions are loaded, and whether
-            the first answer said "loading"."""
-            first = None
-            for _ in range(100):
-                S = json.load(get(path))
-                first = "loading" in S if first is None else first
-                if "loading" not in S:
-                    return S, first
-                time.sleep(0.1)
-            raise AssertionError("still loading: " + path)
+        def status(path, **kw):
+            try:
+                return get(path, **kw).status
+            except urllib.error.HTTPError as err:
+                return err.code
 
-        Sd, waited = ready("/api/summary")
-        check(Sd["loaded"] == [B_T] and Sd["range"]["key"] == "session",
-              "default range: the current session only (the newest, %s) — loaded %s"
-              % (B_T, Sd["loaded"]))
-        cat = {x["T"]: x for x in Sd["sessions"]}
-        check(set(cat) == {A_T, B_T} and cat[B_T]["loaded"] and not cat[A_T]["loaded"]
-              and cat[A_T]["common_s"] is None and cat[A_T]["bytes"] > 0,
-              "every session is listed; the one not loaded has a size, no numbers")
-        Sa = json.load(get("/api/summary?range=session:" + A_T))
-        check("loading" in Sa and Sa["loading"]["sessions"] == [A_T],
-              "another session: the answer says it is loading (%s)" % Sa.get("loading"))
-        Sa, _ = ready("/api/summary?range=session:" + A_T)
-        check(Sa["loaded"] == [A_T], "then that session alone is loaded")
-        S0, _ = ready("/api/summary?range=all")
-        check(S0["loaded"] == sorted([A_T, B_T]), "range=all loads every session")
-        check(S0["engine"] == "deepcw" and [o["key"] for o in S0["overview"]] == ["deepcw", "cw-v2"],
-              "default comparison: the newest decoder (deepcw); the overview lists both")
-        check(S0["names"]["local"] == "Local test" and S0["engines"][1]["label"] == "decoder v2",
-              "names and decoder labels come from compare.ini")
-        S, _ = ready("/api/summary?range=session:20261001-120000&engine=cw-v2")
-        check(S["recall"]["n"] == 4 and S["range"]["label"] == "session 20261001-120000",
-              "/api/summary for session A, cw-v2: 4 real stations")
-        check(S["rtty"]["time_s"] == 0 and S["rtty"]["bands"] == {},
-              "/api/summary carries the RTTY comparison (none here: no band decoded RTTY)")
-        S2 = json.load(get("/api/summary?range=session:20261001-120000&engine=cw-v2&df_khz=0.05"))
-        check(S2["params"]["df_khz"] == 1.5, "an out-of-range parameter falls back to the default")
-        S3 = json.load(get("/api/summary?range=session:20261001-120000&engine=cw-v2&bust_edit=0"))
-        check(S3["cats"].get("bust", 0) == 1,
-              "bust_edit=0 still pairs EA3G/EA3GEH (prefix), parameters reach the matcher")
-        ready("/api/summary?range=all")
-        E = json.load(get("/api/events?range=all&engine=cw-v2"))["events"]
-        check(len(E) == 6, "/api/events lists every event of the comparison (%d)" % len(E))
-        e = next(e for e in E if e["cat"] == "bust")
-        raw = json.load(get("/api/raw?band=40m&f=%s&t0=%d&t1=%d&calls=EA3G,EA3GEH"
-                            % (e["f"], e["t0"], e["t1"])))
-        check(any(r[2] for r in raw["L"]) and any(r[2] for r in raw["R"])
-              and any(x[3] == "EA3GEH" for x in raw["rbn"]),
-              "/api/raw: the L, R and RBN lines of the bust pair")
-        html = get("/").read().decode()
+        D = None
+        for _ in range(100):
+            D = json.load(get("/data.json"))
+            if D.get("state") == "ok":
+                break
+            time.sleep(0.1)
+        check(D.get("state") == "ok", "data.json: the current session's numbers (%s)" % D.get("state"))
+        check(D["names"]["decoder"] == "DeepCW" and D["session"]["stopped"],
+              "the current session is the newest (%s, decoder DeepCW, stopped)" % B_T)
+        check(set(D["recall"]) >= {"L", "W"} and "R" not in D["recall"]
+              and all({"L", "W", "bustL", "bustW"} <= set(b) for b in D["snr"]["bins"]),
+              "the sides are L and W; every SNR bin has recall and bust rate of both")
+        raw = get("/data.json").read().decode()
+        check(not any(x in raw for x in ("ZZ0ZZ", "192.168", "127.0.0.1", root, "OK1HRA")),
+              "data.json carries no call, address or path")
+        check(get("/data.json?range=all&engine=cw-v2&df_khz=9").read().decode() == raw,
+              "a query string changes nothing")
+        check(D["session"]["T"] == B_T and D["counts"]["rbn_spots"] >= 0
+              and {"bands", "downloads"} <= set(D) and "rbn_s" in D["time"],
+              "data.json names the session, the RBN reference, the bands and the downloads")
+        paths = {d["path"] for d in D["downloads"]}
+        check(paths == {"download/events.csv", "download/spots-L.tsv", "download/spots-W.tsv",
+                        "download/rbn.tsv.gz"}, "four downloads listed (%s)" % sorted(paths))
+        r = get("/download/spots-W.tsv")
+        body = r.read().decode()
+        check("ZZ0ZZ" in body and "192.168" not in body and "connected" not in body
+              and r.headers.get("Content-Disposition", "").startswith("attachment")
+              and B_T in r.headers.get("Content-Disposition", ""),
+              "spots-W.tsv: W's spot lines, no connection lines, an attachment named by the session")
+        ev = get("/download/events.csv").read().decode().splitlines()
+        check(ev[0].startswith("first_utc,") and len(ev) == 1 + D["counts"]["events"],
+              "events.csv: a header and one row per compared episode (%d)" % (len(ev) - 1))
+        import gzip as _gz
+        rb = _gz.decompress(get("/download/rbn.tsv.gz").read()).decode()
+        check(rb.startswith("# RBN spots"), "rbn.tsv.gz is gzip text")
+        check(status("/download/../compare.ini") == 404 and status("/download/") == 404
+              and status("/download/x.csv") == 404, "only the four downloads exist under /download/")
+        r = get("/")
+        html = r.read().decode()
         check("<title>Skimmer compare</title>" in html, "the page is served")
+        csp = r.headers.get("Content-Security-Policy", "")
+        check("default-src 'none'" in csp and "frame-ancestors 'none'" in csp
+              and r.headers.get("X-Content-Type-Options") == "nosniff"
+              and "Python" not in r.headers.get("Server", "Python"),
+              "security headers: CSP, nosniff; the Server header names no Python")
+        check(all(status(x) == 200 for x in ("/app.js", "/style.css", "/index.html")),
+              "the page's files are served")
+        check(all(status(x) == 404 for x in ("/api/summary", "/api/events", "/api/raw", "/events",
+                                             "/../compare.ini", "/%2e%2e/compare.ini",
+                                             "/web/app.js", "/compare-web.py", "/logs/")),
+              "every other path is 404 (the old API, path traversal, the sources)")
+        check(status("/", method="POST", data=b"x") == 501 and status("/", method="PUT", data=b"x") == 501,
+              "POST and PUT are not served")
+        check(status("/", method="HEAD") == 200, "HEAD is served")
+        c = socket.create_connection(("127.0.0.1", port), timeout=5)
+        c.sendall(b"\x16\x03\x01garbage\r\n\r\n")
+        reply = c.recv(4096)
+        c.close()
+        check(b"400" in reply and b"Python" not in reply and b"<" not in reply,
+              "a malformed request gets a bare 400, no HTML, no Python banner (%r)" % reply[:40])
+        idle = [socket.create_connection(("127.0.0.1", port), timeout=5) for _ in range(8)]
+        time.sleep(0.2)
         try:
-            get("/../compare.ini")
-            check(False, "path traversal is refused")
-        except urllib.error.HTTPError as err:
-            check(err.code == 404, "path traversal is refused")
-        es = get("/events")
-        check(es.readline().startswith(b"data: "), "/events streams the data version")
-        es.close()
+            refused = status("/") != 200
+        except OSError:
+            refused = True
+        for c in idle:
+            c.close()
+        time.sleep(0.2)
+        check(refused and status("/") == 200,
+              "8 idle connections from one address: a 9th is closed; once they go, it is served")
     finally:
         p.terminate()
         p.wait(5)

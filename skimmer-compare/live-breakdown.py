@@ -3,7 +3,8 @@
 
   live-breakdown.py EVENTS.json [EVENTS.json …] [--taps DIR] [--examples 12]
 
-EVENTS.json is compare-web's /api/events for a range (one session each).
+EVENTS.json is a list of compared events (one session each), as tap-score.py
+writes them (the old compare-web's /api/events shape).
 For every real station R spotted and L did not (only-R, inU), the decode
 tap of that band (headless learn=true: what the extractor ate, with UTC
 wall time) around R's frequency and time says which basket — the live
