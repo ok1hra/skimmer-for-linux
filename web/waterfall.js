@@ -22,7 +22,7 @@ const Wf = (() => {
   const save = () => { try { localStorage.setItem('skwf', JSON.stringify(opt)); } catch (e) { /* private */ } };
   const $ = (s) => document.querySelector(s);
 
-  let ws = null, active = false, retry = 0, hello = null, band = -1;
+  let ws = null, active = false, retry = 0, hello = null, band = -1, shownBand = '', leaveT = 0;
   let W = 0, H = 0, cv, g, sc, sg, sp, spg, rowCv, rowG;
   let view = { lo: 0, hi: 0 };                        // what the canvas shows now
   let floorB = null, envelope = null, rowTimes = [];
@@ -252,7 +252,11 @@ const Wf = (() => {
       band = i >= 0 ? i : 0;
       sel.value = String(band);
       opt.band = m.bands[band] ? m.bands[band].name : '';
-      reframe(true);
+      // back after a pause: the picture stays, a line marks the gap
+      const same = view.hi && shownBand === opt.band;
+      reframe(!same);
+      if (same) { g.fillStyle = 'rgba(125,143,166,.6)'; g.fillRect(0, 0, W, 1); rowTimes.unshift(0); }
+      shownBand = opt.band;
       send();
     };
     ws.onclose = (e) => {
@@ -267,6 +271,7 @@ const Wf = (() => {
   // ---- sizes and the bar ------------------------------------------------------------
   function size() {
     const box = $('#wf-box');
+    if (!box.clientWidth) return false;               // the tab is not shown
     const w = Math.min(hello && hello.max_w ? hello.max_w : 2048, Math.max(200, Math.round(box.clientWidth)));
     const h = Math.max(200, Math.round(innerHeight - box.getBoundingClientRect().top - 12));
     if (w === W && h === H) return false;
@@ -303,6 +308,7 @@ const Wf = (() => {
     $('#wf-band').addEventListener('change', (e) => {
       band = Number(e.target.value);
       opt.band = hello.bands[band].name; opt.centre = 0;
+      shownBand = opt.band;
       reframe(true);
     });
     $('#wf-span').addEventListener('change', (e) => { opt.span = Number(e.target.value); reframe(false); });
@@ -359,8 +365,11 @@ const Wf = (() => {
     }, 2000);
   }
 
+  // Away (another tab, a hidden window) the stream stops after 30 s — the
+  // skimmer then computes nothing for this page; back sooner, nothing stopped.
   function enter() {
     mount();
+    clearTimeout(leaveT);
     active = true;
     size();
     drawScale();
@@ -368,9 +377,13 @@ const Wf = (() => {
     connect();
     if (ws && ws.readyState === 1) send();
   }
-  function leave() {
+  function close() {
     active = false;
-    if (ws) { const s = ws; ws = null; s.close(1000, 'tab left'); }
+    if (ws) { const s = ws; ws = null; s.close(1000, 'away'); }
+  }
+  function leave() {
+    clearTimeout(leaveT);
+    leaveT = setTimeout(close, 30000);
   }
   return { enter, leave };
 })();
