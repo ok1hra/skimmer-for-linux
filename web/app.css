@@ -336,9 +336,13 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
            border-left: 1px solid rgba(160,170,185,.35); border-right: 1px solid rgba(160,170,185,.35); }
 .wf-pass.on { background: rgba(255,196,64,.08); border-color: rgba(255,196,64,.55); }
 .wf-listen { display: inline-flex; align-items: center; gap: 6px; }
-.wf-spk { font-size: 17px; line-height: 1; border: 1px solid var(--ln2); background: var(--deep); padding: 2px 6px; cursor: pointer;
-          filter: grayscale(1); opacity: .7; }
-.wf-spk.on { filter: none; opacity: 1; border-color: #ffc440; }
+/* the speaker: grey and crossed out while muted; the same speaker green, not
+   crossed, while listening */
+.wf-spk { line-height: 0; border: 1px solid var(--ln2); background: var(--deep); padding: 3px 5px; cursor: pointer;
+          color: var(--mut); }
+.wf-spk:hover { color: var(--fg); }
+.wf-spk.on { color: var(--ok); border-color: var(--ok); }
+.wf-spk.on path + path { display: none; }
 /* a field the save refused: red, with what is wrong under it */
 #settings small.ferr { color: var(--bad); font-weight: 700; letter-spacing: 0; }
 .bands-edit input.bad { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--deep)); }

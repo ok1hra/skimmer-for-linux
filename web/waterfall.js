@@ -151,7 +151,6 @@ const Wf = (() => {
   }
   function audioUi() {
     const b = $('#wf-audio');
-    b.textContent = au.on ? '🔊' : '🔇';
     b.classList.toggle('on', au.on);
     b.title = au.on ? `listening on ${fmtKhz(au.f / 1000, 2)} kHz — click to mute` : (au.f ? 'muted — click to listen' : 'click in the waterfall to listen there');
     drawScale();
