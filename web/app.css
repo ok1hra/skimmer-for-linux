@@ -321,7 +321,7 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 .wf-scale { display: block; width: 100%; height: 22px; border: 1px solid var(--ln); border-bottom: 0; cursor: ew-resize; }
 .wf-box { border: 1px solid var(--ln); background: #00000c; }
 .wf-box canvas { display: block; width: 100%; cursor: crosshair; touch-action: none; image-rendering: auto; }
-.strip b.temp.cool { color: var(--ok); } .strip b.temp.warm { color: var(--warn); } .strip b.temp.hot { color: var(--bad); }
+b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot { color: var(--bad); }
 #dxc.side { margin-top: 18px; }
 #dxc.side .dxc td { font-size: 15px; }
 .rbn-link { padding: 8px 18px 0; font-size: 13px; letter-spacing: .02em; }

@@ -442,11 +442,16 @@ function renderStats() {
   Charts.area($('#chart-cpu'), x, layers, g.cpu, (v) => `${fmt(v)} %`, 'CPU, all, % of a core',
     { name: 'IQ lost, worst minute', values: g.lost, color: lostColor,
       fmtV: (v) => `${fmt(v, 3)} %`, fmtTick: (v) => `${+v.toPrecision(2)} %` });
-  // the CPU temperature: the hottest minute of each bucket (from v0.8.2 on)
-  const tempColor = Charts.seriesColor(4);             // magenta: apart from the CPU layers
-  $('#legend-temp').innerHTML = `<span><i class="line" style="border-color:${tempColor};opacity:1"></i>CPU temperature, the hottest minute${status && status.cpu_temp_c != null ? ` · now <b>${fmt(status.cpu_temp_c)} °C</b>` : ''}</span>`;
+  // the CPU temperature: the hottest minute of each bucket (from v0.8.2 on);
+  // the line coloured by its height — green while fine, amber from 70 °C, red
+  // at 85 °C and above (the header's colours)
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const tempRamp = [[60, css('--ok')], [70, css('--ok')], [78, css('--warn')], [85, css('--bad')]];
+  const nowT = status && status.cpu_temp_c != null ? status.cpu_temp_c : null;
+  $('#legend-temp').innerHTML = '<span><i class="ramp" style="background:linear-gradient(90deg,var(--ok),var(--ok) 35%,var(--warn) 65%,var(--bad))"></i>' +
+    `CPU temperature, the hottest minute — green fine, amber from 70 °C, red from 85 °C${nowT != null ? ` · now <b class="temp ${tempClass(nowT)}">${fmt(nowT)} °C</b>` : ''}</span>`;
   Charts.line($('#chart-temp'), x, g.cpu_temp || g.cpu.map(() => null),
-    { name: 'CPU temperature, the hottest minute', color: tempColor, fmtV: (v) => `${fmt(v)} °C`,
+    { name: 'CPU temperature, the hottest minute', color: css('--ok'), ramp: tempRamp, fmtV: (v) => `${fmt(v)} °C`,
       fmtTick: (v) => `${fmt(v)} °C`, height: 110, minSpan: 20 });
   ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-temp'].forEach((id) => loading(id, false));
 

@@ -352,8 +352,18 @@ const Charts = (() => {
   }
 
   // ---- one quantity as a line on its own scale (not from zero) ---------------------
-  // opts: { name, color, fmtV, fmtTick, height, minSpan } — the scale spans the
-  // values' range rounded out to tens, at least minSpan wide.
+  let rampN = 0;
+  function rampAt(ramp, v) {                       // the colour at v, mixed between the stops
+    if (v <= ramp[0][0]) return ramp[0][1];
+    for (let k = 1; k < ramp.length; k++) {
+      if (v <= ramp[k][0]) return mix(ramp[k - 1][1], ramp[k][1], (v - ramp[k - 1][0]) / (ramp[k][0] - ramp[k - 1][0]));
+    }
+    return ramp[ramp.length - 1][1];
+  }
+  // opts: { name, color, fmtV, fmtTick, height, minSpan, ramp } — the scale spans
+  // the values' range rounded out to tens, at least minSpan wide. ramp:
+  // [[value, '#rrggbb'], …] ascending — the line takes the colour of its height
+  // (a gradient up the plot), the dots too.
   function line(box, x, values, opts) {
     const { svg, W, H } = frame(box, opts.height || 110);
     const v = values.filter((y) => y != null);
@@ -368,7 +378,8 @@ const Charts = (() => {
       const y = lo + ((hi - lo) * i) / 2, yy = py(y);
       el('line', { x1: m.l, x2: W - m.r, y1: yy, y2: yy, stroke: i ? css('--grid') : css('--axis'),
                    'stroke-width': 1, 'shape-rendering': 'crispEdges' }, svg);
-      const t = el('text', { x: m.l - 6, y: yy + 4, 'text-anchor': 'end', 'font-size': 11, fill: opts.color }, svg);
+      const t = el('text', { x: m.l - 6, y: yy + 4, 'text-anchor': 'end', 'font-size': 11,
+                             fill: opts.ramp ? css('--tick') : opts.color }, svg);
       t.textContent = opts.fmtTick(y);
     }
     const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(pw / 90))));
@@ -382,11 +393,19 @@ const Charts = (() => {
       d += `${pen ? 'L' : 'M'}${px(i).toFixed(1)},${py(y).toFixed(1)}`;
       pen = true;
     });
-    el('path', { d, fill: 'none', stroke: opts.color, 'stroke-width': 2, 'stroke-linejoin': 'round',
+    const at = (y) => (opts.ramp ? rampAt(opts.ramp, y) : opts.color);
+    let stroke = opts.color;
+    if (opts.ramp) {                               // bottom → top: the ramp's colours
+      const id = `ramp${++rampN}`, g = el('linearGradient', { id, gradientUnits: 'userSpaceOnUse',
+        x1: 0, x2: 0, y1: py(lo), y2: py(hi) }, el('defs', {}, svg));
+      for (let k = 0; k <= 20; k++) el('stop', { offset: k / 20, 'stop-color': at(lo + ((hi - lo) * k) / 20) }, g);
+      stroke = `url(#${id})`;
+    }
+    el('path', { d, fill: 'none', stroke, 'stroke-width': 2, 'stroke-linejoin': 'round',
                  'stroke-linecap': 'round' }, svg);
     values.forEach((y, i) => {                     // a bucket alone between gaps: a dot
       if (y != null && values[i - 1] == null && values[i + 1] == null) {
-        el('circle', { cx: px(i), cy: py(y), r: 2, fill: opts.color }, svg);
+        el('circle', { cx: px(i), cy: py(y), r: 2, fill: at(y) }, svg);
       }
     });
     if (!v.length) {
@@ -402,7 +421,8 @@ const Charts = (() => {
       const i = Math.min(n - 1, Math.max(0, Math.floor(((mx - m.l) * n) / pw)));
       syncAt(i);
       tt.show((px(i) * r.width) / W, (py(values[i] ?? lo) * r.height) / H, x.label(i),
-              [{ value: values[i] == null ? '–' : opts.fmtV(values[i]), label: opts.name, color: opts.color }]);
+              [{ value: values[i] == null ? '–' : opts.fmtV(values[i]), label: opts.name,
+                 color: values[i] == null ? opts.color : at(values[i]) }]);
     });
     hit.addEventListener('pointerleave', () => { tt.hide(); syncOff(); });
   }
