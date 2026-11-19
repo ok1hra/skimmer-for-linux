@@ -433,7 +433,7 @@ const Wf = (() => {
       const x = xIn(e), f = hzOf(x);
       const b = bandInfo();
       const near = b ? spots.filter((s) => s.band === b.name && Math.abs(s.khz * 1000 - f) < Math.max(60, (view.hi - view.lo) / W * 4)) : [];
-      $('#wf-read').innerHTML = `<b>${fmtKhz(f / 1000, 2)}</b> kHz${near.length ? ` · ${near.slice(0, 3).map((s) => s.call).join(', ')}` : ''}`;
+      $('#wf-read').innerHTML = `<b>${fmtKhz(f / 1000, 2)}</b> kHz${near.length ? ` · ${esc(near.slice(0, 3).map((s) => s.call).join(', '))}` : ''}`;
       if (!drag) return;
       opt.centre = drag.c - ((x - drag.x) / W) * (view.hi - view.lo);
       reframe(false);

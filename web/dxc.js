@@ -148,7 +148,7 @@ const Dxc = (() => {
       case 'az': return `<td class="c-az" title="${s.az != null ? `${Math.round(s.az)}°` : ''}">${s.az != null ? `${ARR[Math.round(s.az / 45) % 8]} ${Math.round(s.az)}` : ''}</td>`;
       case 'db': return `<td class="c-db" style="color:${tone(s.snr)}"><span class="m">${meter(s.snr)}</span>${s.snr}</td>`;
       case 'speed': return `<td class="c-speed">${s.speed || ''}</td>`;
-      case 'mode': return `<td class="c-mode">${s.mode}</td>`;
+      case 'mode': return `<td class="c-mode">${esc(s.mode)}</td>`;
       case 'band': return `<td class="c-band" style="color:${SkMap.bandColor(s.band)}">${esc(s.band)}</td>`;
       case 'country': return `<td class="c-country">${s.where ? esc(s.where.name) : ''}</td>`;
       case 'src': return `<td class="c-src">${s.src ? esc(s.src) : '—'}</td>`;

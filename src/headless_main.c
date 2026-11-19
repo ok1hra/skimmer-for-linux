@@ -1580,6 +1580,11 @@ static void spot_log_add(Hd *h, const char *call, const char *mode, double freq_
   s->t = g_get_real_time() / G_USEC_PER_SEC;
   g_strlcpy(s->call, call, sizeof(s->call));
   g_strlcpy(s->mode, mode, sizeof(s->mode));
+  /* the mode may come from another skimmer's feed: letters and digits only
+   * before it reaches a page */
+  for (char *x = s->mode; *x; x++) {
+    if (!g_ascii_isalnum(*x)) { *x = '?'; }
+  }
   s->freq_hz = freq_hz;
   s->snr_db = snr_db;
   s->speed = speed;
