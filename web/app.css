@@ -307,7 +307,17 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
           letter-spacing: .08em; text-transform: uppercase; color: var(--mut); }
 .wf-bar label { display: inline-flex; align-items: center; gap: 6px; }
 .wf-bar select { font-size: 13px; text-transform: none; letter-spacing: 0; padding: 2px 5px; }
-.wf-bar input[type=range] { width: 90px; accent-color: var(--hot); padding: 0; border: 0; background: none; }
+/* quiet sliders: a hairline track, a small grey knob */
+.wf-bar input[type=range] { width: 90px; padding: 0; border: 0; background: none; height: 14px;
+                            -webkit-appearance: none; appearance: none; cursor: pointer; }
+.wf-bar input[type=range]::-webkit-slider-runnable-track { height: 2px; background: var(--ln2); }
+.wf-bar input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 10px; height: 10px; margin-top: -4px;
+                                                  border-radius: 50%; background: var(--mut); border: 0; }
+.wf-bar input[type=range]::-moz-range-track { height: 2px; background: var(--ln2); }
+.wf-bar input[type=range]::-moz-range-progress { height: 2px; background: var(--faint); }
+.wf-bar input[type=range]::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: var(--mut); border: 0; }
+.wf-bar input[type=range]:hover::-moz-range-thumb { background: var(--fg); }
+.wf-bar input[type=range]:hover::-webkit-slider-thumb { background: var(--fg); }
 .wf-bar .wf-read { text-transform: none; letter-spacing: .02em; font-size: 13px; min-width: 14em; font-variant-numeric: tabular-nums; }
 .wf-bar .wf-read b { color: var(--fg); }
 .wf-bar .wf-net { margin-left: auto; text-transform: none; font-variant-numeric: tabular-nums; }

@@ -366,8 +366,7 @@ const Wf = (() => {
     $('#wf-rate').value = String(opt.rate);
     $('#wf-range').value = String(opt.range);
     $('#wf-floor').value = String(opt.floor);
-    $('#wf-range-auto').classList.toggle('on', opt.range === DEF.range);
-    $('#wf-floor-auto').classList.toggle('on', opt.floor === DEF.floor);
+    $('#wf-auto').classList.toggle('on', opt.range === DEF.range && opt.floor === DEF.floor);
     $('#wf-spec').checked = opt.spec;
     $('#wf-calls').checked = opt.calls;
     $('#wf-spec-cv').hidden = !topShown();
@@ -398,8 +397,7 @@ const Wf = (() => {
     $('#wf-range').addEventListener('input', (e) => { opt.range = Number(e.target.value); save(); bar(); });
     $('#wf-floor').addEventListener('input', (e) => { opt.floor = Number(e.target.value); save(); bar(); });
     // auto: back to the default — 50 dB from black to white, the floor on the noise
-    $('#wf-range-auto').addEventListener('click', () => { opt.range = DEF.range; save(); bar(); });
-    $('#wf-floor-auto').addEventListener('click', () => { opt.floor = DEF.floor; save(); bar(); });
+    $('#wf-auto').addEventListener('click', () => { opt.range = DEF.range; opt.floor = DEF.floor; save(); bar(); });
     $('#wf-spec').addEventListener('change', (e) => {
       opt.spec = e.target.checked; envelope = null; save(); bar(); size(); drawTop(); send();
     });
