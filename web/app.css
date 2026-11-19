@@ -49,6 +49,9 @@ nav button { font: inherit; font-size: 13px; letter-spacing: .12em; text-transfo
              cursor: pointer; }
 nav button:hover { color: var(--fg); }
 nav button.on { color: var(--fg); border-bottom-color: var(--hot); }
+nav a.navlink { display: flex; align-items: center; font-size: 13px; letter-spacing: .12em; text-transform: uppercase;
+                color: var(--mut); text-decoration: none; padding: 0 14px; border-bottom: 2px solid transparent; }
+nav a.navlink:hover { color: var(--fg); }
 
 main { padding: 0 0 24px; }
 main > section { padding: 0; }
