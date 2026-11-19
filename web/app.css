@@ -161,7 +161,11 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .st-map { padding: 14px 18px; border-right: 1px solid var(--ln); min-width: 0; }
 .st-side { padding: 14px 18px; min-width: 0; }
 .map-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 8px; }
-.map-bar .seg button { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; padding: 2px 8px; }
+.map-bar .seg { gap: 4px; }
+.map-bar .seg button { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; padding: 2px 6px;
+                       border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--faint); }
+.map-bar .seg button:hover { color: var(--fg); border-color: var(--ln2); }
+.map-bar .seg button.on { background: transparent; color: var(--hot); border-bottom-color: var(--hot); }
 .map-bar .small { margin-top: 0; }
 .map-centre { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--mut); }
 .map-centre input { width: 7em; text-transform: uppercase; margin-left: 4px; }

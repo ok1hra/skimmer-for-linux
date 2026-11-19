@@ -78,7 +78,9 @@ const SkMap = (() => {
 
   // ---- state ----------------------------------------------------------------------------
   const store = (() => { try { return JSON.parse(localStorage.getItem('skmap') || '{}'); } catch (e) { return {}; } })();
-  const opt = { grayline: true, borders: true, prefixes: true, lines: true, calls: true, db: false, center: '', zoom: 0, ...store };
+  // every layer on by default; a viewer's choices are kept (v2: dB joined them, on)
+  if (store.v !== 2) { store.db = true; store.v = 2; }
+  const opt = { grayline: true, borders: true, prefixes: true, lines: true, calls: true, db: true, center: '', zoom: 0, ...store };
   const save = () => { try { localStorage.setItem('skmap', JSON.stringify(opt)); } catch (e) { /* private window */ } };
   let el = null, home = '', spots = [], view = null, baseKey = '', base = null, grayKey = '', gray = null;
 
