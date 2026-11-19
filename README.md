@@ -376,8 +376,11 @@ are decoded, so they make no spot on the telnet feed or to the RBN, no dot on
 the map and no count in the statistics; peers' and workers' spots are held to
 it too. Empty = every call passes.
 
-Only the addresses in `[web] settings_from` (default `127.0.0.1,::1`) may
-change settings; everyone else sees them read-only. From another machine
+Only the addresses in `[web] settings_from` (default `127.0.0.1,::1`) get
+**Settings** and **Log** — everyone else sees Status, Statistics and the
+Waterfall only, so the page can be published on a public address
+([docs/WEB-SECURITY.md](docs/WEB-SECURITY.md): how, and what a visitor
+does not see). From another machine
 use a tunnel: `ssh -L 8073:127.0.0.1:8073 <host>`, then
 `http://localhost:8073/`. A restart re-executes the skimmer; under a
 supervisor that sets `SKIM_SUPERVISED=1` it exits with code 75 instead.

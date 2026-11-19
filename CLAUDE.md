@@ -148,7 +148,11 @@ here; what was done and why is in git.
   kept as `stats.bin.v3` for an older build), settings (one parser:
   `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
   backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
-  POSTs only from `[web] settings_from`, no foreign Origin. Frequencies show
+  Managers only (settings_from, no proxy headers, a Host that is this
+  machine — DNS rebinding): Settings and Log (cut out of index.html for the
+  others), /api/config, /api/log, /api/skimmers, every POST; viewers get a
+  status.json without addresses, paths and switches. Rules and the audit:
+  `docs/WEB-SECURITY.md` — keep them when adding an endpoint. Frequencies show
   with a space after the MHz (`fmtKhz` in app.js); the charts share one plot
   frame and one crosshair.
 - **The waterfall** (`src/headless/waterfall.c`, `web/waterfall.js`, WS
