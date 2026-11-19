@@ -297,6 +297,7 @@ async function refreshSpots(force) {
   spots.skew = d.now - Date.now() / 1000;
   spots.raw = d.spots;
   ageSpots(true);
+  if (status) renderStatus(status);   // the ladder and readouts count these spots
 }
 // The DX cluster filters the spots; the map draws what the filters leave, the
 // row clicked marked on it.
