@@ -111,11 +111,45 @@ callsigns go through a station table and a feed policy. The CQ spots of all band
 **one** telnet feed in the cluster dialect, the CW Skimmer Server model.
 Status comes as a table on the console and as a web page with `/status.json`.
 
-```
-Red Pitaya ──UDP IQ, 1..8 receivers──► skimmer-headless ──► per band: channelizer ──► CW / RTTY decode
-                                               │                                         │
-                                               └── telnet cluster feed ◄── callsigns ◄───┘
-```
+<p align="center"><a href="docs/signal-flow.svg"><img src="docs/signal-flow.svg"
+alt="The signal's way: Red Pitaya → IQ in → bands → channelizer → decoders → callsigns → callsign filter → station table → feed policy → the feed → telnet and RBN" width="760"></a></p>
+
+The way of the signal, step by step, and where each step is in the code (the
+picture opened on its own has the same links):
+
+1. **IQ in** — UDP from the Red Pitaya, conjugated (the wire is RF-inverted),
+   clock correction: [`src/engine/hpsdr_p1.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/hpsdr_p1.c),
+   [`src/headless/source_hpsdr_p1.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/headless/source_hpsdr_p1.c).
+2. **Bands out** — each receiver's IQ to its band's pipelines, and to the
+   waterfall, a worker PC or a recording when asked:
+   `rx_iq_cb` in [`src/headless_main.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/headless_main.c).
+3. **Channelizer** — the band in narrow complex channels (CW 125 Hz, RTTY
+   250 Hz), each channel's noise floor and SNR:
+   [`src/engine/channelizer.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/channelizer.c),
+   [`src/engine/snr_meter.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/snr_meter.c); the pipeline
+   itself: [`src/engine/pipeline.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/pipeline.c).
+4. **Decoders** — CW v3.1
+   ([`decode_cw_v3.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/decode_cw_v3.c),
+   [`cw_reader.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/cw_reader.c)), CW v2
+   ([`decode_cw_v2.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/decode_cw_v2.c)), DeepCW
+   ([`decode_deepcw.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/decode_deepcw.c)), RTTY
+   ([`decode_rtty.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/decode_rtty.c)).
+5. **Callsigns read and validated** (MASTER.SCP, torn and fused reads):
+   [`src/engine/callsign.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/callsign.c).
+6. **Callsign filter** (Settings): `skim_hd_config_call_pass` in
+   [`src/headless/config.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/headless/config.c).
+7. **Station table** (snap 100 Hz, hold 30 s):
+   [`src/engine/station.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/station.c).
+8. **Feed policy** (CQ only, hearings, settle, fold, the learned gate):
+   [`src/engine/feed_fold.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/feed_fold.c),
+   [`src/engine/feed_gate.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/feed_gate.c).
+9. **The feed** — all bands, peers and workers merged, duplicates dropped;
+   the telnet cluster feed and the RBN Aggregator port:
+   [`src/engine/rbn_feed.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/rbn_feed.c),
+   [`src/headless/peers.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/headless/peers.c). Every spot sent also
+   goes to the web page ([`web.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/headless/web.c)), the statistics
+   ([`stats.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/headless/stats.c)) and the archive
+   ([`archive.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/headless/archive.c)).
 
 The skimmer is **read-only towards the operator's radio**. The Red Pitaya is
 the skimmer's own receiver: it sets that receiver's DDC centres, rate and
