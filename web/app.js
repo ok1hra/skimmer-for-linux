@@ -265,6 +265,20 @@ async function refreshSpots(force) {
 }
 // The DX cluster filters the spots; the map draws what the filters leave, the
 // row clicked marked on it.
+// The DX cluster: under the band ladder beside the map on a wide page, under
+// the map on a narrow one.
+const wideDxc = matchMedia('(min-width: 1400px)');
+function placeDxc() {
+  const el = $('#dxc'), side = $('.st-side'), top = $('.st-top');
+  if (wideDxc.matches) {
+    if (el.parentNode !== side) { side.appendChild(el); el.classList.remove('pad'); el.classList.add('side'); }
+  } else if (el.parentNode === side) {
+    top.after(el); el.classList.add('pad'); el.classList.remove('side');
+  }
+}
+wideDxc.addEventListener('change', placeDxc);
+placeDxc();
+
 function renderSpots() {
   if (typeof SkMap === 'undefined' || typeof Dxc === 'undefined') return;
   if (!mapMounted) {
