@@ -219,6 +219,56 @@ const SkMap = (() => {
     const want = far * 1.1 + 200;                   // the farthest dot and its call inside the rim
     return ZOOM_STEPS.find((z) => z >= want) || 20000;
   }
+  // ---- the labels -------------------------------------------------------------------------
+  // Each call (with dB its SNR) beside its dot when there is room; else the
+  // nearest free place on rings around the dot (8 directions, out to ~80 px),
+  // tied to the dot by an elbowed leader. Free = clear of the labels placed
+  // and of the other dots, inside the map. The marked station goes first,
+  // then the strongest. A call with no room anywhere is left out (its dot
+  // and hover stay).
+  const DIRS = [[1, 0], [-1, 0], [1, -1], [1, 1], [-1, -1], [-1, 1], [0, -1], [0, 1]];
+  function placeLabels(g, marks, boxes) {
+    const hit = (b, own) => boxes.some((o) => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]) ||
+      marks.some((m) => m !== own && b[0] < m.x + m.r && b[2] > m.x - m.r && b[1] < m.y + m.r && b[3] > m.y - m.r) ||
+      [[b[0], b[1]], [b[2], b[1]], [b[0], b[3]], [b[2], b[3]]].some(([px, py]) => Math.hypot(px - view.cx, py - view.cy) > view.rr - 2);
+    const todo = [...marks].filter((m) => opt.calls || m.s.hi).sort((a, b) => (b.s.hi - a.s.hi) || (b.s.snr - a.s.snr));
+    for (const m of todo) {
+      const s = m.s, col = s.hi ? '#fff' : bandColor(s.band);
+      g.font = '700 11px RC, sans-serif';
+      const wc = g.measureText(s.call).width;
+      const db = opt.db && s.snr != null ? ` ${Math.round(s.snr)}` : '';
+      g.font = '400 11px RC, sans-serif';
+      const w = wc + (db ? g.measureText(db).width : 0) + 2, h = 13;
+      let spot = null;
+      for (const rad of [0, 14, 26, 40, 56, 76]) {
+        for (const [dx, dy] of DIRS) {
+          if (!rad && dy) continue;                       // beside the dot first
+          const len = Math.hypot(dx, dy), ax = m.x + (dx / len) * rad, ay = m.y + (dy / len) * rad;
+          const left = dx < 0;
+          const bx = left ? ax - m.r - 4 - w : ax + m.r + 3;
+          const b = [bx, ay - h / 2 - 1, bx + w, ay + h / 2 - 1];
+          if (!hit(b, m)) { spot = { b, ax, ay, left, rad }; break; }
+        }
+        if (spot) break;
+      }
+      if (!spot && !s.hi) continue;
+      if (!spot) spot = { b: [m.x + m.r + 3, m.y - 8, m.x + m.r + 3 + w, m.y + 5], ax: m.x, ay: m.y, left: false, rad: 0 };
+      boxes.push(spot.b);
+      g.globalAlpha = 1 - Math.min(1, s.age / 1800) * 0.55;
+      if (spot.rad) {                                    // the elbowed leader
+        const ex = spot.left ? spot.b[2] + 1 : spot.b[0] - 1, ey = spot.ay;
+        const kx = ex + (spot.left ? 6 : -6);
+        g.strokeStyle = col; g.lineWidth = 0.8;
+        g.beginPath(); g.moveTo(m.x, m.y); g.lineTo(kx, ey); g.lineTo(ex, ey); g.stroke();
+      }
+      g.fillStyle = col; g.textBaseline = 'middle';
+      g.font = '700 11px RC, sans-serif'; g.fillText(s.call, spot.b[0] + 1, spot.ay);
+      if (db) { g.font = '400 11px RC, sans-serif'; g.fillText(db, spot.b[0] + 1 + wc, spot.ay); }
+      g.textBaseline = 'alphabetic';
+      g.globalAlpha = 1;
+    }
+  }
+
   function draw() {
     if (!el) return;
     const box = el.querySelector('.map-canvas');
@@ -255,8 +305,9 @@ const SkMap = (() => {
         at.set(s, [px + r * Math.cos(th), py + r * Math.sin(th)]);
       });
     }
-    for (const s of [...spots].sort((a, b) => b.snr - a.snr)) {
-      if (!s.where) continue;
+    // lines and dots first (the strongest on top), the labels after them
+    const order = [...spots].filter((s) => s.where).sort((a, b) => a.snr - b.snr);
+    for (const s of order) {
       const [x, y] = at.get(s), col = bandColor(s.band);
       g.globalAlpha = 1 - Math.min(1, s.age / 1800) * 0.65;
       if (opt.lines) {
@@ -266,24 +317,10 @@ const SkMap = (() => {
       const r = 2.5 + Math.max(0, s.snr) / 12;
       g.fillStyle = col; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
       if (s.hi) { g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.beginPath(); g.arc(x, y, r + 4, 0, 7); g.stroke(); }
-      view.marks.push({ x, y, s });
-      if (opt.calls || s.hi) {
-        // the call, and with dB its SNR behind it (the number only)
-        g.font = '700 11px RC, sans-serif';
-        const wc = g.measureText(s.call).width;
-        const db = opt.db && s.snr != null ? ` ${Math.round(s.snr)}` : '';
-        g.font = '400 11px RC, sans-serif';
-        const wd = db ? g.measureText(db).width : 0;
-        const b = [x + 5, y - 15, x + 7 + wc + wd, y - 2];
-        if (s.hi || !boxes.some((o) => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1])) {
-          boxes.push(b);
-          g.fillStyle = s.hi ? '#fff' : col;
-          g.font = '700 11px RC, sans-serif'; g.fillText(s.call, x + 6, y - 5);
-          if (db) { g.font = '400 11px RC, sans-serif'; g.fillText(db, x + 6 + wc, y - 5); }
-        }
-      }
+      view.marks.push({ x, y, r, s });
       g.globalAlpha = 1;
     }
+    if (opt.calls || spots.some((s) => s.hi)) placeLabels(g, view.marks, boxes);
     g.restore();
     g.fillStyle = '#39d98a'; g.beginPath(); g.arc(view.cx, view.cy, 4, 0, 7); g.fill();
     el.querySelector('[data-k=zoom]').textContent = opt.zoom ? `${fmtKm(zoom)}` : `auto · ${fmtKm(zoom)}`;
