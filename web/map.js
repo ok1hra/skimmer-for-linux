@@ -6,8 +6,8 @@
 // AUTO zooms to about 2000 km and widens as far as the farthest spot shown,
 // so the end stations stay on the map (a ladder of steps, so it does not
 // twitch at every refresh); the wheel takes over, AUTO gives it back. The
-// centre is the station's locator (Settings; the public page gets its first
-// four characters only), or without one the DXCC of the station's call, or
+// centre is the station's locator (Settings; a manager gets it whole, the
+// public page its first four characters only), or without one the DXCC of the station's call, or
 // Paris (JN18) without either. A spot is placed by its DXCC
 // (the prefix's label point), so the spots of one country share a point:
 // they are fanned out around it, a dot each. The cursor reads azimuth,

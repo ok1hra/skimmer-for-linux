@@ -649,7 +649,7 @@ static void status_build(Hd *h, gboolean print) {
       : g_strdup("null");
   g_string_append_printf(json,
       "{\"version\":\"%s\",\"started_us\":%" G_GINT64_FORMAT ",\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
-      "\"call\":\"%s\",\"locator\":\"%.4s\",\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
+      "\"call\":\"%s\",\"locator\":\"%s\",\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"cpu_cw_pct\":%.1f,\"cpu_rtty_pct\":%.1f,\"cpu_temp_c\":%s,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
@@ -974,6 +974,8 @@ static char *status_public(const char *full) {
   static const struct { const char *re, *to; } RULES[] = {
     { "\"(host|addr|model|dir)\":\"(?:[^\"\\\\]|\\\\.)*\"", "\"\\1\":\"\"" },
     { "\"switches\":\\{[^{}]*\\}", "\"switches\":{}" },
+    /* the locator as its square only: six characters are nearly an address */
+    { "\"locator\":\"([A-Z]{2}[0-9]{2})[A-Z]*\"", "\"locator\":\"\\1\"" },
     { "\\b(?:\\d{1,3}\\.){3}\\d{1,3}(?::\\d+)?\\b", "(address)" },
     { "(?<![\\w.])/(?:home|root|var|tmp|etc|usr|srv|mnt|opt|run|media)/[^\"\\s,;)]*", "(path)" },
   };
@@ -1608,7 +1610,7 @@ static void spot_log_add(Hd *h, const char *call, const char *mode, double freq_
 
 /* GET /api/spots?minutes=N: newest first, each with its band. */
 static char *web_spots(GHashTable *q, gboolean may, guint *st, const char **type, gpointer user) {
-  (void)may; (void)st; (void)type;
+  (void)st; (void)type;
   Hd *h = user;
   const char *mv = q ? g_hash_table_lookup(q, "minutes") : NULL;
   const gint64 minutes = CLAMP(mv ? g_ascii_strtoll(mv, NULL, 10) : 30, 1, SPOT_KEEP_S / 60);
@@ -1617,7 +1619,8 @@ static char *web_spots(GHashTable *q, gboolean may, guint *st, const char **type
   g_string_append_printf(o, "{\"now\":%" G_GINT64_FORMAT ",\"minutes\":%" G_GINT64_FORMAT
                          ",\"call\":\"", now, minutes);
   skim_json_append(o, h->cfg.feed_call ? h->cfg.feed_call : "");
-  g_string_append_printf(o, "\",\"locator\":\"%.4s\",\"spots\":[", h->cfg.locator);
+  /* the locator whole for a manager, its square for everyone else */
+  g_string_append_printf(o, "\",\"locator\":\"%.*s\",\"spots\":[", may ? 6 : 4, h->cfg.locator);
   g_mutex_lock(&h->spot_lock);
   guint n = 0;
   for (GList *l = h->spot_log.tail; l; l = l->prev) {
