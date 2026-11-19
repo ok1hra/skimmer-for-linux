@@ -230,17 +230,34 @@ const SkMap = (() => {
     return ZOOM_STEPS.find((z) => z >= want) || 20000;
   }
   // ---- the labels -------------------------------------------------------------------------
-  // Each call (with SNR its SNR in dB; SNR without calls: the number alone) beside its dot when there is room; else the
-  // nearest free place on rings around the dot (8 directions, out to ~80 px),
-  // tied to the dot by an elbowed leader. Free = clear of the labels placed
-  // and of the other dots, inside the map. The marked station goes first,
-  // then the strongest. A call with no room anywhere is left out (its dot
-  // and hover stay).
-  const DIRS = [[1, 0], [-1, 0], [1, -1], [1, 1], [-1, -1], [-1, 1], [0, -1], [0, 1]];
+  // Each call (with SNR its SNR in dB; SNR without calls: the number alone)
+  // beside its dot when there is room, on the side away from the centre first.
+  // Else it moves out along the line from the map's centre through its dot —
+  // the leaders fan out from the centre like the spots' own lines — tried a
+  // little to either side of it and further out step by step. A place is free
+  // when the label is clear of the labels and leaders placed, of the dots and
+  // of the rim, and its straight leader crosses no other leader and no label
+  // (it may pass over a dot of a crowded country). The marked station goes first, then the strongest. A label
+  // with no free place is left out (its dot and hover stay).
+  const OUT = [16, 28, 42, 58, 76, 96, 120, 150, 185, 225];
+  const FAN = [0, 10, -10, 20, -20, 32, -32, 45, -45, 60, -60, 75, -75, 90, -90].map((d) => (d * Math.PI) / 180);
+  function cross(p, q, r, t) {                     // segments pq and rt properly intersect
+    const o = (a, b, c) => Math.sign((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+    return o(p, q, r) * o(p, q, t) < 0 && o(r, t, p) * o(r, t, q) < 0;
+  }
+  function segBox(p, q, b) {                       // segment pq touches box b
+    const inside = (x) => x[0] >= b[0] && x[0] <= b[2] && x[1] >= b[1] && x[1] <= b[3];
+    if (inside(p) || inside(q)) return true;
+    const c = [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]];
+    return c.some((x, i) => cross(p, q, x, c[(i + 1) % 4]));
+  }
   function placeLabels(g, marks, boxes) {
+    const leaders = [];
     const hit = (b, own) => boxes.some((o) => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]) ||
+      leaders.some(([p, q]) => segBox(p, q, b)) ||
       marks.some((m) => m !== own && b[0] < m.x + m.r && b[2] > m.x - m.r && b[1] < m.y + m.r && b[3] > m.y - m.r) ||
       [[b[0], b[1]], [b[2], b[1]], [b[0], b[3]], [b[2], b[3]]].some(([px, py]) => Math.hypot(px - view.cx, py - view.cy) > view.rr - 2);
+    const leaderFree = (p, q) => !leaders.some(([r, t]) => cross(p, q, r, t)) && !boxes.some((o) => segBox(p, q, o));
     const todo = [...marks].filter((m) => opt.calls || opt.db || m.s.hi).sort((a, b) => (b.s.hi - a.s.hi) || (b.s.snr - a.s.snr));
     for (const m of todo) {
       const s = m.s, col = s.hi ? '#fff' : bandColor(s.band);
@@ -251,27 +268,36 @@ const SkMap = (() => {
       if (!call && !db) continue;
       g.font = '400 11px RC, sans-serif';
       const w = wc + (db ? g.measureText(db).width : 0) + 2, h = 13;
+      const phi = Math.hypot(m.x - view.cx, m.y - view.cy) < 1 ? 0 : Math.atan2(m.y - view.cy, m.x - view.cx);
       let spot = null;
-      for (const rad of [0, 14, 26, 40, 56, 76]) {
-        for (const [dx, dy] of DIRS) {
-          if (!rad && dy) continue;                       // beside the dot first
-          const len = Math.hypot(dx, dy), ax = m.x + (dx / len) * rad, ay = m.y + (dy / len) * rad;
-          const left = dx < 0;
-          const bx = left ? ax - m.r - 4 - w : ax + m.r + 3;
-          const b = [bx, ay - h / 2 - 1, bx + w, ay + h / 2 - 1];
-          if (!hit(b, m)) { spot = { b, ax, ay, left, rad }; break; }
-        }
+      // beside the dot: the outer side first
+      for (const left of Math.cos(phi) < 0 ? [true, false] : [false, true]) {
+        const bx = left ? m.x - m.r - 4 - w : m.x + m.r + 3;
+        const b = [bx, m.y - h / 2 - 1, bx + w, m.y + h / 2 - 1];
+        if (!hit(b, m)) { spot = { b, ay: m.y }; break; }
+      }
+      // out along the centre's ray through the dot, fanned a little
+      for (const rad of OUT) {
         if (spot) break;
+        for (const d of FAN) {
+          const a = phi + d, ux = Math.cos(a), uy = Math.sin(a);
+          const ax = m.x + ux * rad, ay = m.y + uy * rad, left = ux < -0.2;
+          const bx = left ? ax - w : ux > 0.2 ? ax : ax - w / 2;
+          const by = Math.abs(ux) > 0.2 ? ay - h / 2 - 1 : uy < 0 ? ay - h : ay;
+          const b = [bx, by, bx + w, by + h];
+          const p = [m.x + ux * (m.r + 1), m.y + uy * (m.r + 1)], q = [ax, ay];
+          if (!hit(b, m) && leaderFree(p, q)) { spot = { b, ay: by + h / 2 + 1, leader: [p, q] }; break; }
+        }
       }
       if (!spot && !s.hi) continue;
-      if (!spot) spot = { b: [m.x + m.r + 3, m.y - 8, m.x + m.r + 3 + w, m.y + 5], ax: m.x, ay: m.y, left: false, rad: 0 };
+      if (!spot) spot = { b: [m.x + m.r + 3, m.y - 8, m.x + m.r + 3 + w, m.y + 5], ay: m.y };
       boxes.push(spot.b);
       g.globalAlpha = 1 - Math.min(1, s.age / 1800) * 0.55;
-      if (spot.rad) {                                    // the elbowed leader
-        const ex = spot.left ? spot.b[2] + 1 : spot.b[0] - 1, ey = spot.ay;
-        const kx = ex + (spot.left ? 6 : -6);
+      if (spot.leader) {                                   // a straight leader, out from the centre
+        const [p, q] = spot.leader;
+        leaders.push(spot.leader);
         g.strokeStyle = col; g.lineWidth = 0.8;
-        g.beginPath(); g.moveTo(m.x, m.y); g.lineTo(kx, ey); g.lineTo(ex, ey); g.stroke();
+        g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(q[0], q[1]); g.stroke();
       }
       g.fillStyle = col; g.textBaseline = 'middle';
       if (call) { g.font = '700 11px RC, sans-serif'; g.fillText(call, spot.b[0] + 1, spot.ay); }
