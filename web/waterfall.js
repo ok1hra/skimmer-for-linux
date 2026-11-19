@@ -60,12 +60,16 @@ const Wf = (() => {
   const xOf = (hz) => ((hz - view.lo) / (view.hi - view.lo)) * W;
   const hzOf = (x) => view.lo + (x / W) * (view.hi - view.lo);
 
-  function send() {
+  // hist: ask for the picture so far, drawn anew at this window and width
+  function send(hist) {
     if (!ws || ws.readyState !== 1 || band < 0) return;
     const v = wanted();
-    ws.send(`band=${band}&lo=${v.lo.toFixed(1)}&hi=${v.hi.toFixed(1)}&w=${W}&rate=${opt.rate}`);
+    ws.send(`band=${band}&lo=${v.lo.toFixed(1)}&hi=${v.hi.toFixed(1)}&w=${W}&rate=${opt.rate}${hist ? `&hist=${H}` : ''}`);
   }
-  // a new window: the picture so far stretched onto it (a new band: cleared)
+  // A new window: while the wheel or the drag goes on, the picture is moved
+  // along (a preview); 200 ms after the last change the skimmer sends the
+  // picture so far again, at full resolution for the new window — the
+  // stretched preview is replaced by a sharp one. A new band starts clean.
   function reframe(clear) {
     const v = wanted();
     if (clear || !view.hi) {
@@ -77,13 +81,13 @@ const Wf = (() => {
       g.fillStyle = '#00000c'; g.fillRect(0, 0, W, H);
       const span = v.hi - v.lo, dx = ((view.lo - v.lo) / span) * W, dw = ((view.hi - view.lo) / span) * W;
       g.drawImage(tmp, dx, 0, dw, H);
-      envelope = null;
     }
     view = v;
     drawScale();
     drawTop();
+    spanUi();
     clearTimeout(sendT);
-    sendT = setTimeout(send, 60);
+    sendT = setTimeout(() => send(true), 200);
     save();
   }
 
@@ -201,14 +205,18 @@ const Wf = (() => {
         spg.beginPath(); spg.moveTo(0, y(db) + 0.5); spg.lineTo(w, y(db) + 0.5); spg.stroke();
         spg.fillText(`${db}`, 2, y(db) - 2);
       }
+      // the envelope keeps the window it was made for: drawn where that
+      // lies in the view now, it follows a zoom at once and never stops
+      const ev = envelope.v, n = ev.length, es = (envelope.hi - envelope.lo) / n;
       const path = () => {
         spg.beginPath();
-        for (let i = 0; i < envelope.length; i++) {
-          const x = (i / envelope.length) * w;
-          if (i) spg.lineTo(x, y(envelope[i])); else spg.moveTo(x, y(envelope[i]));
+        for (let i = 0; i < n; i++) {
+          const x = ((envelope.lo + (i + 0.5) * es - view.lo) / (view.hi - view.lo)) * w;
+          if (i) spg.lineTo(x, y(ev[i])); else spg.moveTo(x, y(ev[i]));
         }
       };
-      path(); spg.lineTo(w, h); spg.lineTo(0, h); spg.closePath();
+      const xa = ((envelope.lo - view.lo) / (view.hi - view.lo)) * w, xb = ((envelope.hi - view.lo) / (view.hi - view.lo)) * w;
+      path(); spg.lineTo(xb, h); spg.lineTo(xa, h); spg.closePath();
       spg.fillStyle = 'rgba(57,217,138,.18)'; spg.fill();
       path(); spg.strokeStyle = '#39d98a'; spg.lineWidth = 1.2; spg.stroke();
     }
@@ -216,42 +224,84 @@ const Wf = (() => {
   }
 
   // ---- a row -------------------------------------------------------------------
+  // one row's bytes as colours (dB over the floor, the range wide)
+  function rowImage(px, w) {
+    if (rowCv.width !== w) rowCv.width = w;
+    const dbFloor = (floorB || 0) / 2 - 160 - 3 + Number(opt.floor), scale = 255 / opt.range;
+    const img = rowG.createImageData(w, 1), d = img.data;
+    for (let i = 0; i < w; i++) {
+      const c = px[i] ? Math.max(0, Math.min(255, Math.round((px[i] / 2 - 160 - dbFloor) * scale))) : 0;
+      d[i * 4] = LUT[c * 3]; d[i * 4 + 1] = LUT[c * 3 + 1]; d[i * 4 + 2] = LUT[c * 3 + 2]; d[i * 4 + 3] = 255;
+    }
+    rowG.putImageData(img, 0, 0);
+    return dbFloor;
+  }
+  function putRow(w, lo, hi, y) {
+    g.imageSmoothingEnabled = false;
+    g.drawImage(rowCv, 0, 0, w, 1, xOf(lo), y, xOf(hi) - xOf(lo), 1);
+  }
+  // the floor: a row's 20th percentile, smoothed
+  function noteFloor(px) {
+    const sorted = Array.from(px).filter((v) => v > 0).sort((a, b) => a - b);
+    if (!sorted.length) return;
+    const p20 = sorted[Math.floor(sorted.length * 0.2)];
+    floorB = floorB == null ? p20 : floorB * 0.92 + p20 * 0.08;
+  }
   function onRow(buf) {
     const dv = new DataView(buf), w = dv.getUint16(2, true), seq = dv.getUint32(4, true);
     const t = dv.getFloat64(8, true), lo = dv.getFloat64(16, true), hi = dv.getFloat64(24, true);
     if (ws && ws.readyState === 1) ws.send(`a=${seq}`);
     if (dv.getUint8(1) !== band) return;               // a row of the band left
     const px = new Uint8Array(buf, 32, w);
-    // the floor: the row's 20th percentile, smoothed; brightness on top of it
-    const sorted = Array.from(px).filter((v) => v > 0).sort((a, b) => a - b);
-    if (sorted.length) {
-      const p20 = sorted[Math.floor(sorted.length * 0.2)];
-      floorB = floorB == null ? p20 : floorB * 0.92 + p20 * 0.08;
-    }
-    const dbFloor = (floorB || 0) / 2 - 160 - 3 + Number(opt.floor);
-    const scale = 255 / opt.range;
-    // one row image, w pixels, put where lo–hi lies in the view
-    if (rowCv.width !== w) rowCv.width = w;
-    const img = rowG.createImageData(w, 1), d = img.data;
-    for (let i = 0; i < w; i++) {
-      const db = px[i] / 2 - 160;
-      const c = px[i] ? Math.max(0, Math.min(255, Math.round((db - dbFloor) * scale))) : 0;
-      d[i * 4] = LUT[c * 3]; d[i * 4 + 1] = LUT[c * 3 + 1]; d[i * 4 + 2] = LUT[c * 3 + 2]; d[i * 4 + 3] = 255;
-    }
-    rowG.putImageData(img, 0, 0);
+    noteFloor(px);
     g.drawImage(cv, 0, 0, W, H - 1, 0, 1, W, H - 1);       // everything one row down
     g.fillStyle = '#00000c'; g.fillRect(0, 0, W, 1);
-    g.imageSmoothingEnabled = false;
-    g.drawImage(rowCv, 0, 0, w, 1, xOf(lo), 0, xOf(hi) - xOf(lo), 1);
+    const dbFloor = rowImage(px, w);
+    putRow(w, lo, hi, 0);
     rowTimes.unshift(t);
     if (rowTimes.length > H) rowTimes.length = H;
-    // the envelope: this view's row, smoothed
-    if (opt.spec && lo === view.lo && hi === view.hi) {
-      if (!envelope || envelope.length !== w) envelope = Array.from(px, (v) => v / 2 - 160);
-      else for (let i = 0; i < w; i++) envelope[i] = envelope[i] * 0.6 + (px[i] / 2 - 160) * 0.4;
+    // the envelope: its window's rows smoothed; a new window starts it anew
+    if (opt.spec) {
+      if (!envelope || envelope.lo !== lo || envelope.hi !== hi || envelope.v.length !== w) {
+        envelope = { lo, hi, v: Array.from(px, (x) => x / 2 - 160) };
+      } else {
+        for (let i = 0; i < w; i++) envelope.v[i] = envelope.v[i] * 0.6 + (px[i] / 2 - 160) * 0.4;
+      }
     }
     drawTop(dbFloor);
     bytes += buf.byteLength;
+  }
+  // The picture so far, from the skimmer's history at this window: each row
+  // of the canvas takes the history row nearest its time (a row a 1/rate s,
+  // the history a row a 0.2 s); a time with no history stays dark.
+  function onHistory(buf) {
+    const dv = new DataView(buf), w = dv.getUint16(2, true), count = dv.getUint32(4, true);
+    const lo = dv.getFloat64(8, true), hi = dv.getFloat64(16, true);
+    if (dv.getUint8(1) !== band || !count) return;
+    const rows = [];
+    for (let i = 0; i < count; i++) {
+      const off = 24 + i * (8 + w);
+      rows.push({ t: dv.getFloat64(off, true), px: new Uint8Array(buf, off + 8, w) });
+    }
+    g.fillStyle = '#00000c'; g.fillRect(0, 0, W, H);
+    const t0 = rows[0].t;
+    rowTimes = [];
+    let k = 0;
+    for (let y = 0; y < H; y++) {
+      const ty = t0 - y / opt.rate;
+      while (k + 1 < rows.length && Math.abs(rows[k + 1].t - ty) <= Math.abs(rows[k].t - ty)) k++;
+      rowTimes.push(ty);
+      if (Math.abs(rows[k].t - ty) > 0.35) continue;      // nothing then
+      if (rows[k].img !== true) { rowImage(rows[k].px, w); rows[k].img = true; rows[k].cv = cloneRow(w); }
+      g.imageSmoothingEnabled = false;
+      g.drawImage(rows[k].cv, 0, 0, w, 1, xOf(lo), y, xOf(hi) - xOf(lo), 1);
+    }
+    bytes += buf.byteLength;
+  }
+  function cloneRow(w) {
+    const c = document.createElement('canvas'); c.width = w; c.height = 1;
+    c.getContext('2d').drawImage(rowCv, 0, 0);
+    return c;
   }
 
   // ---- the calls ------------------------------------------------------------------
@@ -314,7 +364,8 @@ const Wf = (() => {
     status('connecting…');
     ws.onmessage = (e) => {
       if (typeof e.data !== 'string') {
-        if (new DataView(e.data).getUint8(0) === 2) onAudio(e.data); else onRow(e.data);
+        const kind = new DataView(e.data).getUint8(0);
+        if (kind === 2) onAudio(e.data); else if (kind === 3) onHistory(e.data); else onRow(e.data);
         return;
       }
       let m = null;
@@ -334,7 +385,7 @@ const Wf = (() => {
       reframe(!same);
       if (same) { g.fillStyle = 'rgba(125,143,166,.6)'; g.fillRect(0, 0, W, 1); rowTimes.unshift(0); }
       shownBand = opt.band;
-      send();
+      send(true);                                        // whatever the skimmer still keeps
       if (au.on) audioSend();                           // back: listening again
     };
     ws.onclose = (e) => {
@@ -361,8 +412,18 @@ const Wf = (() => {
     if (rowTimes.length > H) rowTimes.length = H;
     return true;
   }
+  // the span list: its steps, and the span the wheel left between them
+  function spanUi() {
+    const sel = $('#wf-span');
+    if (!sel) return;
+    const fmtS = (s) => (s ? `${fmtKhz(s / 1000, s < 10000 ? 1 : 0)} kHz` : 'whole band');
+    const list = SPANS.includes(opt.span) ? SPANS : [...SPANS, opt.span].sort((a, b) => (a && b ? b - a : a ? 1 : -1));
+    const html = list.map((s) => `<option value="${s}">${fmtS(s)}</option>`).join('');
+    if (sel.dataset.html !== html) { sel.dataset.html = html; sel.innerHTML = html; }
+    sel.value = String(opt.span);
+  }
   function bar() {
-    $('#wf-span').value = String(opt.span);
+    spanUi();
     $('#wf-rate').value = String(opt.rate);
     $('#wf-range').value = String(opt.range);
     $('#wf-floor').value = String(opt.floor);
@@ -379,7 +440,7 @@ const Wf = (() => {
     sc = $('#wf-scale'); sg = sc.getContext('2d');
     sp = $('#wf-spec-cv'); spg = sp.getContext('2d');
     rowCv = document.createElement('canvas'); rowCv.height = 1; rowG = rowCv.getContext('2d');
-    $('#wf-span').innerHTML = SPANS.map((s) => `<option value="${s}">${s ? `${fmtKhz(s / 1000, s < 10000 ? 1 : 0)} kHz` : 'whole band'}</option>`).join('');
+    spanUi();
     $('#wf-rate').innerHTML = RATES.map((r) => `<option value="${r}">${r} rows/s</option>`).join('');
     $('#wf-bw').innerHTML = BWS.map((b) => `<option value="${b}">${b} Hz</option>`).join('');
     $('#wf-bw').value = String(opt.abw);
@@ -406,11 +467,9 @@ const Wf = (() => {
     const zoomAt = (x, dir) => {
       const b = bandInfo();
       if (!b) return;
+      // smoothly: a notch of the wheel is a quarter in or out, 1 kHz at the least
       const f = hzOf(x), cur = opt.span || hello.rate;
-      const steps = SPANS.map((s) => s || hello.rate);
-      let k = steps.findIndex((s) => s <= cur + 1);
-      k = Math.max(0, Math.min(steps.length - 1, k + dir));
-      const span = steps[k];
+      const span = Math.max(1000, Math.min(hello.rate, Math.round(cur * (dir > 0 ? 0.8 : 1.25))));
       opt.span = span >= hello.rate ? 0 : span;
       opt.centre = f - (x / W - 0.5) * span;          // the cursor's frequency stays put
       bar();

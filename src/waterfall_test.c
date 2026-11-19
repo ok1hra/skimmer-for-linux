@@ -90,6 +90,26 @@ int main(void) {
   check("… at the same level", abs((int)z[zp] - 240) <= 2);
   check("… and 300 Hz off it, down by more than 60 dB", z[20] < z[zp] - 120);
 
+  printf("== the history's bytes render as the power does\n");
+  {
+    /* a history row: the averaged power as bytes, display order */
+    guint8 *disp = g_new(guint8, N), hb[1024], hp[1024];
+    for (guint d = 0; d < N; d++) {
+      const float v = acc.acc[(d + N / 2) % N];
+      const double db = v > 0 ? 10 * log10(v) : -300;
+      disp[d] = (guint8)CLAMP(lround((db - SKIM_WF_DB_FLOOR) * 2), 0, 255);
+    }
+    gboolean same = TRUE;
+    const double win[3][2] = { { -48000, 48000 }, { 11500, 12500 }, { -31000, -29000 } };
+    for (int k = 0; k < 3; k++) {
+      skim_hd_wf_render(acc.acc, N, rate, centre, centre + win[k][0], centre + win[k][1], 1024, hp);
+      skim_hd_wf_render_bytes(disp, N, rate, centre, centre + win[k][0], centre + win[k][1], 1024, hb);
+      for (guint i = 0; i < 1024; i++) { same = same && hb[i] == hp[i]; }
+    }
+    check("whole band, 1 kHz and 2 kHz windows: byte for byte the same picture", same);
+    g_free(disp);
+  }
+
   printf("== outside the band\n");
   guint8 o[64];
   skim_hd_wf_render(acc.acc, N, rate, centre, centre + 60000, centre + 70000, 64, o);

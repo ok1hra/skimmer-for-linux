@@ -340,7 +340,8 @@ model fetch).
 
 **Waterfall** shows one received band, live, the height of the page: the
 whole band (96 kHz) or zoomed in (the span, the mouse wheel around the
-cursor, a drag to move), at 1 to 20 rows a second, with a frequency scale,
+cursor smoothly, a drag to move — the picture so far is redrawn sharp at the
+new window from the skimmer's last 4 minutes, never stretched), at 1 to 20 rows a second, with a frequency scale,
 the spectrum's envelope as an option, and the spotted calls upright where
 they were heard. A click in it plays that CW signal in the browser: the
 skimmer demodulates it (a passband of 50–500 Hz, shown as a trapezoid on

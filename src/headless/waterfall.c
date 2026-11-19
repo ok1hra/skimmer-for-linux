@@ -9,6 +9,8 @@
 #include "json.h"
 
 #define RING 32                        /* frames kept a band (~1.4 s)        */
+#define HIST_ROWS 1200                 /* the band's history: 4 min …         */
+#define HIST_S    0.2                  /* … a row every 0.2 s                */
 
 /* WDSP (vendor/wdsp): its headers need the GNU dialect, so the calls used
  * are declared here (RESAMPLE is a pointer to its struct). */
@@ -109,6 +111,24 @@ void skim_hd_wf_render(const float *power, guint n, double rate, double centre, 
     }
     const double db = m > 0 ? 10 * log10(m) : -300;
     out[p] = (guint8)CLAMP(lround((db - SKIM_WF_DB_FLOOR) * 2), 0, 255);
+  }
+}
+
+/* The same from a history row: n bytes, display order (lowest first). */
+void skim_hd_wf_render_bytes(const guint8 *disp, guint n, double rate, double centre, double lo,
+                             double hi, guint w, guint8 *out) {
+  const double bw = rate / n, px = (hi - lo) / w;
+  for (guint p = 0; p < w; p++) {
+    const double f0 = lo + p * px, f1 = f0 + px;
+    long d0 = lround(floor((f0 - centre) / bw)) + (long)n / 2;
+    long d1 = lround(ceil((f1 - centre) / bw)) + (long)n / 2 - 1;
+    if (d1 < d0) { d1 = d0; }
+    if (d1 < 0 || d0 >= (long)n) { out[p] = 0; continue; }
+    d0 = MAX(d0, 0);
+    d1 = MIN(d1, (long)n - 1);
+    guint8 m = 0;
+    for (long d = d0; d <= d1; d++) { m = MAX(m, disp[d]); }
+    out[p] = m;
   }
 }
 
@@ -221,6 +241,14 @@ typedef struct {
   float          *ring;                /* RING × n                           */
   guint64         seq;                 /* frames made                        */
   double          centre;
+  /* the history: a full-resolution row every HIST_S (bytes as a row's,
+   * display order), so a viewer that zooms or moves gets its picture again
+   * sharp at the new window instead of a stretched one */
+  guint8         *hist;                /* HIST_ROWS × n                      */
+  double         *hist_t;              /* unix s of each                     */
+  guint64         hist_seq;
+  float          *hacc;                /* the frames summed toward the next  */
+  guint           hacc_n, hacc_need;
 } WfBand;
 
 struct _SkimHdWaterfall {
@@ -254,6 +282,18 @@ static void frame_cb(const float *power, guint n, gpointer user) {
   WfBand *b = user;                                   /* under b->lock      */
   memcpy(b->ring + (b->seq % RING) * n, power, n * sizeof(float));
   b->seq++;
+  for (guint k = 0; k < n; k++) { b->hacc[k] += power[k]; }
+  if (++b->hacc_n < b->hacc_need) { return; }
+  guint8 *row = b->hist + (b->hist_seq % HIST_ROWS) * n;
+  for (guint d = 0; d < n; d++) {                     /* display order      */
+    const float v = b->hacc[(d + n / 2) % n] / b->hacc_n;
+    const double db = v > 0 ? 10 * log10(v) : -300;
+    row[d] = (guint8)CLAMP(lround((db - SKIM_WF_DB_FLOOR) * 2), 0, 255);
+  }
+  b->hist_t[b->hist_seq % HIST_ROWS] = g_get_real_time() / 1e6;
+  b->hist_seq++;
+  memset(b->hacc, 0, n * sizeof(float));
+  b->hacc_n = 0;
 }
 
 void skim_hd_waterfall_push(SkimHdWaterfall *w, guint bi, const float *iq, guint n,
@@ -280,6 +320,13 @@ static void attach(Viewer *v, int bi) {
     b->ring = g_new0(float, (gsize)RING * b->n);
     b->seq = 0;
     b->centre = v->w->centres[bi];
+    b->hist = g_new0(guint8, (gsize)HIST_ROWS * b->n);
+    b->hist_t = g_new0(double, HIST_ROWS);
+    b->hist_seq = 0;
+    b->hacc = g_new0(float, b->n);
+    b->hacc_n = 0;
+    /* frames come every n/2 samples */
+    b->hacc_need = MAX(1u, (guint)lround(HIST_S * v->w->rate / (b->n / 2)));
   }
   v->frame_seq = b->seq;
   g_atomic_int_inc(&b->nsubs);
@@ -353,6 +400,9 @@ static void detach(Viewer *v) {
   if (g_atomic_int_dec_and_test(&b->nsubs)) {         /* the last one: stop */
     g_clear_pointer(&b->an, skim_wf_analyser_free);
     g_clear_pointer(&b->ring, g_free);
+    g_clear_pointer(&b->hist, g_free);
+    g_clear_pointer(&b->hist_t, g_free);
+    g_clear_pointer(&b->hacc, g_free);
   }
   g_mutex_unlock(&b->lock);
   v->band = -1;
@@ -403,6 +453,48 @@ static gboolean viewer_tick(gpointer user) {
   memcpy(msg + 24, &v->hi, 8);
   soup_websocket_connection_send_binary(v->c, msg, len);
   return G_SOURCE_CONTINUE;
+}
+
+/* The band's history (up to `rows` rows of the viewer's, newest first) at
+ * its window and width, in one message: u8 version (3), u8 band, u16 w,
+ * u32 count, f64 lo, f64 hi, then count × (f64 unix time, w bytes). */
+static void send_history(Viewer *v, guint rows) {
+  if (v->band < 0 || !v->width || !rows) { return; }
+  WfBand *b = &v->w->band[v->band];
+  g_mutex_lock(&b->lock);
+  if (!b->hist || !b->hist_seq) { g_mutex_unlock(&b->lock); return; }
+  /* the time the viewer's rows cover, in history rows */
+  const guint want = (guint)MIN((guint64)ceil(rows / (double)v->rate / HIST_S) + 1, (guint64)HIST_ROWS);
+  const guint count = (guint)MIN((guint64)want, b->hist_seq);
+  const guint n = b->n;
+  guint8 *copy = g_malloc((gsize)count * n);
+  double *ts = g_new(double, count);
+  for (guint i = 0; i < count; i++) {                 /* newest first       */
+    const guint64 s = b->hist_seq - 1 - i;
+    memcpy(copy + (gsize)i * n, b->hist + (s % HIST_ROWS) * n, n);
+    ts[i] = b->hist_t[s % HIST_ROWS];
+  }
+  const double centre = b->centre;
+  g_mutex_unlock(&b->lock);
+  const gsize len = 24 + (gsize)count * (8 + v->width);
+  guint8 *msg = g_malloc(len);
+  const guint16 wl = GUINT16_TO_LE((guint16)v->width);
+  const guint32 cl = GUINT32_TO_LE(count);
+  msg[0] = 3;
+  msg[1] = (guint8)v->band;
+  memcpy(msg + 2, &wl, 2);
+  memcpy(msg + 4, &cl, 4);
+  memcpy(msg + 8, &v->lo, 8);
+  memcpy(msg + 16, &v->hi, 8);
+  for (guint i = 0; i < count; i++) {
+    guint8 *r = msg + 24 + (gsize)i * (8 + v->width);
+    memcpy(r, &ts[i], 8);
+    skim_hd_wf_render_bytes(copy + (gsize)i * n, n, v->w->rate, centre, v->lo, v->hi, v->width, r + 8);
+  }
+  soup_websocket_connection_send_binary(v->c, msg, len);
+  g_free(msg);
+  g_free(ts);
+  g_free(copy);
 }
 
 static void viewer_set_rate(Viewer *v, guint rate) {
@@ -473,6 +565,9 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *message, g
     v->hi = v->w->centres[v->band] + v->w->rate / 2;
   }
   v->acked = v->row_seq;                              /* a fresh start      */
+  /* hist=ROWS: the picture so far, sharp at the new window */
+  const char *sh2 = g_hash_table_lookup(f, "hist");
+  if (sh2) { send_history(v, (guint)CLAMP(g_ascii_strtoll(sh2, NULL, 10), 0, 4000)); }
   g_hash_table_unref(f);
 }
 
@@ -555,6 +650,9 @@ void skim_hd_waterfall_free(SkimHdWaterfall *w) {
   for (guint i = 0; i < w->nb; i++) {
     skim_wf_analyser_free(w->band[i].an);
     g_free(w->band[i].ring);
+    g_free(w->band[i].hist);
+    g_free(w->band[i].hist_t);
+    g_free(w->band[i].hacc);
     if (w->band[i].audio) { g_ptr_array_unref(w->band[i].audio); }
     g_mutex_clear(&w->band[i].lock);
   }

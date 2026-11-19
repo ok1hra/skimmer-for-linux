@@ -24,6 +24,11 @@
  *   audio goes out every 100 ms as binary: u8 version (2), u8 band, u16 n,
  *   u32 seq, n bytes of G.711 µ-law at 8 kHz (8 kB/s). It runs only while
  *   on; SKIM_WF_MAX_LISTENERS at once.
+ * History: the band keeps a full-resolution row every 0.2 s for 4 minutes
+ *   while watched; "hist=ROWS" (with a new window) asks for the picture so
+ *   far at the new window and width — binary: u8 version (3), u8 band, u16
+ *   w, u32 count, f64 lo, f64 hi, count × (f64 unix time, w bytes), newest
+ *   first — so a zoom or a move is drawn sharp, never stretched.
  * A row goes out only while fewer than about two seconds' worth are
  * unacknowledged: a slow link gets fewer, longer-averaged rows instead of
  * a growing queue. At most SKIM_WF_MAX_VIEWERS viewers at once.
@@ -79,6 +84,11 @@ void skim_wf_analyser_feed(SkimWfAnalyser *a, const float *iq, guint n, SkimWfFr
  * lo–hi Hz: the strongest bin under each pixel; 0 outside the band. */
 void skim_hd_wf_render(const float *power, guint n, double rate, double centre, double lo,
                        double hi, guint w, guint8 *out);
+
+/* A history row (n bytes, display order) to w bytes covering lo–hi: the
+ * strongest under each pixel. */
+void skim_hd_wf_render_bytes(const guint8 *disp, guint n, double rate, double centre,
+                             double lo, double hi, guint w, guint8 *out);
 
 /* One listener's CW demodulator (see Audio above): IQ of a band, the
  * tuned frequency's offset from its centre, the passband → µ-law at 8 kHz. */
