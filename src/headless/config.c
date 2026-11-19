@@ -408,7 +408,10 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   }
 
   h->feed_call = g_key_file_get_string(kf, "feed", "call", NULL);
-  if (h->feed_call) { g_strstrip(h->feed_call); }
+  if (h->feed_call) {                          /* a call is in capitals: DX de OK1ABC-# */
+    g_strstrip(h->feed_call);
+    for (char *x = h->feed_call; *x; x++) { *x = g_ascii_toupper(*x); }
+  }
   h->feed_port = given(kf, "feed", "port", NULL)
                      ? g_key_file_get_integer(kf, "feed", "port", NULL) : 7300;
   h->feed_min_score = given(kf, "feed", "min_score", NULL)
@@ -791,7 +794,11 @@ char *skim_hd_config_apply_form(const char *text, gsize len, GHashTable *form,
       ok = FALSE;
     } else {
       char *group = g_strndup(key, (gsize)(strchr(key, '.') - key));
-      g_key_file_set_value(kf, group, strchr(key, '.') + 1, val);
+      /* a call and a locator go into the file in capitals */
+      char *v = strcmp(key, "feed.call") == 0 || strcmp(key, "station.locator") == 0
+                    ? g_ascii_strup(val, -1) : g_strdup(val);
+      g_key_file_set_value(kf, group, strchr(key, '.') + 1, v);
+      g_free(v);
       g_free(group);
     }
   }

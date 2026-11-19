@@ -454,6 +454,23 @@ int main(void) {
     g_clear_error(&err);
     g_hash_table_unref(bad);
 
+    GHashTable *low = g_hash_table_new(g_str_hash, g_str_equal);
+    g_hash_table_insert(low, "feed.call", "ok1rak/p");
+    g_hash_table_insert(low, "station.locator", "jo60wa");
+    char *up = skim_hd_config_apply_form(INI, strlen(INI), low, &err);
+    check("a call and a locator typed small go into the file in capitals",
+          up && strstr(up, "call=OK1RAK/P") && strstr(up, "locator=JO60WA") && !strstr(up, "ok1rak"));
+    g_free(up);
+    g_hash_table_unref(low);
+    {
+      static const char SMALL[] = "[bands]\n40m=7045500\n[feed]\ncall=ok1rak\n";
+      const gboolean sok = skim_hd_config_parse(&c, SMALL, strlen(SMALL), path, &err);
+      check("a call written small by hand is used in capitals",
+            sok && c.feed_call && strcmp(c.feed_call, "OK1RAK") == 0);
+      if (sok) { skim_hd_config_clear(&c); }
+      g_clear_error(&err);
+    }
+
     static const char FOREIGN[] =
         "# exported elsewhere\n[radio]\nhost=auto\n[bands]\n20m=14045500 cw,rtty\n"
         "[web]\nsettings_from=0.0.0.0/0\n";

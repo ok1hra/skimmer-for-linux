@@ -32,6 +32,13 @@ header { display: flex; align-items: stretch; gap: 22px; padding: 0 18px; min-he
          border-bottom: 1px solid var(--ln); background: var(--deep); position: sticky; top: 0; z-index: 5;
          flex-wrap: wrap; }
 .title { display: flex; align-items: center; gap: 8px; }
+.unsaved { flex-basis: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin: 0 -18px;
+           padding: 6px 18px; background: var(--warn); color: #111; font-size: 14px; letter-spacing: .02em; }
+.unsaved[hidden] { display: none; }
+.unsaved b { font-weight: 700; }
+.unsaved button { font-size: 13px; padding: 3px 10px; }
+#settings input.upper { text-transform: uppercase; }
+#settings input.upper::placeholder { text-transform: none; }
 h1 { font-size: 20px; margin: 0; font-weight: 700; letter-spacing: .04em; }
 h1 small, #version { color: var(--mut); font-weight: 400; font-size: 13px; letter-spacing: .08em; }
 .strip { flex: 1; display: flex; align-items: center; gap: 18px; color: var(--mut); font-size: 13px;

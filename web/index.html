@@ -31,6 +31,12 @@
     <a class="navlink" href="https://github.com/ok1hra/skimmer-for-linux" target="_blank" rel="noopener"
        title="the project on GitHub: sources, releases, issues (a new tab)">Git ↗</a>
   </nav>
+  <!--admin--><div id="unsaved" class="unsaved" hidden role="alert">
+    <b>Unsaved changes in Settings</b> <span>— they take effect only once saved</span>
+    <button type="button" id="unsaved-show">Show</button>
+    <button type="button" id="unsaved-save" class="primary">Save and restart</button>
+    <button type="button" id="unsaved-discard">Discard</button>
+  </div><!--/admin-->
 </header>
 
 <div id="overlay" hidden><div><b id="overlay-text">Restarting…</b><p class="mut" id="overlay-sub"></p></div></div>
@@ -174,8 +180,8 @@
         </fieldset>
         <fieldset>
           <legend>Station and feed</legend>
-          <label>Call <input name="feed.call" placeholder="YOURCALL"></label>
-          <label>Locator <input name="station.locator" placeholder="JN18EU" maxlength="6">
+          <label>Call <input name="feed.call" class="upper" placeholder="YOURCALL" autocapitalize="characters"></label>
+          <label>Locator <input name="station.locator" class="upper" placeholder="JN18EU" maxlength="6" autocapitalize="characters">
             <small>the centre of the map on Status, the distances and bearings; the public pages show its first four characters only (JN18) — empty: the centre is your call's DXCC</small></label>
           <label>Port <input name="feed.port" inputmode="numeric" placeholder="7300">
             <small>0 = off</small></label>

@@ -678,6 +678,34 @@ window.addEventListener('resize', () => {
 
 // ---- settings --------------------------------------------------------------------
 const cfg = { data: null, dirty: false };
+// An edit not saved yet: a bar in the header on every tab, and the browser
+// asks before the page is left.
+function setDirty(v) {
+  cfg.dirty = v;
+  const bar = $('#unsaved');
+  if (bar) bar.hidden = !v;
+}
+addEventListener('beforeunload', (e) => {
+  if (!cfg.dirty) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
+on('#unsaved-show', 'click', () => show('settings'));
+on('#unsaved-save', 'click', () => { show('settings'); $('#settings').requestSubmit(); });
+on('#unsaved-discard', 'click', () => {
+  if (tab === 'settings') tabs.settings.refresh(true); else setDirty(false);
+});
+// A call and a locator in capitals, whatever is typed (the caret stays put).
+const upperFields = () => document.querySelectorAll('#settings input.upper');
+on('#settings', 'input', (e) => {
+  const t = e.target;
+  if (!t.classList || !t.classList.contains('upper')) return;
+  const u = t.value.toUpperCase();
+  if (u === t.value) return;
+  const a = t.selectionStart, b = t.selectionEnd;
+  t.value = u;
+  try { t.setSelectionRange(a, b); } catch (err) { /* not a text field */ }
+});
 const MAX_BANDS = 8;          // receivers: the bands on
 const MAX_LISTED = 16;        // [bands] lines, the ones off included
 
@@ -766,16 +794,16 @@ on('#band-rows', 'click', (e) => {
   if (a === 'up' && i > 0) [list[i - 1], list[i]] = [list[i], list[i - 1]];
   if (a === 'down' && i < list.length - 1) [list[i + 1], list[i]] = [list[i], list[i + 1]];
   drawBands(list);
-  cfg.dirty = true;
+  setDirty(true);
 });
 on('#band-add', 'click', () => {
   const list = readBands();
   const on = list.filter((b) => b.on).length < MAX_BANDS;   // a ninth line starts off
   list.push({ name: '', khz: '', cw: true, engine: $('[name="decode.engine"]').value || 'v3', rtty: false, on });
   drawBands(list);
-  cfg.dirty = true;
+  setDirty(true);
 });
-on('#settings', 'input', () => { cfg.dirty = true; });
+on('#settings', 'input', () => setDirty(true));
 
 // The callsign filter, as IP-rotator's DX filter (its DXC page): plain text
 // (part of a call, any case) or, with Regex, a regular expression ignoring
@@ -809,13 +837,13 @@ on('#filter-mycall-diff', 'input', mycallShow);
 on('#filter-clear', 'click', () => {
   $('#filter-call').value = '';
   $('#filter-regex').checked = false;
-  cfg.dirty = true;
+  setDirty(true);
   filterCheck();
 });
 
 function fillSettings(d) {
   cfg.data = d;
-  cfg.dirty = false;
+  setDirty(false);
   const f = $('#settings');
   for (const [k, v] of Object.entries(d.values)) {
     const inp = f.elements[k];
@@ -824,6 +852,7 @@ function fillSettings(d) {
     else if (inp.tagName === 'SELECT') inp.value = v || inp.dataset.default || inp.options[0].value;
     else inp.value = v;
   }
+  for (const inp of upperFields()) inp.value = inp.value.toUpperCase();
   applyLock(f, d.may_change);
   f.classList.toggle('locked', !d.may_change);
   $('#set-export').disabled = false;                 // anyone may read the file
@@ -1020,7 +1049,8 @@ on('#settings', 'submit', async (e) => {
   $('#set-msg').textContent = 'checking…';
   try {
     const j = await post('api/config', body);
-    if (!j.changed) { $('#set-msg').textContent = 'nothing changed'; cfg.dirty = false; return; }
+    setDirty(false);                               // saved: leaving is fine now
+    if (!j.changed) { $('#set-msg').textContent = 'nothing changed'; return; }
     const port = body.get('status.http_port');
     await waitRestart('Saved', port || '8073');
   } catch (err) {
@@ -1030,6 +1060,8 @@ on('#settings', 'submit', async (e) => {
 });
 on('#set-reset', 'click', () => tabs.settings.refresh(true));
 on('#set-restart', 'click', async () => {
+  if (cfg.dirty && !confirm('Restart without the unsaved changes in the form? They are lost.')) return;
+  setDirty(false);
   try { await post('api/restart', new URLSearchParams()); await waitRestart('Restart'); }
   catch (err) { $('#set-msg').textContent = err.message; }
 });
@@ -1116,7 +1148,7 @@ on('#lan-list', 'click', (e) => {
   if (hub) {
     $('[name="radio.type"]').value = 'hub';
     $('[name="radio.host"]').value = hub;
-    cfg.dirty = true;
+    setDirty(true);
     e.target.disabled = true;
     e.target.textContent = 'set as the hub — Save to apply';
     return;
@@ -1125,13 +1157,13 @@ on('#lan-list', 'click', (e) => {
   if (!peer) return;
   const inp = $('[name="peers.hosts"]');
   inp.value = [...inp.value.split(/[\s,]+/).filter(Boolean), peer].join(', ');
-  cfg.dirty = true;
+  setDirty(true);
   e.target.disabled = true;
   e.target.textContent = 'added — Save to apply';
 });
 
 tabs.settings = {
-  enter() { this.refresh(true); },
+  enter() { if (!cfg.dirty) this.refresh(true); },   // an edit not saved stays
   async refresh(force) {
     if (!force) return;                        // never overwrite the user's edits
     $('#set-error').hidden = true;
