@@ -10,6 +10,13 @@
 
 #define RING 32                        /* frames kept a band (~1.4 s)        */
 
+/* WDSP (vendor/wdsp): its headers need the GNU dialect, so the calls used
+ * are declared here (RESAMPLE is a pointer to its struct). */
+extern void *create_resample(int run, int size, double *in, double *out, int in_rate,
+                             int out_rate, double fc, int ncoef, double gain);
+extern void  destroy_resample(void *a);
+extern int   xresample(void *a);
+
 /* ---- the analyser ------------------------------------------------------------- */
 
 struct _SkimWfAnalyser {
@@ -107,8 +114,107 @@ void skim_hd_wf_render(const float *power, guint n, double rate, double centre, 
 
 /* ---- the bands and the viewers ------------------------------------------------ */
 
+/* ---- the audio --------------------------------------------------------------- */
+
+/* One listener's demodulator (the source thread runs it, under the band's
+ * lock): the band shifted so the tuned frequency sits at 0, WDSP's resampler
+ * down to 8 kHz, a second one at 8 kHz as the narrow filter (±bw/2), the
+ * BFO at SKIM_WF_AUDIO_BFO, an AGC, G.711 µ-law out. */
+struct _SkimWfAudio {
+  void   *dec, *nar;                   /* WDSP RESAMPLE: rate → 8 k, the filter */
+  double *blk, *mid, *out;             /* 10 ms: rate/100 in, 80 at 8 kHz       */
+  guint   blk_n, fill;
+  double  offset, rate;                /* tuned − centre (Hz), the IQ rate      */
+  double  nco, bfo;                    /* phases (rad)                          */
+  double  agc;                         /* the level followed                    */
+  GByteArray *pcm;                     /* µ-law waiting for the main loop       */
+};
+typedef SkimWfAudio Audio;
+
+static guint8 ulaw(double x) {                     /* G.711 µ-law, x in ±1   */
+  int s = (int)CLAMP(x * 32767.0, -32767, 32767);
+  const int sign = s < 0 ? 0x80 : 0;
+  if (s < 0) { s = -s; }
+  s = MIN(s + 0x84, 0x7fff);
+  int exp = 7;
+  for (int m = 0x4000; !(s & m) && exp > 0; m >>= 1) { exp--; }
+  const int mant = (s >> (exp + 3)) & 0x0f;
+  return (guint8)~(sign | (exp << 4) | mant);
+}
+
+static Audio *audio_new(double rate, double offset, double bw) {
+  Audio *a = g_new0(Audio, 1);
+  a->rate = rate;
+  a->offset = offset;
+  a->blk_n = (guint)(rate / 100);
+  a->blk = g_new0(double, 2 * a->blk_n);
+  a->mid = g_new0(double, 2 * 80);
+  a->out = g_new0(double, 2 * 80);
+  /* to 8 kHz: only what would fold into the passband (around ±8 kHz) must
+   * go, so a short filter does (240 taps: the stopband from ~6 kHz) */
+  a->dec = create_resample(1, (int)a->blk_n, a->blk, a->mid, (int)rate, SKIM_WF_AUDIO_RATE, 3500, 240, 1.0);
+  /* the narrow filter: a transition about half the passband wide */
+  const int taps = CLAMP((int)(13.2 * SKIM_WF_AUDIO_RATE / bw), 64, 2400);
+  a->nar = create_resample(1, 80, a->mid, a->out, SKIM_WF_AUDIO_RATE, SKIM_WF_AUDIO_RATE, bw / 2, taps, 1.0);
+  a->agc = 1e-4;
+  a->pcm = g_byte_array_new();
+  return a;
+}
+
+static void audio_free(Audio *a) {
+  if (!a) { return; }
+  destroy_resample(a->dec);
+  destroy_resample(a->nar);
+  g_free(a->blk);
+  g_free(a->mid);
+  g_free(a->out);
+  g_byte_array_unref(a->pcm);
+  g_free(a);
+}
+
+static void audio_feed(Audio *a, const float *iq, guint n) {
+  const double step = -2 * G_PI * a->offset / a->rate;
+  const double bstep = 2 * G_PI * SKIM_WF_AUDIO_BFO / SKIM_WF_AUDIO_RATE;
+  for (guint i = 0; i < n; i++) {
+    const double c = cos(a->nco), s = sin(a->nco);
+    const double re = iq[2 * i], im = iq[2 * i + 1];
+    a->blk[2 * a->fill] = re * c - im * s;
+    a->blk[2 * a->fill + 1] = re * s + im * c;
+    a->nco = fmod(a->nco + step, 2 * G_PI);
+    if (++a->fill < a->blk_n) { continue; }
+    a->fill = 0;
+    const int m = xresample(a->dec);
+    if (m != 80) { continue; }
+    xresample(a->nar);
+    guint8 u[80];
+    for (int k = 0; k < 80; k++) {
+      const double I = a->out[2 * k], Q = a->out[2 * k + 1];
+      const double y = I * cos(a->bfo) - Q * sin(a->bfo);   /* up to the BFO tone */
+      a->bfo = fmod(a->bfo + bstep, 2 * G_PI);
+      const double mag = sqrt(I * I + Q * Q);
+      /* AGC: fast up (2 ms), slow down (~1.5 s), the floor keeps noise quiet */
+      a->agc = mag > a->agc ? a->agc + (mag - a->agc) * 0.06 : a->agc * 0.99992;
+      a->agc = MAX(a->agc, 1e-7);
+      u[k] = ulaw(0.35 * y / a->agc);
+    }
+    if (a->pcm->len < SKIM_WF_AUDIO_RATE * 2) { g_byte_array_append(a->pcm, u, 80); }  /* ≤ 2 s */
+  }
+}
+
+SkimWfAudio *skim_wf_audio_new(double rate, double offset, double bw) {
+  return audio_new(rate, offset, bw);
+}
+void skim_wf_audio_free(SkimWfAudio *a) { audio_free(a); }
+void skim_wf_audio_feed(SkimWfAudio *a, const float *iq, guint n) { audio_feed(a, iq, n); }
+GByteArray *skim_wf_audio_take(SkimWfAudio *a) {
+  GByteArray *p = a->pcm;
+  a->pcm = g_byte_array_new();
+  return p;
+}
+
 typedef struct {
   GMutex          lock;
+  GPtrArray      *audio;               /* Audio* of its listeners            */
   gint            nsubs;               /* atomic: viewers on it              */
   SkimWfAnalyser *an;                  /* while watched                      */
   guint           n;
@@ -138,6 +244,10 @@ typedef struct {
   float                   *avg;
   guint                    avg_n;
   guint8                  *row;
+  Audio                   *au;        /* listening (in its band's list)      */
+  double                   af, bw;    /* the tuned frequency, the passband   */
+  guint                    audio_timer;
+  guint32                  aseq;
 } Viewer;
 
 static void frame_cb(const float *power, guint n, gpointer user) {
@@ -157,6 +267,7 @@ void skim_hd_waterfall_push(SkimHdWaterfall *w, guint bi, const float *iq, guint
     b->centre = centre;
     skim_wf_analyser_feed(b->an, iq, n, frame_cb, b);
   }
+  for (guint k = 0; b->audio && k < b->audio->len; k++) { audio_feed(b->audio->pdata[k], iq, n); }
   g_mutex_unlock(&b->lock);
 }
 
@@ -176,8 +287,67 @@ static void attach(Viewer *v, int bi) {
   v->band = bi;
 }
 
+static guint listeners(SkimHdWaterfall *w);
+
+/* The viewer's audio off: out of its band's list, freed. */
+static void audio_stop(Viewer *v) {
+  if (v->audio_timer) { g_source_remove(v->audio_timer); v->audio_timer = 0; }
+  if (!v->au) { return; }
+  WfBand *b = &v->w->band[v->band];
+  g_mutex_lock(&b->lock);
+  g_ptr_array_remove(b->audio, v->au);
+  g_mutex_unlock(&b->lock);
+  audio_free(v->au);
+  v->au = NULL;
+}
+
+/* What was demodulated since the last time, to the viewer (every 100 ms):
+ * u8 version (2), u8 band, u16 n, u32 seq, then n µ-law bytes at 8 kHz. */
+static gboolean audio_tick(gpointer user) {
+  Viewer *v = user;
+  if (!v->au) { return G_SOURCE_CONTINUE; }
+  WfBand *b = &v->w->band[v->band];
+  g_mutex_lock(&b->lock);
+  GByteArray *pcm = v->au->pcm;
+  v->au->pcm = g_byte_array_new();
+  g_mutex_unlock(&b->lock);
+  if (pcm->len) {
+    const guint n = MIN(pcm->len, 65535u);
+    guint8 *msg = g_malloc(8 + n);
+    const guint16 nl = GUINT16_TO_LE((guint16)n);
+    const guint32 sq = GUINT32_TO_LE(++v->aseq);
+    msg[0] = 2;
+    msg[1] = (guint8)v->band;
+    memcpy(msg + 2, &nl, 2);
+    memcpy(msg + 4, &sq, 4);
+    memcpy(msg + 8, pcm->data + pcm->len - n, n);
+    soup_websocket_connection_send_binary(v->c, msg, 8 + n);
+    g_free(msg);
+  }
+  g_byte_array_unref(pcm);
+  return G_SOURCE_CONTINUE;
+}
+
+/* The viewer listens at v->af with passband v->bw (a new tuning restarts it). */
+static void audio_start(Viewer *v) {
+  audio_stop(v);
+  if (v->band < 0) { return; }
+  if (listeners(v->w) >= SKIM_WF_MAX_LISTENERS) {
+    soup_websocket_connection_send_text(v->c, "{\"type\":\"audio\",\"error\":\"too many listeners — try again later\"}");
+    return;
+  }
+  WfBand *b = &v->w->band[v->band];
+  v->au = audio_new(v->w->rate, v->af - v->w->centres[v->band], v->bw);
+  g_mutex_lock(&b->lock);
+  if (!b->audio) { b->audio = g_ptr_array_new(); }
+  g_ptr_array_add(b->audio, v->au);
+  g_mutex_unlock(&b->lock);
+  v->audio_timer = g_timeout_add(100, audio_tick, v);
+}
+
 static void detach(Viewer *v) {
   if (v->band < 0) { return; }
+  audio_stop(v);
   WfBand *b = &v->w->band[v->band];
   g_mutex_lock(&b->lock);
   if (g_atomic_int_dec_and_test(&b->nsubs)) {         /* the last one: stop */
@@ -281,6 +451,23 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *message, g
     }
   }
   if (sr) { viewer_set_rate(v, (guint)CLAMP(g_ascii_strtoll(sr, NULL, 10), 1, 25)); }
+  /* audio=1&af=HZ&bw=HZ: listen there (in the band, 50–500 Hz); audio=0: stop */
+  const char *sa = g_hash_table_lookup(f, "audio");
+  if (sa && v->band >= 0) {
+    const char *saf = g_hash_table_lookup(f, "af"), *sbw = g_hash_table_lookup(f, "bw");
+    const double c = v->w->centres[v->band], half = v->w->rate / 2;
+    const double af = saf ? g_ascii_strtod(saf, NULL) : v->af;
+    const double bw = sbw ? CLAMP(g_ascii_strtod(sbw, NULL), 50, 500) : (v->bw ? v->bw : 250);
+    if (strcmp(sa, "1") == 0 && af > c - half && af < c + half) {
+      if (!v->au || af != v->af || bw != v->bw) {
+        v->af = af;
+        v->bw = bw;
+        audio_start(v);
+      }
+    } else {
+      audio_stop(v);
+    }
+  }
   if (v->band >= 0 && v->hi <= v->lo) {               /* the whole band     */
     v->lo = v->w->centres[v->band] - v->w->rate / 2;
     v->hi = v->w->centres[v->band] + v->w->rate / 2;
@@ -290,7 +477,7 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *message, g
 }
 
 static void viewer_free(Viewer *v) {
-  detach(v);
+  detach(v);                                          /* the audio with it  */
   if (v->timer) { g_source_remove(v->timer); }
   g_signal_handlers_disconnect_by_data(v->c, v);
   g_object_unref(v->c);
@@ -338,6 +525,13 @@ void skim_hd_waterfall_add(SkimHdWaterfall *w, SoupWebsocketConnection *c, const
 
 guint skim_hd_waterfall_viewers(SkimHdWaterfall *w) { return w ? w->viewers->len : 0; }
 
+static guint listeners(SkimHdWaterfall *w) {
+  guint n = 0;
+  for (guint i = 0; i < w->viewers->len; i++) { n += ((Viewer *)w->viewers->pdata[i])->au != NULL; }
+  return n;
+}
+guint skim_hd_waterfall_listeners(SkimHdWaterfall *w) { return w ? listeners(w) : 0; }
+
 SkimHdWaterfall *skim_hd_waterfall_new(guint nb, const char *const *names,
                                        const double *centres, double rate) {
   SkimHdWaterfall *w = g_new0(SkimHdWaterfall, 1);
@@ -361,6 +555,7 @@ void skim_hd_waterfall_free(SkimHdWaterfall *w) {
   for (guint i = 0; i < w->nb; i++) {
     skim_wf_analyser_free(w->band[i].an);
     g_free(w->band[i].ring);
+    if (w->band[i].audio) { g_ptr_array_unref(w->band[i].audio); }
     g_mutex_clear(&w->band[i].lock);
   }
   g_strfreev(w->names);

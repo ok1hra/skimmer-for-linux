@@ -743,7 +743,8 @@ static void status_build(Hd *h, gboolean print) {
   } else {
     g_string_append(json, "null");
   }
-  g_string_append_printf(json, ",\"waterfall_viewers\":%u", skim_hd_waterfall_viewers(h->wf));
+  g_string_append_printf(json, ",\"waterfall_viewers\":%u,\"waterfall_listeners\":%u",
+                         skim_hd_waterfall_viewers(h->wf), skim_hd_waterfall_listeners(h->wf));
   g_string_append(json, ",\"archive\":");
   if (h->archive) {                            /* [archive]: where, today's file */
     char *adir = NULL, *today = NULL, *aerr = NULL;

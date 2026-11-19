@@ -325,3 +325,11 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
            background: transparent; color: var(--faint); padding: 1px 3px; cursor: pointer; }
 .wf-auto:hover { color: var(--fg); }
 .wf-auto.on { color: var(--hot); border-bottom-color: var(--hot); }
+.wf-box { position: relative; }
+.wf-pass { position: absolute; top: 0; bottom: 0; pointer-events: none; background: rgba(160,170,185,.06);
+           border-left: 1px solid rgba(160,170,185,.35); border-right: 1px solid rgba(160,170,185,.35); }
+.wf-pass.on { background: rgba(255,196,64,.08); border-color: rgba(255,196,64,.55); }
+.wf-listen { display: inline-flex; align-items: center; gap: 6px; }
+.wf-spk { font-size: 17px; line-height: 1; border: 1px solid var(--ln2); background: var(--deep); padding: 2px 6px; cursor: pointer;
+          filter: grayscale(1); opacity: .7; }
+.wf-spk.on { filter: none; opacity: 1; border-color: #ffc440; }

@@ -97,6 +97,48 @@ int main(void) {
   for (guint i = 0; i < 64; i++) { zero = zero && o[i] == 0; }
   check("a window past the band's edge is all 0", zero);
 
+  printf("== the audio: tuned on the +12 kHz tone, and 300 Hz off it\n");
+  {
+    /* µ-law back to linear, then the level at the BFO tone (Goertzel) */
+    double lvl[2], rms[2];
+    const double tune[2] = { 12000, 12300 };
+    for (int k = 0; k < 2; k++) {
+      SkimWfAudio *au = skim_wf_audio_new(rate, tune[k], 100);
+      for (guint off = 0; off < frames;) {
+        const guint n = MIN(1023u, frames - off);
+        skim_wf_audio_feed(au, iq + 2 * off, n);
+        off += n;
+      }
+      GByteArray *pcm = skim_wf_audio_take(au);
+      double s1 = 0, s2 = 0, e = 0;
+      const double cf = 2 * cos(2 * G_PI * SKIM_WF_AUDIO_BFO / SKIM_WF_AUDIO_RATE);
+      const guint skip = 2000;                    /* the filters and AGC settle */
+      for (guint i = skip; i < pcm->len; i++) {
+        const guint8 u = ~pcm->data[i];
+        const int t = ((u & 0x0f) << 3) + 0x84, v = (t << ((u & 0x70) >> 4)) - 0x84;
+        const double x = ((u & 0x80) ? -v : v) / 32768.0;
+        const double s0 = x + cf * s1 - s2;
+        s2 = s1; s1 = s0;
+        e += x * x;
+      }
+      const guint n = pcm->len - skip;
+      lvl[k] = sqrt(s1 * s1 + s2 * s2 - cf * s1 * s2) / n;
+      rms[k] = sqrt(e / n);
+      if (k == 0) {
+        g_snprintf(what, sizeof(what), "8 kHz out: %u bytes a second (µ-law)", pcm->len);
+        check(what, pcm->len >= 7900 && pcm->len <= 8000);
+      }
+      g_byte_array_unref(pcm);
+      skim_wf_audio_free(au);
+    }
+    g_snprintf(what, sizeof(what), "tuned on it: a loud 600 Hz tone (rms %.2f, at 600 Hz %.2f)", rms[0], lvl[0]);
+    check(what, rms[0] > 0.15 && lvl[0] > 0.6 * rms[0] / 1.4142);
+    /* 300 Hz off with a 100 Hz passband: the AGC lifts the residue, so the
+     * test is the tone at the BFO (600 Hz) falling far below the tuned case */
+    g_snprintf(what, sizeof(what), "300 Hz off, 100 Hz wide: the 600 Hz tone gone (%.4f vs %.2f)", lvl[1], lvl[0]);
+    check(what, lvl[1] < lvl[0] / 30);
+  }
+
   skim_wf_analyser_free(an);
   g_free(acc.acc);
   g_free(iq);

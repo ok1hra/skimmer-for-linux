@@ -15,7 +15,8 @@
 const Wf = (() => {
   const SPANS = [0, 48000, 24000, 12000, 6000, 3000, 1500];   // 0 = the whole band
   const RATES = [1, 2, 5, 10, 20];
-  const DEF = { band: '', span: 0, centre: 0, rate: 5, range: 50, floor: 0, spec: true, calls: true };
+  const DEF = { band: '', span: 0, centre: 0, rate: 5, range: 50, floor: 0, spec: true, calls: true, abw: 250 };
+  const BWS = [50, 100, 150, 200, 250, 300, 400, 500];
   const store = (() => { try { return JSON.parse(localStorage.getItem('skwf') || '{}'); } catch (e) { return {}; } })();
   if (store.v !== 2) { store.spec = true; store.v = 2; }        // v2: the spectrum on by default
   const opt = { ...DEF, ...store };
@@ -105,6 +106,78 @@ const Wf = (() => {
       const x = (f - view.lo) * px;
       sg.beginPath(); sg.moveTo(x + 0.5, 19); sg.lineTo(x + 0.5, 22); sg.stroke();
     }
+    // the audio's passband: a trapezoid, its base the passband, on the scale
+    if (au.f) {
+      const x0 = (au.f - opt.abw / 2 - view.lo) * px, x1 = (au.f + opt.abw / 2 - view.lo) * px;
+      const inset = Math.min((x1 - x0) / 4, 6);
+      sg.beginPath(); sg.moveTo(x0, 22); sg.lineTo(x0 + inset, 3); sg.lineTo(x1 - inset, 3); sg.lineTo(x1, 22); sg.closePath();
+      sg.fillStyle = au.on ? 'rgba(255,196,64,.35)' : 'rgba(160,170,185,.25)'; sg.fill();
+      sg.strokeStyle = au.on ? '#ffc440' : '#8796a8'; sg.lineWidth = 1; sg.stroke();
+    }
+    placePass();
+  }
+  // the passband over the waterfall too (an overlay, never in the picture)
+  function placePass() {
+    const el = $('#wf-pass');
+    if (!el) return;
+    el.hidden = !au.f || !view.hi;
+    if (el.hidden) return;
+    const w = cv.clientWidth, span = view.hi - view.lo;
+    const x0 = ((au.f - opt.abw / 2 - view.lo) / span) * w, x1 = ((au.f + opt.abw / 2 - view.lo) / span) * w;
+    el.style.left = `${x0}px`; el.style.width = `${Math.max(1, x1 - x0)}px`;
+    el.classList.toggle('on', au.on);
+  }
+
+  // ---- the audio --------------------------------------------------------------------
+  // A click in the waterfall tunes the skimmer's demodulator there; its audio
+  // (µ-law, 8 kHz, ~8 kB/s) is played as it comes, a little ahead, the delay
+  // kept short (a backlog is dropped). The speaker mutes: the skimmer stops.
+  const au = { f: 0, on: false, ctx: null, next: 0 };
+  const ULAW = (() => {
+    const t = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const u = ~i & 0xff, m = ((u & 0x0f) << 3) + 0x84, v = (m << ((u & 0x70) >> 4)) - 0x84;
+      t[i] = ((u & 0x80) ? -v : v) / 32768;
+    }
+    return t;
+  })();
+  function audioSend() {
+    if (!ws || ws.readyState !== 1) return;
+    ws.send(au.on && au.f ? `audio=1&af=${au.f.toFixed(1)}&bw=${opt.abw}` : 'audio=0');
+  }
+  function audioUi() {
+    const b = $('#wf-audio');
+    b.textContent = au.on ? '🔊' : '🔇';
+    b.classList.toggle('on', au.on);
+    b.title = au.on ? `listening on ${fmtKhz(au.f / 1000, 2)} kHz — click to mute` : (au.f ? 'muted — click to listen' : 'click in the waterfall to listen there');
+    drawScale();
+  }
+  function audioTune(f) {
+    au.f = f;
+    au.on = true;
+    if (!au.ctx) au.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    au.ctx.resume();
+    au.next = 0;
+    audioSend();
+    audioUi();
+  }
+  function audioOff(forget) {
+    if (au.on) { au.on = false; audioSend(); }
+    if (forget) au.f = 0;
+    audioUi();
+  }
+  function onAudio(buf) {
+    if (!au.on || !au.ctx) return;
+    const dv = new DataView(buf), n = dv.getUint16(2, true);
+    if (dv.getUint8(1) !== band || !n) return;
+    const u = new Uint8Array(buf, 8, n), ab = au.ctx.createBuffer(1, n, 8000), d = ab.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = ULAW[u[i]];
+    const now = au.ctx.currentTime;
+    if (au.next < now + 0.05 || au.next > now + 0.8) au.next = now + 0.2;   // start, or drop a backlog
+    const src = au.ctx.createBufferSource();
+    src.buffer = ab; src.connect(au.ctx.destination); src.start(au.next);
+    au.next += n / 8000;
+    bytes += buf.byteLength;
   }
   // The strip over the scale: the spectrum's envelope (an option) and the
   // calls spotted on the band in the last 15 minutes, small, upright at their
@@ -240,9 +313,13 @@ const Wf = (() => {
     ws.binaryType = 'arraybuffer';
     status('connecting…');
     ws.onmessage = (e) => {
-      if (typeof e.data !== 'string') { onRow(e.data); return; }
+      if (typeof e.data !== 'string') {
+        if (new DataView(e.data).getUint8(0) === 2) onAudio(e.data); else onRow(e.data);
+        return;
+      }
       let m = null;
       try { m = JSON.parse(e.data); } catch (err) { return; }
+      if (m.type === 'audio' && m.error) { audioOff(false); status(m.error, true); return; }
       if (m.type !== 'hello') return;
       hello = m;
       retry = 0;
@@ -258,6 +335,7 @@ const Wf = (() => {
       if (same) { g.fillStyle = 'rgba(125,143,166,.6)'; g.fillRect(0, 0, W, 1); rowTimes.unshift(0); }
       shownBand = opt.band;
       send();
+      if (au.on) audioSend();                           // back: listening again
     };
     ws.onclose = (e) => {
       ws = null;
@@ -304,8 +382,12 @@ const Wf = (() => {
     rowCv = document.createElement('canvas'); rowCv.height = 1; rowG = rowCv.getContext('2d');
     $('#wf-span').innerHTML = SPANS.map((s) => `<option value="${s}">${s ? `${fmtKhz(s / 1000, s < 10000 ? 1 : 0)} kHz` : 'whole band'}</option>`).join('');
     $('#wf-rate').innerHTML = RATES.map((r) => `<option value="${r}">${r} rows/s</option>`).join('');
+    $('#wf-bw').innerHTML = BWS.map((b) => `<option value="${b}">${b} Hz</option>`).join('');
+    $('#wf-bw').value = String(opt.abw);
+    audioUi();
     bar();
     $('#wf-band').addEventListener('change', (e) => {
+      audioOff(true);                                  // the audio stays with its band
       band = Number(e.target.value);
       opt.band = hello.bands[band].name; opt.centre = 0;
       shownBand = opt.band;
@@ -341,7 +423,12 @@ const Wf = (() => {
       el.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(xIn(e), e.deltaY < 0 ? 1 : -1); }, { passive: false });
     }
     let drag = null;
-    cv.addEventListener('pointerdown', (e) => { if (opt.span) { drag = { x: xIn(e), c: opt.centre }; cv.setPointerCapture(e.pointerId); } });
+    let down = null;                                   // a press: a click, or the start of a drag
+    cv.addEventListener('pointerdown', (e) => {
+      down = { x: xIn(e) };
+      if (opt.span) drag = { x: xIn(e), c: opt.centre };
+      try { cv.setPointerCapture(e.pointerId); } catch (err) { /* not a live pointer */ }
+    });
     cv.addEventListener('pointermove', (e) => {
       const x = xIn(e), f = hzOf(x);
       const b = bandInfo();
@@ -351,9 +438,20 @@ const Wf = (() => {
       opt.centre = drag.c - ((x - drag.x) / W) * (view.hi - view.lo);
       reframe(false);
     });
-    const end = () => { drag = null; };
-    cv.addEventListener('pointerup', end);
-    cv.addEventListener('pointercancel', end);
+    // a click (no drag): listen there
+    cv.addEventListener('pointerup', (e) => {
+      if (down && Math.abs(xIn(e) - down.x) < 4) audioTune(Math.round(hzOf(xIn(e))));
+      down = null; drag = null;
+    });
+    cv.addEventListener('pointercancel', () => { down = null; drag = null; });
+    $('#wf-audio').addEventListener('click', () => {
+      if (au.on) audioOff(false); else if (au.f) audioTune(au.f);
+    });
+    $('#wf-bw').addEventListener('change', (e) => {
+      opt.abw = Number(e.target.value); save();
+      if (au.on) audioSend();
+      audioUi();
+    });
     cv.addEventListener('dblclick', (e) => { if (opt.span) { opt.centre = hzOf(xIn(e)); reframe(false); } });
     addEventListener('resize', () => { if (active && size()) { drawScale(); send(); } });
     setInterval(() => {                              // kB/s, the spots
@@ -379,6 +477,7 @@ const Wf = (() => {
   }
   function close() {
     active = false;
+    audioOff(false);
     if (ws) { const s = ws; ws = null; s.close(1000, 'away'); }
   }
   function leave() {

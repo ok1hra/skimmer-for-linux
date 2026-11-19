@@ -125,13 +125,15 @@
         <button type="button" class="wf-auto" id="wf-floor-auto" title="back to the noise floor">auto</button></label>
       <label class="chk"><input type="checkbox" id="wf-spec"> spectrum</label>
       <label class="chk"><input type="checkbox" id="wf-calls"> calls</label>
+      <span class="wf-listen"><button type="button" id="wf-audio" class="wf-spk">🔇</button>
+        <select id="wf-bw" title="the audio's passband"></select></span>
       <span class="wf-read" id="wf-read"></span>
       <span class="wf-net mut" id="wf-net"></span>
     </div>
     <canvas id="wf-spec-cv" class="wf-spec" hidden></canvas>
     <canvas id="wf-scale" class="wf-scale"></canvas>
-    <div id="wf-box" class="wf-box"><canvas id="wf-cv"></canvas></div>
-    <p class="mut note">wheel: zoom around the cursor · drag: move · double click: centre · computed by the skimmer
+    <div id="wf-box" class="wf-box"><canvas id="wf-cv"></canvas><div id="wf-pass" class="wf-pass" hidden></div></div>
+    <p class="mut note">click: listen there (CW, the passband chosen beside the speaker) · wheel: zoom around the cursor · drag: move · double click: centre · computed by the skimmer
       only while this tab is open, and sent at the speed chosen</p>
   </section>
 

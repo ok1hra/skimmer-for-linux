@@ -17,6 +17,13 @@
  *     "bands":[{"name":…,"centre_hz":…},…]};
  *   binary, a row: u8 version (1), u8 band, u16 w, u32 seq, f64 unix time,
  *     f64 lo Hz, f64 hi Hz, then w bytes — little-endian.
+ * Audio (a CW signal heard in the browser): "audio=1&af=HZ&bw=HZ" tunes
+ *   the viewer's own demodulator to af with a passband of bw (50–500 Hz) —
+ *   the band shifted, WDSP's resampler to 8 kHz, a second one at 8 kHz as
+ *   the narrow filter, a 600 Hz BFO, an AGC — and "audio=0" stops it; the
+ *   audio goes out every 100 ms as binary: u8 version (2), u8 band, u16 n,
+ *   u32 seq, n bytes of G.711 µ-law at 8 kHz (8 kB/s). It runs only while
+ *   on; SKIM_WF_MAX_LISTENERS at once.
  * A row goes out only while fewer than about two seconds' worth are
  * unacknowledged: a slow link gets fewer, longer-averaged rows instead of
  * a growing queue. At most SKIM_WF_MAX_VIEWERS viewers at once.
@@ -34,6 +41,9 @@ G_BEGIN_DECLS
 #define SKIM_WF_MAX_VIEWERS  8
 #define SKIM_WF_MAX_W        2048     /* pixels a row                         */
 #define SKIM_WF_DB_FLOOR     (-160.0) /* byte 0                               */
+#define SKIM_WF_AUDIO_RATE   8000     /* the audio's sample rate               */
+#define SKIM_WF_AUDIO_BFO    600.0    /* Hz: the tone a carrier is heard at   */
+#define SKIM_WF_MAX_LISTENERS 4
 
 typedef struct _SkimHdWaterfall SkimHdWaterfall;
 
@@ -50,6 +60,7 @@ void skim_hd_waterfall_push(SkimHdWaterfall *w, guint b, const float *iq, guint 
 /* Main thread: a new viewer (the waterfall takes its own reference). */
 void  skim_hd_waterfall_add(SkimHdWaterfall *w, SoupWebsocketConnection *c, const char *peer);
 guint skim_hd_waterfall_viewers(SkimHdWaterfall *w);
+guint skim_hd_waterfall_listeners(SkimHdWaterfall *w);
 
 /* ---- the DSP, for the gate ---------------------------------------------------- */
 
@@ -68,5 +79,13 @@ void skim_wf_analyser_feed(SkimWfAnalyser *a, const float *iq, guint n, SkimWfFr
  * lo–hi Hz: the strongest bin under each pixel; 0 outside the band. */
 void skim_hd_wf_render(const float *power, guint n, double rate, double centre, double lo,
                        double hi, guint w, guint8 *out);
+
+/* One listener's CW demodulator (see Audio above): IQ of a band, the
+ * tuned frequency's offset from its centre, the passband → µ-law at 8 kHz. */
+typedef struct _SkimWfAudio SkimWfAudio;
+SkimWfAudio *skim_wf_audio_new(double rate, double offset, double bw);
+void         skim_wf_audio_free(SkimWfAudio *a);
+void         skim_wf_audio_feed(SkimWfAudio *a, const float *iq, guint n);
+GByteArray  *skim_wf_audio_take(SkimWfAudio *a);         /* the caller unrefs */
 
 G_END_DECLS

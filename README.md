@@ -342,7 +342,10 @@ model fetch).
 whole band (96 kHz) or zoomed in (the span, the mouse wheel around the
 cursor, a drag to move), at 1 to 20 rows a second, with a frequency scale,
 the spectrum's envelope as an option, and the spotted calls upright where
-they were heard. The skimmer computes a band only while someone watches it
+they were heard. A click in it plays that CW signal in the browser: the
+skimmer demodulates it (a passband of 50–500 Hz, shown as a trapezoid on
+the scale, a 600 Hz tone) and sends only the audio, 8 kB/s; the speaker
+icon mutes it, and the skimmer stops. The skimmer computes a band only while someone watches it
 (about 0.3 % of a core) and sends each viewer just its window, a byte a
 pixel (about 7 kB/s at 1,400 px and 5 rows a second, less with the
 WebSocket's compression); each row is acknowledged, so a slow link over
