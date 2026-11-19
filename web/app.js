@@ -257,7 +257,7 @@ function renderDcw(dc) {
 // map, the cluster and the ladder at the next poll — also when a fetch fails
 // or the page was in another tab for a while.
 const SPOT_MAX_AGE_S = 30 * 60;
-const spots = { raw: [], list: [], at: 0, skew: 0, locator: '' };
+const spots = { raw: [], list: [], at: 0, skew: 0, locator: '', call: '' };
 window.spots = spots;
 let mapMounted = false;
 function ageSpots(fresh) {
@@ -271,6 +271,7 @@ async function refreshSpots(force) {
   spots.at = Date.now();
   const d = await getJSON(`api/spots?minutes=${SPOT_MAX_AGE_S / 60}`);
   spots.locator = d.locator;
+  spots.call = d.call;
   spots.skew = d.now - Date.now() / 1000;
   spots.raw = d.spots;
   ageSpots(true);
@@ -327,11 +328,10 @@ function renderSpots() {
   if (!mapMounted) {
     SkMap.mount($('#skmap'));
     Dxc.mount($('#dxc'), (shown, marked) =>
-      SkMap.update(shown.map((s) => ({ ...s, hi: s.call === marked })), spots.locator || 'JN18'));
+      SkMap.update(shown.map((s) => ({ ...s, hi: s.call === marked })), { locator: spots.locator, call: spots.call }));
     mapMounted = true;
-    SkMap.update([], spots.locator || 'JN18');              // the centre before the rows
+    SkMap.update([], { locator: spots.locator, call: spots.call });   // the centre before the rows
   }
-  SkMap.noLocator(!spots.locator);
   const bands = status ? status.bands.map((b) => b.band) : [];
   const workers = status && status.hub ? status.hub.workers.map((w) => w.name) : [];
   Dxc.update(spots.list, bands, workers);

@@ -174,8 +174,6 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .map-bar .seg button:hover { color: var(--fg); border-color: var(--ln2); }
 .map-bar .seg button.on { background: transparent; color: var(--hot); border-bottom-color: var(--hot); }
 .map-bar .small { margin-top: 0; }
-.map-centre { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--mut); }
-.map-centre input { width: 7em; text-transform: uppercase; margin-left: 4px; }
 [data-k=zoom] { font-size: 12px; letter-spacing: .06em; font-variant-numeric: tabular-nums; }
 .map-canvas { position: relative; }
 .map-canvas canvas { display: block; cursor: crosshair; }

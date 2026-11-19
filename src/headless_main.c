@@ -649,7 +649,7 @@ static void status_build(Hd *h, gboolean print) {
       : g_strdup("null");
   g_string_append_printf(json,
       "{\"version\":\"%s\",\"started_us\":%" G_GINT64_FORMAT ",\"time\":\"%s\",\"radio\":\"%s\",\"streaming\":%s,\"host\":\"%s\","
-      "\"call\":\"%s\",\"locator\":\"%s\",\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
+      "\"call\":\"%s\",\"locator\":\"%.4s\",\"clock_ppm\":%.2f,\"rate\":%u,\"lost_pct\":%.3f,\"packets_per_s\":%.0f,\"cpu_pct\":%.1f,"
       "\"cpu_cw_pct\":%.1f,\"cpu_rtty_pct\":%.1f,\"cpu_temp_c\":%s,"
       "\"engine\":\"%s\","
       "\"feed_policy\":{\"min_score\":%.2f,\"min_hearings\":%u,\"settle_s\":%.1f,"
@@ -1617,7 +1617,7 @@ static char *web_spots(GHashTable *q, gboolean may, guint *st, const char **type
   g_string_append_printf(o, "{\"now\":%" G_GINT64_FORMAT ",\"minutes\":%" G_GINT64_FORMAT
                          ",\"call\":\"", now, minutes);
   skim_json_append(o, h->cfg.feed_call ? h->cfg.feed_call : "");
-  g_string_append_printf(o, "\",\"locator\":\"%s\",\"spots\":[", h->cfg.locator);
+  g_string_append_printf(o, "\",\"locator\":\"%.4s\",\"spots\":[", h->cfg.locator);
   g_mutex_lock(&h->spot_lock);
   guint n = 0;
   for (GList *l = h->spot_log.tail; l; l = l->prev) {

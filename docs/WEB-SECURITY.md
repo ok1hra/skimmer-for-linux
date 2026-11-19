@@ -28,6 +28,11 @@ Everyone else is a viewer.
 | `status.json` | without addresses, file paths and the `SKIM_*` values | whole |
 | `stats.json`, `/api/spots`, `/ws/waterfall` | yes | yes |
 
+The station's locator leaves the skimmer as its square only — the first
+four characters (JN18), in `status.json` and `/api/spots`, for everyone:
+a six-character locator is a few kilometres, nearly an address. Only
+Settings (managers) shows it whole.
+
 Each answer carries a Content-Security-Policy (the page's own scripts,
 styles, fonts and sockets only; no framing), `X-Frame-Options: DENY`,
 `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.

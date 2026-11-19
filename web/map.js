@@ -6,12 +6,13 @@
 // AUTO zooms to about 2000 km and widens as far as the farthest spot shown,
 // so the end stations stay on the map (a ladder of steps, so it does not
 // twitch at every refresh); the wheel takes over, AUTO gives it back. The
-// centre is the station's locator unless another is typed in; "back to
-// <locator>" (shown only then) returns to it. A spot is placed by its DXCC
+// centre is the station's locator (Settings; the public page gets its first
+// four characters only), or without one the DXCC of the station's call, or
+// Paris (JN18) without either. A spot is placed by its DXCC
 // (the prefix's label point), so the spots of one country share a point:
 // they are fanned out around it, a dot each. The cursor reads azimuth,
 // distance and locator.
-// Per-viewer choices (layers, centre, zoom) are kept in localStorage.
+// Per-viewer choices (layers, zoom) are kept in localStorage.
 'use strict';
 
 const SkMap = (() => {
@@ -80,12 +81,21 @@ const SkMap = (() => {
   const store = (() => { try { return JSON.parse(localStorage.getItem('skmap') || '{}'); } catch (e) { return {}; } })();
   // every layer on by default; a viewer's choices are kept (v2: dB joined them, on)
   if (store.v !== 2) { store.db = true; store.v = 2; }
-  const opt = { grayline: true, borders: true, prefixes: true, lines: true, calls: true, db: true, center: '', zoom: 0, ...store };
+  const opt = { grayline: true, borders: true, prefixes: true, lines: true, calls: true, db: true, zoom: 0, ...store };
+  delete opt.center;                               // a typed-in centre (before v0.8.4) is gone
   const save = () => { try { localStorage.setItem('skmap', JSON.stringify(opt)); } catch (e) { /* private window */ } };
-  let el = null, home = '', spots = [], view = null, baseKey = '', base = null, grayKey = '', gray = null;
+  let el = null, home = '', homeCall = '', spots = [], view = null, baseKey = '', base = null, grayKey = '', gray = null;
 
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-  function centerLL() { return locToLL(opt.center) || locToLL(home) || locToLL('JN18'); }
+  // the centre: the locator, else the call's DXCC, else Paris — and what it is
+  function centerOf() {
+    const l = locToLL(home);
+    if (l) return { ll: l, what: home };
+    const d = homeCall && locate(homeCall);
+    if (d) return { ll: { lat: d.lat, lon: d.lon }, what: `${d.name} — ${homeCall}'s DXCC (no locator in Settings)` };
+    return { ll: locToLL('JN18'), what: 'JN18 (Paris — no locator and no call in Settings)' };
+  }
+  function centerLL() { return centerOf().ll; }
 
   // ---- projection for the current view ----------------------------------------------------
   function makeView(size, zoom) {
@@ -325,11 +335,8 @@ const SkMap = (() => {
     g.fillStyle = '#39d98a'; g.beginPath(); g.arc(view.cx, view.cy, 4, 0, 7); g.fill();
     el.querySelector('[data-k=zoom]').textContent = opt.zoom ? `${fmtKm(zoom)}` : `auto · ${fmtKm(zoom)}`;
     el.querySelector('[data-o=auto]').classList.toggle('on', !opt.zoom);
-    // HOME only means something while another centre is typed in
-    const back = el.querySelector('[data-o=home]');
-    back.hidden = !opt.center || opt.center === home;
-    back.textContent = `back to ${home || 'the station'}`;
-    el.querySelector('.map-count').textContent = `${spots.length} spot${spots.length === 1 ? '' : 's'} · ${spots.filter((s) => !s.where).length ? `${spots.filter((s) => !s.where).length} unplaced · ` : ''}centre ${opt.center || home || '—'}${noLoc && !opt.center ? ' (Paris — no station locator: Settings → Station and feed)' : ''}`;
+    const un = spots.filter((s) => !s.where).length;
+    el.querySelector('.map-count').textContent = `${spots.length} spot${spots.length === 1 ? '' : 's'} · ${un ? `${un} unplaced · ` : ''}centre ${centerOf().what}`;
   }
   const fmtKm = (km) => `${Math.round(km).toLocaleString('en-US')} km`;
 
@@ -360,8 +367,6 @@ const SkMap = (() => {
           <button type="button" data-o="calls">calls</button>
           <button type="button" data-o="db" title="the spot's SNR in dB behind its call">dB</button>
         </span>
-        <label class="map-centre">centre <input data-k="centre" maxlength="6" size="7" placeholder="locator"></label>
-        <button type="button" class="small" data-o="home" title="centre the map on the station's locator again" hidden>back to the station</button>
         <span class="mut" data-k="zoom"></span>
       </div>
       <div class="map-canvas"><canvas></canvas><div class="map-read" hidden></div></div>
@@ -369,20 +374,12 @@ const SkMap = (() => {
     for (const k of ['grayline', 'borders', 'prefixes', 'lines', 'calls', 'db']) {
       el.querySelector(`[data-o=${k}]`).classList.toggle('on', !!opt[k]);
     }
-    el.querySelector('[data-k=centre]').value = opt.center;
     el.querySelector('.map-bar').addEventListener('click', (e) => {
       const o = e.target.dataset && e.target.dataset.o;
       if (!o) return;
       if (o === 'auto') opt.zoom = 0;
-      else if (o === 'home') { opt.center = ''; el.querySelector('[data-k=centre]').value = ''; }
       else { opt[o] = !opt[o]; e.target.classList.toggle('on', opt[o]); }
       save(); draw();
-    });
-    el.querySelector('[data-k=centre]').addEventListener('change', (e) => {
-      const v = e.target.value.trim().toUpperCase();
-      e.target.classList.toggle('bad', !!v && !locToLL(v));
-      if (v && !locToLL(v)) return;
-      opt.center = v; save(); draw();
     });
     const cv = el.querySelector('canvas');
     cv.addEventListener('wheel', (e) => {
@@ -401,16 +398,13 @@ const SkMap = (() => {
     addEventListener('resize', () => draw());
   }
 
-  // spots: [{ call, khz, mode, snr, band, age, hi }] — placed here by their DXCC
-  // no station locator: the centre is a stand-in, the footer says so
-  let noLoc = false;
-  function noLocator(on) { if (on !== noLoc) { noLoc = on; draw(); } }
-
+  // spots: [{ call, khz, mode, snr, band, age, hi }] — placed here by their DXCC;
+  // station: { locator, call } — the centre
   function update(list, station) {
-    home = station || home;
+    if (station) { home = station.locator || ''; homeCall = station.call || ''; }
     spots = list.map((s) => ({ ...s, where: s.where !== undefined ? s.where : locate(s.call) }));
     draw();
   }
 
-  return { mount, update, noLocator, redraw: () => draw(), locate, geo, locToLL, llToLoc, bandColor, center: centerLL };
+  return { mount, update, redraw: () => draw(), locate, geo, locToLL, llToLoc, bandColor, center: centerLL };
 })();
