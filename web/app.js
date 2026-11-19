@@ -95,8 +95,9 @@ function renderStatus(d) {
   const per = (band) => window.spots ? window.spots.list.filter((s) => s.band === band) : [];
   $('#ladder').innerHTML = decoded.map((b) => {
     const sp = per(b.band), cwOn = b.cw !== false, rt = b.rtty;
+    const col = typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : '';   // the band's own colour
     const bar = (on, act, dec, cls) => on
-      ? `<td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active"><i style="width:${(100 * act / maxAct).toFixed(0)}%"></i></td><td class="n">${fmt(act)}</td>`
+      ? `<td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active"><i style="width:${(100 * act / maxAct).toFixed(0)}%;${col ? `background:${col}` : ''}"></i></td><td class="n">${fmt(act)}</td>`
       : '<td class="bar off"></td><td class="n mut">–</td>';
     return `<tr><td class="b" style="color:${typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : ''}">${esc(b.band)}</td>` +
       bar(cwOn, b.active, b.decoders, 'cw') + bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty') +

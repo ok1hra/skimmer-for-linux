@@ -186,7 +186,7 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .ladder td.b { font-weight: 700; font-size: 17px; width: 56px; }
 .ladder td.bar { width: 26%; min-width: 70px; }
 .ladder td.bar i { display: block; height: 7px; background: var(--hot); min-width: 1px; }
-.ladder td.bar.rtty i { background: var(--warn); }
+.ladder td.bar.rtty i { background: var(--warn); opacity: .6; }
 .ladder td.bar.cw, .ladder td.bar.rtty { background: linear-gradient(var(--deep), var(--deep)) center / 100% 7px no-repeat; }
 .ladder td.n { text-align: right; color: var(--mut); font-size: 13px; width: 44px; }
 .ladder td.last { color: var(--hot); letter-spacing: .03em; }
