@@ -5,6 +5,9 @@
 'use strict';
 
 const $ = (sel) => document.querySelector(sel);
+// a listener on an element that may not be on the page (Settings and Log are
+// served only to the addresses that may change settings)
+const on = (sel, ev, fn, o) => { const e = document.querySelector(sel); if (e) e.addEventListener(ev, fn, o); };
 const esc = (s) => String(s).replace(/[&<>"']/g,
   (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (v, d = 0) => (v === undefined || v === null || Number.isNaN(v)) ? '–'
@@ -563,8 +566,8 @@ function timeLabel(offH) {
   $('#t-label').textContent = offH ? `${f(start)} – ${f(end)} UTC` : `the last ${stats.hours >= 48 ? `${stats.hours / 24} days` : `${stats.hours} h`}, up to now`;
   $('#t-now').disabled = !offH;
 }
-$('#t-end').addEventListener('input', (e) => { timeLabel(-Number(e.target.value)); drawOver(); });
-$('#t-end').addEventListener('change', (e) => {
+on('#t-end', 'input', (e) => { timeLabel(-Number(e.target.value)); drawOver(); });
+on('#t-end', 'change', (e) => {
   const off = -Number(e.target.value);
   stats.end = off ? Math.floor(Date.now() / 1000) - off * 3600 : null;
   tabs.stats.refresh(true);
@@ -579,20 +582,20 @@ function overPick(e) {
   timeLabel(off);
   drawOver();
 }
-$('#t-over').addEventListener('pointerdown', (e) => {
+on('#t-over', 'pointerdown', (e) => {
   over.drag = true;
   e.currentTarget.setPointerCapture(e.pointerId);
   overPick(e);
 });
-$('#t-over').addEventListener('pointermove', (e) => { if (over.drag) overPick(e); });
+on('#t-over', 'pointermove', (e) => { if (over.drag) overPick(e); });
 const overDone = () => {
   if (!over.drag) return;
   over.drag = false;
   $('#t-end').dispatchEvent(new Event('change'));
 };
-$('#t-over').addEventListener('pointerup', overDone);
-$('#t-over').addEventListener('pointercancel', overDone);
-$('#t-now').addEventListener('click', () => { stats.end = null; tabs.stats.refresh(true); });
+on('#t-over', 'pointerup', overDone);
+on('#t-over', 'pointercancel', overDone);
+on('#t-now', 'click', () => { stats.end = null; tabs.stats.refresh(true); });
 
 for (const b of document.querySelectorAll('#range button')) {
   b.addEventListener('click', () => {
@@ -632,7 +635,7 @@ function applyLock(root, may) {
 }
 // a locked list snaps back to its value before anything sees the change
 for (const ev of ['input', 'change']) {
-  $('#settings').addEventListener(ev, (e) => {
+  on('#settings', ev, (e) => {
     const t = e.target;
     if (t.tagName === 'SELECT' && t.dataset.locked === '1') {
       t.value = t.dataset.v;
@@ -687,10 +690,10 @@ function drawBands(list) {
   $('#band-add').disabled = !may || list.length >= MAX_LISTED;
 }
 // ticking a band on or off renumbers the receivers
-$('#band-rows').addEventListener('change', (e) => {
+on('#band-rows', 'change', (e) => {
   if (e.target.dataset && e.target.dataset.k === 'on') drawBands(readBands());
 });
-$('#band-rows').addEventListener('click', (e) => {
+on('#band-rows', 'click', (e) => {
   const a = e.target.dataset && e.target.dataset.a;
   if (!a) return;
   const list = readBands(), i = [...$('#band-rows').children].indexOf(e.target.closest('tr'));
@@ -700,14 +703,14 @@ $('#band-rows').addEventListener('click', (e) => {
   drawBands(list);
   cfg.dirty = true;
 });
-$('#band-add').addEventListener('click', () => {
+on('#band-add', 'click', () => {
   const list = readBands();
   const on = list.filter((b) => b.on).length < MAX_BANDS;   // a ninth line starts off
   list.push({ name: '', khz: '', cw: true, engine: $('[name="decode.engine"]').value || 'v3', rtty: false, on });
   drawBands(list);
   cfg.dirty = true;
 });
-$('#settings').addEventListener('input', () => { cfg.dirty = true; });
+on('#settings', 'input', () => { cfg.dirty = true; });
 
 // The callsign filter, as IP-rotator's DX filter (its DXC page): plain text
 // (part of a call, any case) or, with Regex, a regular expression ignoring
@@ -722,8 +725,8 @@ function filterCheck() {
   $('#filter-bad').hidden = ok;
   return ok;
 }
-$('#filter-call').addEventListener('input', filterCheck);
-$('#filter-regex').addEventListener('change', (e) => {
+on('#filter-call', 'input', filterCheck);
+on('#filter-regex', 'change', (e) => {
   if (e.target.checked && !$('#filter-call').value.trim()) $('#filter-call').value = DX_FILTER_DEFAULT;
   filterCheck();
 });
@@ -736,9 +739,9 @@ function mycallShow() {
   $('#filter-mycall-diff').classList.toggle('bad', !ok);
   return ok;
 }
-$('[name="feed.call"]').addEventListener('input', mycallShow);
-$('#filter-mycall-diff').addEventListener('input', mycallShow);
-$('#filter-clear').addEventListener('click', () => {
+on('[name="feed.call"]', 'input', mycallShow);
+on('#filter-mycall-diff', 'input', mycallShow);
+on('#filter-clear', 'click', () => {
   $('#filter-call').value = '';
   $('#filter-regex').checked = false;
   cfg.dirty = true;
@@ -844,7 +847,7 @@ async function waitRestart(what, newPort) {
   $('#overlay-sub').innerHTML = 'Check its log on the machine; an earlier config can be restored under Settings once it answers.';
 }
 
-$('#settings').addEventListener('submit', async (e) => {
+on('#settings', 'submit', async (e) => {
   e.preventDefault();
   if (!cfg.data || !cfg.data.may_change) return;
   const body = formBody();
@@ -880,15 +883,15 @@ $('#settings').addEventListener('submit', async (e) => {
     box.textContent = `Not saved: ${err.message}`;
   }
 });
-$('#set-reset').addEventListener('click', () => tabs.settings.refresh(true));
-$('#set-restart').addEventListener('click', async () => {
+on('#set-reset', 'click', () => tabs.settings.refresh(true));
+on('#set-restart', 'click', async () => {
   try { await post('api/restart', new URLSearchParams()); await waitRestart('Restart'); }
   catch (err) { $('#set-msg').textContent = err.message; }
 });
 // Export: the file on disk as it is (what a restart would run), named after
 // the day. Import: an exported file as the config — the skimmer keeps its own
 // [web] settings_from, checks the file with the start's parser and restarts.
-$('#set-export').addEventListener('click', async () => {
+on('#set-export', 'click', async () => {
   try {
     const c = await getJSON('api/config');
     const a = document.createElement('a');
@@ -900,8 +903,8 @@ $('#set-export').addEventListener('click', async () => {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   } catch (err) { $('#set-msg').textContent = `Not exported: ${err.message}`; }
 });
-$('#set-import').addEventListener('click', () => $('#set-import-file').click());
-$('#set-import-file').addEventListener('change', async (e) => {
+on('#set-import', 'click', () => $('#set-import-file').click());
+on('#set-import-file', 'change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file || !cfg.data || !cfg.data.may_change) return;
@@ -926,7 +929,7 @@ async function restore(name) {
   try { await post('api/rollback', new URLSearchParams({ name })); await waitRestart('Restored'); }
   catch (err) { alert(`Not restored: ${err.message}`); }
 }
-$('#set-baks').addEventListener('click', (e) => { if (e.target.dataset.restore) restore(e.target.dataset.restore); });
+on('#set-baks', 'click', (e) => { if (e.target.dataset.restore) restore(e.target.dataset.restore); });
 
 // Skimmers on the LAN: a search, and what each found one can be used for here
 async function findSkimmers() {
@@ -961,9 +964,9 @@ async function findSkimmers() {
     $('#lan-find').disabled = false;
   }
 }
-$('#lan-find').addEventListener('click', findSkimmers);
-$('#lan').addEventListener('toggle', () => { if ($('#lan').open) findSkimmers(); });
-$('#lan-list').addEventListener('click', (e) => {
+on('#lan-find', 'click', findSkimmers);
+on('#lan', 'toggle', () => { if ($('#lan').open) findSkimmers(); });
+on('#lan-list', 'click', (e) => {
   const hub = e.target.dataset && e.target.dataset.hub;
   if (hub) {
     $('[name="radio.type"]').value = 'hub';

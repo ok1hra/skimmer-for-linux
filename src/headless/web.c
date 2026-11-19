@@ -76,7 +76,10 @@ static const char *type_of(const char *path) {
   return "text/html; charset=utf-8";
 }
 
-static gboolean serve_static(SoupServerMessage *msg, const char *path) {
+/* The page: index.html's <!--admin-->…<!--/admin--> parts (Settings, Log)
+ * go only to a client that may change settings — the others never get them,
+ * not even hidden. */
+static gboolean serve_static(SoupServerMessage *msg, const char *path, gboolean admin) {
   if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0) { path = "/index.html"; }
   if (strstr(path, "..")) { return FALSE; }
   char *res = g_strconcat(WEB_RES, path, NULL);
@@ -84,33 +87,101 @@ static gboolean serve_static(SoupServerMessage *msg, const char *path) {
   g_free(res);
   if (!b) { return FALSE; }
   soup_server_message_set_status(msg, SOUP_STATUS_OK, NULL);
-  soup_server_message_set_response(msg, type_of(path), SOUP_MEMORY_COPY,
-                                    g_bytes_get_data(b, NULL), g_bytes_get_size(b));
+  if (strcmp(path, "/index.html") == 0 && !admin) {
+    GString *o = g_string_new_len(g_bytes_get_data(b, NULL), (gssize)g_bytes_get_size(b));
+    for (char *a; (a = strstr(o->str, "<!--admin-->"));) {
+      char *e = strstr(a, "<!--/admin-->");
+      const gsize from = (gsize)(a - o->str);
+      g_string_erase(o, (gssize)from, e ? (gssize)(e - a) + 13 : -1);
+    }
+    const gsize len = o->len;
+    soup_server_message_set_response(msg, type_of(path), SOUP_MEMORY_TAKE, g_string_free(o, FALSE), len);
+  } else {
+    soup_server_message_set_response(msg, type_of(path), SOUP_MEMORY_COPY,
+                                      g_bytes_get_data(b, NULL), g_bytes_get_size(b));
+  }
   g_bytes_unref(b);
   return TRUE;
 }
 
+/* A request a proxy forwarded: its address is the proxy's (127.0.0.1 for one
+ * on this machine), not the client's — never trusted as a local one. */
+static gboolean via_proxy(SoupServerMessage *msg) {
+  SoupMessageHeaders *h = soup_server_message_get_request_headers(msg);
+  return soup_message_headers_get_one(h, "X-Forwarded-For") ||
+         soup_message_headers_get_one(h, "Forwarded") ||
+         soup_message_headers_get_one(h, "X-Real-IP") || soup_message_headers_get_one(h, "Via");
+}
+
+/* The Host the browser asked for is this machine — an address, localhost or
+ * its own name — and not some domain a page made point here (DNS rebinding:
+ * a site that resolves its name to 127.0.0.1 would otherwise be "this page"
+ * to the Origin check, with the client address local). */
+static gboolean host_ok(SoupServerMessage *msg) {
+  const char *host = soup_message_headers_get_one(soup_server_message_get_request_headers(msg), "Host");
+  if (!host || !host[0]) { return TRUE; }                       /* HTTP/1.0, curl -0 */
+  char *h = g_strdup(host);
+  if (h[0] == '[') {                                            /* [::1]:8073        */
+    char *e = strchr(h, ']');
+    if (e) { *e = '\0'; memmove(h, h + 1, strlen(h)); }
+  } else {
+    char *c = strrchr(h, ':');
+    if (c && strchr(h, ':') == c) { *c = '\0'; }
+  }
+  const char *me = g_get_host_name();
+  gboolean ok = g_hostname_is_ip_address(h) || g_ascii_strcasecmp(h, "localhost") == 0 ||
+                g_ascii_strcasecmp(h, me) == 0;
+  static const char *const SFX[] = { ".local", ".lan", ".home", ".localdomain", ".home.arpa", NULL };
+  for (const char *const *x = SFX; !ok && *x; x++) {
+    char *full = g_strconcat(me, *x, NULL);
+    ok = g_ascii_strcasecmp(h, full) == 0;
+    g_free(full);
+  }
+  g_free(h);
+  return ok;
+}
+
+/* May this client manage the skimmer (Settings, Log, the config, POSTs)?
+ * Its address in settings_from, not through a proxy, and asking for this
+ * machine by an address or its name. */
 static gboolean client_allowed(SkimHdWeb *w, SoupServerMessage *msg) {
   GSocketAddress *sa = soup_server_message_get_remote_address(msg);
   GInetAddress *a = G_IS_INET_SOCKET_ADDRESS(sa)
                         ? g_inet_socket_address_get_address(G_INET_SOCKET_ADDRESS(sa))
                         : NULL;
-  return allowed(w->nets, a);
+  return allowed(w->nets, a) && !via_proxy(msg) && host_ok(msg);
+}
+
+/* What every answer carries: no sniffing, no framing (the settings page
+ * must not be clickjacked), nothing loaded from elsewhere. */
+static void harden(SoupServerMessage *msg) {
+  SoupMessageHeaders *h = soup_server_message_get_response_headers(msg);
+  soup_message_headers_replace(h, "X-Content-Type-Options", "nosniff");
+  soup_message_headers_replace(h, "X-Frame-Options", "DENY");
+  soup_message_headers_replace(h, "Referrer-Policy", "no-referrer");
+  soup_message_headers_replace(h, "Content-Security-Policy",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+      "img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self'; "
+      "frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
 }
 
 /* May this POST change the skimmer? The client's address must be in
  * settings_from, and a browser's Origin — when it sends one — this page. */
 static const char *post_refused(SkimHdWeb *w, SoupServerMessage *msg) {
   if (!client_allowed(w, msg)) {
-    return "settings are read-only from this address ([web] settings_from)";
+    return "settings are read-only from this address ([web] settings_from; not through a "
+           "proxy; the page asked for by this machine's address or name)";
   }
   SoupMessageHeaders *h = soup_server_message_get_request_headers(msg);
   const char *origin = soup_message_headers_get_one(h, "Origin");
   const char *host = soup_message_headers_get_one(h, "Host");
   if (origin) {
     char *want = host ? g_strconcat("http://", host, NULL) : NULL;
-    const gboolean same = want && g_ascii_strcasecmp(origin, want) == 0;
+    char *want_s = host ? g_strconcat("https://", host, NULL) : NULL;
+    const gboolean same = want && (g_ascii_strcasecmp(origin, want) == 0 ||
+                                   g_ascii_strcasecmp(origin, want_s) == 0);
     g_free(want);
+    g_free(want_s);
     if (!same) { return "a page from another origin may not change the settings"; }
   }
   return NULL;
@@ -130,8 +201,17 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
    * the 1024 fds ran out (~60 h of status polls). Close after every reply. */
   soup_message_headers_replace(soup_server_message_get_response_headers(msg),
                                "Connection", "close");
+  harden(msg);
+  const gboolean admin = client_allowed(w, msg);
 
   if (get) {
+    /* the config, the log and the LAN search (0.8 s on the main loop) are
+     * for those who may manage the skimmer only */
+    if (!admin && (strcmp(path, "/api/config") == 0 || strcmp(path, "/api/log") == 0 ||
+                   strcmp(path, "/api/skimmers") == 0)) {
+      reply_error(msg, SOUP_STATUS_FORBIDDEN, "only from an address that may change the settings");
+      return;
+    }
     SkimHdWebGet hook = strcmp(path, "/status.json") == 0 ? k->status
                       : strcmp(path, "/stats.json") == 0  ? k->stats
                       : strcmp(path, "/api/log") == 0     ? k->log
@@ -142,11 +222,11 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
     if (hook) {
       guint status = SOUP_STATUS_OK;
       const char *type = "application/json";
-      char *body = hook(query, client_allowed(w, msg), &status, &type, k->user);
+      char *body = hook(query, admin, &status, &type, k->user);
       reply(msg, status, type, body);
       return;
     }
-    if (!serve_static(msg, path)) { reply_error(msg, SOUP_STATUS_NOT_FOUND, "not found"); }
+    if (!serve_static(msg, path, admin)) { reply_error(msg, SOUP_STATUS_NOT_FOUND, "not found"); }
     return;
   }
   if (post) {
@@ -185,6 +265,17 @@ static void ws_waterfall(SoupServer *srv, SoupServerMessage *msg, const char *pa
                          SoupWebsocketConnection *conn, gpointer user) {
   (void)srv; (void)path;
   SkimHdWeb *w = user;
+  /* a page from elsewhere may not open it (read-only, but it costs CPU) */
+  SoupMessageHeaders *rh = soup_server_message_get_request_headers(msg);
+  const char *origin = soup_message_headers_get_one(rh, "Origin");
+  const char *host = soup_message_headers_get_one(rh, "Host");
+  if (origin && host) {
+    const char *o = strstr(origin, "://");
+    if (!o || g_ascii_strcasecmp(o + 3, host) != 0) {
+      soup_websocket_connection_close(conn, SOUP_WEBSOCKET_CLOSE_POLICY_VIOLATION, "another origin");
+      return;
+    }
+  }
   GSocketAddress *sa = soup_server_message_get_remote_address(msg);
   char *peer = G_IS_INET_SOCKET_ADDRESS(sa)
       ? g_inet_address_to_string(g_inet_socket_address_get_address(G_INET_SOCKET_ADDRESS(sa)))

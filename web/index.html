@@ -26,8 +26,8 @@
     <button data-tab="status" class="on">Status</button>
     <button data-tab="stats">Statistics</button>
     <button data-tab="waterfall">Waterfall</button>
-    <button data-tab="settings">Settings</button>
-    <button data-tab="log">Log</button>
+    <!--admin--><button data-tab="settings">Settings</button>
+    <button data-tab="log">Log</button><!--/admin-->
     <a class="navlink" href="https://github.com/ok1hra/skimmer-for-linux" target="_blank" rel="noopener"
        title="the project on GitHub: sources, releases, issues (a new tab)">Git ↗</a>
   </nav>
@@ -137,7 +137,7 @@
       only while this tab is open, and sent at the speed chosen</p>
   </section>
 
-  <section id="tab-settings" hidden>
+  <!--admin--><section id="tab-settings" hidden>
     <div id="set-lock" class="warnbox" hidden></div>
     <div id="set-error" class="warnbox" hidden></div>
     <form id="settings" autocomplete="off">
@@ -293,7 +293,7 @@
 
   <section id="tab-log" hidden>
     <pre id="log" class="log"></pre>
-  </section>
+  </section><!--/admin-->
 </main>
 
 <footer class="mut">

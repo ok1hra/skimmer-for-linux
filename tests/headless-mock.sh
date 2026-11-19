@@ -173,6 +173,9 @@ before=$(md5sum < "$T/headless.ini")
 code=$(curl -s -o "$T/r.json" -w '%{http_code}' --data-urlencode 'bands=20m=14045500 psk' "$U/api/config")
 [[ $code == 400 && $(md5sum < "$T/headless.ini") == "$before" ]] && grep -q psk "$T/r.json"
 check "settings: a bad band is refused (400, the reason, the file untouched)" $?
+rcode=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: evil.example:$HTTP" -H "Origin: http://evil.example:$HTTP" \
+        --data-urlencode 'feed.call=EVIL' "$U/api/config")
+[[ $rcode == 403 ]]; check "settings: a page under another name pointed here (DNS rebinding) may not post (403)" $?
 u0=$(started)
 code=$(curl -s -o "$T/r.json" -w '%{http_code}' -H "Origin: $U" \
        --data-urlencode $'bands=20m=14045500\n40m=7045500 cw:v2,rtty\n17m=18113500' "$U/api/config")
@@ -202,11 +205,17 @@ INVOCATION_ID=gate "$HL" --config "$T/ro.ini" > "$T/ro.log" 2>&1 &
 P2=$!
 for _ in $(seq 20); do curl -s -o /dev/null "http://127.0.0.1:$H2/status.json" && break; sleep 0.2; done
 code=$(curl -s -o "$T/r.json" -w '%{http_code}' -d 'feed.call=X' "http://127.0.0.1:$H2/api/config")
-may=$(curl -s "http://127.0.0.1:$H2/api/config" | python3 -c "import json,sys; print(json.load(sys.stdin)['may_change'])")
+gets=$(for e in api/config api/log api/skimmers; do curl -s -o /dev/null -w '%{http_code} ' "http://127.0.0.1:$H2/$e"; done)
+page=$(curl -s "http://127.0.0.1:$H2/")
+pub=$(curl -s "http://127.0.0.1:$H2/status.json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['host'] == '' and d['switches'] == {})")
 sup=$(curl -s "http://127.0.0.1:$H2/status.json" | python3 -c "import json,sys; print(json.load(sys.stdin)['supervisor'])")
 kill -TERM $P2; wait $P2 2>/dev/null
-[[ $code == 403 && $may == False ]] && grep -q settings_from "$T/r.json"
-check "settings: an address outside settings_from reads only (403, may_change false)" $?
+[[ $code == 403 ]] && grep -q settings_from "$T/r.json"
+check "settings: an address outside settings_from may not change them (403)" $?
+[[ $gets == "403 403 403 " ]]; check "… nor read the config, the log or the LAN search (403 403 403)" $?
+[[ $page != *tab-settings* && $page != *tab-log* && $page == *tab-waterfall* ]]
+check "… its page has no Settings and no Log, not even hidden" $?
+[[ $pub == True ]]; check "… its status.json without the radio's address and the switches" $?
 [[ $sup == systemd ]] && grep -q "service: running under systemd .*console table off" "$T/ro.log" &&
   ! grep -q "band  mode  centre kHz" "$T/ro.log"
 check "under systemd: supervisor \"systemd\", no console table" $?

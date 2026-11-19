@@ -966,13 +966,39 @@ static gboolean tick(gpointer data) {
 
 /* ---- web page (headless/web.h) --------------------------------------------------- */
 
+/* The status for everyone else (the page published on a public address):
+ * the same, less what tells about the machine and the LAN — addresses
+ * (the radio's, the peers', the workers'), file paths (with the user's
+ * name), the SKIM_* switches' values. */
+static char *status_public(const char *full) {
+  static const struct { const char *re, *to; } RULES[] = {
+    { "\"(host|addr|model|dir)\":\"(?:[^\"\\\\]|\\\\.)*\"", "\"\\1\":\"\"" },
+    { "\"switches\":\\{[^{}]*\\}", "\"switches\":{}" },
+    { "\\b(?:\\d{1,3}\\.){3}\\d{1,3}(?::\\d+)?\\b", "(address)" },
+    { "(?<![\\w.])/(?:home|root|var|tmp|etc|usr|srv|mnt|opt|run|media)/[^\"\\s,;)]*", "(path)" },
+  };
+  char *out = g_strdup(full);
+  for (guint i = 0; i < G_N_ELEMENTS(RULES); i++) {
+    GRegex *re = g_regex_new(RULES[i].re, G_REGEX_OPTIMIZE, 0, NULL);
+    char *next = re ? g_regex_replace(re, out, -1, 0, RULES[i].to, 0, NULL) : NULL;
+    if (re) { g_regex_unref(re); }
+    if (next) { g_free(out); out = next; }
+  }
+  return out;
+}
+
 static char *web_status(GHashTable *q, gboolean may, guint *st, const char **type,
                         gpointer user) {
-  (void)q; (void)may; (void)st; (void)type;
+  (void)q; (void)st; (void)type;
   Hd *h = user;
   g_mutex_lock(&h->snap_lock);
   char *body = g_strdup(h->snap_json ? h->snap_json : "{}");
   g_mutex_unlock(&h->snap_lock);
+  if (!may) {
+    char *pub = status_public(body);
+    g_free(body);
+    body = pub;
+  }
   return body;
 }
 
@@ -985,9 +1011,21 @@ static char *web_stats(GHashTable *q, gboolean may, guint *st, const char **type
   const char *ev = q ? g_hash_table_lookup(q, "end") : NULL;    /* unix s: a past window */
   gint64 end = g_get_real_time() / (60 * G_USEC_PER_SEC);
   if (ev) { end = MIN(end, (gint64)g_ascii_strtoll(ev, NULL, 10) / 60); }
-  return skim_stats_json(h->stats, end,
-                         hv ? (guint)g_ascii_strtoull(hv, NULL, 10) : 24,
-                         sv ? (guint)g_ascii_strtoull(sv, NULL, 10) : 0);
+  const guint hours = hv ? (guint)g_ascii_strtoull(hv, NULL, 10) : 24;
+  const guint step = sv ? (guint)g_ascii_strtoull(sv, NULL, 10) : 0;
+  /* the same question within 20 s gets the same answer: many viewers (or
+   * someone hammering a public page) cost one computation */
+  static char *c_body;
+  static gint64 c_end, c_at;
+  static guint c_hours, c_step;
+  const gint64 now = g_get_monotonic_time();
+  if (c_body && c_end == end && c_hours == hours && c_step == step && now - c_at < 20 * G_USEC_PER_SEC) {
+    return g_strdup(c_body);
+  }
+  g_free(c_body);
+  c_body = skim_stats_json(h->stats, end, hours, step);
+  c_end = end; c_hours = hours; c_step = step; c_at = now;
+  return g_strdup(c_body);
 }
 
 /* ---- settings (POST from settings_from only — web.c checks) ---------------------- */
