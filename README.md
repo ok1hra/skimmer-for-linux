@@ -1,14 +1,38 @@
-# Skimmer for Linux — headless multi-band skimmer
+# Skimmer for Linux — CW/RTTY skimmer for the Red Pitaya, with a web interface
 
 <img src="docs/cw-skimmer.jpg" alt="Skimmer for Linux" width="100%">
 
-*Based on the Linux skimmer with a GUI by Richard, OK1BR — TNX!*
+A CW and RTTY skimmer for Linux that runs as a server: it takes up to eight
+bands at once straight from a **Red Pitaya** SDR, decodes every signal on
+them, and puts the spots out on a **telnet feed** (DX cluster format) and to
+the **Reverse Beacon Network**. Everything is seen and set from a **web
+page** — no desktop, no Windows, no GPU. The aim is the performance of the
+legendary CW Skimmer Server by VE3NEA (TNX!).
 
-*Modified by Dan, OK1HRA, into a server application with a web interface that
-skims several bands at once (up to 8), CW and RTTY, from a Red Pitaya SDR —
-aiming for the performance of the legendary CW Skimmer Server by VE3NEA — TNX!
-It currently uses a conventional decoder, with no neural networks, to keep the
-hardware requirements low.*
+*Built on the foundations of the Linux skimmer by Richard, OK1BR (a GTK4
+desktop application, TCI client) — TNX! This fork by Dan, OK1HRA, has
+grown far from it:*
+
+- **Its own CW decoder, v3.1** — the classical decoder plus a weak-signal
+  path (carrier detector, matched filter, calibrated likelihoods) and a
+  call reader that confirms MASTER.SCP calls in the audio, with precision
+  rules against busts; tuned on live air against CW Skimmer Server. No
+  neural network, low hardware needs (DeepCW is an option).
+- **Red Pitaya direct** (HPSDR Protocol 1, Pavel Demin's
+  `sdr_receiver_hpsdr`): up to 8 receivers, 48/96/192 kHz, automatic
+  discovery, clock correction — no other program in between.
+- **RTTY beside CW** on the same bands (45.45 Bd).
+- **A web interface**: an azimuthal map and a DX cluster of the last half
+  hour, two years of statistics (spots, decoders, CPU and its temperature),
+  a live **waterfall** of any band, and all the settings — usable from
+  afar, with the settings locked to the machine itself.
+- **The feed**: RBN-grade call validation, a learned feed gate, a callsign
+  filter (IP-rotator's DX filter, and one that drops the busts of your own
+  call), an RBN Aggregator port, and a daily archive of every spot.
+- **Several PCs, one radio**: a hub passes bands to worker PCs and merges
+  other skimmers' feeds into its own.
+- **One file to run**: an AppImage for x86_64 Linux, and a systemd user
+  service in one command.
 
 ## Quick start guide
 
