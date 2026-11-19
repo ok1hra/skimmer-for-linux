@@ -53,11 +53,12 @@ function tile(k, v, unit = '') {
   return `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${v}${unit ? ` <small>${esc(unit)}</small>` : ''}</div></div>`;
 }
 
-// The bands as decoded: a band a worker decodes ("worker") is shown with
-// that worker's own numbers (its status comes with the hub's), or as waiting.
+// The bands as decoded, low band first (Settings may list them in any
+// order): a band a worker decodes ("worker") is shown with that worker's own
+// numbers (its status comes with the hub's), or as waiting.
 function bandsDecoded(d) {
   const workers = (d.hub && d.hub.workers) || [];
-  return d.bands.map((b) => {
+  return [...d.bands].sort((a, b) => a.centre_hz - b.centre_hz).map((b) => {
     if (!b.worker) return b;
     const w = workers.find((x) => x.name === b.worker);
     const wb = w && w.status && (w.status.bands || []).find((x) => x.band === b.band);
@@ -68,6 +69,16 @@ function bandsDecoded(d) {
              rtty: b.worker_rtty ? { ...empty, spots: b.remote_spots_rtty } : null };
   });
 }
+
+// The bands the map leaves out (the eye in the ladder), per browser.
+const mapHidden = new Set((() => {
+  try { const v = JSON.parse(localStorage.getItem('skimmer-map-hidden') || '[]'); return Array.isArray(v) ? v : []; }
+  catch (e) { return []; }
+})());
+const EYE_SVG = (cross) => '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" ' +
+  'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/>' +
+  `<circle cx="12" cy="12" r="3"/>${cross ? '<path d="M4 4l16 16"/>' : ''}</svg>`;
+const EYE_ON = EYE_SVG(false), EYE_OFF = EYE_SVG(true);
 
 // the CPU temperature's colour: fine, warm, hot
 const tempClass = (c) => (c >= 85 ? 'hot' : c >= 70 ? 'warm' : 'cool');
@@ -96,17 +107,24 @@ function renderStatus(d) {
   const decoded = bandsDecoded(d);
   const maxAct = Math.max(1, ...decoded.map((b) => Math.max(b.cw !== false ? b.active : 0, b.rtty ? b.rtty.active : 0)));
   const per = (band) => window.spots ? window.spots.list.filter((s) => s.band === band) : [];
+  const maxSpots = Math.max(1, ...decoded.map((b) => per(b.band).length));
   $('#ladder').innerHTML = decoded.map((b) => {
     const sp = per(b.band), cwOn = b.cw !== false, rt = b.rtty;
     const col = typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : '';   // the band's own colour
+    const i = (frac) => `<i style="width:${(100 * frac).toFixed(0)}%;${col ? `background:${col}` : ''}"></i>`;
     const bar = (on, act, dec, cls) => on
-      ? `<td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active"><i style="width:${(100 * act / maxAct).toFixed(0)}%;${col ? `background:${col}` : ''}"></i></td><td class="n">${fmt(act)}</td>`
+      ? `<td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active">${i(act / maxAct)}</td><td class="n">${fmt(act)}</td>`
       : '<td class="bar off"></td><td class="n mut">–</td>';
-    return `<tr><td class="b" style="color:${typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : ''}">${esc(b.band)}</td>` +
+    const off = mapHidden.has(b.band);
+    return `<tr${off ? ' class="off-map"' : ''}><td class="eye"><button type="button" data-band="${esc(b.band)}" ` +
+      `title="${off ? 'not on the map — click: show' : 'on the map — click: hide'} ${esc(b.band)}" ` +
+      `aria-pressed="${off ? 'false' : 'true'}">${off ? EYE_OFF : EYE_ON}</button></td>` +
+      `<td class="b" style="color:${col}">${esc(b.band)}</td>` +
       bar(cwOn, b.active, b.decoders, 'cw') + bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty') +
+      `<td class="bar spots" title="${fmt(sp.length)} spots in 30 min">${i(sp.length / maxSpots)}</td>` +
       `<td class="n">${fmt(sp.length)}</td><td class="last">${sp.length ? esc(sp[0].call) : ''}</td>` +
       `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : ''}</td></tr>`;
-  }).join('') + '<tr class="legend-row"><td></td><td colspan="2" class="mut">CW</td><td colspan="2" class="mut">RTTY</td><td class="mut n">spots</td><td colspan="2"></td></tr>';
+  }).join('') + '<tr class="legend-row"><td colspan="2" class="mut">map</td><td colspan="2" class="mut">CW</td><td colspan="2" class="mut">RTTY</td><td colspan="2" class="mut">spots</td><td colspan="2"></td></tr>';
   const sumDec = (f) => decoded.reduce((a, b) => a + (f(b) || 0), 0);
   const ro = (k, v) => `<span>${k} <b>${v}</b></span>`;
   // every number says over what: now, the last half hour, or since the start
@@ -174,13 +192,17 @@ function renderStatus(d) {
     `<dt>switches</dt><dd>${sw.length ? sw.map(([k, v]) => `${esc(k)}=${esc(v)}`).join('<br>') : 'none'}</dd>` +
     '</dl>';
   $('#updated').textContent = `updated ${d.time}`;
-  // the RBN upload on: this skimmer's spots as reversebeacon.net shows them
+  // under the map, the RBN on: this skimmer's spots as reversebeacon.net
+  // shows them — and plainly, when nothing takes them there
   const rl = $('#rbn-link');
   rl.hidden = !(d.rbn && d.call);
   if (!rl.hidden) {
     const url = `https://beta.reversebeacon.net/main.php?max_age=10,hours&rows=100&spotter_call=${encodeURIComponent(d.call)}&hide=distance_mi,time,speed,type`;
     const html = `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(d.call)} on the Reverse Beacon Network ↗</a>` +
-      ` <span class="mut">the last 10 hours of this skimmer's spots there${d.rbn.clients ? '' : ' · no Aggregator connected now'}</span>`;
+      ` <span class="mut">the last 10 hours of this skimmer's spots there</span>` +
+      (d.rbn.clients ? ''
+        : `<br><b class="bad">No spots go to the RBN now:</b> <span class="mut">nothing is connected to port ${esc(d.rbn.port)} — ` +
+          'the RBN takes spots only through the RBN Aggregator, connected to this port (Settings → RBN).</span>');
     if (rl.dataset.html !== html) { rl.dataset.html = html; rl.innerHTML = html; }
   }
 
@@ -323,12 +345,28 @@ placeDxc();
   });
 })();
 
+// What the DX cluster shows goes to the map, less the bands its eye in the
+// ladder hides (kept in the browser).
+const mapShown = { list: [], marked: null };
+function mapDraw() {
+  if (typeof SkMap === 'undefined') return;
+  SkMap.update(mapShown.list.filter((s) => !mapHidden.has(s.band)).map((s) => ({ ...s, hi: s.call === mapShown.marked })),
+               { locator: spots.locator, call: spots.call });
+}
+on('#ladder', 'click', (e) => {
+  const b = e.target.closest('button[data-band]');
+  if (!b) return;
+  const band = b.dataset.band;
+  if (mapHidden.has(band)) mapHidden.delete(band); else mapHidden.add(band);
+  try { localStorage.setItem('skimmer-map-hidden', JSON.stringify([...mapHidden])); } catch (err) { /* private window */ }
+  if (status) renderStatus(status);
+  mapDraw();
+});
 function renderSpots() {
   if (typeof SkMap === 'undefined' || typeof Dxc === 'undefined') return;
   if (!mapMounted) {
     SkMap.mount($('#skmap'));
-    Dxc.mount($('#dxc'), (shown, marked) =>
-      SkMap.update(shown.map((s) => ({ ...s, hi: s.call === marked })), { locator: spots.locator, call: spots.call }));
+    Dxc.mount($('#dxc'), (shown, marked) => { mapShown.list = shown; mapShown.marked = marked; mapDraw(); });
     mapMounted = true;
     SkMap.update([], { locator: spots.locator, call: spots.call });   // the centre before the rows
   }

@@ -187,13 +187,19 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .ladder { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
 .ladder td { padding: 5px 6px; border-bottom: 1px solid var(--ln); white-space: nowrap; }
 .ladder td.b { font-weight: 700; font-size: 17px; width: 56px; }
-.ladder td.bar { width: 26%; min-width: 70px; }
+.ladder td.bar { width: 20%; min-width: 56px; }
 .ladder td.bar i { display: block; height: 7px; background: var(--hot); min-width: 1px; }
 .ladder td.bar.rtty i { background: var(--warn); opacity: .6; }
-.ladder td.bar.cw, .ladder td.bar.rtty { background: linear-gradient(var(--deep), var(--deep)) center / 100% 7px no-repeat; }
+.ladder td.bar.spots i { opacity: .75; }
+.ladder td.bar.cw, .ladder td.bar.rtty, .ladder td.bar.spots { background: linear-gradient(var(--deep), var(--deep)) center / 100% 7px no-repeat; }
 .ladder td.n { text-align: right; color: var(--mut); font-size: 13px; width: 44px; }
 .ladder td.last { color: var(--hot); letter-spacing: .03em; }
 .ladder td.w { font-size: 12px; }
+.ladder td.eye { width: 24px; padding: 2px 0; }
+.ladder td.eye button { display: flex; padding: 2px; border: 0; background: transparent; color: var(--mut); cursor: pointer; }
+.ladder td.eye button:hover { color: var(--fg); }
+.ladder tr.off-map td.eye button { color: var(--faint); }
+.ladder tr.off-map td:not(.eye) { opacity: .4; }
 .ladder tr.legend-row td { border-bottom: 0; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; padding-top: 3px; }
 .readouts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 16px; color: var(--mut); font-size: 13px;
             letter-spacing: .06em; text-transform: uppercase; }
@@ -324,7 +330,7 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot { color: var(--bad); }
 #dxc.side { margin-top: 18px; }
 #dxc.side .dxc td { font-size: 15px; }
-.rbn-link { padding: 8px 18px 0; font-size: 13px; letter-spacing: .02em; }
+.rbn-link { padding: 8px 0 0; font-size: 13px; letter-spacing: .02em; line-height: 1.5; }
 .rbn-link a { color: var(--cq); text-decoration: none; font-weight: 700; }
 .rbn-link a:hover { text-decoration: underline; }
 .wf-auto { font: inherit; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; border: 0; border-bottom: 2px solid transparent;
