@@ -14,7 +14,8 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   /* callsign extraction */
   { "SKIM_CALL_DESPACE", B }, { "SKIM_CALL_EXCH", B }, { "SKIM_CALL_FUSED", B },
   { "SKIM_CALL_GLUE", B }, { "SKIM_CALL_TU", B }, { "SKIM_CALL_TU_STRICT", B },
-  { "SKIM_CALL_CQWORDS", B }, { "SKIM_DESPACE_DEBUG", D },
+  { "SKIM_CALL_CQWORDS", B }, { "SKIM_CALL_CQNAMED", B }, { "SKIM_CALL_NAMEEXCH", B },
+  { "SKIM_DESPACE_DEBUG", D },
   /* CW engines */
   { "SKIM_CW_ENGINE", B }, { "SKIM_CW_V1", B }, { "SKIM_CW_READER", B },
   { "SKIM_CW_READER_RAW", B }, { "SKIM_CW_DEBUG", D }, { "SKIM_CW_DUMP_RUNS", D },

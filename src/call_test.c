@@ -264,6 +264,43 @@ int main(void) {
     }
   }
 
+  /* -- the CQ window belongs to the call it names; name-and-number exchanges
+   *    (2026-11-19, CWT 2026-11-18: callers answering on a runner's
+   *    frequency were spotted there as calling) --------------------------- */
+  {
+    static const struct { const char *text, *call; gboolean calling, addressed; const char *what; }
+    cw[] = {
+      { "CQ CWT SP3FSM PA3AAV PA3AAV ", "PA3AAV", FALSE, FALSE,
+        "a caller right after the runner's CQ does not inherit it (PA3AAV)" },
+      { "CQ CWT SP3FSM SP3FSM ", "SP3FSM", TRUE, FALSE,
+        "the runner its window names stays calling (SP3FSM)" },
+      { "CQ TEST DL1AB DL1ABC DL1ABC ", "DL1ABC", TRUE, FALSE,
+        "the named call's longer reading keeps the window (DL1AB → DL1ABC)" },
+      { "CQ CWT KY4GS · K5QR K5QR AMANDA 32T8 ", "K5QR", FALSE, FALSE,
+        "a caller after the over break, garbled number: not calling (K5QR)" },
+      /* the runner's call lost: the window names nobody, the caller first */
+      { "CQ CWT · PA3AAV PA3AAV GE GERT 2624 ", "PA3AAV", FALSE, TRUE,
+        "<call> GE <name> <number> past the over break: worked (PA3AAV)" },
+      { "CQ CWT · W0RLD W0RLD BRUCE NC ", "W0RLD", FALSE, TRUE,
+        "<call> <name> <state> past the over break: worked (W0RLD)" },
+      { "CQ CWT · W0RLD W0RLD ", "W0RLD", TRUE, FALSE,
+        "… without the exchange it still counts as calling (W0RLD)" },
+      { "CQ DE DL1ABC DL1ABC NAME HANS ", "DL1ABC", TRUE, FALSE,
+        "a QSO's NAME HANS is no exchange — still calling (DL1ABC)" },
+    };
+    for (guint i = 0; i < G_N_ELEMENTS(cw); i++) {
+      SkimCallsignExtractor *x = skim_callsign_extractor_new();
+      char got[32];
+      gboolean cq = !cw[i].calling;
+      skim_callsign_extractor_feed(x, cw[i].text);
+      skim_callsign_extractor_best_ex(x, got, sizeof(got), &cq);
+      check(cw[i].what, strcmp(got, cw[i].call) == 0 && cq == cw[i].calling &&
+                        skim_callsign_extractor_addressed(x, cw[i].call) ==
+                            cw[i].addressed);
+      skim_callsign_extractor_free(x);
+    }
+  }
+
   /* -- degenerate fist: gaps around the markers collapse (2026-07-16) ---------- */
   {
     SkimCallsignExtractor *x = skim_callsign_extractor_new();

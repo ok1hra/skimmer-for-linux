@@ -529,6 +529,13 @@ struct _SkimCallsignExtractor {
   guint    cq_pairs;                           /* adjacent "C","Q" pairs seen */
   gboolean cq_half;                            /* last token was a lone "C"  */
   gboolean tu_win;                             /* the open window is a TU's  */
+  char     cq_named[CALL_MAX];                 /* SKIM_CALL_CQNAMED: the call
+                                                * the open window named first */
+  char     ex_call[CALL_MAX];                  /* SKIM_CALL_NAMEEXCH: the call
+                                                * a name/number may follow */
+  gint     ex_state;                           /* 0 idle, 1 after the call,
+                                                * 2 after the name          */
+  gboolean ex_greet;                           /* a GE/GM/GA/GN already eaten */
   char     tu_call[CALL_MAX];                  /* the call that TU blessed   */
   guint    tok_n;                              /* tokens processed (age clock)*/
   gint64   now_us;                             /* caller's clock (set_now)   */
@@ -591,6 +598,9 @@ void skim_callsign_extractor_reset(SkimCallsignExtractor *x) {
   x->held_d     = x->d_flush = FALSE;
   x->tu_win     = FALSE;
   x->tu_call[0] = '\0';
+  x->cq_named[0] = x->ex_call[0] = '\0';
+  x->ex_state   = 0;
+  x->ex_greet   = FALSE;
   g_string_set_size(x->over, 0);
   g_string_assign(x->over_toks, " ");
   x->tok_n      = 0;
@@ -693,6 +703,45 @@ static gboolean report_token(const char *s) {
     }
   }
   return FALSE;
+}
+
+/* SKIM_CALL_CQNAMED=1: a CQ window belongs to the call it names first.
+ * "CQ CWT SP3FSM PA3AAV" — the caller answers on the runner's frequency
+ * right after the CQ, the channel's text runs on, and PA3AAV fell inside
+ * the window as if it were calling there (live 2026-11-18, CWT: 87 % of
+ * the spots still off RBN's frequency sat on a runner's frequency). A
+ * different call later in the same window does not inherit it; the named
+ * call itself, its torn head or its longer reading, does. */
+#define CALL_CQNAMED_DEFAULT  1
+#define CALL_NAMEEXCH_DEFAULT 1
+
+static gboolean cqnamed_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_CQNAMED");
+    on = e && e[0] ? strcmp(e, "0") != 0 : CALL_CQNAMED_DEFAULT;
+  }
+  return on;
+}
+
+/* SKIM_CALL_NAMEEXCH=1: "<call> [GE] <name> <number>" — a name-and-number
+ * exchange (CWT, SST, FOC) carries no RST, so report_token never marked
+ * the call as worked. A call followed, with no over break, by a name and
+ * then a number (or a short state / country) is being worked: ADDRESSED —
+ * which (cand_calling) withdraws a CQ window that reached it across an
+ * over break: "CQ CWT · PA3AAV GE GERT 2624", the runner's own call not
+ * read, the caller the first call in its window. */
+static gboolean nameexch_on(void) {
+  static gint on = -1;
+  if (G_UNLIKELY(on < 0)) {
+    const char *e = g_getenv("SKIM_CALL_NAMEEXCH");
+    on = e && e[0] ? strcmp(e, "0") != 0 : CALL_NAMEEXCH_DEFAULT;
+  }
+  return on;
+}
+
+static gboolean same_station(const char *a, const char *b) {
+  return strcmp(a, b) == 0 || g_str_has_prefix(a, b) || g_str_has_prefix(b, a);
 }
 
 /* Tokens that never take part in a join: prosigns and stock CW abbreviations
@@ -1111,7 +1160,37 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     x->prev_gap = x->prev_tok[0] != '\0';
     /* a CQ window that runs past an over break may be someone else's */
     if (x->cq_recent <= CQ_WINDOW) { x->cq_broken = TRUE; }
+    x->ex_state = 0;
     return;
+  }
+  if (nameexch_on() && x->ex_state > 0) {
+    gsize n = strlen(tok), alpha = 0, digit = 0;
+    for (gsize i = 0; i < n; i++) {
+      if (g_ascii_isalpha(tok[i])) { alpha++; }
+      else if (g_ascii_isdigit(tok[i])) { digit++; }
+    }
+    const gboolean word = alpha == n && !join_stop_word(tok) &&
+                          strcmp(tok, "CQ") != 0 && strcmp(tok, "DE") != 0 &&
+                          strcmp(tok, "CWT") != 0 && strcmp(tok, "DX") != 0;
+    const gboolean greet = strcmp(tok, "GE") == 0 || strcmp(tok, "GM") == 0 ||
+                           strcmp(tok, "GA") == 0 || strcmp(tok, "GN") == 0;
+    if (x->ex_state == 1 && greet && !x->ex_greet) {
+      x->ex_greet = TRUE;                      /* "PA3AAV GE GERT 2624"     */
+    } else if (x->ex_state == 1 && word && n >= 2 && n <= 10 && !call_ok(tok)) {
+      x->ex_state = 2;                         /* the name                  */
+    } else if (x->ex_state == 2 &&
+               ((digit == n && n >= 1 && n <= 5) ||
+                (word && n >= 2 && n <= 3))) {
+      for (guint i = 0; i < x->ncand; i++) {   /* the number / state: worked */
+        if (strcmp(x->cand[i].call, x->ex_call) == 0) {
+          x->cand[i].addressed = TRUE;
+          break;
+        }
+      }
+      x->ex_state = 0;
+    } else {
+      x->ex_state = 0;
+    }
   }
   /* A report right after a call, no over break between: that call is being
    * ADDRESSED — the runner answering a caller (cand_calling). */
@@ -1149,7 +1228,10 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     x->cq_half = TRUE;
   } else if (x->cq_half && tok[0] == 'Q' && tok[1] == '\0') {
     x->cq_half = FALSE;
-    if (++x->cq_pairs >= 2) { x->cq_recent = 0; }
+    if (++x->cq_pairs >= 2) {
+      x->cq_recent = 0;
+      x->cq_named[0] = '\0';
+    }
   } else {
     x->cq_half  = FALSE;
     x->cq_pairs = 0;
@@ -1200,6 +1282,7 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
     /* the window ages before the next token reads it: CQ_WINDOW - 1
      * leaves exactly that one token inside */
     x->cq_recent = is_tu && tu_mode == 2 ? CQ_WINDOW - 1 : 0;
+    x->cq_named[0] = '\0';
     x->tu_win = is_tu && tu_mode == 2;
     x->cq_broken = FALSE;
     if (strcmp(tok, "TU") != 0 && x->prev_tok[0]) {
@@ -1243,7 +1326,14 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
 
   const gboolean valid = call_ok(tok) && strlen(tok) < CALL_MAX;
   const gboolean de_now = x->de_pending > 0;
-  const gboolean cq_now = x->cq_recent <= CQ_WINDOW;
+  gboolean cq_now = x->cq_recent <= CQ_WINDOW;
+  if (cq_now && valid && cqnamed_on()) {
+    if (!x->cq_named[0]) {
+      g_strlcpy(x->cq_named, tok, sizeof(x->cq_named));
+    } else if (!same_station(tok, x->cq_named)) {
+      cq_now = FALSE;                          /* an answer, not the caller */
+    }
+  }
   if (x->tu_win) {
     if (cq_now && valid) { g_strlcpy(x->tu_call, tok, sizeof(x->tu_call)); }
     if (!cq_now) { x->tu_win = FALSE; }
@@ -1330,6 +1420,11 @@ static void take_token(SkimCallsignExtractor *x, const char *tok) {
 
   cand_add(x, tok, 1, de_now, cq_now);
   x->de_pending = 0;
+  if (nameexch_on()) {
+    g_strlcpy(x->ex_call, tok, sizeof(x->ex_call));
+    x->ex_state = 1;
+    x->ex_greet = FALSE;
+  }
 }
 
 /* SKIM_CALL_DESPACE=1 — the torn run, the fused run's mirror. A fist whose
