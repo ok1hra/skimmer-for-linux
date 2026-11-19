@@ -66,12 +66,15 @@ function bandsDecoded(d) {
   });
 }
 
+// the CPU temperature's colour: fine, warm, hot
+const tempClass = (c) => (c >= 85 ? 'hot' : c >= 70 ? 'warm' : 'cool');
+
 let status = null;
 function renderStatus(d) {
   status = d;
   $('#call').textContent = d.call || 'SKIMMER';
   $('#version').textContent = d.locator || (d.version ? `v${d.version}` : '');
-  $('#hdr-stats').innerHTML = `<span>CPU <b>${fmt(d.cpu_pct)}%</b>${d.cpu_temp_c != null ? ` <b>${fmt(d.cpu_temp_c)} °C</b>` : ''}</span> <span>lost <b>${fmt(d.lost_pct, 3)}%</b></span> ` +
+  $('#hdr-stats').innerHTML = `<span>CPU <b>${fmt(d.cpu_pct)}%</b>${d.cpu_temp_c != null ? ` <b class="temp ${tempClass(d.cpu_temp_c)}" title="the hottest CPU sensor: under 70 °C fine, 70–85 °C warm, 85 °C and more hot">${fmt(d.cpu_temp_c)} °C</b>` : ''}</span> <span>lost <b>${fmt(d.lost_pct, 3)}%</b></span> ` +
     `<span>feed <b>${d.feed_port ? fmt(d.feed_clients) : 'off'}</b></span> <span>${esc(d.engine || '')}</span> <span>v${esc(d.version || '')}</span>`;
   document.title = `${d.call ? `${d.call} · ` : ''}Skimmer for Linux`;
   const dot = $('#radio .dot');
