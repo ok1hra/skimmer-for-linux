@@ -79,7 +79,7 @@ const SkMap = (() => {
 
   // ---- state ----------------------------------------------------------------------------
   const store = (() => { try { return JSON.parse(localStorage.getItem('skmap') || '{}'); } catch (e) { return {}; } })();
-  // every layer on by default; a viewer's choices are kept (v2: dB joined them, on)
+  // every layer on by default; a viewer's choices are kept (v2: SNR joined them, on)
   if (store.v !== 2) { store.db = true; store.v = 2; }
   const opt = { grayline: true, borders: true, prefixes: true, lines: true, calls: true, db: true, zoom: 0, ...store };
   delete opt.center;                               // a typed-in centre (before v0.8.4) is gone
@@ -230,7 +230,7 @@ const SkMap = (() => {
     return ZOOM_STEPS.find((z) => z >= want) || 20000;
   }
   // ---- the labels -------------------------------------------------------------------------
-  // Each call (with dB its SNR) beside its dot when there is room; else the
+  // Each call (with SNR its SNR in dB; SNR without calls: the number alone) beside its dot when there is room; else the
   // nearest free place on rings around the dot (8 directions, out to ~80 px),
   // tied to the dot by an elbowed leader. Free = clear of the labels placed
   // and of the other dots, inside the map. The marked station goes first,
@@ -241,12 +241,14 @@ const SkMap = (() => {
     const hit = (b, own) => boxes.some((o) => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]) ||
       marks.some((m) => m !== own && b[0] < m.x + m.r && b[2] > m.x - m.r && b[1] < m.y + m.r && b[3] > m.y - m.r) ||
       [[b[0], b[1]], [b[2], b[1]], [b[0], b[3]], [b[2], b[3]]].some(([px, py]) => Math.hypot(px - view.cx, py - view.cy) > view.rr - 2);
-    const todo = [...marks].filter((m) => opt.calls || m.s.hi).sort((a, b) => (b.s.hi - a.s.hi) || (b.s.snr - a.s.snr));
+    const todo = [...marks].filter((m) => opt.calls || opt.db || m.s.hi).sort((a, b) => (b.s.hi - a.s.hi) || (b.s.snr - a.s.snr));
     for (const m of todo) {
       const s = m.s, col = s.hi ? '#fff' : bandColor(s.band);
+      const call = opt.calls || s.hi ? s.call : '';           // SNR alone: the number only
       g.font = '700 11px RC, sans-serif';
-      const wc = g.measureText(s.call).width;
-      const db = opt.db && s.snr != null ? ` ${Math.round(s.snr)}` : '';
+      const wc = call ? g.measureText(call).width : 0;
+      const db = opt.db && s.snr != null ? `${call ? ' ' : ''}${Math.round(s.snr)}` : '';
+      if (!call && !db) continue;
       g.font = '400 11px RC, sans-serif';
       const w = wc + (db ? g.measureText(db).width : 0) + 2, h = 13;
       let spot = null;
@@ -272,7 +274,7 @@ const SkMap = (() => {
         g.beginPath(); g.moveTo(m.x, m.y); g.lineTo(kx, ey); g.lineTo(ex, ey); g.stroke();
       }
       g.fillStyle = col; g.textBaseline = 'middle';
-      g.font = '700 11px RC, sans-serif'; g.fillText(s.call, spot.b[0] + 1, spot.ay);
+      if (call) { g.font = '700 11px RC, sans-serif'; g.fillText(call, spot.b[0] + 1, spot.ay); }
       if (db) { g.font = '400 11px RC, sans-serif'; g.fillText(db, spot.b[0] + 1 + wc, spot.ay); }
       g.textBaseline = 'alphabetic';
       g.globalAlpha = 1;
@@ -330,7 +332,7 @@ const SkMap = (() => {
       view.marks.push({ x, y, r, s });
       g.globalAlpha = 1;
     }
-    if (opt.calls || spots.some((s) => s.hi)) placeLabels(g, view.marks, boxes);
+    if (opt.calls || opt.db || spots.some((s) => s.hi)) placeLabels(g, view.marks, boxes);
     g.restore();
     g.fillStyle = '#39d98a'; g.beginPath(); g.arc(view.cx, view.cy, 4, 0, 7); g.fill();
     el.querySelector('[data-k=zoom]').textContent = opt.zoom ? `${fmtKm(zoom)}` : `auto · ${fmtKm(zoom)}`;
@@ -365,7 +367,7 @@ const SkMap = (() => {
           <button type="button" data-o="prefixes">DXCC</button>
           <button type="button" data-o="lines">lines</button>
           <button type="button" data-o="calls">calls</button>
-          <button type="button" data-o="db" title="the spot's SNR in dB behind its call">dB</button>
+          <button type="button" data-o="db" title="the spot's SNR in dB — behind its call, or alone without calls">SNR</button>
         </span>
         <span class="mut" data-k="zoom"></span>
       </div>
