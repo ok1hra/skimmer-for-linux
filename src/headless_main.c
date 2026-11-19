@@ -60,6 +60,7 @@
 #include <unistd.h>
 
 #include "headless/archive.h"
+#include "headless/spotlog.h"
 #include "headless/config.h"
 #include "headless/deepcw_model.h"
 #include "headless/hub.h"
@@ -170,8 +171,8 @@ typedef struct {
   SkimHdPeers    *peers;       /* [peers]: other skimmers' feeds, aggregated  */
   SkimHdDiscovery *disco;      /* answers the LAN's "who is there"            */
   SkimHdHub      *hub;         /* [hub]: bands passed to workers              */
-  GMutex          spot_lock;   /* the spots the feed sent (the page's map, DXC) */
-  GQueue          spot_log;    /* Spot*, oldest first, SPOT_KEEP_S at most    */
+  SkimHdSpotLog  *spot_log;    /* the spots the feed sent (the page's map, DXC) */
+  char           *spot_path;   /* … kept there across a restart               */
   SkimScpUpdater *scp;
   GMainLoop      *loop;
   gint64          t_start;
@@ -787,6 +788,8 @@ static gint float_cmp(gconstpointer a, gconstpointer b) {
   return x < y ? -1 : x > y;
 }
 
+static void spot_log_save(Hd *h);
+
 /* Close the minute h->minute: what each band did in it, and the machine. */
 static void stats_minute(Hd *h) {
   SkimStatsMinute m;
@@ -879,6 +882,7 @@ static void stats_minute(Hd *h) {
   /* the first minute after a start is partial and its deltas start from
    * zero — not a record */
   if (h->minutes++) { skim_stats_put(h->stats, h->minute, &m); }
+  spot_log_save(h);                            /* a crash loses a minute at most */
   if (h->minutes % 5 == 0) {
     GError *err = NULL;
     if (!skim_stats_save(h->stats, &err)) {
@@ -1568,17 +1572,9 @@ static void hub_spot(const char *worker, const char *call, const char *mode, dou
 #define SPOT_KEEP_S  (2 * 3600)
 #define SPOT_MAX     20000
 
-typedef struct {
-  gint64 t;                    /* unix s                                      */
-  char   call[16], mode[8];
-  double freq_hz, snr_db, speed;
-  char   src[64];              /* "" = this skimmer; a worker or a peer        */
-} Spot;
-
-
 static void spot_log_add(Hd *h, const char *call, const char *mode, double freq_hz,
                          double snr_db, double speed) {
-  Spot *s = g_new0(Spot, 1);
+  SkimHdSpot sp = { 0 }, *s = &sp;
   s->t = g_get_real_time() / G_USEC_PER_SEC;
   g_strlcpy(s->call, call, sizeof(s->call));
   g_strlcpy(s->mode, mode, sizeof(s->mode));
@@ -1598,14 +1594,40 @@ static void spot_log_add(Hd *h, const char *call, const char *mode, double freq_
     }
     skim_hd_archive_add(h->archive, s->t, call, mode, freq_hz, snr_db, speed, band, s->src);
   }
-  g_mutex_lock(&h->spot_lock);
-  g_queue_push_tail(&h->spot_log, s);
-  Spot *o;
-  while ((o = g_queue_peek_head(&h->spot_log)) &&
-         (s->t - o->t > SPOT_KEEP_S || h->spot_log.length > SPOT_MAX)) {
-    g_free(g_queue_pop_head(&h->spot_log));
+  skim_hd_spotlog_add(h->spot_log, s);
+}
+
+/* Save the spot log (each minute and at the end): a restart keeps the page. */
+static void spot_log_save(Hd *h) {
+  GError *err = NULL;
+  if (h->spot_log && h->spot_path && !skim_hd_spotlog_save(h->spot_log, h->spot_path, &err)) {
+    g_warning("spots: %s", err->message);
+    g_clear_error(&err);
   }
-  g_mutex_unlock(&h->spot_lock);
+}
+
+typedef struct { Hd *h; GString *o; gint64 now, minutes; guint n; } SpotsJson;
+
+static gboolean spot_json(const SkimHdSpot *s, gpointer user) {
+  SpotsJson *j = user;
+  Hd *h = j->h;
+  GString *o = j->o;
+  if (j->now - s->t > j->minutes * 60) { return FALSE; }
+  const char *band = "";
+  for (guint i = 0; i < h->nb; i++) {
+    if (fabs(s->freq_hz - h->band[i].centre_hz) <= h->cfg.rate / 2.0) { band = h->band[i].name; break; }
+  }
+  char khz[G_ASCII_DTOSTR_BUF_SIZE];
+  g_ascii_formatd(khz, sizeof(khz), "%.1f", s->freq_hz / 1000.0);
+  g_string_append_printf(o, "%s{\"t\":%" G_GINT64_FORMAT ",\"call\":\"", j->n++ ? "," : "", s->t);
+  skim_json_append(o, s->call);
+  g_string_append_printf(o, "\",\"mode\":\"%s\",\"khz\":%s,\"snr\":%.0f,\"speed\":%.0f,\"band\":\"",
+                         s->mode, khz, s->snr_db, s->speed);
+  skim_json_append(o, band);
+  g_string_append(o, "\",\"src\":\"");
+  skim_json_append(o, s->src);
+  g_string_append(o, "\"}");
+  return TRUE;
 }
 
 /* GET /api/spots?minutes=N: newest first, each with its band. */
@@ -1621,27 +1643,8 @@ static char *web_spots(GHashTable *q, gboolean may, guint *st, const char **type
   skim_json_append(o, h->cfg.feed_call ? h->cfg.feed_call : "");
   /* the locator whole for a manager, its square for everyone else */
   g_string_append_printf(o, "\",\"locator\":\"%.*s\",\"spots\":[", may ? 6 : 4, h->cfg.locator);
-  g_mutex_lock(&h->spot_lock);
-  guint n = 0;
-  for (GList *l = h->spot_log.tail; l; l = l->prev) {
-    const Spot *s = l->data;
-    if (now - s->t > minutes * 60) { break; }
-    const char *band = "";
-    for (guint i = 0; i < h->nb; i++) {
-      if (fabs(s->freq_hz - h->band[i].centre_hz) <= h->cfg.rate / 2.0) { band = h->band[i].name; break; }
-    }
-    char khz[G_ASCII_DTOSTR_BUF_SIZE];
-    g_ascii_formatd(khz, sizeof(khz), "%.1f", s->freq_hz / 1000.0);
-    g_string_append_printf(o, "%s{\"t\":%" G_GINT64_FORMAT ",\"call\":\"", n++ ? "," : "", s->t);
-    skim_json_append(o, s->call);
-    g_string_append_printf(o, "\",\"mode\":\"%s\",\"khz\":%s,\"snr\":%.0f,\"speed\":%.0f,\"band\":\"",
-                           s->mode, khz, s->snr_db, s->speed);
-    skim_json_append(o, band);
-    g_string_append(o, "\",\"src\":\"");
-    skim_json_append(o, s->src);
-    g_string_append(o, "\"}");
-  }
-  g_mutex_unlock(&h->spot_lock);
+  SpotsJson j = { h, o, now, minutes, 0 };
+  skim_hd_spotlog_foreach_newest(h->spot_log, spot_json, &j);
   g_string_append(o, "]}");
   return g_string_free(o, FALSE);
 }
@@ -2038,8 +2041,13 @@ int main(int argc, char **argv) {
   }
 
   /* every spot that goes out, whatever made it: the page's map and DXC */
-  g_mutex_init(&h->spot_lock);
-  g_queue_init(&h->spot_log);
+  h->spot_log = skim_hd_spotlog_new(SPOT_KEEP_S, SPOT_MAX);
+  h->spot_path = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", "spots.tsv", NULL);
+  {
+    const guint n = skim_hd_spotlog_load(h->spot_log, h->spot_path,
+                                         g_get_real_time() / G_USEC_PER_SEC);
+    if (n) { g_message("spots: %u of the last %d h back from %s", n, SPOT_KEEP_S / 3600, h->spot_path); }
+  }
   if (h->feed || h->rbn) { skim_rbn_feed_set_tap(h->feed ? h->feed : h->rbn, feed_tap, h); }
 
   if (c->peers && c->peers[0]) {
@@ -2285,6 +2293,9 @@ int main(int argc, char **argv) {
   g_clear_pointer(&h->peers, skim_hd_peers_free);  /* they spot into the feed */
   g_clear_pointer(&h->feed, skim_rbn_feed_free);   /* it relays to rbn: first */
   g_clear_pointer(&h->rbn, skim_rbn_feed_free);
+  spot_log_save(h);                  /* nothing spots any more: the page's spots kept */
+  g_clear_pointer(&h->spot_log, skim_hd_spotlog_free);
+  g_clear_pointer(&h->spot_path, g_free);
   g_clear_pointer(&h->scp, skim_scp_updater_free);
   if (h->exit_code == EXIT_RESTART && g_strcmp0(g_getenv("SKIM_SUPERVISED"), "1") != 0) {
     g_message("restart: starting again");

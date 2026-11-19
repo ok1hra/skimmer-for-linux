@@ -325,6 +325,14 @@ skimmer_archive_test = executable('skimmer-archive-test',
 )
 test('archive', skimmer_archive_test, timeout : 30)
 
+# The page's spots across a restart: saved, read back, old ones and bad lines left out.
+skimmer_spotlog_test = executable('skimmer-spotlog-test',
+  ['src/spotlog_test.c', 'src/headless/spotlog.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+)
+test('spotlog', skimmer_spotlog_test, timeout : 30)
+
 # The waterfall's DSP: a tone lands in its pixel at its level, zoom, edges.
 skimmer_waterfall_test = executable('skimmer-waterfall-test',
   ['src/waterfall_test.c', 'src/headless/waterfall.c'],
@@ -365,6 +373,7 @@ headless_sources = files(
   'src/headless/hub.c',             # the hub: bands passed to workers on other PCs
   'src/headless/logring.c',         # the last log lines (/api/log)
   'src/headless/archive.c',         # [archive]: every spot, a gzip file a day
+  'src/headless/spotlog.c',         # the page's spots, kept across a restart
   'src/headless/peers.c',           # [peers]: other skimmers' feeds, aggregated
   'src/headless/record.c',          # [record]: a band's IQ to disk
   'src/headless/scp_update.c',      # MASTER.SCP updater
