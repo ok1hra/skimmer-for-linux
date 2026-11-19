@@ -14,11 +14,13 @@
   /* charts: band colours (follow the band, never its rank), ramps, recessive ink */
   --s1: #4f8dff; --s2: #ff7a2f; --s3: #27c26b; --s4: #ffb21f;
   --s5: #e24fd8; --s6: #18b0c9; --s7: #8e6cff; --s8: #ff5d5d;
-  /* the two modes, the same everywhere on Statistics: CW blue, RTTY teal
-     (the active-decoders ramps end in them) */
-  --cw: #4f9bff; --rtty: #1fc8c4;
-  --seq-lo: #10203a; --seq-hi: var(--cw);
-  --seq2-lo: #0b2628; --seq2-hi: var(--rtty);
+  /* the two modes, the same everywhere on Statistics: CW a pastel blue,
+     RTTY a pastel peach — apart at a glance; in the active-decoders heatmap
+     the same two hues with the saturation taken down, so the CW and RTTY
+     strips of a band do not shout against each other */
+  --cw: #8fb9ff; --rtty: #ffb88a;
+  --seq-lo: #121b28; --seq-hi: #9fb4d2;
+  --seq2-lo: #1b1813; --seq2-hi: #d2bba4;
   --grid: #1a283a; --axis: #2f4560; --tick: #6a7d96;
 }
 * { box-sizing: border-box; }
