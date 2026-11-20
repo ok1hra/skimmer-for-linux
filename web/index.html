@@ -177,6 +177,12 @@
           <label class="check"><input type="checkbox" name="decode.log"> raw decode logs per band</label>
           <label class="check"><input type="checkbox" name="decode.suppress_cw_on_rtty"> CW off the RTTY stations
             (bands with CW and RTTY)</label>
+          <label class="check"><input type="checkbox" name="decode.rtty_adaptive"> adaptive RTTY — the RTTY
+            decoders only while a contest runs</label>
+          <label>RTTY spots <input name="decode.rtty_adaptive_spots" inputmode="numeric" placeholder="100">
+            <small>more than this, all bands together …</small></label>
+          <label>in minutes <input name="decode.rtty_adaptive_minutes" inputmode="numeric" placeholder="2">
+            <small>… in the first minutes of each full hour (and of a start) keeps RTTY on until the next hour; fewer turn it off till then</small></label>
           <div id="dcw" class="dcw"></div>
         </fieldset>
         <fieldset>

@@ -112,7 +112,9 @@ function renderStatus(d) {
     const sp = per(b.band), cwOn = b.cw !== false, rt = b.rtty;
     const col = typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : '';   // the band's own colour
     const i = (frac) => `<i style="width:${(100 * frac).toFixed(0)}%;${col ? `background:${col}` : ''}"></i>`;
-    const bar = (on, act, dec, cls) => on
+    const bar = (on, act, dec, cls, paused) => paused
+      ? `<td class="bar off" title="${esc(pausedText(paused))}"></td><td class="n mut" title="${esc(pausedText(paused))}">off</td>`
+      : on
       ? `<td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active">${i(act / maxAct)}</td><td class="n">${fmt(act)}</td>`
       : '<td class="bar off"></td><td class="n mut">–</td>';
     const off = mapHidden.has(b.band);
@@ -120,7 +122,8 @@ function renderStatus(d) {
       `title="${off ? 'not on the map — click: show' : 'on the map — click: hide'} ${esc(b.band)}" ` +
       `aria-pressed="${off ? 'false' : 'true'}">${off ? EYE_OFF : EYE_ON}</button></td>` +
       `<td class="b" style="color:${col}">${esc(b.band)}</td>` +
-      bar(cwOn, b.active, b.decoders, 'cw') + bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty') +
+      bar(cwOn, b.active, b.decoders, 'cw', cwOn && b.paused) +
+      bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty', rt && rt.paused) +
       `<td class="bar spots" title="${fmt(sp.length)} spots in 30 min">${i(sp.length / maxSpots)}</td>` +
       `<td class="n">${fmt(sp.length)}</td><td class="last">${sp.length ? esc(sp[0].call) : ''}</td>` +
       `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : ''}</td></tr>`;
@@ -139,6 +142,7 @@ function renderStatus(d) {
     ...(d.feed_port ? [ro('telnet now', `${fmt(d.feed_clients)} client${d.feed_clients === 1 ? '' : 's'} on :${d.feed_port}`)] : []),
     ro('packets', `${fmt(d.packets_per_s)}/s`),
     ro('MASTER.SCP', `${fmt(d.dict_calls)} calls`),
+    ...(d.rtty_adaptive ? [ro('adaptive RTTY', rttyAdaptiveText(d.rtty_adaptive))] : []),
     ...(d.rbn ? [ro('RBN now', `${fmt(d.rbn.clients)} on :${d.rbn.port} · ${fmt(d.rbn.lines)} sent since the start${d.rbn.delay_s ? ` · held ${d.rbn.delay_s} s` : ''}`)] : []),
   ].join('');
 
@@ -150,6 +154,8 @@ function renderStatus(d) {
       `${b.waiting ? 'waiting for' : `${esc(b.engine)} · on`} <b>${esc(b.worker)}</b></td>`
     : b.mode === 'CW' && b.engine_wanted === 'deepcw' && b.engine !== 'deepcw'
     ? `<td class="bad" title="DeepCW not available: ${esc(dc.fallback || '')}">${esc(b.engine)} · DeepCW not available</td>`
+    : b.paused
+    ? `<td class="mut" title="${esc(pausedText(b.paused))}">${esc(b.engine || d.engine)} · paused</td>`
     : `<td>${esc(b.engine || d.engine)}</td>`;
   $('#bands').innerHTML = head + modes.map((b) =>
     `<tr><td>${esc(b.band)}</td><td class="l">${b.mode}</td><td>${fmtKhz(b.centre_hz / 1000, 1)}</td>${engineCell(b)}` +
@@ -411,6 +417,20 @@ function renderDecTile(d) {
     `<div class="l">${label}<small>${list.length ? `${fmt(n(list, (b) => f(b).active))} active · ${list.length} band${list.length === 1 ? '' : 's'}` : 'no band'}</small></div></div>`;
   el.innerHTML = '<div class="k">CW + RTTY decoders <small>running now</small></div><div class="parts">' +
     part('CW', 'cw', cw, (b) => b) + part('RTTY', 'rtty', rt, (b) => b.rtty) + '</div>';
+}
+// why the skimmer paused a band's mode on its own (status.json "paused")
+function pausedText(why) {
+  return why === 'rtty-adaptive' ? 'off: adaptive RTTY found no contest — on again for a test at the next full hour'
+    : why === 'thermal' ? 'off: the CPU runs hot — the band with the fewest spots is paused until it cools'
+    : `paused (${why})`;
+}
+// adaptive RTTY's state, one line: testing, on (a contest) or off till the hour
+function rttyAdaptiveText(a) {
+  const hm = (t) => { const x = new Date(t * 1000); return `${String(x.getUTCHours()).padStart(2, '0')}:${String(x.getUTCMinutes()).padStart(2, '0')}`; };
+  const last = a.last == null ? '' : ` · last test ${fmt(a.last)} spots`;
+  return a.state === 'test' ? `testing till ${hm(a.until)} UTC: ${fmt(a.count)} of > ${fmt(a.spots)} spots`
+    : a.state === 'on' ? `on — a contest${last} · next test ${hm(a.until)} UTC`
+    : `off — no contest${last} (> ${fmt(a.spots)} in ${a.minutes} min) · next test ${hm(a.until)} UTC`;
 }
 function sum(a) { return a.reduce((x, v) => x + (v || 0), 0); }
 // CW and RTTY keep one colour each across Statistics (CSS --cw, --rtty)

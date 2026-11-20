@@ -342,6 +342,14 @@ skimmer_waterfall_test = executable('skimmer-waterfall-test',
 )
 test('waterfall', skimmer_waterfall_test, timeout : 30)
 
+# The governor: adaptive RTTY's hourly test (and the thermal guard).
+skimmer_governor_test = executable('skimmer-governor-test',
+  ['src/governor_test.c', 'src/headless/governor.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+)
+test('governor', skimmer_governor_test, timeout : 30)
+
 # Golden gate: real-air IQ + decode-tap slices through the whole engine with
 # no SKIM_* switches — every output byte-identical to tests/golden/
 # expected.sha256. Inputs live outside git (tests/golden/README.md); without
@@ -370,6 +378,7 @@ headless_sources = files(
   'src/headless/config.c',          # headless.ini, parsed and checked
   'src/headless/deepcw_model.c',    # the DeepCW model: check, fetch
   'src/headless/discovery.c',       # instances finding each other on the LAN
+  'src/headless/governor.c',        # adaptive RTTY, the thermal guard
   'src/headless/hub.c',             # the hub: bands passed to workers on other PCs
   'src/headless/logring.c',         # the last log lines (/api/log)
   'src/headless/archive.c',         # [archive]: every spot, a gzip file a day

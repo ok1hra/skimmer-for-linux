@@ -44,6 +44,11 @@ static const char DEFAULT_CONFIG[] =
   "# on a band that decodes RTTY too, keep its CW decoders off the RTTY stations\n"
   "# it copies (an FSK tone reads as junk CW); off until measured live\n"
   "#suppress_cw_on_rtty=false\n"
+  "# rtty_adaptive=true: the RTTY decoders run only while there is a contest —\n"
+  "# on at each full hour (and at start); if all bands together spot no more\n"
+  "# than rtty_adaptive_spots RTTY spots in the first rtty_adaptive_minutes,\n"
+  "# they stay off until the next full hour\n"
+  "#rtty_adaptive=false\n#rtty_adaptive_spots=100\n#rtty_adaptive_minutes=2\n"
   "\n[feed]\n# telnet spot feed (validated CQ spots only); port 0 = off.\n"
   "# call = YOUR callsign: the feed stays OFF until it is set.\n"
   "call=\nport=7300\n"
@@ -231,6 +236,28 @@ static gboolean opt_bool(GKeyFile *kf, const char *group, const char *key, gbool
   return TRUE;
 }
 
+/* A number key: dflt when absent or blank, an error outside lo–hi or when it
+ * is no number (whole: no fraction allowed). */
+static gboolean opt_num(GKeyFile *kf, const char *group, const char *key, double dflt, double lo,
+                        double hi, gboolean whole, double *out, const char *path, GError **error) {
+  *out = dflt;
+  char *v = g_key_file_get_value(kf, group, key, NULL);
+  if (!v || !g_strstrip(v)[0]) {
+    g_free(v);
+    return TRUE;
+  }
+  char *end = NULL;
+  const double x = g_ascii_strtod(v, &end);
+  const gboolean ok = end != v && !*end && x >= lo && x <= hi && (!whole || x == (double)(gint64)x);
+  g_free(v);
+  if (!ok) {
+    return bad(error, path, whole ? "[%s] %s: a whole number, %g to %g" : "[%s] %s: %g to %g",
+               group, key, lo, hi);
+  }
+  *out = x;
+  return TRUE;
+}
+
 static gboolean engine_of(const char *s, SkimCwEngine *out) {
   if (g_strcmp0(s, "v3") == 0 || g_strcmp0(s, "v3.1") == 0) { *out = SKIM_CW_ENGINE_V3; return TRUE; }
   if (g_strcmp0(s, "v2") == 0) { *out = SKIM_CW_ENGINE_V2; return TRUE; }
@@ -405,6 +432,16 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   if (!opt_bool(kf, "decode", "suppress_cw_on_rtty", FALSE, &h->suppress_cw_on_rtty, path,
                 error)) {
     return FALSE;
+  }
+  {
+    double sp, mi;
+    if (!opt_bool(kf, "decode", "rtty_adaptive", FALSE, &h->rtty_adaptive, path, error) ||
+        !opt_num(kf, "decode", "rtty_adaptive_spots", 100, 0, 100000, TRUE, &sp, path, error) ||
+        !opt_num(kf, "decode", "rtty_adaptive_minutes", 2, 1, 30, TRUE, &mi, path, error)) {
+      return FALSE;
+    }
+    h->rtty_adaptive_spots = (guint)sp;
+    h->rtty_adaptive_minutes = (guint)mi;
   }
 
   h->feed_call = g_key_file_get_string(kf, "feed", "call", NULL);
@@ -732,7 +769,8 @@ gboolean skim_hd_config_load(SkimHdConfig *cfg, const char *path, GError **error
 const char *const SKIM_HD_EDITABLE[] = {
   "radio.type", "radio.host", "radio.rate", "radio.clock_ppm",
   "bands",
-  "decode.engine", "decode.log", "decode.suppress_cw_on_rtty",
+  "decode.engine", "decode.log", "decode.suppress_cw_on_rtty", "decode.rtty_adaptive",
+  "decode.rtty_adaptive_spots", "decode.rtty_adaptive_minutes",
   "feed.call", "feed.port", "feed.rtty",
   "rbn.enabled", "rbn.port", "rbn.delay_s",
   "peers.hosts", "hub.name", "hub.port", "station.locator",

@@ -65,6 +65,7 @@
 #include "headless/deepcw_model.h"
 #include "headless/hub.h"
 #include "headless/discovery.h"
+#include "headless/governor.h"
 #include "headless/json.h"
 #include "headless/logring.h"
 #include "headless/peers.h"
@@ -122,6 +123,7 @@ typedef struct {
   GArray       *snr;           /* SNR of the minute's feed lines (float)      */
   /* main loop: the cumulative counters at the last minute's end */
   guint64       spots_prev, folded_prev, below_prev;
+  volatile gint paused;        /* governor.h: no IQ pushed while set          */
 } Dec;
 
 typedef struct {
@@ -187,6 +189,7 @@ typedef struct {
   guint           ticks;
 
   SkimStats *stats;            /* the 7-day history (stats.h)                 */
+  SkimHdGovernor *gov;         /* adaptive RTTY: what pauses on its own       */
   SkimHdArchive *archive;      /* [archive]: every spot, a file a day; NULL   */
   SkimHdWaterfall *wf;         /* the page's waterfall (idle while unwatched) */
   char      *archive_err;      /* the last flush error logged (no repeats)    */
@@ -346,7 +349,25 @@ static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double cent
     return;
   }
   for (guint k = 0; k < M_N; k++) {
-    if (b->dec[k].p) { skim_pipeline_push(b->dec[k].p, iq, n, rate, centre); }
+    if (b->dec[k].p && !g_atomic_int_get(&b->dec[k].paused)) {
+      skim_pipeline_push(b->dec[k].p, iq, n, rate, centre);
+    }
+  }
+}
+
+/* Why the governor pauses mode k of band i now (NULL: it runs). */
+static const char *paused_why(const Hd *h, guint i, guint k) {
+  (void)i;
+  if (k == M_RTTY && h->gov && !skim_hd_governor_rtty_on(h->gov)) { return "rtty-adaptive"; }
+  return NULL;
+}
+
+/* The pipelines' paused flags as the governor has them now. */
+static void pause_apply(Hd *h) {
+  for (guint i = 0; i < h->nb; i++) {
+    for (guint k = 0; k < M_N; k++) {
+      if (h->band[i].dec[k].p) { g_atomic_int_set(&h->band[i].dec[k].paused, paused_why(h, i, k) != NULL); }
+    }
   }
 }
 
@@ -490,13 +511,17 @@ static SkimPipeline *feed_pipeline(const Hd *h) {
   return h->cfg.feed_rtty && h->nb ? h->band[0].dec[M_RTTY].p : NULL;
 }
 
+static void json_opt_str(GString *o, const char *v);
+
 /* One mode of a band as JSON fields (no braces): what decodes it, its
  * counters and its newest stations. A mode not decoded gives zeros. */
-static void dec_json(GString *json, Dec *d, gint64 now) {
+static void dec_json(GString *json, Dec *d, const char *paused, gint64 now) {
   BandStat s;
   band_stat(d, &s);
+  g_string_append(json, "\"paused\":");
+  json_opt_str(json, paused);
   g_string_append_printf(json,
-      "\"engine\":\"%s\",\"decoders\":%u,\"active\":%u,\"stations\":%u,"
+      ",\"engine\":\"%s\",\"decoders\":%u,\"active\":%u,\"stations\":%u,"
       "\"spots\":%" G_GUINT64_FORMAT ",\"drops\":%" G_GUINT64_FORMAT ",\"recent\":[",
       d->p ? skim_pipeline_cw_engine_name(d->p) : "", s.channels, s.active, s.stations,
       s.spots, s.drops);
@@ -659,7 +684,7 @@ static void status_build(Hd *h, gboolean print) {
       "\"feed_gate\":%s,\"switches\":%s,\"supervisor\":%s,"
       "\"rbn\":%s,\"peers\":%s,\"external_dups\":%" G_GUINT64_FORMAT ","
       "\"suppress_cw_on_rtty\":%s,\"feed_port\":%d,\"feed_rtty\":%s,\"feed_clients\":%u,\"feed_lines\":%" G_GUINT64_FORMAT ","
-      "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT ",\"bands\":[",
+      "\"dict_calls\":%u,\"uptime_s\":%" G_GINT64_FORMAT,
       SKIMMER_VERSION, h->started_us, clock, jstate, src->streaming ? "true" : "false", jhost, jcall, h->cfg.locator, src->ppm, h->cfg.rate, lost_pct,
       h->pps, h->cpu_pct, h->cpu_mode_pct[M_CW], h->cpu_mode_pct[M_RTTY], temp, engine, pol_score,
       pol_hear, pol_settle, pol_nd, pol_fresh,
@@ -667,6 +692,8 @@ static void status_build(Hd *h, gboolean print) {
       h->cfg.suppress_cw_on_rtty ? "true" : "false",
       h->feed ? h->cfg.feed_port : 0, h->cfg.feed_rtty ? "true" : "false", fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
+  if (h->gov) { skim_hd_governor_json(h->gov, json); }   /* "rtty_adaptive" */
+  g_string_append(json, ",\"bands\":[");
   g_free(jstate);
   g_free(jcall);
   g_free(jgate);
@@ -723,11 +750,11 @@ static void status_build(Hd *h, gboolean print) {
                            b->dec[M_CW].p ? engine_key(h->cfg.band[i].cw_engine) : "",
                            b->dec[M_CW].p ? skim_pipeline_rtty_suppressed(b->dec[M_CW].p) : 0);
     g_free(jname);
-    dec_json(json, &b->dec[M_CW], now);
+    dec_json(json, &b->dec[M_CW], b->dec[M_CW].p ? paused_why(h, i, M_CW) : NULL, now);
     g_string_append(json, ",\"rtty\":");
     if (b->dec[M_RTTY].p) {
       g_string_append_c(json, '{');
-      dec_json(json, &b->dec[M_RTTY], now);
+      dec_json(json, &b->dec[M_RTTY], paused_why(h, i, M_RTTY), now);
       /* the pairs it copies now (published for the band's CW) */
       g_string_append_printf(json, ",\"pairs\":%u}",
                              b->pairs ? skim_rtty_pairs_count(b->pairs, now) : 0);
@@ -794,6 +821,7 @@ static void spot_log_save(Hd *h);
 static void stats_minute(Hd *h) {
   SkimStatsMinute m;
   memset(&m, 0, sizeof(m));
+  guint rtty_spots = 0;                        /* the minute's, every band here */
   for (guint b = 0; b < SKIM_STATS_BANDS; b++) {
     for (guint k = 0; k < SKIM_STATS_MODES; k++) {
       for (guint j = 0; j < SKIM_SM_N; j++) { m.band[b][k][j] = NAN; }
@@ -820,6 +848,7 @@ static void stats_minute(Hd *h) {
       skim_pipeline_feed_gate_stats(b->p, NULL, &gspots, &below);
       float *v = m.band[i][k];
       v[SKIM_SM_SPOTS] = (float)(bs.spots - b->spots_prev);
+      if (k == M_RTTY) { rtty_spots += (guint)v[SKIM_SM_SPOTS]; }
       v[SKIM_SM_FOLDED] = (float)(folded - b->folded_prev);
       v[SKIM_SM_GATE_BELOW] = (float)(below - b->below_prev);
       v[SKIM_SM_ACTIVE] = (float)bs.active;
@@ -835,8 +864,14 @@ static void stats_minute(Hd *h) {
         g_array_set_size(b->snr, 0);
       }
       g_mutex_unlock(&b->lock);
+      /* paused the minute through (the governor changes only on a minute's
+       * edge): not decoded — a gap in the history, not a quiet minute */
+      if (g_atomic_int_get(&b->paused)) {
+        for (guint j = 0; j < SKIM_SM_N; j++) { v[j] = NAN; }
+      }
     }
   }
+  if (h->gov && skim_hd_governor_minute(h->gov, h->minute, rtty_spots)) { pause_apply(h); }
   const SkimIqSourceStatus *src = &h->src_st;
   const guint64 frames = h->nb ? h->band[0].frames : 0;
   const guint64 df = frames - h->min_frames_prev, dl = src->lost_frames - h->min_lost_prev;
@@ -2198,6 +2233,23 @@ int main(int argc, char **argv) {
             "2 years)", stats_path);
   g_free(stats_path);
 
+  {
+    const SkimHdGovernorConfig gc = {
+      .rtty_adaptive = c->rtty_adaptive,
+      .rtty_spots = c->rtty_adaptive_spots,
+      .rtty_minutes = c->rtty_adaptive_minutes,
+    };
+    gboolean any_rtty = FALSE;
+    for (guint i = 0; i < h->nb; i++) { any_rtty |= h->band[i].dec[M_RTTY].p != NULL; }
+    if (c->rtty_adaptive && !any_rtty) {
+      g_message("rtty: adaptive — no band decodes RTTY here, nothing to switch");
+    }
+    if (any_rtty || !c->rtty_adaptive) {
+      h->gov = skim_hd_governor_new(&gc, g_get_real_time() / (60 * G_USEC_PER_SEC));
+    }
+    pause_apply(h);
+  }
+
   SkimHdWeb *web = NULL;
   if (h->http_port > 0) {
     double centres[SKIM_HD_MAX_BANDS];
@@ -2287,6 +2339,7 @@ int main(int argc, char **argv) {
     skim_rec_free(h->band[i].rec);
   }
   g_clear_pointer(&h->stats, skim_stats_free);  /* saves                       */
+  g_clear_pointer(&h->gov, skim_hd_governor_free);
   g_clear_pointer(&h->archive, skim_hd_archive_free);   /* flushes             */
   g_clear_pointer(&h->archive_err, g_free);
   g_clear_pointer(&h->temp_paths, g_ptr_array_unref);

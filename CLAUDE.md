@@ -196,6 +196,12 @@ here; what was done and why is in git.
   fused/torn run reading, TU blesses the next call only, min_score 0.90,
   unknown calls held 60 s, fresh 120 s, fold 600 s; edge model / Rayleigh
   fade off. Numbers, bench and rejected tries: `docs/LIVE-AIR.md`.
+- **Adaptive RTTY** (`[decode] rtty_adaptive`, default off;
+  `src/headless/governor.c`): the RTTY decoders are on at each full UTC
+  hour and at start for `rtty_adaptive_minutes` (2); more than
+  `rtty_adaptive_spots` (100) RTTY spots on all bands keeps them on, else
+  off till the next hour. A paused mode gets no IQ (`Dec.paused` in
+  `rx_iq_cb`; its engine thread idles) and is NaN in the stats.
 - Opt-in and without a live verdict: the tone splitter (`SKIM_TONE_SPLIT=1`)
   and the narrow focus slot (`SKIM_TONE_FOCUS=1`, implies the splitter).
 

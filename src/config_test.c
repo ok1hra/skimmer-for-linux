@@ -246,6 +246,21 @@ int main(void) {
           parse(&c, "[bands]\n20m=14045500 cw,rtty\n[decode]\nsuppress_cw_on_rtty=true\n", NULL) &&
           c.suppress_cw_on_rtty);
     skim_hd_config_clear(&c);
+    check("[decode] adaptive RTTY off by default: 100 spots in 2 min",
+          parse(&c, "[bands]\n20m=14045500 cw,rtty\n[decode]\nrtty_adaptive_spots=\n", NULL) &&
+          !c.rtty_adaptive && c.rtty_adaptive_spots == 100 && c.rtty_adaptive_minutes == 2);
+    skim_hd_config_clear(&c);
+    check("[decode] rtty_adaptive=true, 50 spots in 3 min",
+          parse(&c, "[bands]\n20m=14045500 cw,rtty\n[decode]\nrtty_adaptive=true\n"
+                    "rtty_adaptive_spots=50\nrtty_adaptive_minutes=3\n", NULL) &&
+          c.rtty_adaptive && c.rtty_adaptive_spots == 50 && c.rtty_adaptive_minutes == 3);
+    skim_hd_config_clear(&c);
+    check("[decode] rtty_adaptive_minutes refused out of 1–30, spots not whole",
+          !parse(&c, "[bands]\n20m=14045500\n[decode]\nrtty_adaptive_minutes=0\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[decode]\nrtty_adaptive_minutes=31\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[decode]\nrtty_adaptive_spots=2.5\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[decode]\nrtty_adaptive_spots=many\n", NULL));
+    skim_hd_config_clear(&c);
     check("[peers] two feeds, one with its port",
           parse(&c, "[bands]\n20m=14045500\n[peers]\nhosts=192.168.1.30, pc2:7302\n", NULL) &&
           g_strv_length(c.peers) == 2 && strcmp(c.peers[1], "pc2:7302") == 0);

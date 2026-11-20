@@ -17,7 +17,11 @@
  *            with [decode] engine; off = the band is kept, not received;
  *            @name = received here, decoded by the worker "name" (hub.h)
  *   [decode] engine=v3|v2|deepcw (the bands that name none), log=true|false,
- *            suppress_cw_on_rtty (default false: rtty_pairs.h)
+ *            suppress_cw_on_rtty (default false: rtty_pairs.h),
+ *            rtty_adaptive (default false), rtty_adaptive_spots (100),
+ *            rtty_adaptive_minutes (2): the RTTY decoders on at each full
+ *            hour and at start, off again until the next full hour when all
+ *            bands spot no more than that in the first minutes (governor.h)
  *   [feed]   call, port (0 = off), min_score, min_hearings, settle_s,
  *            settle_nodict_s, fresh_s, fold_s, learn, gate, gate_mode,
  *            rtty (RTTY spots on the feed too; default true)
@@ -107,6 +111,9 @@ typedef struct {
   SkimCwEngine     engine;            /* default for bands that name none    */
   gboolean         decode_log;
   gboolean         suppress_cw_on_rtty; /* CW off the RTTY pairs copied     */
+  gboolean         rtty_adaptive;     /* RTTY only while a contest runs      */
+  guint            rtty_adaptive_spots;   /* … more spots than this …        */
+  guint            rtty_adaptive_minutes; /* … in this many minutes an hour  */
   /* [feed] — 0 = the pipeline's default, < 0 = off, as SkimPipelineConfig */
   char            *feed_call;
   int              feed_port;
