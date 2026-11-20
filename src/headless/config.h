@@ -46,6 +46,10 @@
  *   [archive] dir — every spot the feed sends, a gzip file a UTC day
  *            (<dir>/YYYYMMDD-spots.gz, headless/archive.h); empty = off;
  *            ~/ is the home, a relative path lies next to this file
+ *   [thermal] enabled (default false), limit_c (40–110 °C; empty = the CPU
+ *            sensor's critical temperature − 15 °C, else 80), average_min
+ *            (5), restore_margin_c (3): the thermal guard (governor.h) —
+ *            the band with the fewest spots paused while the CPU runs hot
  *   [filter] call — only the calls that match go anywhere (empty = all):
  *            part of a call, any case; regex=true: a regular expression
  *            (PCRE, any case). Dropped where they are decoded — no station,
@@ -151,6 +155,11 @@ typedef struct {
   gint64           rec_at_us;         /* real time to start, 0 = at once     */
   /* [archive] */
   char            *archive_dir;       /* absolute; NULL = off                */
+  /* [thermal] (governor.h) */
+  gboolean         thermal;
+  double           thermal_limit_c;   /* 0 = the sensor's critical − 15 °C   */
+  guint            thermal_average_min;
+  double           thermal_margin_c;
   /* [filter] */
   char            *filter_call;       /* as written; NULL = no filter        */
   gboolean         filter_regex;

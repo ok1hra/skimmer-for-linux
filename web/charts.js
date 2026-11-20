@@ -403,6 +403,7 @@ const Charts = (() => {
     const span = opts.minSpan || 20;
     let lo = v.length ? Math.floor(Math.min(...v) / 10) * 10 : 0;
     let hi = v.length ? Math.ceil(Math.max(...v) / 10) * 10 : span;
+    if (opts.mark) { lo = Math.min(lo, Math.floor(opts.mark.value / 10) * 10); hi = Math.max(hi, Math.ceil(opts.mark.value / 10) * 10); }
     if (hi - lo < span) { const c = (hi + lo) / 2; lo = Math.floor((c - span / 2) / 10) * 10; hi = lo + span; }
     const m = { l: ML, r: MR, t: 6, b: 22 };
     const pw = W - m.l - m.r, ph = H - m.t - m.b, n = x.t.length;
@@ -420,6 +421,12 @@ const Charts = (() => {
     for (let i = 0; i < n; i += every) {
       const t = el('text', { x: px(i), y: H - 6, 'text-anchor': 'middle', 'font-size': 11, fill: css('--tick') }, svg);
       t.textContent = timeLabel(x.t[i], x.spanH);
+    }
+    if (opts.mark) {                               // a level to compare with: dashed
+      const my = Math.round(py(opts.mark.value)) + 0.5;
+      el('line', { x1: m.l, x2: W - m.r, y1: my, y2: my, stroke: css('--bad'), 'stroke-width': 1,
+                   'stroke-dasharray': '5 4', 'shape-rendering': 'crispEdges' }, svg);
+      el('title', {}, svg).textContent = opts.mark.label;
     }
     let d = '', pen = false;
     values.forEach((y, i) => {

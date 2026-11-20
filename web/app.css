@@ -151,6 +151,7 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .legend i { width: 10px; height: 10px; display: inline-block; }
 .legend i.ramp { width: 46px; }
 .legend i.line { width: 14px; height: 0; border-top: 2px solid var(--fg); opacity: .75; }
+.legend i.line.dash { border-top: 2px dashed var(--bad); opacity: 1; }
 .timebar { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
 .timebar .t-track { flex: 1 1 320px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .timebar input[type=range] { display: none; }        /* the frame in the history is the control */

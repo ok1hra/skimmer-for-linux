@@ -202,6 +202,14 @@ here; what was done and why is in git.
   `rtty_adaptive_spots` (100) RTTY spots on all bands keeps them on, else
   off till the next hour. A paused mode gets no IQ (`Dec.paused` in
   `rx_iq_cb`; its engine thread idles) and is NaN in the stats.
+- **The thermal guard** (`[thermal] enabled`, default off; `governor.c`):
+  the 5-min mean of the hottest CPU sensor over `limit_c` (empty = the
+  sensor's crit − 15 °C, 85 on coretemp; else 80) for 5 min pauses the
+  local band with the fewest spots in 30 min (CW + RTTY), 10 min later the
+  next; one always stays. The drop each pause brought (10 min after) is
+  its hysteresis: it comes back (LIFO) once the mean holds ≤ limit −
+  max(drop, 5) − `restore_margin_c` (3) for 20 min. hra2 (2026-11-20):
+  mean ~78 °C, minute peaks up to 100 — so the mean, never the peak.
 - Opt-in and without a live verdict: the tone splitter (`SKIM_TONE_SPLIT=1`)
   and the narrow focus slot (`SKIM_TONE_FOCUS=1`, implies the splitter).
 

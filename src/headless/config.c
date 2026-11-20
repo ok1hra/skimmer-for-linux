@@ -97,6 +97,14 @@ static const char DEFAULT_CONFIG[] =
   "\n[web]\n# who may change the settings from the web page (addresses or\n"
   "# networks, comma separated); everyone else sees them read-only\n"
   "settings_from=127.0.0.1,::1\n"
+  "\n[thermal]\n# the thermal guard: while the hottest CPU sensor, averaged over\n"
+  "# average_min minutes, stays over limit_c for 5 minutes, the band with the\n"
+  "# fewest spots in the last 30 minutes is paused (CW and RTTY); 10 minutes\n"
+  "# later the next, if it is still hot (one band always stays). A band comes\n"
+  "# back once the mean has stayed under limit_c by what pausing it saved (5 C\n"
+  "# at least) plus restore_margin_c for 20 minutes. limit_c empty = the\n"
+  "# sensor's critical temperature - 15 C (85 C on most Intel CPUs), else 80\n"
+  "enabled=false\nlimit_c=\n#average_min=5\n#restore_margin_c=3\n"
   "\n[archive]\n# every spot the feed sends, kept in this directory: a gzip file a UTC\n"
   "# day, YYYYMMDD-spots.gz (zcat reads it), a tab-separated line a spot;\n"
   "# empty = off\ndir=\n"
@@ -632,6 +640,21 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     g_free(dv);
   }
 
+  {
+    /* [thermal]: limit_c blank = 0, the start takes the sensor's critical
+     * temperature − 15 °C (80 °C without one) */
+    double lim, avg;
+    if (!opt_bool(kf, "thermal", "enabled", FALSE, &h->thermal, path, error) ||
+        !opt_num(kf, "thermal", "limit_c", 0, 40, 110, FALSE, &lim, path, error) ||
+        !opt_num(kf, "thermal", "average_min", 5, 1, 30, TRUE, &avg, path, error) ||
+        !opt_num(kf, "thermal", "restore_margin_c", 3, 0, 20, FALSE, &h->thermal_margin_c, path,
+                 error)) {
+      return FALSE;
+    }
+    h->thermal_limit_c = lim;
+    h->thermal_average_min = (guint)avg;
+  }
+
   h->console_s = given(kf, "status", "console_s", NULL)
                      ? g_key_file_get_integer(kf, "status", "console_s", NULL) : -1;
   h->http_port = given(kf, "status", "http_port", NULL)
@@ -776,7 +799,8 @@ const char *const SKIM_HD_EDITABLE[] = {
   "peers.hosts", "hub.name", "hub.port", "station.locator",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
-  "archive.dir", "filter.call", "filter.regex", "filter.mycall", "filter.mycall_diff",
+  "archive.dir", "thermal.enabled", "thermal.limit_c", "thermal.average_min",
+  "thermal.restore_margin_c", "filter.call", "filter.regex", "filter.mycall", "filter.mycall_diff",
   NULL,
 };
 

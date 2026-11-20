@@ -357,7 +357,7 @@ static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double cent
 
 /* Why the governor pauses mode k of band i now (NULL: it runs). */
 static const char *paused_why(const Hd *h, guint i, guint k) {
-  (void)i;
+  if (h->gov && skim_hd_governor_band_shed(h->gov, i)) { return "thermal"; }
   if (k == M_RTTY && h->gov && !skim_hd_governor_rtty_on(h->gov)) { return "rtty-adaptive"; }
   return NULL;
 }
@@ -432,6 +432,52 @@ static GPtrArray *temp_sensors(void) {
   }
   if (d) { g_dir_close(d); }
   return out;
+}
+
+static double read_milli_c(const char *path) {
+  char *t = NULL;
+  double v = NAN;
+  if (g_file_get_contents(path, &t, NULL, NULL)) {
+    char *end = NULL;
+    const double x = g_ascii_strtod(t, &end) / 1000.0;
+    if (end != t && x > 0 && x < 200) { v = x; }
+  }
+  g_free(t);
+  return v;
+}
+
+/* The lowest critical temperature of those sensors, °C (NAN: none says):
+ * a hwmon input's tempN_crit, a thermal zone's "critical" trip point. */
+static double cpu_crit_c(const GPtrArray *paths) {
+  double crit = NAN;
+  for (guint i = 0; paths && i < paths->len; i++) {
+    const char *p = paths->pdata[i];
+    if (g_str_has_suffix(p, "_input")) {
+      char *c = g_strndup(p, strlen(p) - 6);
+      char *cp = g_strconcat(c, "_crit", NULL);
+      const double v = read_milli_c(cp);
+      if (!isnan(v) && !(v >= crit)) { crit = v; }
+      g_free(cp);
+      g_free(c);
+      continue;
+    }
+    char *dir = g_path_get_dirname(p);                 /* a thermal zone       */
+    for (int k = 0; k < 16; k++) {
+      char *tp = g_strdup_printf("%s/trip_point_%d_type", dir, k), *type = NULL;
+      const gboolean got = g_file_get_contents(tp, &type, NULL, NULL);
+      if (got && strcmp(g_strstrip(type), "critical") == 0) {
+        char *vp = g_strdup_printf("%s/trip_point_%d_temp", dir, k);
+        const double v = read_milli_c(vp);
+        if (!isnan(v) && !(v >= crit)) { crit = v; }
+        g_free(vp);
+      }
+      g_free(type);
+      g_free(tp);
+      if (!got) { break; }
+    }
+    g_free(dir);
+  }
+  return crit;
 }
 
 /* The hottest of them now, °C (NAN: none, or none readable). */
@@ -822,6 +868,7 @@ static void stats_minute(Hd *h) {
   SkimStatsMinute m;
   memset(&m, 0, sizeof(m));
   guint rtty_spots = 0;                        /* the minute's, every band here */
+  guint band_spots[SKIM_HD_MAX_BANDS] = { 0 };  /* … each band's, CW + RTTY      */
   for (guint b = 0; b < SKIM_STATS_BANDS; b++) {
     for (guint k = 0; k < SKIM_STATS_MODES; k++) {
       for (guint j = 0; j < SKIM_SM_N; j++) { m.band[b][k][j] = NAN; }
@@ -849,6 +896,7 @@ static void stats_minute(Hd *h) {
       float *v = m.band[i][k];
       v[SKIM_SM_SPOTS] = (float)(bs.spots - b->spots_prev);
       if (k == M_RTTY) { rtty_spots += (guint)v[SKIM_SM_SPOTS]; }
+      band_spots[i] += (guint)v[SKIM_SM_SPOTS];
       v[SKIM_SM_FOLDED] = (float)(folded - b->folded_prev);
       v[SKIM_SM_GATE_BELOW] = (float)(below - b->below_prev);
       v[SKIM_SM_ACTIVE] = (float)bs.active;
@@ -864,14 +912,15 @@ static void stats_minute(Hd *h) {
         g_array_set_size(b->snr, 0);
       }
       g_mutex_unlock(&b->lock);
-      /* paused the minute through (the governor changes only on a minute's
-       * edge): not decoded — a gap in the history, not a quiet minute */
+      /* paused at the minute's end (adaptive RTTY changes only on a
+       * minute's edge, the thermal guard any second): not decoded — a gap
+       * in the history, not a quiet minute */
       if (g_atomic_int_get(&b->paused)) {
         for (guint j = 0; j < SKIM_SM_N; j++) { v[j] = NAN; }
       }
     }
   }
-  if (h->gov && skim_hd_governor_minute(h->gov, h->minute, rtty_spots)) { pause_apply(h); }
+  if (h->gov && skim_hd_governor_minute(h->gov, h->minute, rtty_spots, band_spots)) { pause_apply(h); }
   const SkimIqSourceStatus *src = &h->src_st;
   const guint64 frames = h->nb ? h->band[0].frames : 0;
   const guint64 df = frames - h->min_frames_prev, dl = src->lost_frames - h->min_lost_prev;
@@ -972,6 +1021,9 @@ static gboolean tick(gpointer data) {
   h->cpu_prev_us = now;
   h->temp_c = cpu_temp_c(h->temp_paths);              /* and the minute's peak */
   if (!isnan(h->temp_c) && !(h->temp_c <= h->temp_peak)) { h->temp_peak = (float)h->temp_c; }
+  if (h->gov && skim_hd_governor_temp(h->gov, g_get_real_time() / G_USEC_PER_SEC, h->temp_c)) {
+    pause_apply(h);                                    /* the thermal guard     */
+  }
 
   const gint64 minute = g_get_real_time() / (60 * G_USEC_PER_SEC);
   if (minute != h->minute) {
@@ -2234,19 +2286,38 @@ int main(int argc, char **argv) {
   g_free(stats_path);
 
   {
-    const SkimHdGovernorConfig gc = {
-      .rtty_adaptive = c->rtty_adaptive,
-      .rtty_spots = c->rtty_adaptive_spots,
-      .rtty_minutes = c->rtty_adaptive_minutes,
-    };
     gboolean any_rtty = FALSE;
     for (guint i = 0; i < h->nb; i++) { any_rtty |= h->band[i].dec[M_RTTY].p != NULL; }
     if (c->rtty_adaptive && !any_rtty) {
       g_message("rtty: adaptive — no band decodes RTTY here, nothing to switch");
     }
-    if (any_rtty || !c->rtty_adaptive) {
-      h->gov = skim_hd_governor_new(&gc, g_get_real_time() / (60 * G_USEC_PER_SEC));
+    /* the thermal guard's limit: as set, else the sensor's critical − 15 °C */
+    double lim = c->thermal_limit_c;
+    if (c->thermal && lim <= 0) {
+      const double crit = cpu_crit_c(h->temp_paths);
+      lim = isnan(crit) ? 80.0 : crit - 15.0;
+      g_message("thermal: limit %.0f °C (%s)", lim,
+                isnan(crit) ? "no critical temperature from the sensor: 80 °C"
+                            : "the sensor's critical temperature − 15 °C");
     }
+    if (c->thermal && !h->temp_paths->len) {
+      g_warning("thermal: no CPU temperature sensor found — the guard has nothing to go by");
+    }
+    const SkimHdGovernorConfig gc = {
+      .rtty_adaptive = c->rtty_adaptive && any_rtty,
+      .rtty_spots = c->rtty_adaptive_spots,
+      .rtty_minutes = c->rtty_adaptive_minutes,
+      .thermal = c->thermal,
+      .limit_c = lim,
+      .average_min = c->thermal_average_min,
+      .restore_margin_c = c->thermal_margin_c,
+    };
+    h->gov = skim_hd_governor_new(&gc, g_get_real_time() / (60 * G_USEC_PER_SEC));
+    gboolean can[SKIM_HD_MAX_BANDS];
+    for (guint i = 0; i < h->nb; i++) {          /* a worker's band costs no decoding here */
+      can[i] = !h->band[i].worker && (h->band[i].dec[M_CW].p || h->band[i].dec[M_RTTY].p);
+    }
+    skim_hd_governor_set_bands(h->gov, h->nb, names, can);
     pause_apply(h);
   }
 

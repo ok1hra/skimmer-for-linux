@@ -261,6 +261,20 @@ int main(void) {
           !parse(&c, "[bands]\n20m=14045500\n[decode]\nrtty_adaptive_spots=2.5\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[decode]\nrtty_adaptive_spots=many\n", NULL));
     skim_hd_config_clear(&c);
+    check("[thermal] off by default: limit from the sensor, 5 min, margin 3",
+          parse(&c, "[bands]\n20m=14045500\n[thermal]\nlimit_c=\n", NULL) && !c.thermal &&
+          c.thermal_limit_c == 0 && c.thermal_average_min == 5 && c.thermal_margin_c == 3);
+    skim_hd_config_clear(&c);
+    check("[thermal] on at 82.5 °C, 10 min, margin 2",
+          parse(&c, "[bands]\n20m=14045500\n[thermal]\nenabled=true\nlimit_c=82.5\naverage_min=10\n"
+                    "restore_margin_c=2\n", NULL) &&
+          c.thermal && c.thermal_limit_c == 82.5 && c.thermal_average_min == 10 &&
+          c.thermal_margin_c == 2);
+    skim_hd_config_clear(&c);
+    check("[thermal] refused: limit 30 °C, 120 °C, average 0 min",
+          !parse(&c, "[bands]\n20m=14045500\n[thermal]\nlimit_c=30\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[thermal]\nlimit_c=120\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[thermal]\naverage_min=0\n", NULL));
     check("[peers] two feeds, one with its port",
           parse(&c, "[bands]\n20m=14045500\n[peers]\nhosts=192.168.1.30, pc2:7302\n", NULL) &&
           g_strv_length(c.peers) == 2 && strcmp(c.peers[1], "pc2:7302") == 0);

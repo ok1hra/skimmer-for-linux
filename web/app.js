@@ -143,6 +143,7 @@ function renderStatus(d) {
     ro('packets', `${fmt(d.packets_per_s)}/s`),
     ro('MASTER.SCP', `${fmt(d.dict_calls)} calls`),
     ...(d.rtty_adaptive ? [ro('adaptive RTTY', rttyAdaptiveText(d.rtty_adaptive))] : []),
+    ...(d.thermal ? [ro('thermal guard', thermalText(d.thermal))] : []),
     ...(d.rbn ? [ro('RBN now', `${fmt(d.rbn.clients)} on :${d.rbn.port} · ${fmt(d.rbn.lines)} sent since the start${d.rbn.delay_s ? ` · held ${d.rbn.delay_s} s` : ''}`)] : []),
   ].join('');
 
@@ -424,6 +425,15 @@ function pausedText(why) {
     : why === 'thermal' ? 'off: the CPU runs hot — the band with the fewest spots is paused until it cools'
     : `paused (${why})`;
 }
+// the thermal guard, one line: the mean against the limit, the bands paused
+// (each with the drop its pause brought and the mean it waits for)
+function thermalText(t) {
+  const m = t.mean_c == null ? '–' : `${fmt(t.mean_c, 1)} °C`;
+  const shed = (t.shed || []).map((s) => `${esc(s.band)} off${s.drop_c == null ? ''
+    : ` (−${fmt(s.drop_c, 1)} °C)`}, back ≤ ${fmt(s.back_at_c, 1)} °C`).join(' · ');
+  return `${m} / ${fmt(t.limit_c, 1)} °C, ${t.average_min}-min mean` +
+    (t.state === 'hot' ? ' — <span class="bad">over the limit</span>' : '') + (shed ? ` · ${shed}` : '');
+}
 // adaptive RTTY's state, one line: testing, on (a contest) or off till the hour
 function rttyAdaptiveText(a) {
   const hm = (t) => { const x = new Date(t * 1000); return `${String(x.getUTCHours()).padStart(2, '0')}:${String(x.getUTCMinutes()).padStart(2, '0')}`; };
@@ -510,10 +520,13 @@ function renderStats() {
   const tempRamp = [[60, css('--ok')], [70, css('--ok')], [78, css('--warn')], [85, css('--bad')]];
   const nowT = status && status.cpu_temp_c != null ? status.cpu_temp_c : null;
   $('#legend-temp').innerHTML = '<span><i class="ramp" style="background:linear-gradient(90deg,var(--ok),var(--ok) 35%,var(--warn) 65%,var(--bad))"></i>' +
-    `CPU temperature, the hottest minute — green fine, amber from 70 °C, red from 85 °C${nowT != null ? ` · now <b class="temp ${tempClass(nowT)}">${fmt(nowT)} °C</b>` : ''}</span>`;
+    `CPU temperature, the hottest minute — green fine, amber from 70 °C, red from 85 °C${nowT != null ? ` · now <b class="temp ${tempClass(nowT)}">${fmt(nowT)} °C</b>` : ''}</span>` +
+    (status && status.thermal ? `<span><i class="line dash"></i>the thermal guard's limit (on the ${status.thermal.average_min}-min mean)</span>` : '');
+  const guard = status && status.thermal ? status.thermal.limit_c : null;
   Charts.line($('#chart-temp'), x, g.cpu_temp || g.cpu.map(() => null),
     { name: 'CPU temperature, the hottest minute', color: css('--ok'), ramp: tempRamp, fmtV: (v) => `${fmt(v)} °C`,
-      fmtTick: (v) => `${fmt(v)} °C`, height: 110, minSpan: 20 });
+      fmtTick: (v) => `${fmt(v)} °C`, height: 110, minSpan: 20,
+      mark: guard == null ? null : { value: guard, label: `thermal guard ${fmt(guard)} °C (on the mean)` } });
   ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-temp'].forEach((id) => loading(id, false));
 
   // CW and RTTY one under the other — in the tiles and in every table cell

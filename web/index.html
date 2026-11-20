@@ -186,6 +186,17 @@
           <div id="dcw" class="dcw"></div>
         </fieldset>
         <fieldset>
+          <legend>Thermal guard</legend>
+          <label class="check"><input type="checkbox" name="thermal.enabled"> pause the quietest band while the CPU runs hot</label>
+          <label>Limit °C <input name="thermal.limit_c" inputmode="decimal" placeholder="auto">
+            <small>the mean of the hottest CPU sensor; empty = the sensor's critical temperature − 15 °C (85 °C on most Intel CPUs), else 80 °C</small></label>
+          <label>Mean over min <input name="thermal.average_min" inputmode="numeric" placeholder="5">
+            <small>short bursts of work do not count</small></label>
+          <label>Margin °C <input name="thermal.restore_margin_c" inputmode="decimal" placeholder="3">
+            <small>a band comes back once the mean stays under the limit by what pausing it saved (5 °C at least) plus this, for 20 min</small></label>
+          <small class="note-s">Over the limit for 5 min on end: the band with the fewest spots in the last 30 min stops decoding (CW and RTTY); still hot 10 min later, the next — one band always stays. The drop each pause brought is shown on Status.</small>
+        </fieldset>
+        <fieldset>
           <legend>Station and feed</legend>
           <label>Call <input name="feed.call" class="upper" placeholder="YOURCALL" autocapitalize="characters"></label>
           <label>Locator <input name="station.locator" class="upper" placeholder="JN18EU" maxlength="6" autocapitalize="characters">
