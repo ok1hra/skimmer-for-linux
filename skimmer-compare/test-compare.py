@@ -221,16 +221,19 @@ def core(root, logs, A_T, B_T):
     check(bu["L"]["k"] == 2 and bu["L"]["n"] == 5 and bu["R"]["k"] == 0 and bu["R"]["n"] == 3,
           "bust rate: L 2 of 5 episodes, R 0 of 3")
     bd = S["breakdown"]
-    check(bd["L"] == {"found": 2, "lost": 1, "missed": 1, "unverified": 1, "unresolved": 0,
+    # found_scp: found stations only MASTER.SCP vouches for — R's only-R G4CCC
+    check(bd["L"] == {"found": 2, "found_scp": 0, "lost": 1, "missed": 1, "unverified": 1,
+                      "unresolved": 0,
                       "nonCQ": 1, "episodes": 5,
                       "calls": {"found": 2, "lost": 1, "missed": 1, "unverified": 2,
                                 "unresolved": 0, "nonCQ": 1, "own": 5}}
-          and bd["R"] == {"found": 3, "lost": 0, "missed": 1, "unverified": 0, "unresolved": 0,
-                          "nonCQ": 0, "episodes": 3,
+          and bd["R"] == {"found": 3, "found_scp": 1, "lost": 0, "missed": 1, "unverified": 0,
+                          "unresolved": 0, "nonCQ": 0, "episodes": 3,
                           "calls": {"found": 3, "lost": 0, "missed": 1, "unverified": 0,
                                     "unresolved": 0, "nonCQ": 0, "own": 3}}
           and bd["calls_real"] == 4 and bd["n"] == 4,
-          "breakdown: L's EA3G bust costs recall, its ON4HHH bust only the bust rate %s" % bd)
+          "breakdown: L's EA3G bust costs recall, its ON4HHH bust only the bust rate;"
+          " R's G4CCC is found by MASTER.SCP alone %s" % bd)
     check(all(bd[X]["found"] + bd[X]["lost"] + bd[X]["missed"] == r["n"]
               and bd[X]["lost"] + bd[X]["unverified"] == bu[X]["k"] for X in "LR"),
           "breakdown: found + lost + missed = recall n, lost + unverified = bust k")
