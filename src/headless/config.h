@@ -135,6 +135,9 @@ typedef struct {
   gboolean         feed_rtty;         /* RTTY spots go to the feed too       */
   char            *feed_gate;         /* absolute path; NULL = built in      */
   char            *feed_gate_mode;    /* as written; NULL = not set          */
+  char            *feed_address;      /* the telnet address the page header
+                                       * shows (host:port or a telnet/http(s)
+                                       * URL); NULL = none                   */
   /* [rbn] */
   gboolean         rbn_on;
   int              rbn_port;

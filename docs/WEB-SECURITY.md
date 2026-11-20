@@ -29,6 +29,16 @@ CSS, fonts, the map's data, so the sign-in form can show) and nothing else:
 `status.json`, `stats.json` and `/api/spots` answer 401 `{"error":"login"}`,
 the waterfall's socket is closed with "login".
 
+A client from outside — not free in the sense above, signed in or not, and
+whether sign-in is on or off — gets no machine readings either: in
+`status.json` the CPU (total and per mode), its temperature, the thermal
+guard's temperatures, IQ lost and packets/s are `null` (the workers' status
+the hub passes on too), and in `stats.json` the `cpu*` and `lost` series
+are `null`; the page leaves those out (Dan, 2026-11-20: how hard the box
+runs is nobody else's business). `[feed] address` — the telnet address the
+header shows — goes to everyone on purpose, added after the address
+rule, so an IP:port written there reaches the visitor as written.
+
 The callsign is checked on the server (`src/headless/visitors.c`): 3 to 15
 characters of A–Z, 0–9 and `/`, at least one digit and one letter. It comes
 back as an HttpOnly, SameSite=Strict cookie `skv=CALL.ISSUED.HMAC` valid 30
@@ -65,8 +75,9 @@ tells the visitor what is logged. Managers read both in the Log tab
 | every `POST` (config, import, restart, rollback, DeepCW fetch) | 403 | yes |
 | `POST /api/visitor` (sign in with a call, sign out) | yes (same origin) | yes |
 | `/api/visitors` (the visitors' log) | 403 | yes |
-| `status.json` | without addresses, file paths and the `SKIM_*` values | whole |
-| `stats.json`, `/api/spots`, `/ws/waterfall` | yes (from outside free_from: once signed in) | yes |
+| `status.json` | without addresses, file paths and the `SKIM_*` values; from outside also without CPU, temperature, lost | whole |
+| `stats.json` | yes (from outside: once signed in, without the CPU, temperature and lost series) | yes |
+| `/api/spots`, `/ws/waterfall` | yes (from outside free_from: once signed in) | yes |
 
 The station's locator goes to a viewer as its square only — the first
 four characters (JN18), in `status.json` and `/api/spots`: a

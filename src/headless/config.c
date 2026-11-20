@@ -52,6 +52,9 @@ static const char DEFAULT_CONFIG[] =
   "\n[feed]\n# telnet spot feed (validated CQ spots only); port 0 = off.\n"
   "# call = YOUR callsign: the feed stays OFF until it is set.\n"
   "call=\nport=7300\n"
+  "# address = how the world reaches the feed (host:port or a telnet:// URL),\n"
+  "# shown in the web page's header; empty = not shown\n"
+  "address=\n"
   "# a call is spotted once it scored min_score, was read min_hearings times\n"
   "# (or MASTER.SCP knows it) and stayed settle_s seconds in the station table;\n"
   "# min_hearings=1 and settle_s=0 switch those two off\n"
@@ -145,6 +148,7 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_free(cfg->feed_call);
   g_free(cfg->feed_gate);
   g_free(cfg->feed_gate_mode);
+  g_free(cfg->feed_address);
   g_strfreev(cfg->settings_from);
   g_strfreev(cfg->visitors_free);
   g_strfreev(cfg->peers);
@@ -489,6 +493,29 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   g_free(gate);
   h->feed_gate_mode = g_key_file_get_string(kf, "feed", "gate_mode", NULL);
   if (h->feed_gate_mode) { g_strstrip(h->feed_gate_mode); }
+  /* address: what the page header offers as the telnet feed — host:port,
+   * or a telnet://, http:// or https:// URL; printable, no spaces/quotes */
+  char *addr = g_key_file_get_string(kf, "feed", "address", NULL);
+  if (addr && g_strstrip(addr)[0]) {
+    gboolean ok = strlen(addr) <= 120;
+    for (const char *x = addr; ok && *x; x++) {
+      ok = g_ascii_isgraph(*x) && !strchr("\"'<>\\`", *x);
+    }
+    const char *sch = strstr(addr, "://");
+    if (ok && sch) {
+      ok = g_ascii_strncasecmp(addr, "telnet://", 9) == 0 ||
+           g_ascii_strncasecmp(addr, "http://", 7) == 0 ||
+           g_ascii_strncasecmp(addr, "https://", 8) == 0;
+    }
+    if (!ok) {
+      g_free(addr);
+      return bad(error, path, "[feed] address: host:port, or a telnet://, http:// or https:// "
+                 "URL (no spaces or quotes, 120 characters at most)");
+    }
+    h->feed_address = addr;
+  } else {
+    g_free(addr);
+  }
 
   if (!opt_bool(kf, "rbn", "enabled", FALSE, &h->rbn_on, path, error)) { return FALSE; }
   h->rbn_port = 7550;
@@ -830,7 +857,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "bands",
   "decode.engine", "decode.log", "decode.suppress_cw_on_rtty", "decode.rtty_adaptive",
   "decode.rtty_adaptive_spots", "decode.rtty_adaptive_minutes",
-  "feed.call", "feed.port", "feed.rtty",
+  "feed.call", "feed.port", "feed.rtty", "feed.address",
   "rbn.enabled", "rbn.port", "rbn.delay_s",
   "peers.hosts", "hub.name", "hub.port", "station.locator",
   "status.console_s", "status.http_port",

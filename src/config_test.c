@@ -286,6 +286,21 @@ int main(void) {
           !parse(&c, "[bands]\n20m=14045500\n[thermal]\nlimit_c=30\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[thermal]\nlimit_c=120\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[thermal]\naverage_min=0\n", NULL));
+    check("[feed] address: none by default, empty = none",
+          parse(&c, "[bands]\n20m=14045500\n[feed]\naddress=\n", NULL) && !c.feed_address);
+    skim_hd_config_clear(&c);
+    check("[feed] address host:port kept, a telnet:// URL too",
+          parse(&c, "[bands]\n20m=14045500\n[feed]\naddress= skimmer.example.net:7300 \n", NULL) &&
+          strcmp(c.feed_address, "skimmer.example.net:7300") == 0);
+    skim_hd_config_clear(&c);
+    check("… telnet://203.0.113.5:7300",
+          parse(&c, "[bands]\n20m=14045500\n[feed]\naddress=telnet://203.0.113.5:7300\n", NULL) &&
+          strcmp(c.feed_address, "telnet://203.0.113.5:7300") == 0);
+    skim_hd_config_clear(&c);
+    check("[feed] address refused: a space, a quote, javascript:",
+          !parse(&c, "[bands]\n20m=14045500\n[feed]\naddress=a b:7300\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[feed]\naddress=x\"y\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[feed]\naddress=javascript://x\n", NULL));
     check("[peers] two feeds, one with its port",
           parse(&c, "[bands]\n20m=14045500\n[peers]\nhosts=192.168.1.30, pc2:7302\n", NULL) &&
           g_strv_length(c.peers) == 2 && strcmp(c.peers[1], "pc2:7302") == 0);

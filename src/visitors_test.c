@@ -208,9 +208,10 @@ static int http(const char *method, const char *path, const char *headers, const
   return code;
 }
 
-static char *hook_status(GHashTable *q, gboolean m, guint *st, const char **ty, gpointer u) {
-  (void)q; (void)m; (void)st; (void)ty; (void)u;
-  return g_strdup("{\"ok\":true}");
+/* answers who it was asked by: 0 from outside, 1 at home, 2 a manager */
+static char *hook_status(GHashTable *q, SkimHdWebWho who, guint *st, const char **ty, gpointer u) {
+  (void)q; (void)st; (void)ty; (void)u;
+  return g_strdup_printf("{\"ok\":true,\"who\":%d}", (int)who);
 }
 
 static SkimHdWeb *web;
@@ -242,8 +243,8 @@ static gpointer client(gpointer data) {
         ck && g_str_has_prefix(ck, "OK1ABC."));
   g_free(body);
   char *hdr = g_strdup_printf("Cookie: a=1; skv=%s\r\n", ck ? ck : "");
-  check("with the cookie: /status.json 200", http("GET", "/status.json", hdr, NULL, &body, NULL) == 200 &&
-        strstr(body, "\"ok\":true"));
+  check("with the cookie: /status.json 200, asked as from outside",
+        http("GET", "/status.json", hdr, NULL, &body, NULL) == 200 && strstr(body, "\"who\":0"));
   g_free(body);
   http("GET", "/api/visitor", hdr, NULL, &body, NULL);
   check("/api/visitor: no need, the call", strstr(body, "\"need\":false") && strstr(body, "\"call\":\"OK1ABC\""));
@@ -257,12 +258,19 @@ static gpointer client(gpointer data) {
   g_free(ck);
   /* loopback free now */
   skim_hd_web_set_visitors(web, gvis, LO);
-  check("loopback in free_from: 200 without a cookie", http("GET", "/status.json", NULL, NULL, NULL, NULL) == 200);
+  check("loopback in free_from: 200 without a cookie, asked as at home",
+        http("GET", "/status.json", NULL, NULL, &body, NULL) == 200 && strstr(body, "\"who\":1"));
+  g_free(body);
   check("… but not through a proxy",
         http("GET", "/status.json", "X-Forwarded-For: 198.51.100.7\r\n", NULL, NULL, NULL) == 401);
   skim_hd_web_set_visitors(web, NULL, LO);
-  check("sign-in off: everyone has the data",
-        http("GET", "/status.json", "X-Forwarded-For: 198.51.100.7\r\n", NULL, NULL, NULL) == 200);
+  check("sign-in off: everyone has the data — from outside without the machine readings",
+        http("GET", "/status.json", "X-Forwarded-For: 198.51.100.7\r\n", NULL, &body, NULL) == 200 &&
+        strstr(body, "\"who\":0"));
+  g_free(body);
+  check("… at home with them", http("GET", "/status.json", NULL, NULL, &body, NULL) == 200 &&
+        strstr(body, "\"who\":1"));
+  g_free(body);
   g_main_loop_quit(srv.loop);
   return NULL;
 }

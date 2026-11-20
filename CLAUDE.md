@@ -205,7 +205,11 @@ here; what was done and why is in git.
   waterfall windows/audio watched ≥ 10 s) go to `visitors.tsv`, refusals to
   `visitors-failed.tsv` (≤ 30/min); the Log tab shows both. The visitor's
   call is in the header and, from another DXCC, a star on the map that AUTO
-  zooms to. Rules: `docs/WEB-SECURITY.md`.
+  zooms to. From outside (signed in or not) the status and history come
+  without the machine readings — CPU, temperature, IQ lost (`SkimHdWebWho`
+  PUBLIC / LOCAL / MANAGER in the GET hooks). `[feed] address` (host:port or
+  a telnet/http(s) URL) is the feed's address in the header, for everyone.
+  Rules: `docs/WEB-SECURITY.md`.
 - **Adaptive RTTY** (`[decode] rtty_adaptive`, default off;
   `src/headless/governor.c`): the RTTY decoders are on at each full UTC
   hour and at start for `rtty_adaptive_minutes` (2); more than

@@ -199,10 +199,15 @@ static char *cookie_token(SoupServerMessage *msg) {
   return out;
 }
 
-/* Needs this client no sign-in? A manager, or an address in free_from not
- * through a proxy — or sign-in off. */
+/* Is this client at home? A manager, or an address in free_from not
+ * through a proxy. */
+static gboolean client_local(SkimHdWeb *w, SoupServerMessage *msg, gboolean admin) {
+  return admin || (w->free_nets && !via_proxy(msg) && allowed(w->free_nets, remote(msg)));
+}
+
+/* Needs this client no sign-in? One at home — or sign-in off. */
 static gboolean visitor_free(SkimHdWeb *w, SoupServerMessage *msg, gboolean admin) {
-  return !w->vis || admin || (!via_proxy(msg) && allowed(w->free_nets, remote(msg)));
+  return !w->vis || client_local(w, msg, admin);
 }
 
 /* The signed-in visitor's token (and call), or NULL. */
@@ -392,7 +397,10 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
     if (hook) {
       guint status = SOUP_STATUS_OK;
       const char *type = "application/json";
-      char *body = hook(query, admin, &status, &type, k->user);
+      const SkimHdWebWho who = admin ? SKIM_HD_WEB_MANAGER
+                             : client_local(w, msg, admin) ? SKIM_HD_WEB_LOCAL
+                                                           : SKIM_HD_WEB_PUBLIC;
+      char *body = hook(query, who, &status, &type, k->user);
       reply(msg, status, type, body);
       return;
     }

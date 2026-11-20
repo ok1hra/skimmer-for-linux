@@ -17,6 +17,7 @@
 <header>
   <div class="title" title="Skimmer for Linux">
     <h1 id="call">SKIMMER</h1><span id="version"></span>
+    <a id="feed-address" class="feed-address" hidden title="the spot feed: connect with telnet"></a>
     <span id="visitor" class="visitor" hidden></span>
   </div>
   <div class="strip">
@@ -123,7 +124,7 @@
       <div class="legend" id="legend-active"></div>
       <div class="chart" id="chart-active"></div>
     </div>
-    <div class="chart-card"><h2>CPU, its temperature and IQ lost</h2>
+    <div class="chart-card" id="card-cpu"><h2>CPU, its temperature and IQ lost</h2>
       <p class="sub mut">CPU in % of one core (left), what the CW and RTTY decoders take of it; IQ frames lost on the wire, % in the worst minute of each bucket (right); below, the hottest CPU sensor in the hottest minute of each bucket</p>
       <div class="legend" id="legend-cpu"></div><div class="chart" id="chart-cpu"></div>
       <div class="legend" id="legend-temp"></div><div class="chart" id="chart-temp"></div></div>
@@ -221,6 +222,8 @@
           <label>Port <input name="feed.port" inputmode="numeric" placeholder="7300">
             <small>0 = off</small></label>
           <label class="check"><input type="checkbox" name="feed.rtty" data-default="true"> RTTY spots on the feed too</label>
+          <label>Telnet address <input name="feed.address" placeholder="skimmer.example.net:7300" spellcheck="false" autocomplete="off">
+            <small>how the world reaches the feed — host:port, or a telnet:// or http(s):// URL; shown in the header of the page to everyone (empty: not shown)</small></label>
         </fieldset>
         <fieldset>
           <legend>Callsign filter</legend>

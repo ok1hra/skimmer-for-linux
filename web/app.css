@@ -299,6 +299,10 @@ button:disabled { opacity: .45; cursor: default; }
                  border: 1px solid var(--hot); cursor: pointer; }
 #signin .bad { color: var(--bad); margin: 6px 0 0; }
 #signin .small { font-size: 12px; margin: 12px 0 0; }
+.feed-address { font-size: 13px; letter-spacing: .04em; margin-left: 6px; white-space: nowrap;
+  color: var(--accent); text-decoration: none; }
+.feed-address:hover { text-decoration: underline; }
+.feed-address .mut { font-size: 12px; }
 .visitor { color: var(--mut); font-size: 13px; letter-spacing: .04em; margin-left: 6px; white-space: nowrap; }
 .visitor b { color: var(--accent); }
 .visitor button { font: inherit; font-size: 12px; background: none; border: 0; color: var(--cq); cursor: pointer;

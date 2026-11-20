@@ -46,11 +46,21 @@ G_BEGIN_DECLS
 
 typedef struct _SkimHdWeb SkimHdWeb;
 
+/* Who asks: a client from outside (not a manager, not from free_from
+ * without a proxy — it sees no machine readings: CPU, temperature, IQ
+ * lost), one from the LAN, or a manager (may POST: its address is in
+ * settings_from). */
+typedef enum {
+  SKIM_HD_WEB_PUBLIC,
+  SKIM_HD_WEB_LOCAL,
+  SKIM_HD_WEB_MANAGER,
+} SkimHdWebWho;
+
 /* A hook answers with a body and an HTTP status; *type is the content type
- * (static string; default application/json). may_change: the client may
- * POST (its address is in settings_from). A POST hook gets the form fields
- * of an application/x-www-form-urlencoded body (empty table for none). */
-typedef char *(*SkimHdWebGet)(GHashTable *query, gboolean may_change, guint *status,
+ * (static string; default application/json). A POST hook gets the form
+ * fields of an application/x-www-form-urlencoded body (empty table for
+ * none). */
+typedef char *(*SkimHdWebGet)(GHashTable *query, SkimHdWebWho who, guint *status,
                               const char **type, gpointer user);
 typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
@@ -73,7 +83,8 @@ void       skim_hd_web_free(SkimHdWeb *w);
 
 /* Visitors from outside sign in (v: the log, kept by the caller; NULL = no
  * sign-in, everyone gets the data). free_from: the networks that need not
- * (NULL-terminated). */
+ * (NULL-terminated) — and that see the machine readings (SkimHdWebWho);
+ * never set, every client that is not a manager counts as from outside. */
 void       skim_hd_web_set_visitors(SkimHdWeb *w, SkimHdVisitors *v, const char *const *free_from);
 
 /* TRUE when addr (a client address) is inside one of nets. */

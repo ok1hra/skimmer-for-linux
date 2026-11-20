@@ -145,12 +145,27 @@ const EYE_ON = EYE_SVG(false), EYE_OFF = EYE_SVG(true);
 // the CPU temperature's colour: fine, warm, hot
 const tempClass = (c) => (c >= 85 ? 'hot' : c >= 70 ? 'warm' : 'cool');
 
+// [feed] address in the header: host:port → a telnet:// link; a URL as it is
+// (the server lets telnet://, http:// and https:// through only)
+function renderFeedAddress(a) {
+  const el = $('#feed-address');
+  el.hidden = !a;
+  if (!a || el.dataset.a === a) return;
+  el.dataset.a = a;
+  const url = /^(telnet|https?):\/\//i.test(a) ? a : `telnet://${a}`;
+  el.href = url;
+  el.innerHTML = `<span class="mut">telnet</span> ${esc(a.replace(/^telnet:\/\//i, ''))}`;
+}
+
 let status = null;
 function renderStatus(d) {
   status = d;
   $('#call').textContent = d.call || 'SKIMMER';
   $('#version').textContent = d.locator || (d.version ? `v${d.version}` : '');
-  $('#hdr-stats').innerHTML = `<span>CPU <b>${fmt(d.cpu_pct)}%</b>${d.cpu_temp_c != null ? ` <b class="temp ${tempClass(d.cpu_temp_c)}" title="the hottest CPU sensor: under 70 °C fine, 70–85 °C warm, 85 °C and more hot">${fmt(d.cpu_temp_c)} °C</b>` : ''}</span> <span>lost <b>${fmt(d.lost_pct, 3)}%</b></span> ` +
+  renderFeedAddress(d.feed_address);
+  // the machine readings (CPU, its temperature, IQ lost) come to the LAN only
+  $('#hdr-stats').innerHTML = (d.cpu_pct != null ? `<span>CPU <b>${fmt(d.cpu_pct)}%</b>${d.cpu_temp_c != null ? ` <b class="temp ${tempClass(d.cpu_temp_c)}" title="the hottest CPU sensor: under 70 °C fine, 70–85 °C warm, 85 °C and more hot">${fmt(d.cpu_temp_c)} °C</b>` : ''}</span> ` : '') +
+    (d.lost_pct != null ? `<span>lost <b>${fmt(d.lost_pct, 3)}%</b></span> ` : '') +
     `<span>feed <b>${d.feed_port ? fmt(d.feed_clients) : 'off'}</b></span> <span>${esc(d.engine || '')}</span> <span>v${esc(d.version || '')}</span>`;
   document.title = `${d.call ? `${d.call} · ` : ''}Skimmer for Linux`;
   const dot = $('#radio .dot');
@@ -202,7 +217,7 @@ function renderStatus(d) {
     ro(`since the start ${uptime(d.uptime_s)} ago`, `${fmt(spots)} spots` +
        `${d.feed_port ? ` · ${fmt(d.feed_lines)} telnet lines out` : ''}`),
     ...(d.feed_port ? [ro('telnet now', `${fmt(d.feed_clients)} client${d.feed_clients === 1 ? '' : 's'} on :${d.feed_port}`)] : []),
-    ro('packets', `${fmt(d.packets_per_s)}/s`),
+    ...(d.packets_per_s != null ? [ro('packets', `${fmt(d.packets_per_s)}/s`)] : []),
     ro('MASTER.SCP', `${fmt(d.dict_calls)} calls`),
     ...(d.rtty_adaptive ? [ro('adaptive RTTY', rttyAdaptiveText(d.rtty_adaptive))] : []),
     ...(d.thermal ? [ro('thermal guard', thermalText(d.thermal))] : []),
@@ -233,7 +248,7 @@ function renderStatus(d) {
           ? esc(w.bands.map((i) => d.bands[i] ? d.bands[i].band : `#${i}`).join(', '))
           : '<span class="mut">none assigned — Settings → Bands → decoded by</span>'}</td>` +
         `<td>${fmt(w.mbps, 1)}</td><td class="${w.dropped ? 'bad' : ''}">${fmt(w.dropped)}</td><td>${fmt(w.spots)}</td>` +
-        `<td>${w.status ? `${fmt(w.status.cpu_pct)} %` : '–'}</td></tr>`).join('');
+        `<td>${w.status && w.status.cpu_pct != null ? `${fmt(w.status.cpu_pct)} %` : '–'}</td></tr>`).join('');
   }
   const peers = d.peers || [];
   $('#peers-box').hidden = !peers.length;
@@ -490,6 +505,10 @@ function pausedText(why) {
 // the thermal guard, one line: the mean against the limit, the bands paused
 // (each with the drop its pause brought and the mean it waits for)
 function thermalText(t) {
+  if (t.limit_c == null) {           // from outside: no temperatures, what it did
+    const off = (t.shed || []).map((s) => esc(s.band)).join(', ');
+    return `on${t.state === 'hot' ? ' — the CPU runs hot' : ''}${off ? ` · paused: ${off}` : ''}`;
+  }
   const m = t.mean_c == null ? '–' : `${fmt(t.mean_c, 1)} °C`;
   const shed = (t.shed || []).map((s) => `${esc(s.band)} off${s.drop_c == null ? ''
     : ` (−${fmt(s.drop_c, 1)} °C)`}, back ≤ ${fmt(s.back_at_c, 1)} °C`).join(' · ');
@@ -560,7 +579,17 @@ function renderStats() {
     `${d.rtty ? 'upper strip ' : ''}CW${span('CW')}${d.rtty ? ` · lower strip RTTY${span('RTTY')}` : ''}</span>`;
   // CPU: the CW and RTTY pipelines' threads and the rest of the process, stacked
   // under the total (history before the split has the total line only)
-  const g = d.global, cpuCw = g.cpu_cw || g.cpu.map(() => null), cpuRt = g.cpu_rtty || g.cpu.map(() => null);
+  const g = d.global;
+  // from outside the LAN the history comes without them (null): no card
+  $('#card-cpu').hidden = !g.cpu;
+  if (g.cpu) renderCpu(d, x, g);
+  ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-temp'].forEach((id) => loading(id, false));
+  renderStatsTables(d);
+}
+// the CPU card: the decoders' share stacked under the total, IQ lost, and
+// the temperature below
+function renderCpu(d, x, g) {
+  const cpuCw = g.cpu_cw || g.cpu.map(() => null), cpuRt = g.cpu_rtty || g.cpu.map(() => null);
   const anyRt = cpuRt.some((v) => v != null);
   const layers = [
     { name: 'CW decoders', color: modeColor('cw'), values: cpuCw },
@@ -589,7 +618,8 @@ function renderStats() {
     { name: 'CPU temperature, the hottest minute', color: css('--ok'), ramp: tempRamp, fmtV: (v) => `${fmt(v)} °C`,
       fmtTick: (v) => `${fmt(v)} °C`, height: 110, minSpan: 20,
       mark: guard == null ? null : { value: guard, label: `thermal guard ${fmt(guard)} °C (on the mean)` } });
-  ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-temp'].forEach((id) => loading(id, false));
+}
+function renderStatsTables(d) {
 
   // CW and RTTY one under the other — in the tiles and in every table cell
   const modes = [['CW', d.cw], ...(d.rtty ? [['RTTY', d.rtty]] : [])];

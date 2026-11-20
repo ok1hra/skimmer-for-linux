@@ -1064,8 +1064,13 @@ static gboolean tick(gpointer data) {
  * the same, less what tells about the machine and the LAN — addresses
  * (the radio's, the peers', the workers'), file paths (with the user's
  * name), the SKIM_* switches' values. */
-static char *status_public(const char *full) {
+static char *status_public(const char *full, gboolean outside) {
   static const struct { const char *re, *to; } RULES[] = {
+    /* from outside the LAN, no machine readings either: the CPU, its
+     * temperature (the thermal guard's too), IQ lost — here and in the
+     * workers' status the hub passes on */
+    { "\"(cpu_pct|cpu_cw_pct|cpu_rtty_pct|cpu_temp_c|lost_pct|packets_per_s|mean_c|limit_c|"
+      "at_c|drop_c|back_at_c)\":-?[0-9.eE+-]+", "\"\\1\":null" },
     { "\"(host|addr|model|dir)\":\"(?:[^\"\\\\]|\\\\.)*\"", "\"\\1\":\"\"" },
     { "\"switches\":\\{[^{}]*\\}", "\"switches\":{}" },
     /* the locator as its square only: six characters are nearly an address */
@@ -1074,7 +1079,7 @@ static char *status_public(const char *full) {
     { "(?<![\\w.])/(?:home|root|var|tmp|etc|usr|srv|mnt|opt|run|media)/[^\"\\s,;)]*", "(path)" },
   };
   char *out = g_strdup(full);
-  for (guint i = 0; i < G_N_ELEMENTS(RULES); i++) {
+  for (guint i = outside ? 0 : 1; i < G_N_ELEMENTS(RULES); i++) {
     GRegex *re = g_regex_new(RULES[i].re, G_REGEX_OPTIMIZE, 0, NULL);
     char *next = re ? g_regex_replace(re, out, -1, 0, RULES[i].to, 0, NULL) : NULL;
     if (re) { g_regex_unref(re); }
@@ -1083,24 +1088,44 @@ static char *status_public(const char *full) {
   return out;
 }
 
-static char *web_status(GHashTable *q, gboolean may, guint *st, const char **type,
+static char *web_status(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
                         gpointer user) {
   (void)q; (void)st; (void)type;
   Hd *h = user;
   g_mutex_lock(&h->snap_lock);
   char *body = g_strdup(h->snap_json ? h->snap_json : "{}");
   g_mutex_unlock(&h->snap_lock);
-  if (!may) {
-    char *pub = status_public(body);
+  if (who != SKIM_HD_WEB_MANAGER) {
+    char *pub = status_public(body, who == SKIM_HD_WEB_PUBLIC);
     g_free(body);
     body = pub;
+  }
+  /* [feed] address: published on purpose — after the address rule */
+  if (h->cfg.feed_address && body[0] == '{') {
+    char *ja = skim_json_str(h->cfg.feed_address);
+    char *with = g_strdup_printf("{\"feed_address\":\"%s\",%s", ja, body + 1);
+    g_free(ja);
+    g_free(body);
+    body = with;
   }
   return body;
 }
 
-static char *web_stats(GHashTable *q, gboolean may, guint *st, const char **type,
+/* The history without the machine readings (CPU, its temperature, IQ lost)
+ * for a client from outside: those series as null. */
+static char *stats_public(const char *full) {
+  static GRegex *re;
+  if (!re) {
+    re = g_regex_new("\"(cpu|cpu_cw|cpu_rtty|cpu_temp|lost)\":\\[[^\\]]*\\]", G_REGEX_OPTIMIZE,
+                     0, NULL);
+  }
+  char *out = re ? g_regex_replace(re, full, -1, 0, "\"\\1\":null", 0, NULL) : NULL;
+  return out ? out : g_strdup(full);
+}
+
+static char *web_stats(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
                        gpointer user) {
-  (void)may; (void)st; (void)type;
+  (void)st; (void)type;
   Hd *h = user;
   const char *hv = q ? g_hash_table_lookup(q, "hours") : NULL;
   const char *sv = q ? g_hash_table_lookup(q, "step") : NULL;
@@ -1115,13 +1140,13 @@ static char *web_stats(GHashTable *q, gboolean may, guint *st, const char **type
   static gint64 c_end, c_at;
   static guint c_hours, c_step;
   const gint64 now = g_get_monotonic_time();
-  if (c_body && c_end == end && c_hours == hours && c_step == step && now - c_at < 20 * G_USEC_PER_SEC) {
-    return g_strdup(c_body);
+  if (!(c_body && c_end == end && c_hours == hours && c_step == step &&
+        now - c_at < 20 * G_USEC_PER_SEC)) {
+    g_free(c_body);
+    c_body = skim_stats_json(h->stats, end, hours, step);
+    c_end = end; c_hours = hours; c_step = step; c_at = now;
   }
-  g_free(c_body);
-  c_body = skim_stats_json(h->stats, end, hours, step);
-  c_end = end; c_hours = hours; c_step = step; c_at = now;
-  return g_strdup(c_body);
+  return who == SKIM_HD_WEB_PUBLIC ? stats_public(c_body) : g_strdup(c_body);
 }
 
 /* ---- settings (POST from settings_from only — web.c checks) ---------------------- */
@@ -1159,10 +1184,11 @@ static void json_kv(GString *o, const char *k, const char *v, gboolean comma) {
 
 /* GET /api/config: the file on disk (what a restart would run) — its
  * editable values, its bands, the rest read-only, the backups. */
-static char *web_config(GHashTable *q, gboolean may, guint *st, const char **type,
+static char *web_config(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
                         gpointer user) {
   (void)q; (void)type;
   Hd *h = user;
+  const gboolean may = who == SKIM_HD_WEB_MANAGER;
   char *text = NULL;
   gsize len = 0;
   GError *err = NULL;
@@ -1550,9 +1576,9 @@ static char *disco_info(gpointer user) {
 }
 
 /* GET /api/skimmers: a search (0.8 s — the main loop waits it out) */
-static char *web_skimmers(GHashTable *q, gboolean may, guint *st, const char **type,
+static char *web_skimmers(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
                           gpointer user) {
-  (void)q; (void)may; (void)st; (void)type;
+  (void)q; (void)who; (void)st; (void)type;
   Hd *h = user;
   char *found = skim_hd_discovery_find(800);
   GString *o = g_string_new("{\"self\":");
@@ -1622,9 +1648,9 @@ static void wf_view(const char *visitor, gconstpointer conn, const char *band, d
   }
 }
 
-static char *web_log(GHashTable *q, gboolean may, guint *st, const char **type,
+static char *web_log(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
                      gpointer user) {
-  (void)q; (void)may; (void)st; (void)type; (void)user;
+  (void)q; (void)who; (void)st; (void)type; (void)user;
   return skim_log_ring_json();
 }
 
@@ -1732,7 +1758,8 @@ static gboolean spot_json(const SkimHdSpot *s, gpointer user) {
 }
 
 /* GET /api/spots?minutes=N: newest first, each with its band. */
-static char *web_spots(GHashTable *q, gboolean may, guint *st, const char **type, gpointer user) {
+static char *web_spots(GHashTable *q, SkimHdWebWho who, guint *st, const char **type, gpointer user) {
+  const gboolean may = who == SKIM_HD_WEB_MANAGER;
   (void)st; (void)type;
   Hd *h = user;
   const char *mv = q ? g_hash_table_lookup(q, "minutes") : NULL;
@@ -2371,10 +2398,11 @@ int main(int argc, char **argv) {
           g_message("visitors: from outside %s they sign in with a call; the log: %s", fr,
                     skim_hd_visitors_path(h->vis));
           g_free(fr);
-          skim_hd_web_set_visitors(web, h->vis, (const char *const *)c->visitors_free);
           skim_hd_waterfall_set_view_cb(h->wf, wf_view, h);
         }
       }
+      /* free_from also says who is at home (sees CPU, temperature, lost) */
+      skim_hd_web_set_visitors(web, h->vis, (const char *const *)c->visitors_free);
     }
   }
 
