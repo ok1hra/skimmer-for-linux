@@ -88,13 +88,14 @@ const SkMap = (() => {
 
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   // the centre: the locator, else the call's DXCC, else Paris — and what it is
-  function centerOf() {
-    const l = locToLL(home);
-    if (l) return { ll: l, what: home };
-    const d = homeCall && locate(homeCall);
-    if (d) return { ll: { lat: d.lat, lon: d.lon }, what: `${d.name} — ${homeCall}'s DXCC (no locator in Settings)` };
+  function centerFor(loc, call) {
+    const l = locToLL(loc);
+    if (l) return { ll: l, what: loc };
+    const d = call && locate(call);
+    if (d) return { ll: { lat: d.lat, lon: d.lon }, what: `${d.name} — ${call}'s DXCC (no locator in Settings)` };
     return { ll: locToLL('JN18'), what: 'JN18 (Paris — no locator and no call in Settings)' };
   }
+  function centerOf() { return centerFor(home, homeCall); }
   function centerLL() { return centerOf().ll; }
 
   // ---- projection for the current view ----------------------------------------------------
@@ -434,5 +435,8 @@ const SkMap = (() => {
     draw();
   }
 
-  return { mount, update, redraw: () => draw(), locate, geo, locToLL, llToLoc, bandColor, center: centerLL };
+  // site: where the station is for a locator and a call, as the map's centre
+  // (Statistics shades the night there); subsolar, sunAlt: the sun, for it
+  return { mount, update, redraw: () => draw(), locate, geo, locToLL, llToLoc, bandColor, center: centerLL,
+           site: (loc, call) => centerFor(loc, call).ll, subsolar, sunAlt };
 })();

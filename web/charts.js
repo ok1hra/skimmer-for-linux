@@ -63,6 +63,36 @@ const Charts = (() => {
     const svg = el('svg', { viewBox: `0 0 ${W} ${height}`, height, role: 'img' }, box);
     return { svg, W, H: height };
   }
+  // ---- the night at the station, the plot darkened while the sun is down -------------
+  // x.site { lat, lon } and x.sun { at(t) → the subsolar point, alt(lat, lon, s) → ° }
+  // (map.js's formulae: the date and the place both count). Each ~3 px column of
+  // the plot is shaded by its MEAN darkness over its own stretch of time: within
+  // a day the dusk is a soft edge, over days soft stripes, and once a column is
+  // a day or longer its shade is that day's share of the night — no thicket of
+  // edges over months and years, and winter reads darker than summer. Dark from
+  // the civil dusk (−6°), light from +1° (the map's grey line uses the same).
+  const NIGHT_MAX = 0.38;
+  let nightOn = true, nightN = 0;
+  const darkness = (alt) => (alt >= 1 ? 0 : alt <= -6 ? 1 : (1 - alt) / 7);
+  function night(svg, l, t, pw, ph, x, scale = 1) {
+    if (!nightOn || !x.site || !x.sun || !x.step || !x.t.length || pw <= 0 || ph <= 0) return;
+    const n = x.t.length, t0 = x.t[0], span = n * x.step;
+    const cols = Math.max(2, Math.min(400, Math.round(pw / 3))), dt = span / cols;
+    const whole = dt >= 86400, len = whole ? 86400 : dt;
+    const k = whole ? 48 : Math.max(4, Math.min(24, Math.ceil(len / 900)));
+    const g = el('linearGradient', { id: `night${++nightN}`, x1: 0, x2: 1, y1: 0, y2: 0 }, el('defs', {}, svg));
+    for (let c = 0; c < cols; c++) {
+      const from = whole ? t0 + (c + 0.5) * dt - 43200 : t0 + c * dt;
+      let d = 0;
+      for (let j = 0; j < k; j++) {
+        d += darkness(x.sun.alt(x.site.lat, x.site.lon, x.sun.at(from + ((j + 0.5) * len) / k)));
+      }
+      el('stop', { offset: ((c + 0.5) / cols).toFixed(4), 'stop-color': '#000',
+                   'stop-opacity': ((NIGHT_MAX * scale * d) / k).toFixed(3) }, g);
+    }
+    el('rect', { x: l, y: t, width: pw, height: ph, fill: `url(#${g.id})`, 'pointer-events': 'none' }, svg);
+  }
+
   // y grid + ticks (4 lines), x ticks at ~6 positions; returns the plot area
   function axes(svg, W, H, x, yMax, left = 40, right = 8) {
     const m = { l: left, r: right, t: 6, b: 22 };
@@ -123,6 +153,7 @@ const Charts = (() => {
     const slot = pw / n, bw = Math.min(24, Math.max(1, slot - (slot > 4 ? 2 : 0)));
     const tot = halves.map((h) => x.t.map((_, i) => h.series.reduce((a, s) => a + (s.values[i] || 0), 0)));
     const max = tot.map((t) => Math.max(0, ...t) || 1);
+    night(svg, m.l, m.t, pw, halfH * (two ? 2 : 1), x);
     // a column's length in px for a total v of half k
     const len = (k, v) => (log ? (halfH * Math.log10(1 + Math.max(0, v))) / Math.log10(1 + max[k])
       : (halfH * v) / max[k]);
@@ -262,6 +293,7 @@ const Charts = (() => {
     }
     // the shared crosshair: the bucket under the cursor anywhere in the rows
     const plotB = m.t + rows.length * (blockH + bandGap) - bandGap;
+    night(svg, m.l, m.t, pw, plotB - m.t, x, 0.6);   // over the cells (they fill the plot), lighter
     crossLine(box, svg, m.t, plotB, (i) => Math.round(m.l + (i + 0.5) * cw) + 0.5);
     svg.addEventListener('pointermove', (e) => {
       const r = svg.getBoundingClientRect(), mx = ((e.clientX - r.left) * W) / r.width;
@@ -280,6 +312,7 @@ const Charts = (() => {
     const { svg, W, H } = frame(box, 180);
     const yMax = niceMax(Math.max(0, ...total.filter((v) => v != null)));
     const a = axes(svg, W, H, x, yMax, ML, MR);
+    night(svg, a.l, a.t, a.pw, a.ph, x);
     const n = x.t.length, px = (i) => a.l + ((i + 0.5) * a.pw) / n,
       py = (v) => a.t + a.ph - (a.ph * Math.min(v, yMax)) / yMax;
     const ok = (i) => layers.every((l) => l.values[i] != null);
@@ -374,6 +407,7 @@ const Charts = (() => {
     const m = { l: ML, r: MR, t: 6, b: 22 };
     const pw = W - m.l - m.r, ph = H - m.t - m.b, n = x.t.length;
     const px = (i) => m.l + ((i + 0.5) * pw) / n, py = (y) => m.t + ph - (ph * (y - lo)) / (hi - lo);
+    night(svg, m.l, m.t, pw, ph, x);
     for (let i = 0; i <= 2; i++) {
       const y = lo + ((hi - lo) * i) / 2, yy = py(y);
       el('line', { x1: m.l, x2: W - m.r, y1: yy, y2: yy, stroke: i ? css('--grid') : css('--axis'),
@@ -427,5 +461,6 @@ const Charts = (() => {
     hit.addEventListener('pointerleave', () => { tt.hide(); syncOff(); });
   }
 
-  return { mirror, heat, area, line, seriesColor };
+  return { mirror, heat, area, line, seriesColor,
+           setNight(on) { nightOn = !!on; } };
 })();

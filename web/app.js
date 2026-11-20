@@ -379,6 +379,16 @@ function spotsYButtons() {
   for (const b of document.querySelectorAll('#spots-y button')) b.classList.toggle('on', (b.dataset.y === 'log') === stats.logY);
 }
 spotsYButtons();
+// the night under the charts (the grey line at the station), on unless turned off
+// (charts.js loads deferred, after this file: handed over in renderStats)
+stats.night = (() => { try { return localStorage.getItem('skimmer-stats-night') !== 'off'; } catch (e) { return true; } })();
+$('#stats-night').classList.toggle('on', stats.night);
+on('#stats-night', 'click', () => {
+  stats.night = !stats.night;
+  $('#stats-night').classList.toggle('on', stats.night);
+  try { localStorage.setItem('skimmer-stats-night', stats.night ? 'on' : 'off'); } catch (err) { /* private */ }
+  renderStats();
+});
 on('#spots-y', 'click', (e) => {
   const y = e.target.dataset && e.target.dataset.y;
   if (!y) return;
@@ -419,7 +429,12 @@ function renderStats() {
     return d.step_min >= 1440 || a.getUTCDate() !== b.getUTCDate() && d.step_min >= 360
       ? `${day(a)} ${f(a)} – ${day(b)} ${f(b)} UTC` : `${day(a)} ${f(a)}–${f(b)} UTC`;
   };
-  const x = { t, spanH: stats.hours, label };
+  // the night at the station (the grey line): where the map has its centre
+  const site = status && typeof SkMap !== 'undefined' ? SkMap.site(status.locator, status.call) : null;
+  stats.sited = !!site;
+  Charts.setNight(stats.night);
+  const x = { t, spanH: stats.hours, label, step: d.step_min * 60, site,
+              sun: typeof SkMap !== 'undefined' ? { at: SkMap.subsolar, alt: SkMap.sunAlt } : null };
   renderTimebar(d);
   const per = d.step_min % 1440 === 0 ? `${d.step_min / 1440}-day` : d.step_min % 60 === 0
     ? `${d.step_min / 60}-hour` : `${d.step_min}-minute`;
@@ -535,6 +550,8 @@ function renderStats() {
 tabs.stats = {
   enter() { this.refresh(true); },
   async refresh(force) {
+    // drawn before the first status came: again now that the station's place is known
+    if (!force && stats.data && !stats.sited && status) renderStats();
     // history moves by the minute: refetch at most every 30 s
     if (!force && (stats.end || Date.now() - stats.at < 30000)) return;   // a past window stays
     ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-temp'].forEach((id) => $(id).classList.add('loading'));
