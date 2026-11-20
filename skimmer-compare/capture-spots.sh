@@ -8,7 +8,7 @@
 #
 #   capture-spots.sh [-c CALL] [-o DIR] [-t SECONDS] [-l HOST:PORT]
 #                    [-r HOST:PORT] [-b HOST:PORT] [-w URL] [-k SECONDS]
-#                    [-S SECONDS] [-L REGEX] [-R REGEX] [-n]
+#                    [-S SECONDS] [-L REGEX] [-R REGEX] [-C T] [-n]
 #
 #   -c CALL       login callsign for all feeds           (default OK1HRA)
 #   -o DIR        output directory          (default <script dir>/logs)
@@ -21,9 +21,13 @@
 #   -R REGEX      the same for the remote feed
 #                                  (default "skimmer server|de skimmer")
 #   -w URL        local skimmer status JSON, "" = off
-#                                   (default http://127.0.0.1:8073/status.json)
+#                                   (default http://127.0.0.1:8074/status.json)
 #   -k SECONDS    keepalive: an empty line to each feed this often (300)
 #   -S SECONDS    status JSON snapshot this often (300)
+#   -C T          continue session T (YYYYMMDD-HHMMSS): append to its files
+#                 instead of starting a new session, so a restart (a new
+#                 option, a moved port) does not start the comparison anew;
+#                 its events log gets a "resumed session" line
 #   -n            do not hold a sleep inhibitor (by default the machine is
 #                 kept from suspending while recording)
 #
@@ -59,7 +63,7 @@ REMOTE=127.0.0.1:7301
 LOCAL_ID=skimmer-for-linux
 REMOTE_ID="skimmer server|de skimmer"
 RBN=telnet.reversebeacon.net:7000
-STATUS_URL=http://127.0.0.1:8073/status.json
+STATUS_URL=http://127.0.0.1:8074/status.json
 KEEPALIVE=300
 SNAP_EVERY=300
 INHIBIT=1
@@ -67,7 +71,8 @@ TICK=${CAPTURE_TICK:-60}          # heartbeat period (tests shorten it)
 READ_T=${CAPTURE_READ_T:-10}      # socket read wake-up (keepalive, state)
 IDLE_NOTE=1800                    # heartbeat mentions a feed silent this long
 
-while getopts "c:o:t:l:r:b:w:k:S:L:R:nh" opt; do
+RESUME=
+while getopts "c:o:t:l:r:b:w:k:S:L:R:C:nh" opt; do
   case $opt in
     c) CALL=$OPTARG ;;
     o) OUT=$OPTARG ;;
@@ -80,6 +85,7 @@ while getopts "c:o:t:l:r:b:w:k:S:L:R:nh" opt; do
     S) SNAP_EVERY=$OPTARG ;;
     L) LOCAL_ID=$OPTARG ;;
     R) REMOTE_ID=$OPTARG ;;
+    C) RESUME=$OPTARG ;;
     n) INHIBIT=0 ;;
     *) sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
@@ -89,6 +95,11 @@ export TZ=UTC
 mkdir -p "$OUT" || { echo "cannot create $OUT" >&2; exit 1; }
 [[ -w $OUT ]] || { echo "$OUT is not writable" >&2; exit 1; }
 START=$(date -u +%Y%m%d-%H%M%S)
+if [[ -n $RESUME ]]; then
+  [[ $RESUME =~ ^[0-9]{8}-[0-9]{6}$ ]] || { echo "-C wants YYYYMMDD-HHMMSS, not $RESUME" >&2; exit 2; }
+  [[ -f $OUT/events-$RESUME.log ]] || { echo "no session $RESUME in $OUT" >&2; exit 2; }
+  START=$RESUME
+fi
 LOCAL_FILE="$OUT/local-$START.log"
 REMOTE_FILE="$OUT/remote-$START.log"
 RBN_FILE="$OUT/rbn-$START.log"
@@ -353,7 +364,11 @@ stop() {
 }
 trap stop INT TERM HUP
 
-note "recording as $CALL since $START UTC$( ((DURATION > 0)) && echo " for $DURATION s")"
+if [[ -n $RESUME ]]; then
+  note "resumed session $START as $CALL — appending to its files$( ((DURATION > 0)) && echo " for $DURATION s")"
+else
+  note "recording as $CALL since $START UTC$( ((DURATION > 0)) && echo " for $DURATION s")"
+fi
 note "  local  $LOCAL  → $LOCAL_FILE${LOCAL_ID:+  (greeting /$LOCAL_ID/)}"
 note "  remote $REMOTE → $REMOTE_FILE${REMOTE_ID:+  (greeting /$REMOTE_ID/)}"
 note "  rbn    ${RBN:-off}$([[ -n $RBN ]] && echo " → $RBN_FILE")"

@@ -81,7 +81,7 @@ class Config:
         self.exclude = [c.strip().upper() for c in
                         cp.get("rbn", "exclude", fallback="").replace(",", " ").split()]
         self.listen = cp.get("web", "listen", fallback="0.0.0.0")
-        self.port = cp.getint("web", "port", fallback=8074)
+        self.port = cp.getint("web", "port", fallback=8075)
         # how often the page's numbers (data.json) are recomputed, seconds
         self.every = max(15, cp.getint("web", "every_s", fallback=60))
         base = {k: v[0] for k, v in PARAMS.items()}

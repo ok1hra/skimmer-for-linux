@@ -61,7 +61,7 @@ sys.path.insert(0, HERE)
 
 from skimcmp.arbiter import RbnIndex, load_scp  # noqa: E402
 from skimcmp.config import Config               # noqa: E402
-from skimcmp.logs import Store, parse_spot      # noqa: E402
+from skimcmp.logs import Store, catalog, parse_spot  # noqa: E402
 from skimcmp.match import analyze, compared_time, curve_at, engine_summary, snr_curve  # noqa: E402
 from skimcmp.rtty import analyze_rtty           # noqa: E402
 from skimcmp.stats import summarize             # noqa: E402
@@ -416,6 +416,31 @@ def current_session():
     check(live == [run], "only the running session is live (%s)" % live)
 
 
+def resumed_session():
+    print("=== resumed session — capture-spots.sh -C continues a stopped run")
+    root = tempfile.mkdtemp(prefix="compare-res-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    now = time.time()
+    stamp = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+    run = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now - 600))
+    with open(os.path.join(logs, "events-%s.log" % run), "w") as fh:
+        fh.write("%s recording as OK1HRA since %s UTC\n" % (stamp(now - 600), run))
+        fh.write("%s stopped — write check OK\n" % stamp(now - 300))
+        fh.write("%s resumed session %s as OK1HRA — appending to its files\n" % (stamp(now - 299), run))
+        fh.write("%s local up: 1 spots (+1)\n" % stamp(now - 30))
+    with open(os.path.join(logs, "local-%s.log" % run), "w") as fh:
+        fh.write("#%s\tconnected to 127.0.0.1:7302\n" % stamp(now - 600))
+    store = Store(logs, lambda: RbnIndex(loose_bands([("40m", 7000, 7091)], 2.0), set()))
+    store.poll()
+    s = store.current(time.time())
+    check(s is not None and s.T == run and s.stopped is None,
+          "a resumed session is not stopped (stopped=%s)" % (s and s.stopped))
+    cat = catalog(logs, time.time())
+    check(len(cat) == 1 and cat[0]["live"] and cat[0]["stopped"] is None,
+          "catalog() sees the resumed session live (%s)" % cat)
+
+
 def rbn_overlap():
     print("=== RBN overlap — a short run beside the recorder logged the same RBN")
     root = tempfile.mkdtemp(prefix="compare-rbn-")
@@ -736,6 +761,7 @@ if __name__ == "__main__":
     core(root, logs, A, Bs)
     web(root, A, Bs)
     current_session()
+    resumed_session()
     band_plan()
     rbn_overlap()
     split_episodes()

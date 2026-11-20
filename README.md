@@ -452,7 +452,7 @@ The command line wins over the config. The log and `/status.json`
 ```sh
 cd skimmer-compare
 ./capture-spots.sh -c YOURCALL -r <cw-skimmer-host>:<port>   # records local, remote and RBN feeds into logs/
-./compare-web.py                                             # live comparison at http://localhost:8074/
+./compare-web.py                                             # live comparison at http://localhost:8075/
 ```
 
 `compare.ini` sets the labels, the remote's receive windows and the matching

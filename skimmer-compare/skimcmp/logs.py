@@ -6,7 +6,8 @@ UTC start time <T>:
   local-<T>.log  remote-<T>.log  rbn-<T>.log
       <UTC>\\tDX de …         a received line
       #<UTC>\\tconnected to … a connection event (also disconnected, cannot connect)
-  events-<T>.log   <UTC> message      ("stopped — write check …" ends the session)
+  events-<T>.log   <UTC> message      ("stopped — write check …" ends the session,
+                                       a later "resumed session …" (-C) continues it)
   status-<T>.jsonl <UTC>\\t{json}     local skimmer health every few minutes
 
 Files are tailed: each poll reads only what was appended, keeps a trailing
@@ -24,6 +25,7 @@ import threading
 
 from .windows import snapshot_windows
 
+RESUMED = "resumed session"   # capture-spots.sh -C: the session goes on
 FILE_RE = re.compile(r"^(local|remote|rbn|events|status)-(\d{8}-\d{6})\.(?:log|jsonl)$")
 # one regex for all three dialects:
 #   DX de OK1HRA-#:   1825.8  OK1CF        CW    30 dB  25 WPM  CQ      1727Z   skimmer-for-linux
@@ -295,6 +297,8 @@ class Store:
             s.seen(t)
             if "stopped — write check" in line:
                 s.stopped = t
+            elif RESUMED in line:
+                s.stopped = None
             return
         if kind == "status":
             ts, _, js = line.partition("\t")
@@ -399,6 +403,7 @@ def catalog(logs_dir, now):
     for T in sorted(S):
         s = S[T]
         last_event = stopped = None
+        resumed = False
         feeds = {}
         for line in reversed(_tail_lines(s["paths"].get("events", ""), 16384)):
             t = epoch(line[:20])
@@ -406,7 +411,9 @@ def catalog(logs_dir, now):
                 continue
             if last_event is None:
                 last_event = t
-            if stopped is None and "stopped — write check" in line:
+            if RESUMED in line:
+                resumed = True     # a stop line before it no longer ends it
+            if stopped is None and not resumed and "stopped — write check" in line:
                 stopped = t
             if not feeds and FEED_RE.search(line):
                 feeds = {k: v == "up" for k, v in FEED_RE.findall(line)}

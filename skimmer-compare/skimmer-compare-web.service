@@ -2,7 +2,7 @@
 #   ln -s "$PWD/skimmer-compare-web.service" ~/.config/systemd/user/
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now skimmer-compare-web
-# Read-only on logs/; listens where compare.ini [web] says (0.0.0.0:8074).
+# Read-only on logs/; listens where compare.ini [web] says (0.0.0.0:8075).
 [Unit]
 Description=Skimmer compare — public L/W CW skimmer comparison (web)
 
