@@ -62,8 +62,16 @@ void             skim_hd_waterfall_free(SkimHdWaterfall *w);
 void skim_hd_waterfall_push(SkimHdWaterfall *w, guint b, const float *iq, guint n,
                             double rate, double centre);
 
-/* Main thread: a new viewer (the waterfall takes its own reference). */
-void  skim_hd_waterfall_add(SkimHdWaterfall *w, SoupWebsocketConnection *c, const char *peer);
+/* Main thread: a new viewer (the waterfall takes its own reference);
+ * visitor: its sign-in token (visitors.h), NULL for a free client. */
+void  skim_hd_waterfall_add(SkimHdWaterfall *w, SoupWebsocketConnection *c, const char *peer,
+                            const char *visitor);
+
+/* What a signed-in visitor's viewer watches, at each of its requests (band
+ * NULL: it left) — conn tells its viewers apart. Main thread. */
+typedef void (*SkimWfViewCb)(const char *visitor, gconstpointer conn, const char *band, double lo,
+                             double hi, gboolean audio, double af, gpointer user);
+void  skim_hd_waterfall_set_view_cb(SkimHdWaterfall *w, SkimWfViewCb cb, gpointer user);
 guint skim_hd_waterfall_viewers(SkimHdWaterfall *w);
 guint skim_hd_waterfall_listeners(SkimHdWaterfall *w);
 

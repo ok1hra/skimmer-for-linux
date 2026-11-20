@@ -303,7 +303,8 @@ test('peers', skimmer_peers_test, timeout : 60)
 
 # The hub's side of the hub ↔ worker link: handshake, int24 IQ, lines, lag.
 skimmer_hub_test = executable('skimmer-hub-test',
-  ['src/hub_test.c', 'src/headless/hub.c', 'src/headless/config.c', 'src/headless/web.c'],
+  ['src/hub_test.c', 'src/headless/hub.c', 'src/headless/config.c', 'src/headless/web.c',
+   'src/headless/visitors.c'],
   include_directories : [include_directories('src'), engine_inc],
   dependencies : engine_deps + [soup_dep],
 )
@@ -350,6 +351,15 @@ skimmer_governor_test = executable('skimmer-governor-test',
 )
 test('governor', skimmer_governor_test, timeout : 30)
 
+# The visitors: the callsign check, the signed cookie, visits and what they
+# watched, the refused sign-ins and their cap, the web's sign-in gate.
+skimmer_visitors_test = executable('skimmer-visitors-test',
+  ['src/visitors_test.c', 'src/headless/visitors.c', 'src/headless/web.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps + [soup_dep],
+)
+test('visitors', skimmer_visitors_test, timeout : 60)
+
 # Golden gate: real-air IQ + decode-tap slices through the whole engine with
 # no SKIM_* switches — every output byte-identical to tests/golden/
 # expected.sha256. Inputs live outside git (tests/golden/README.md); without
@@ -393,6 +403,7 @@ headless_sources = files(
   'src/headless/source_mock.c',     # … synthetic CW (the headless gate)
   'src/headless/stats.c',           # the 7-day per-minute history
   'src/headless/switches.c',        # the SKIM_* switches a start runs with
+  'src/headless/visitors.c',        # the page's visitors: sign-in, their log
   'src/headless/waterfall.c',       # the page's waterfall (only while watched)
   'src/headless/web.c',             # the web page (libsoup 3)
 )

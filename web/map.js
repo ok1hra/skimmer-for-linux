@@ -84,6 +84,7 @@ const SkMap = (() => {
   const opt = { grayline: true, borders: true, prefixes: true, lines: true, calls: true, db: true, zoom: 0, ...store };
   delete opt.center;                               // a typed-in centre (before v0.8.4) is gone
   const save = () => { try { localStorage.setItem('skmap', JSON.stringify(opt)); } catch (e) { /* private window */ } };
+  let visitorCall = '';
   let el = null, home = '', homeCall = '', spots = [], view = null, baseKey = '', base = null, grayKey = '', gray = null;
 
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -222,11 +223,60 @@ const SkMap = (() => {
     return cv;
   }
 
+  // ---- the visitor ------------------------------------------------------------------------
+  // A visitor signed in from another country is marked on the map — a star at
+  // their call's DXCC, its call beside it — and AUTO zooms out to keep it on.
+  // Not for a call of the station's own DXCC (or the centre's, without a call).
+  function visitorAt() {
+    if (!visitorCall) return null;
+    const w = locate(visitorCall);
+    if (!w) return null;
+    const mine = homeCall && locate(homeCall);
+    if (mine ? mine.name === w.name : (() => { const c = centerLL(); return Math.abs(c.lat - w.lat) < 0.01 && Math.abs(c.lon - w.lon) < 0.01; })()) return null;
+    return w;
+  }
+  function star(g, x, y, r) {
+    g.beginPath();
+    for (let k = 0; k < 10; k++) {
+      const a = -Math.PI / 2 + (k * Math.PI) / 5, rr = k % 2 ? r * 0.45 : r;
+      g.lineTo(x + rr * Math.cos(a), y + rr * Math.sin(a));
+    }
+    g.closePath();
+  }
+  // where the star and its call go (their box keeps the spots' labels off), or null
+  function placeVisitor(g, v, boxes) {
+    const w = visitorAt();
+    if (!w) return null;
+    const d = geo(v.c, w.lat, w.lon);
+    if (d.km > v.zoom) return null;                  // off the map (a zoom by hand)
+    const [x, y] = v.P(w.lat, w.lon);
+    g.font = '700 14px RC, "Roboto Condensed", sans-serif';
+    const tw = g.measureText(visitorCall).width;
+    const lx = x + 15 + tw > v.size - 4 ? x - 15 - tw : x + 15;
+    boxes.push([Math.min(x - 12, lx), y - 12, Math.max(x + 12, lx + tw), y + 12]);
+    return { x, y, lx, w, km: d.km };
+  }
+  function paintVisitor(g, p) {                      // on top of everything
+    g.save();
+    g.shadowColor = 'rgba(0,0,0,.6)'; g.shadowBlur = 6;
+    star(g, p.x, p.y, 11);
+    g.fillStyle = '#ffffff'; g.fill();
+    g.shadowBlur = 0;
+    g.lineWidth = 2.5; g.strokeStyle = css('--accent') || '#39d98a'; g.stroke();
+    g.font = '700 14px RC, "Roboto Condensed", sans-serif';
+    g.textAlign = 'left'; g.textBaseline = 'middle';
+    g.lineWidth = 4; g.strokeStyle = 'rgba(5,9,14,.85)'; g.strokeText(visitorCall, p.lx, p.y);
+    g.fillStyle = '#ffffff'; g.fillText(visitorCall, p.lx, p.y);
+    g.restore();
+  }
+
   // ---- drawing ---------------------------------------------------------------------------
   const ZOOM_STEPS = [2000, 2500, 3000, 3500, 4000, 5000, 6000, 7000, 8000, 10000, 12000, 14000, 16000, 18000, 20000];
   function autoZoom() {
     const c = centerLL();
-    const far = Math.max(0, ...spots.filter((s) => s.where).map((s) => geo(c, s.where.lat, s.where.lon).km));
+    const vis = visitorAt();
+    const far = Math.max(0, ...spots.filter((s) => s.where).map((s) => geo(c, s.where.lat, s.where.lon).km),
+                         vis ? geo(c, vis.lat, vis.lon).km : 0);
     const want = far * 1.1 + 200;                   // the farthest dot and its call inside the rim
     return ZOOM_STEPS.find((z) => z >= want) || 20000;
   }
@@ -328,6 +378,7 @@ const SkMap = (() => {
     g.save(); g.beginPath(); g.arc(view.cx, view.cy, view.rr, 0, Math.PI * 2); g.clip();
     const boxes = [];
     view.marks = [];
+    view.visitor = placeVisitor(g, view, boxes);    // its label keeps the spots' labels off
     // the spots of one DXCC share its point: fan them out on a sunflower
     // spiral around it (the strongest in the middle), a dot each
     const at = new Map(), groups = new Map();
@@ -360,6 +411,7 @@ const SkMap = (() => {
       g.globalAlpha = 1;
     }
     if (opt.calls || opt.db || spots.some((s) => s.hi)) placeLabels(g, view.marks, boxes);
+    if (view.visitor) paintVisitor(g, view.visitor);
     g.restore();
     g.fillStyle = '#39d98a'; g.beginPath(); g.arc(view.cx, view.cy, 4, 0, 7); g.fill();
     el.querySelector('[data-k=zoom]').textContent = opt.zoom ? `${fmtKm(zoom)}` : `auto · ${fmtKm(zoom)}`;
@@ -378,7 +430,9 @@ const SkMap = (() => {
     const d = geo(view.c, q.lat, q.lon);
     const near = (view.marks || []).find((m) => Math.hypot(m.x - x, m.y - y) < 8);
     out.hidden = false;
+    const vv = view.visitor && Math.hypot(view.visitor.x - x, view.visitor.y - y) < 12 ? view.visitor : null;
     out.innerHTML = `<span>AZ <b>${Math.round(d.az)}°</b></span><span>QRB <b>${fmtKm(d.km)}</b></span><span>LOC <b>${llToLoc(q.lat, q.lon)}</b></span>` +
+      (vv ? `<span class="spot">you: <b>${esc(visitorCall)}</b> · ${esc(vv.w.name)} · ${fmtKm(vv.km)}</span>` : '') +
       (near ? `<span class="spot" style="color:${bandColor(near.s.band)}"><b>${esc(near.s.call)}</b> ${fmtKhz(near.s.khz)} ${esc(near.s.mode)} ${esc(near.s.snr)} dB${near.s.where ? ` · ${esc(near.s.where.name)}` : ''}</span>` : '');
   }
 
@@ -428,9 +482,9 @@ const SkMap = (() => {
   }
 
   // spots: [{ call, khz, mode, snr, band, age, hi }] — placed here by their DXCC;
-  // station: { locator, call } — the centre
+  // station: { locator, call, visitor } — the centre, and the visitor signed in (or none)
   function update(list, station) {
-    if (station) { home = station.locator || ''; homeCall = station.call || ''; }
+    if (station) { home = station.locator || ''; homeCall = station.call || ''; visitorCall = station.visitor || ''; }
     spots = list.map((s) => ({ ...s, where: s.where !== undefined ? s.where : locate(s.call) }));
     draw();
   }

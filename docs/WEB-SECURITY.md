@@ -17,6 +17,44 @@ A request may manage the skimmer only when all three hold:
 
 Everyone else is a viewer.
 
+## Who must sign in
+
+With `[visitors] login=true` (the default), a viewer that is not **free**
+signs in with a callsign before it gets any data. Free is a manager, or a
+client whose address is in `[visitors] free_from` (default: the private
+networks, loopback, link-local) and that no proxy forwarded — through a
+proxy every visitor signs in, the same reason a proxy never makes a
+manager. A visitor that has not signed in gets the page itself (HTML, JS,
+CSS, fonts, the map's data, so the sign-in form can show) and nothing else:
+`status.json`, `stats.json` and `/api/spots` answer 401 `{"error":"login"}`,
+the waterfall's socket is closed with "login".
+
+The callsign is checked on the server (`src/headless/visitors.c`): 3 to 15
+characters of A–Z, 0–9 and `/`, at least one digit and one letter. It comes
+back as an HttpOnly, SameSite=Strict cookie `skv=CALL.ISSUED.HMAC` valid 30
+days, signed (HMAC-SHA256) with a key made once in the state directory
+(`visitor.key`, 0600). A forged, altered or expired cookie is refused; the
+skimmer keeps no session table, so a restart signs no one out.
+
+This is an introduction, not a password: anyone may type any callsign. It
+keeps the page from being scraped anonymously and gives the station a log
+of who watched.
+
+`POST /api/visitor` is the one POST open to viewers — it must be, a visitor
+is not a manager. It still refuses a page from another origin (the Origin
+check every POST has), reads at most 256 bytes, and changes nothing but the
+caller's own cookie. A refused sign-in is logged at most 30 times a minute,
+the rest only counted, so a script cannot fill the disk.
+
+The logs (state directory, rolled to `.1` at 5 MB each): `visitors.tsv` — a
+line a visit: start, end, seconds, call, the connection's address, what a
+proxy said it forwarded for (its word, never used for a decision), the
+waterfall windows and audio frequencies watched for 10 s or more;
+`visitors-failed.tsv` — time, address, forwarded-for, what was typed
+(control characters escaped, 32 characters at most), why. The sign-in form
+tells the visitor what is logged. Managers read both in the Log tab
+(`/api/visitors`, 403 for viewers).
+
 ## What a viewer gets
 
 | | viewer | manager |
@@ -25,8 +63,10 @@ Everyone else is a viewer.
 | Settings and Log — in the menu and in the page's HTML | no (cut out on the server) | yes |
 | `GET /api/config`, `/api/log`, `/api/skimmers` | 403 | yes |
 | every `POST` (config, import, restart, rollback, DeepCW fetch) | 403 | yes |
+| `POST /api/visitor` (sign in with a call, sign out) | yes (same origin) | yes |
+| `/api/visitors` (the visitors' log) | 403 | yes |
 | `status.json` | without addresses, file paths and the `SKIM_*` values | whole |
-| `stats.json`, `/api/spots`, `/ws/waterfall` | yes | yes |
+| `stats.json`, `/api/spots`, `/ws/waterfall` | yes (from outside free_from: once signed in) | yes |
 
 The station's locator goes to a viewer as its square only — the first
 four characters (JN18), in `status.json` and `/api/spots`: a

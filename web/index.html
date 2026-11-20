@@ -17,6 +17,7 @@
 <header>
   <div class="title" title="Skimmer for Linux">
     <h1 id="call">SKIMMER</h1><span id="version"></span>
+    <span id="visitor" class="visitor" hidden></span>
   </div>
   <div class="strip">
     <span id="radio" class="radio"><span class="dot"></span><span id="radio-text">…</span></span>
@@ -39,6 +40,16 @@
   </div><!--/admin-->
 </header>
 
+<div id="signin" hidden><form id="signin-form">
+  <h2>Who is watching?</h2>
+  <p class="mut">This skimmer's page is for radio amateurs. Enter your callsign to see it.</p>
+  <div class="signin-row"><input name="call" id="signin-call" class="upper" placeholder="YOURCALL" maxlength="15"
+    autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="your callsign">
+  <button type="submit" class="primary">Enter</button></div>
+  <p class="bad" id="signin-err" role="alert" hidden></p>
+  <p class="mut small">The skimmer keeps a log of its visitors: the callsign, the address, the time and the
+    frequencies watched on the waterfall. The browser remembers the callsign for 30 days.</p>
+</form></div>
 <div id="overlay" hidden><div><b id="overlay-text">Restarting…</b><p class="mut" id="overlay-sub"></p></div></div>
 <main>
   <section id="tab-status">
@@ -186,6 +197,12 @@
           <div id="dcw" class="dcw"></div>
         </fieldset>
         <fieldset>
+          <legend>Visitors</legend>
+          <label class="check"><input type="checkbox" name="visitors.login" data-default="true"> visitors from outside sign in with their callsign</label>
+          <label class="wide">Free from <input name="visitors.free_from" placeholder="the private networks" spellcheck="false">
+            <small>the addresses or networks (a.b.c.d/n, comma separated) that see the page without signing in; empty = the private networks (10/8, 172.16/12, 192.168/16, loopback, link-local). Through a proxy everyone signs in. The visits are in the Log tab.</small></label>
+        </fieldset>
+        <fieldset>
           <legend>Thermal guard</legend>
           <label class="check"><input type="checkbox" name="thermal.enabled"> pause the quietest band while the CPU runs hot</label>
           <label>Limit °C <input name="thermal.limit_c" inputmode="decimal" placeholder="auto">
@@ -324,6 +341,12 @@
 
   <section id="tab-log" hidden>
     <pre id="log" class="log"></pre>
+    <div class="pad" id="visitors-box">
+      <h2 class="sect">Visitors <span class="mut" id="visitors-note">signed in from outside the LAN — visitors.tsv in the state directory</span></h2>
+      <div class="wrap"><table id="visitors" class="grid"></table></div>
+      <h2 class="sect">Refused sign-ins <span class="mut">visitors-failed.tsv</span></h2>
+      <div class="wrap"><table id="visitors-failed" class="grid"></table></div>
+    </div>
   </section><!--/admin-->
 </main>
 

@@ -258,12 +258,15 @@ struct _SkimHdWaterfall {
   double     rate;
   WfBand    *band;
   GPtrArray *viewers;                  /* Viewer*                            */
+  SkimWfViewCb view_cb;                /* what a signed-in visitor watches   */
+  gpointer   view_user;
 };
 
 typedef struct {
   SkimHdWaterfall         *w;
   SoupWebsocketConnection *c;
   char                    *peer;
+  char                    *visitor;   /* its sign-in token; NULL: free       */
   int                      band;      /* -1: none yet                        */
   double                   lo, hi;
   guint                    width, rate, timer;
@@ -565,6 +568,10 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *message, g
     v->hi = v->w->centres[v->band] + v->w->rate / 2;
   }
   v->acked = v->row_seq;                              /* a fresh start      */
+  if (v->visitor && v->w->view_cb && v->band >= 0) {   /* for the visitors' log */
+    v->w->view_cb(v->visitor, v, v->w->names[v->band], v->lo, v->hi, v->au != NULL, v->af,
+                  v->w->view_user);
+  }
   /* hist=ROWS: the picture so far, sharp at the new window */
   const char *sh2 = g_hash_table_lookup(f, "hist");
   if (sh2) { send_history(v, (guint)CLAMP(g_ascii_strtoll(sh2, NULL, 10), 0, 4000)); }
@@ -579,6 +586,7 @@ static void viewer_free(Viewer *v) {
   g_free(v->avg);
   g_free(v->row);
   g_free(v->peer);
+  g_free(v->visitor);
   g_free(v);
 }
 
@@ -586,10 +594,17 @@ static void on_closed(SoupWebsocketConnection *c, gpointer user) {
   (void)c;
   Viewer *v = user;
   g_message("waterfall: %s left", v->peer);
+  if (v->visitor && v->w->view_cb) { v->w->view_cb(v->visitor, v, NULL, 0, 0, FALSE, 0, v->w->view_user); }
   g_ptr_array_remove(v->w->viewers, v);               /* frees it           */
 }
 
-void skim_hd_waterfall_add(SkimHdWaterfall *w, SoupWebsocketConnection *c, const char *peer) {
+void skim_hd_waterfall_set_view_cb(SkimHdWaterfall *w, SkimWfViewCb cb, gpointer user) {
+  w->view_cb = cb;
+  w->view_user = user;
+}
+
+void skim_hd_waterfall_add(SkimHdWaterfall *w, SoupWebsocketConnection *c, const char *peer,
+                           const char *visitor) {
   if (w->viewers->len >= SKIM_WF_MAX_VIEWERS) {
     soup_websocket_connection_close(c, 1013, "too many waterfall viewers — try again later");
     return;
@@ -598,6 +613,7 @@ void skim_hd_waterfall_add(SkimHdWaterfall *w, SoupWebsocketConnection *c, const
   v->w = w;
   v->c = g_object_ref(c);
   v->peer = g_strdup(peer ? peer : "a viewer");
+  v->visitor = g_strdup(visitor);
   v->band = -1;
   g_ptr_array_add(w->viewers, v);
   soup_websocket_connection_set_keepalive_interval(c, 30);   /* a dead link goes */

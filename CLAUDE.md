@@ -196,6 +196,16 @@ here; what was done and why is in git.
   fused/torn run reading, TU blesses the next call only, min_score 0.90,
   unknown calls held 60 s, fresh 120 s, fold 600 s; edge model / Rayleigh
   fade off. Numbers, bench and rejected tries: `docs/LIVE-AIR.md`.
+- **Visitors sign in** (`[visitors] login`, default on; `src/headless/visitors.c`,
+  the gate in `web.c`): a client that is neither a manager nor from
+  `free_from` (default the private nets) without a proxy gets the page but
+  401 on status/stats/spots and a closed waterfall until it signs in with a
+  call (3–15 of A–Z0–9/, a digit and a letter) — an HMAC-signed HttpOnly
+  cookie, 30 days, key in the state dir. Visits (call, address, time, the
+  waterfall windows/audio watched ≥ 10 s) go to `visitors.tsv`, refusals to
+  `visitors-failed.tsv` (≤ 30/min); the Log tab shows both. The visitor's
+  call is in the header and, from another DXCC, a star on the map that AUTO
+  zooms to. Rules: `docs/WEB-SECURITY.md`.
 - **Adaptive RTTY** (`[decode] rtty_adaptive`, default off;
   `src/headless/governor.c`): the RTTY decoders are on at each full UTC
   hour and at start for `rtty_adaptive_minutes` (2); more than

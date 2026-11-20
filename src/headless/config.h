@@ -46,6 +46,10 @@
  *   [archive] dir — every spot the feed sends, a gzip file a UTC day
  *            (<dir>/YYYYMMDD-spots.gz, headless/archive.h); empty = off;
  *            ~/ is the home, a relative path lies next to this file
+ *   [visitors] login (default true): the web page's visitors from outside
+ *            free_from (default the private networks, loopback, link-local)
+ *            or through a proxy sign in with their callsign; the visits and
+ *            the refused sign-ins are logged (visitors.h)
  *   [thermal] enabled (default false), limit_c (40–110 °C; empty = the CPU
  *            sensor's critical temperature − 15 °C, else 80), average_min
  *            (5), restore_margin_c (3): the thermal guard (governor.h) —
@@ -155,6 +159,9 @@ typedef struct {
   gint64           rec_at_us;         /* real time to start, 0 = at once     */
   /* [archive] */
   char            *archive_dir;       /* absolute; NULL = off                */
+  /* [visitors] (visitors.h) */
+  gboolean         visitors_login;    /* outside free_from: sign in first    */
+  char           **visitors_free;     /* NULL-terminated, never empty        */
   /* [thermal] (governor.h) */
   gboolean         thermal;
   double           thermal_limit_c;   /* 0 = the sensor's critical − 15 °C   */

@@ -10,6 +10,8 @@ struct _SkimHdWeb {
   SoupServer    *srv;
   GPtrArray     *nets;                 /* GInetAddressMask                   */
   SkimHdWebHooks hooks;
+  SkimHdVisitors *vis;                 /* sign-in on; NULL = off             */
+  GPtrArray     *free_nets;            /* [visitors] free_from               */
 };
 
 /* An IPv4 client on a dual-stack socket shows as ::ffff:a.b.c.d. */
@@ -152,6 +154,150 @@ static gboolean client_allowed(SkimHdWeb *w, SoupServerMessage *msg) {
   return allowed(w->nets, a) && !via_proxy(msg) && host_ok(msg);
 }
 
+/* ---- visitors (visitors.h) ------------------------------------------------------ */
+
+static GInetAddress *remote(SoupServerMessage *msg) {
+  GSocketAddress *sa = soup_server_message_get_remote_address(msg);
+  return G_IS_INET_SOCKET_ADDRESS(sa) ? g_inet_socket_address_get_address(G_INET_SOCKET_ADDRESS(sa))
+                                      : NULL;
+}
+
+/* The client's address as text (an IPv4 one without ::ffff:). */
+static char *remote_text(SoupServerMessage *msg) {
+  GInetAddress *a = remote(msg);
+  if (!a) { return g_strdup("?"); }
+  GInetAddress *u = unmapped(a);
+  char *t = g_inet_address_to_string(u);
+  g_object_unref(u);
+  return t;
+}
+
+/* What a proxy says it forwarded for: X-Forwarded-For's last entry (the
+ * one the proxy itself added), else X-Real-IP; NULL without either. Its
+ * word only — for the log, never for a decision. */
+static char *forwarded_for(SoupServerMessage *msg) {
+  SoupMessageHeaders *h = soup_server_message_get_request_headers(msg);
+  const char *x = soup_message_headers_get_list(h, "X-Forwarded-For");
+  if (!x) { x = soup_message_headers_get_one(h, "X-Real-IP"); }
+  if (!x) { return NULL; }
+  const char *c = strrchr(x, ',');
+  char *t = g_strndup(c ? c + 1 : x, 64);
+  return g_strstrip(t);
+}
+
+/* The sign-in cookie's value, or NULL. */
+static char *cookie_token(SoupServerMessage *msg) {
+  const char *c = soup_message_headers_get_list(soup_server_message_get_request_headers(msg), "Cookie");
+  if (!c) { return NULL; }
+  char *out = NULL;
+  char **parts = g_strsplit(c, ";", -1);
+  for (char **p = parts; *p && !out; p++) {
+    const char *x = g_strstrip(*p);
+    if (g_str_has_prefix(x, SKIM_VIS_COOKIE "=")) { out = g_strdup(x + strlen(SKIM_VIS_COOKIE) + 1); }
+  }
+  g_strfreev(parts);
+  return out;
+}
+
+/* Needs this client no sign-in? A manager, or an address in free_from not
+ * through a proxy — or sign-in off. */
+static gboolean visitor_free(SkimHdWeb *w, SoupServerMessage *msg, gboolean admin) {
+  return !w->vis || admin || (!via_proxy(msg) && allowed(w->free_nets, remote(msg)));
+}
+
+/* The signed-in visitor's token (and call), or NULL. */
+static char *visitor_token(SkimHdWeb *w, SoupServerMessage *msg, char *call) {
+  char *t = cookie_token(msg);
+  if (t && !skim_hd_visitors_check(w->vis, t, g_get_real_time() / G_USEC_PER_SEC, call)) {
+    g_clear_pointer(&t, g_free);
+  }
+  return t;
+}
+
+/* May this client have the data? A free one, or a signed-in visitor (its
+ * visit kept open). */
+static gboolean may_see(SkimHdWeb *w, SoupServerMessage *msg, gboolean admin) {
+  if (visitor_free(w, msg, admin)) { return TRUE; }
+  char call[SKIM_VIS_CALL_MAX + 1];
+  char *t = visitor_token(w, msg, call);
+  if (!t) { return FALSE; }
+  char *addr = remote_text(msg), *fwd = forwarded_for(msg);
+  skim_hd_visitors_seen(w->vis, t, call, addr, fwd, g_get_real_time() / G_USEC_PER_SEC);
+  g_free(addr);
+  g_free(fwd);
+  g_free(t);
+  return TRUE;
+}
+
+static void reply(SoupServerMessage *msg, guint status, const char *type, char *body);
+static void reply_error(SoupServerMessage *msg, guint status, const char *what);
+static const char *origin_refused(SoupServerMessage *msg);
+
+/* GET /api/visitor: must this client sign in, and as whom it is. */
+static void visitor_get(SkimHdWeb *w, SoupServerMessage *msg, gboolean admin) {
+  const gboolean fr = visitor_free(w, msg, admin);
+  char call[SKIM_VIS_CALL_MAX + 1] = "";
+  char *t = fr ? NULL : visitor_token(w, msg, call);
+  reply(msg, SOUP_STATUS_OK, "application/json",
+        g_strdup_printf("{\"login\":%s,\"free\":%s,\"need\":%s,\"call\":%s%s%s}",
+                        w->vis ? "true" : "false", fr ? "true" : "false",
+                        !fr && !t ? "true" : "false", t ? "\"" : "", t ? call : "null",
+                        t ? "\"" : ""));
+  g_free(t);
+}
+
+/* POST /api/visitor: call=… signs in, logout=1 signs out. Open to all (the
+ * sign-in is for those not free), the same origin only. */
+static void visitor_post(SkimHdWeb *w, SoupServerMessage *msg, gboolean admin) {
+  const char *why = origin_refused(msg);
+  if (why) {
+    reply_error(msg, SOUP_STATUS_FORBIDDEN, why);
+    return;
+  }
+  GBytes *bytes = soup_message_body_flatten(soup_server_message_get_request_body(msg));
+  if (g_bytes_get_size(bytes) > 256) {
+    g_bytes_unref(bytes);
+    reply_error(msg, SOUP_STATUS_REQUEST_ENTITY_TOO_LARGE, "too long");
+    return;
+  }
+  char *text = g_strndup(g_bytes_get_data(bytes, NULL), g_bytes_get_size(bytes));
+  g_bytes_unref(bytes);
+  GHashTable *form = text[0] ? soup_form_decode(text) : g_hash_table_new(g_str_hash, g_str_equal);
+  g_free(text);
+  SoupMessageHeaders *rh = soup_server_message_get_response_headers(msg);
+  const gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+  char *addr = remote_text(msg), *fwd = forwarded_for(msg);
+  if (g_hash_table_lookup(form, "logout")) {
+    char *t = cookie_token(msg);
+    skim_hd_visitors_leave(w->vis, t, now);
+    g_free(t);
+    soup_message_headers_append(rh, "Set-Cookie", SKIM_VIS_COOKIE "=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict");
+    reply(msg, SOUP_STATUS_OK, "application/json",
+          g_strdup_printf("{\"need\":%s}", visitor_free(w, msg, admin) ? "false" : "true"));
+  } else {
+    const char *typed = g_hash_table_lookup(form, "call");
+    char call[SKIM_VIS_CALL_MAX + 1];
+    const char *bad = NULL;
+    if (!skim_hd_visitor_call_ok(typed, call, &bad)) {
+      skim_hd_visitors_failed(w->vis, now, addr, fwd, typed, bad);
+      reply_error(msg, SOUP_STATUS_BAD_REQUEST, bad);
+    } else {
+      char *t = skim_hd_visitors_token(w->vis, call, now);
+      char *ck = g_strdup_printf(SKIM_VIS_COOKIE "=%s; Max-Age=%d; Path=/; HttpOnly; SameSite=Strict",
+                                 t, SKIM_VIS_MAX_AGE_S);
+      soup_message_headers_append(rh, "Set-Cookie", ck);
+      g_free(ck);
+      if (!visitor_free(w, msg, admin)) { skim_hd_visitors_seen(w->vis, t, call, addr, fwd, now); }
+      g_free(t);
+      reply(msg, SOUP_STATUS_OK, "application/json",
+            g_strdup_printf("{\"need\":false,\"call\":\"%s\"}", call));
+    }
+  }
+  g_free(addr);
+  g_free(fwd);
+  g_hash_table_unref(form);
+}
+
 /* What every answer carries: no sniffing, no framing (the settings page
  * must not be clickjacked), nothing loaded from elsewhere. */
 static void harden(SoupServerMessage *msg) {
@@ -165,13 +311,8 @@ static void harden(SoupServerMessage *msg) {
       "frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
 }
 
-/* May this POST change the skimmer? The client's address must be in
- * settings_from, and a browser's Origin — when it sends one — this page. */
-static const char *post_refused(SkimHdWeb *w, SoupServerMessage *msg) {
-  if (!client_allowed(w, msg)) {
-    return "settings are read-only from this address ([web] settings_from; not through a "
-           "proxy; the page asked for by this machine's address or name)";
-  }
+/* A browser's Origin — when it sends one — is this page. */
+static const char *origin_refused(SoupServerMessage *msg) {
   SoupMessageHeaders *h = soup_server_message_get_request_headers(msg);
   const char *origin = soup_message_headers_get_one(h, "Origin");
   const char *host = soup_message_headers_get_one(h, "Host");
@@ -185,6 +326,16 @@ static const char *post_refused(SkimHdWeb *w, SoupServerMessage *msg) {
     if (!same) { return "a page from another origin may not change the settings"; }
   }
   return NULL;
+}
+
+/* May this POST change the skimmer? The client's address must be in
+ * settings_from, and a browser's Origin — when it sends one — this page. */
+static const char *post_refused(SkimHdWeb *w, SoupServerMessage *msg) {
+  if (!client_allowed(w, msg)) {
+    return "settings are read-only from this address ([web] settings_from; not through a "
+           "proxy; the page asked for by this machine's address or name)";
+  }
+  return origin_refused(msg);
 }
 
 static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
@@ -208,8 +359,27 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
     /* the config, the log and the LAN search (0.8 s on the main loop) are
      * for those who may manage the skimmer only */
     if (!admin && (strcmp(path, "/api/config") == 0 || strcmp(path, "/api/log") == 0 ||
-                   strcmp(path, "/api/skimmers") == 0)) {
+                   strcmp(path, "/api/skimmers") == 0 || strcmp(path, "/api/visitors") == 0)) {
       reply_error(msg, SOUP_STATUS_FORBIDDEN, "only from an address that may change the settings");
+      return;
+    }
+    if (strcmp(path, "/api/visitor") == 0) {
+      visitor_get(w, msg, admin);
+      return;
+    }
+    if (strcmp(path, "/api/visitors") == 0) {
+      if (!w->vis) {
+        reply(msg, SOUP_STATUS_OK, "application/json", g_strdup("{\"off\":true}"));
+      } else {
+        reply(msg, SOUP_STATUS_OK, "application/json",
+              skim_hd_visitors_json(w->vis, 200, g_get_real_time() / G_USEC_PER_SEC));
+      }
+      return;
+    }
+    /* the data: for a visitor from outside only once signed in */
+    if ((strcmp(path, "/status.json") == 0 || strcmp(path, "/stats.json") == 0 ||
+         strcmp(path, "/api/spots") == 0) && !may_see(w, msg, admin)) {
+      reply_error(msg, SOUP_STATUS_UNAUTHORIZED, "login");
       return;
     }
     SkimHdWebGet hook = strcmp(path, "/status.json") == 0 ? k->status
@@ -227,6 +397,14 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
       return;
     }
     if (!serve_static(msg, path, admin)) { reply_error(msg, SOUP_STATUS_NOT_FOUND, "not found"); }
+    return;
+  }
+  if (post && strcmp(path, "/api/visitor") == 0) {
+    if (!w->vis) {
+      reply_error(msg, SOUP_STATUS_NOT_FOUND, "no sign-in here");
+    } else {
+      visitor_post(w, msg, admin);
+    }
     return;
   }
   if (post) {
@@ -276,16 +454,25 @@ static void ws_waterfall(SoupServer *srv, SoupServerMessage *msg, const char *pa
       return;
     }
   }
-  GSocketAddress *sa = soup_server_message_get_remote_address(msg);
-  char *peer = G_IS_INET_SOCKET_ADDRESS(sa)
-      ? g_inet_address_to_string(g_inet_socket_address_get_address(G_INET_SOCKET_ADDRESS(sa)))
-      : g_strdup("a viewer");
+  /* a visitor from outside: signed in first (its visit kept open) */
+  const gboolean admin = client_allowed(w, msg);
+  char *token = NULL;
+  if (!visitor_free(w, msg, admin)) {
+    if (!may_see(w, msg, admin)) {
+      soup_websocket_connection_close(conn, SOUP_WEBSOCKET_CLOSE_POLICY_VIOLATION, "login");
+      return;
+    }
+    char call[SKIM_VIS_CALL_MAX + 1];
+    token = visitor_token(w, msg, call);
+  }
+  char *peer = remote_text(msg);
   if (w->hooks.waterfall) {
-    w->hooks.waterfall(conn, peer, w->hooks.user);
+    w->hooks.waterfall(conn, peer, token, w->hooks.user);
   } else {
     soup_websocket_connection_close(conn, SOUP_WEBSOCKET_CLOSE_NORMAL, "no waterfall");
   }
   g_free(peer);
+  g_free(token);
 }
 
 SkimHdWeb *skim_hd_web_new(guint16 port, const char *const *settings_from,
@@ -304,8 +491,15 @@ SkimHdWeb *skim_hd_web_new(guint16 port, const char *const *settings_from,
   return w;
 }
 
+void skim_hd_web_set_visitors(SkimHdWeb *w, SkimHdVisitors *v, const char *const *free_from) {
+  w->vis = v;
+  if (w->free_nets) { g_ptr_array_unref(w->free_nets); }
+  w->free_nets = nets_parse(free_from);
+}
+
 void skim_hd_web_free(SkimHdWeb *w) {
   if (!w) { return; }
+  if (w->free_nets) { g_ptr_array_unref(w->free_nets); }
   if (w->srv) {
     soup_server_disconnect(w->srv);
     g_object_unref(w->srv);

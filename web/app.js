@@ -24,9 +24,71 @@ function fmtKhz(khz, d = 1, sep = '\u00a0') {
 
 async function getJSON(url) {
   const r = await fetch(url, { cache: 'no-store' });
+  if (r.status === 401 && url !== 'api/visitor') {           // a visitor from outside: sign in first
+    visitor.need = true;
+    visitor.call = null;
+    showVisitor();
+    throw new Error('sign in first');
+  }
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
   return r.json();
 }
+
+// ---- visitors from outside the LAN sign in with their call (visitors.h) ----------
+// need: this browser must sign in before it gets any data; call: as whom it
+// is signed in (null for a client on the LAN, who needs none)
+const visitor = { need: false, call: null };
+async function visitorCheck() {
+  try {
+    const v = await getJSON('api/visitor');
+    visitor.need = !!v.need;
+    visitor.call = v.call || null;
+  } catch (e) { /* an old skimmer: no sign-in */ }
+  showVisitor();
+}
+function showVisitor() {
+  const box = $('#signin'), was = box.hidden;
+  box.hidden = !visitor.need;
+  if (visitor.need && was) setTimeout(() => $('#signin-call').focus(), 0);
+  const el = $('#visitor');
+  el.hidden = !visitor.call;
+  el.innerHTML = visitor.call ? `you: <b>${esc(visitor.call)}</b><button type="button" id="visitor-out" ` +
+    'title="sign out, or in with another call">change</button>' : '';
+}
+async function visitorPost(fields) {
+  const r = await fetch('api/visitor', { method: 'POST', body: new URLSearchParams(fields),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+  let j = {};
+  try { j = await r.json(); } catch (e) { /* none */ }
+  return { ok: r.ok, ...j };
+}
+on('#signin-form', 'submit', async (e) => {
+  e.preventDefault();
+  const err = $('#signin-err');
+  // the skimmer checks the call (and logs a refusal) — the page only shows why
+  const r = await visitorPost({ call: $('#signin-call').value });
+  if (!r.ok) {
+    err.hidden = false;
+    err.textContent = r.error === 'no callsign entered' || /callsign has|not a callsign/.test(r.error || '')
+      ? `That is not a callsign — ${r.error}.` : (r.error || 'not signed in');
+    $('#signin-call').select();
+    return;
+  }
+  err.hidden = true;
+  visitor.need = !!r.need;
+  visitor.call = r.call || null;
+  showVisitor();
+  poll();
+  if (tab !== 'status' && tabs[tab] && tabs[tab].enter) tabs[tab].enter();
+});
+on('#visitor', 'click', async (e) => {
+  if (e.target.id !== 'visitor-out') return;
+  const r = await visitorPost({ logout: '1' });
+  visitor.call = null;
+  visitor.need = !!r.need;
+  $('#signin-call').value = '';
+  showVisitor();
+});
 
 // ---- tabs ------------------------------------------------------------------------
 const tabs = {};
@@ -346,7 +408,7 @@ const mapShown = { list: [], marked: null };
 function mapDraw() {
   if (typeof SkMap === 'undefined') return;
   SkMap.update(mapShown.list.filter((s) => !mapHidden.has(s.band)).map((s) => ({ ...s, hi: s.call === mapShown.marked })),
-               { locator: spots.locator, call: spots.call });
+               { locator: spots.locator, call: spots.call, visitor: visitor.call });
 }
 on('#ladder', 'click', (e) => {
   const b = e.target.closest('button[data-band]');
@@ -363,7 +425,7 @@ function renderSpots() {
     SkMap.mount($('#skmap'));
     Dxc.mount($('#dxc'), (shown, marked) => { mapShown.list = shown; mapShown.marked = marked; mapDraw(); });
     mapMounted = true;
-    SkMap.update([], { locator: spots.locator, call: spots.call });   // the centre before the rows
+    SkMap.update([], { locator: spots.locator, call: spots.call, visitor: visitor.call });   // the centre before the rows
   }
   const bands = status ? status.bands.map((b) => b.band) : [];
   const workers = status && status.hub ? status.hub.workers.map((w) => w.name) : [];
@@ -1252,16 +1314,36 @@ tabs.log = {
     el.innerHTML = lines.map((l) =>
       `<span class="${esc(l.level)}">${esc(l.t)} ${esc(l.text)}</span>`).join('\n');
     if (atEnd) el.scrollTop = el.scrollHeight;
+    if (Date.now() - visitorsAt > 15000) { visitorsAt = Date.now(); renderVisitors(await getJSON('api/visitors')); }
   },
 };
+let visitorsAt = 0;
+// the visitors' log for the managers: who is here now, the last visits, the refusals
+function renderVisitors(v) {
+  $('#visitors-box').hidden = !!v.off;
+  if (v.off) return;
+  const t = (s) => esc(String(s || '').replace('T', ' ').replace('Z', ''));
+  const freqs = (f) => esc(f || '').replace(/,/g, ', ').replace(/=(\d+)/g, ' $1 s');
+  const dur = (s) => { s = Number(s) || 0; return s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor(s / 60) % 60} min` : s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`; };
+  const addr = (r) => `${esc(r.addr)}${r.fwd ? ` <span class="mut">for ${esc(r.fwd)}</span>` : ''}`;
+  $('#visitors').innerHTML = '<tr><th class="l">start UTC</th><th>call</th><th>time</th><th class="l">address</th><th class="l">watched on the waterfall (10 s or more)</th></tr>' +
+    (v.open || []).map((r) => `<tr class="ok"><td class="l">${t(r.start)} <b>now</b></td><td>${esc(r.call)}</td><td>${dur(r.secs)}</td><td class="l">${addr(r)}</td><td class="l">${freqs(r.freqs)}</td></tr>`).join('') +
+    (v.visits || []).map((r) => `<tr><td class="l">${t(r.start)}</td><td>${esc(r.call)}</td><td>${dur(r.secs)}</td><td class="l">${addr(r)}</td><td class="l">${freqs(r.freqs)}</td></tr>`).join('') +
+    (!(v.open || []).length && !(v.visits || []).length ? '<tr><td colspan="5" class="mut">no visitor yet</td></tr>' : '');
+  $('#visitors-failed').innerHTML = '<tr><th class="l">time UTC</th><th class="l">address</th><th class="l">typed</th><th class="l">why</th></tr>' +
+    (v.failed || []).map((r) => `<tr><td class="l">${t(r.time)}</td><td class="l">${addr(r)}</td><td class="l">${esc(r.typed)}</td><td class="l">${esc(r.why)}</td></tr>`).join('') +
+    (!(v.failed || []).length ? '<tr><td colspan="4" class="mut">none</td></tr>' : '');
+}
 
 // ---- the loop --------------------------------------------------------------------
 async function poll() {
+  if (visitor.need) return;                     // nothing until the visitor signs in
   try {
     await tabs.status.refresh();
     checkRollback(status);
     if (tab !== 'status' && tabs[tab] && tabs[tab].refresh) await tabs[tab].refresh();
   } catch (e) {
+    if (visitor.need) return;
     $('#radio .dot').className = 'dot bad';
     $('#radio-text').textContent = `no answer from the skimmer (${e.message})`;
   }
@@ -1270,5 +1352,5 @@ async function poll() {
 let saved = 'status';
 try { saved = localStorage.getItem('skimmer-tab') || 'status'; } catch (e) { /* private window */ }
 show(document.getElementById(`tab-${saved}`) ? saved : 'status');
-poll();
+visitorCheck().then(poll);
 setInterval(poll, 2000);

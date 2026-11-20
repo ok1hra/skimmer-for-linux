@@ -261,6 +261,17 @@ int main(void) {
           !parse(&c, "[bands]\n20m=14045500\n[decode]\nrtty_adaptive_spots=2.5\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[decode]\nrtty_adaptive_spots=many\n", NULL));
     skim_hd_config_clear(&c);
+    check("[visitors] sign-in on by default, free from the private networks",
+          parse(&c, "[bands]\n20m=14045500\n", NULL) && c.visitors_login &&
+          g_strv_contains((const char *const *)c.visitors_free, "192.168.0.0/16") &&
+          g_strv_contains((const char *const *)c.visitors_free, "fc00::/7"));
+    skim_hd_config_clear(&c);
+    check("[visitors] off, free from one network",
+          parse(&c, "[bands]\n20m=14045500\n[visitors]\nlogin=false\nfree_from=203.0.113.0/24\n", NULL) &&
+          !c.visitors_login && g_strv_length(c.visitors_free) == 1);
+    skim_hd_config_clear(&c);
+    check("[visitors] free_from refused when it is no network",
+          !parse(&c, "[bands]\n20m=14045500\n[visitors]\nfree_from=lan\n", NULL));
     check("[thermal] off by default: limit from the sensor, 5 min, margin 3",
           parse(&c, "[bands]\n20m=14045500\n[thermal]\nlimit_c=\n", NULL) && !c.thermal &&
           c.thermal_limit_c == 0 && c.thermal_average_min == 5 && c.thermal_margin_c == 3);

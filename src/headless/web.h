@@ -16,7 +16,16 @@
  *   POST /api/restart           restart with the config on disk (settings_from)
  *   POST /api/rollback          the previous config back, restart (settings_from)
  *   POST /api/deepcw            fetch the DeepCW model (settings_from)
+ *   GET  /api/visitor           {"login","need","call","free"}: must this client sign in
+ *   POST /api/visitor           call=… signs in (a cookie), logout=1 signs out — open
+ *                               to all, same origin only (visitors.h)
+ *   GET  /api/visitors          the visitors' log (settings_from)
  *   WS   /ws/waterfall          a band's spectrum, live (waterfall.h)
+ *
+ * With visitors on (skim_hd_web_set_visitors), a client that is not free —
+ * not a manager, and not from [visitors] free_from without a proxy — gets
+ * the page itself but no data (/status.json, /stats.json, /api/spots, the
+ * waterfall: 401 {"error":"login"}) until it signs in with a callsign.
  *
  * Every body comes from the owner's hooks — this module only routes, checks
  * who may change things and answers. A POST is refused (403) unless the
@@ -30,6 +39,8 @@
 
 #include <gio/gio.h>
 #include <libsoup/soup.h>
+
+#include "visitors.h"
 
 G_BEGIN_DECLS
 
@@ -46,9 +57,11 @@ typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 typedef struct {
   SkimHdWebGet  status, stats, log, config, skimmers, spots;
   SkimHdWebPost config_post, config_import, restart, rollback, deepcw;
-  /* a WebSocket viewer of the waterfall (peer: its address, for the log);
-   * the hook takes its own reference */
-  void        (*waterfall)(SoupWebsocketConnection *conn, const char *peer, gpointer user);
+  /* a WebSocket viewer of the waterfall (peer: its address, for the log;
+   * visitor: its sign-in token, NULL for a free client); the hook takes its
+   * own reference */
+  void        (*waterfall)(SoupWebsocketConnection *conn, const char *peer, const char *visitor,
+                           gpointer user);
   gpointer      user;
 } SkimHdWebHooks;
 
@@ -57,6 +70,11 @@ typedef struct {
 SkimHdWeb *skim_hd_web_new(guint16 port, const char *const *settings_from,
                            const SkimHdWebHooks *hooks, GError **error);
 void       skim_hd_web_free(SkimHdWeb *w);
+
+/* Visitors from outside sign in (v: the log, kept by the caller; NULL = no
+ * sign-in, everyone gets the data). free_from: the networks that need not
+ * (NULL-terminated). */
+void       skim_hd_web_set_visitors(SkimHdWeb *w, SkimHdVisitors *v, const char *const *free_from);
 
 /* TRUE when addr (a client address) is inside one of nets. */
 gboolean skim_hd_web_addr_allowed(const char *const *nets, GInetAddress *addr);

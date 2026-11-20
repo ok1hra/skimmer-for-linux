@@ -77,6 +77,7 @@
 #include "headless/stats.h"
 #include "headless/switches.h"
 #include "headless/waterfall.h"
+#include "headless/visitors.h"
 #include "headless/web.h"
 #include "engine/callsign.h"
 #include "engine/decode_deepcw.h"
@@ -190,6 +191,7 @@ typedef struct {
 
   SkimStats *stats;            /* the 7-day history (stats.h)                 */
   SkimHdGovernor *gov;         /* adaptive RTTY: what pauses on its own       */
+  SkimHdVisitors *vis;         /* [visitors]: sign-in and the visitors' log   */
   SkimHdArchive *archive;      /* [archive]: every spot, a file a day; NULL   */
   SkimHdWaterfall *wf;         /* the page's waterfall (idle while unwatched) */
   char      *archive_err;      /* the last flush error logged (no repeats)    */
@@ -1032,6 +1034,7 @@ static gboolean tick(gpointer data) {
   }
 
   h->ticks++;
+  if (h->vis && h->ticks % 10 == 0) { skim_hd_visitors_tick(h->vis, g_get_real_time() / G_USEC_PER_SEC); }
   if (h->archive && h->ticks % 60 == 0) {      /* [archive]: a gzip member a minute */
     GError *err = NULL;
     if (!skim_hd_archive_flush(h->archive, &err)) {
@@ -1604,8 +1607,19 @@ static int find_skimmers_cli(void) {
   return 0;
 }
 
-static void web_waterfall(SoupWebsocketConnection *conn, const char *peer, gpointer user) {
-  skim_hd_waterfall_add(((Hd *)user)->wf, conn, peer);
+static void web_waterfall(SoupWebsocketConnection *conn, const char *peer, const char *visitor,
+                          gpointer user) {
+  skim_hd_waterfall_add(((Hd *)user)->wf, conn, peer, visitor);
+}
+
+/* What a signed-in visitor watches on the waterfall: to its visit. */
+static void wf_view(const char *visitor, gconstpointer conn, const char *band, double lo,
+                    double hi, gboolean audio, double af, gpointer user) {
+  Hd *h = user;
+  if (h->vis) {
+    skim_hd_visitors_view(h->vis, visitor, conn, band, lo, hi, audio, af,
+                          g_get_real_time() / G_USEC_PER_SEC);
+  }
 }
 
 static char *web_log(GHashTable *q, gboolean may, guint *st, const char **type,
@@ -2345,6 +2359,22 @@ int main(int argc, char **argv) {
       g_message("web: http://<this machine>:%d/ (JSON: /status.json); settings "
                 "from %s", h->http_port, from);
       g_free(from);
+      if (c->visitors_login) {
+        char *vdir = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", NULL);
+        h->vis = skim_hd_visitors_new(vdir, &err);
+        g_free(vdir);
+        if (!h->vis) {
+          g_warning("visitors: %s — no sign-in, the page is open to all", err->message);
+          g_clear_error(&err);
+        } else {
+          char *fr = g_strjoinv(", ", c->visitors_free);
+          g_message("visitors: from outside %s they sign in with a call; the log: %s", fr,
+                    skim_hd_visitors_path(h->vis));
+          g_free(fr);
+          skim_hd_web_set_visitors(web, h->vis, (const char *const *)c->visitors_free);
+          skim_hd_waterfall_set_view_cb(h->wf, wf_view, h);
+        }
+      }
     }
   }
 
@@ -2403,6 +2433,7 @@ int main(int argc, char **argv) {
   if (h->dcw_thread) { g_thread_join(h->dcw_thread); }
   g_clear_pointer(&h->src, skim_iq_source_free);
   g_clear_pointer(&h->wf, skim_hd_waterfall_free);   /* nothing pushes into it */
+  g_clear_pointer(&h->vis, skim_hd_visitors_free);   /* the open visits logged */
   g_clear_pointer(&h->hub, skim_hd_hub_free);     /* nothing pushes any more   */
   for (guint i = 0; i < h->nb; i++) {
     for (guint k = 0; k < M_N; k++) { skim_pipeline_free(h->band[i].dec[k].p); }

@@ -97,6 +97,12 @@ static const char DEFAULT_CONFIG[] =
   "\n[web]\n# who may change the settings from the web page (addresses or\n"
   "# networks, comma separated); everyone else sees them read-only\n"
   "settings_from=127.0.0.1,::1\n"
+  "\n[visitors]\n# the web page's visitors from outside free_from (and everyone through a\n"
+  "# proxy) sign in with their callsign before they see anything; a log of\n"
+  "# the visits (call, address, how long, the frequencies watched on the\n"
+  "# waterfall) in ~/.local/state/skimmer-for-linux/visitors.tsv, the refused\n"
+  "# sign-ins in visitors-failed.tsv. free_from empty = the private networks\n"
+  "login=true\nfree_from=\n"
   "\n[thermal]\n# the thermal guard: while the hottest CPU sensor, averaged over\n"
   "# average_min minutes, stays over limit_c for 5 minutes, the band with the\n"
   "# fewest spots in the last 30 minutes is paused (CW and RTTY); 10 minutes\n"
@@ -140,6 +146,7 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_free(cfg->feed_gate);
   g_free(cfg->feed_gate_mode);
   g_strfreev(cfg->settings_from);
+  g_strfreev(cfg->visitors_free);
   g_strfreev(cfg->peers);
   g_free(cfg->hub_name);
   g_strfreev(cfg->hub_allow);
@@ -683,6 +690,35 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   h->settings_from = (char **)g_ptr_array_free(nets, FALSE);
   if (!ok) { return FALSE; }
 
+  {
+    /* [visitors]: sign-in for the page's visitors from outside the LAN */
+    if (!opt_bool(kf, "visitors", "login", TRUE, &h->visitors_login, path, error)) { return FALSE; }
+    char *fv = g_key_file_get_string(kf, "visitors", "free_from", NULL);
+    GPtrArray *fl = g_ptr_array_new();
+    char **fp = g_strsplit_set(fv ? fv : "", ", \t", -1);
+    gboolean fok = TRUE;
+    for (char **q = fp; *q && fok; q++) {
+      if (!**q) { continue; }
+      GInetAddressMask *m = g_inet_address_mask_new_from_string(*q, NULL);
+      if (!m) {
+        fok = bad(error, path, "[visitors] free_from \"%s\" (an address or address/bits)", *q);
+      } else {
+        g_object_unref(m);
+        g_ptr_array_add(fl, g_strdup(*q));
+      }
+    }
+    g_strfreev(fp);
+    g_free(fv);
+    if (!fl->len) {
+      static const char *const LAN[] = { "127.0.0.0/8", "::1", "10.0.0.0/8", "172.16.0.0/12",
+                                         "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10" };
+      for (guint i = 0; i < G_N_ELEMENTS(LAN); i++) { g_ptr_array_add(fl, g_strdup(LAN[i])); }
+    }
+    g_ptr_array_add(fl, NULL);
+    h->visitors_free = (char **)g_ptr_array_free(fl, FALSE);
+    if (!fok) { return FALSE; }
+  }
+
   char *rb = g_key_file_get_string(kf, "record", "bands", NULL);
   if (rb && g_strstrip(rb)[0]) {
     h->rec_bands = g_strsplit(rb, ",", -1);
@@ -799,7 +835,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "peers.hosts", "hub.name", "hub.port", "station.locator",
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
-  "archive.dir", "thermal.enabled", "thermal.limit_c", "thermal.average_min",
+  "archive.dir", "visitors.login", "visitors.free_from", "thermal.enabled", "thermal.limit_c", "thermal.average_min",
   "thermal.restore_margin_c", "filter.call", "filter.regex", "filter.mycall", "filter.mycall_diff",
   NULL,
 };

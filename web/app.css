@@ -285,6 +285,24 @@ button.small:hover, .bands-edit button:hover { border-color: var(--hot); }
 .actions .sep { width: 1px; align-self: stretch; background: var(--ln); margin: 0 4px; }
 .actions button.primary { background: var(--hot); border-color: var(--hot); color: var(--hot-ink); font-weight: 700; }
 button:disabled { opacity: .45; cursor: default; }
+/* the sign-in for visitors from outside the LAN: over everything */
+#signin { position: fixed; inset: 0; z-index: 20; background: rgba(5,9,14,.92); display: flex;
+          align-items: center; justify-content: center; padding: 16px; }
+#signin form { background: var(--panel); border: 1px solid var(--ln2); padding: 22px 24px; width: 100%;
+               max-width: 420px; }
+#signin h2 { margin: 0 0 6px; font-size: 18px; letter-spacing: .04em; }
+#signin .signin-row { display: flex; gap: 8px; margin: 14px 0 6px; }
+#signin input { flex: 1; min-width: 0; font: inherit; font-size: 20px; letter-spacing: .08em; padding: 6px 10px;
+                background: var(--deep); color: var(--fg); border: 1px solid var(--ln2); text-transform: uppercase; }
+#signin input::placeholder { text-transform: none; color: var(--faint); }
+#signin button { font: inherit; font-weight: 700; padding: 6px 18px; background: var(--hot); color: var(--hot-ink);
+                 border: 1px solid var(--hot); cursor: pointer; }
+#signin .bad { color: var(--bad); margin: 6px 0 0; }
+#signin .small { font-size: 12px; margin: 12px 0 0; }
+.visitor { color: var(--mut); font-size: 13px; letter-spacing: .04em; margin-left: 6px; white-space: nowrap; }
+.visitor b { color: var(--accent); }
+.visitor button { font: inherit; font-size: 12px; background: none; border: 0; color: var(--cq); cursor: pointer;
+                  padding: 0 0 0 4px; text-decoration: underline; }
 #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center;
            justify-content: center; z-index: 10; }
 #overlay > div { background: var(--panel); border: 1px solid var(--ln2); padding: 18px 22px; max-width: 90vw; }
