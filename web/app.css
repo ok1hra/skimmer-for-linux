@@ -279,6 +279,8 @@ input:disabled, select:disabled { opacity: .55; }
 input.bad { border-color: var(--bad); }
 .bands-edit input[type=text], .bands-edit input:not([type]) { width: 7em; }
 .bands-edit td { padding: 3px 6px; }
+.bands-edit td.segname { font-weight: 700; padding-left: 10px; text-align: left; }
+.bands-edit td.span { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .bands-edit tr.off td { background: var(--deep); }
 .bands-edit tr.off input:not([data-k=on]), .bands-edit tr.off select { opacity: .5; }
 button.small, .bands-edit button { font: inherit; font-size: 13px; letter-spacing: .04em; border: 1px solid var(--ln2);

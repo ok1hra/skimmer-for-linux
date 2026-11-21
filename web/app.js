@@ -938,29 +938,92 @@ for (const ev of ['input', 'change']) {
   }, true);
 }
 
-function bandRow(b, i, n, may, rx) {
+// The segments a rate offers, as CW Skimmer offers them: per band its low
+// edge and how many segments each rate takes (48, 96, 192 kHz). A segment
+// spans 91/96 of the rate (45.5, 91, 182 kHz — the rest is the filter's
+// edge), the first from the band's low edge, the next right above it. The
+// rate is one for every receiver (the Red Pitaya's), so it sets the list;
+// up to 8 of them are on (its receivers).
+const SEG_BANDS = [['160m', 1800000, 1, 1, 1], ['80m', 3500000, 2, 1, 1], ['40m', 7000000, 1, 1, 1],
+  ['30m', 10100000, 1, 1, 1], ['20m', 14000000, 2, 1, 1], ['17m', 18068000, 1, 1, 1], ['15m', 21000000, 2, 1, 1],
+  ['12m', 24890000, 1, 1, 1], ['10m', 28000000, 2, 2, 1], ['6m', 50000000, 4, 2, 1]];
+function segments(rate) {
+  const col = rate === 48000 ? 2 : rate === 192000 ? 4 : 3, step = (rate * 91) / 96;
+  const out = [];
+  for (const b of SEG_BANDS) {
+    for (let k = 0; k < b[col]; k++) out.push({ name: k ? `${b[0]}-${k + 1}` : b[0], hz: Math.round(b[1] + step / 2 + k * step) });
+  }
+  return out;
+}
+const bandRate = () => Number($('[name="radio.rate"]').value) || 96000;
+const parseKhz = (v) => parseFloat(String(v).replace(/\s/g, '').replace(',', '.'));
+// a band's centre in Hz: the one typed, else its segment's
+const bandHz = (b) => (b.khz ? Math.round(parseKhz(b.khz) * 1000) : b.def);
+// IQ on the wire for n receivers at a rate (HPSDR P1: 24-bit I and Q per
+// receiver and a 16-bit mic word per sample, 504 bytes of them in each half
+// of a 1032-byte packet; + Ethernet, IP and UDP headers)
+function wireMbps(n, rate) {
+  if (!n) return 0;
+  return (rate / (2 * Math.floor(504 / (6 * n + 2)))) * (1032 + 42) * 8 / 1e6;
+}
+
+// The rows: every segment of the rate (a band of the config with its name
+// takes it, its own centre kept — empty = the segment's) and the config's
+// other bands as bands of the user's own, all in frequency order = the
+// receivers' order. A segment band the new rate has not (80m-2 at 96 kHz)
+// stays as a band of its own while it is on or set up, else it goes.
+function withSegments(list, rate) {
+  const dflt = $('[name="decode.engine"]').value || 'v3';
+  const left = [...list];
+  const out = [];
+  for (const s of segments(rate)) {
+    const i = left.findIndex((b) => b.name === s.name), b = i >= 0 ? left.splice(i, 1)[0] : null;
+    if (!b) { out.push({ seg: true, def: s.hz, name: s.name, khz: '', cw: true, engine: dflt, rtty: false, on: false, worker: '' }); continue; }
+    const hz = bandHz(b);
+    out.push({ ...b, seg: true, def: s.hz, khz: b.khz && hz !== s.hz && !(b.seg && hz === b.def) ? b.khz : '' });
+  }
+  for (const b of left) {
+    if (b.seg && !b.on && !setUp(b)) continue;
+    out.push({ ...b, seg: false, khz: b.khz || fmtKhz(b.def / 1000, null, ' '), def: 0 });
+  }
+  return out.sort((a, b) => (bandHz(a) || Infinity) - (bandHz(b) || Infinity));
+}
+// a band off that is still saved: its own, or a segment set up beyond a plain CW one
+function setUp(b) {
+  return !b.seg || !b.cw || b.rtty || !!b.worker || !!b.khz || b.engine !== ($('[name="decode.engine"]').value || 'v3');
+}
+
+function bandRow(b, may, rx, rate) {
   const tr = document.createElement('tr');
   const dis = may ? '' : ' disabled';
   tr.classList.toggle('off', !b.on);
+  tr.dataset.seg = b.seg ? b.name : '';
+  tr.dataset.def = b.def || '';
+  const hz = bandHz(b);
+  const span = Number.isFinite(hz) && hz > 0
+    ? `${fmtKhz((hz - rate / 2) / 1000, 0, ' ')} – ${fmtKhz((hz + rate / 2) / 1000, 0, ' ')}` : '–';
   tr.innerHTML =
     `<td>${b.on ? `RX${rx}` : '<span class="mut">off</span>'}</td>` +
     `<td><input type="checkbox" data-k="on"${b.on ? ' checked' : ''}${dis} title="received"></td>` +
-    `<td><input data-k="name" value="${esc(b.name)}" size="6"${dis}></td>` +
-    `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${dis}></td>` +
+    (b.seg ? `<td class="segname" title="a segment of the rate">${esc(b.name)}</td>`
+      : `<td><input data-k="name" value="${esc(b.name)}" size="6"${dis} title="a band of your own"></td>`) +
+    `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${b.seg ? ` placeholder="${esc(fmtKhz(b.def / 1000, null, ' '))}" title="empty = the segment's centre; a number moves it"` : ''}${dis}></td>` +
+    `<td class="mut span">${span}</td>` +
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
     `<td><select data-k="engine"${dis}><option value="v3">v3.1</option><option value="v2">v2</option><option value="deepcw" title="not tested with this skimmer">DeepCW (not tested)</option></select></td>` +
     `<td><input type="checkbox" data-k="rtty"${b.rtty ? ' checked' : ''}${dis}></td>` +
     `<td><input data-k="worker" value="${esc(b.worker || '')}" list="worker-names" size="8" placeholder="this PC"${dis}></td>` +
-    `<td><button type="button" data-a="up" title="earlier receiver"${i && may ? '' : ' disabled'}>↑</button>` +
-    `<button type="button" data-a="down" title="later receiver"${i < n - 1 && may ? '' : ' disabled'}>↓</button>` +
-    `<button type="button" data-a="del" title="remove"${n > 1 && may ? '' : ' disabled'}>✕</button></td>`;
+    `<td>${b.seg ? '' : `<button type="button" data-a="del" title="remove this band of your own"${may ? '' : ' disabled'}>✕</button>`}</td>`;
   tr.querySelector('select').value = b.engine;
-  if (!may) applyLock(tr, false);               // the ↑ ↓ ✕ keep their own limits when may
+  if (!may) applyLock(tr, false);
   return tr;
 }
+const rowName = (tr) => tr.dataset.seg || tr.querySelector('[data-k=name]').value.trim();
 function readBands() {
   return [...document.querySelectorAll('#band-rows tr')].map((tr) => ({
-    name: tr.querySelector('[data-k=name]').value.trim(),
+    seg: !!tr.dataset.seg,
+    def: Number(tr.dataset.def) || 0,
+    name: rowName(tr),
     khz: tr.querySelector('[data-k=khz]').value.trim(),
     cw: tr.querySelector('[data-k=cw]').checked,
     engine: tr.querySelector('[data-k=engine]').value,
@@ -969,40 +1032,61 @@ function readBands() {
     worker: tr.querySelector('[data-k=worker]').value.trim(),
   }));
 }
-function drawBands(list) {
-  const may = cfg.data && cfg.data.may_change;
+function drawBands(list, note) {
+  const may = cfg.data && cfg.data.may_change, rate = bandRate();
   let rx = 0;
-  $('#band-rows').replaceChildren(...list.map((b, i) => bandRow(b, i, list.length, may, b.on ? ++rx : 0)));
+  $('#band-rows').replaceChildren(...list.map((b) => bandRow(b, may, b.on ? ++rx : 0, rate)));
   // the workers this hub knows: named in a band, connected, or found on the LAN
   const names = new Set(list.map((b) => b.worker).filter(Boolean));
   for (const w of (status && status.hub && status.hub.workers) || []) names.add(w.name);
   for (const n of cfg.lanWorkers || []) names.add(n);
   $('#worker-names').innerHTML = [...names].map((n) => `<option value="${esc(n)}">`).join('');
-  const off = list.length - rx;
-  $('#band-count').textContent = `${rx} of ${MAX_BANDS} receivers${off ? ` · ${off} off` : ''}`;
-  $('#band-count').classList.toggle('bad', rx > MAX_BANDS);
-  $('#band-add').disabled = !may || list.length >= MAX_LISTED;
+  const mbps = wireMbps(rx, rate);
+  $('#band-count').textContent = `${rx} of ${MAX_BANDS} receivers · ${rate / 1000} kHz each` +
+    `${rx ? ` · ≈ ${Math.round(mbps)} Mb/s of IQ on the wire` : ''}${note ? ` · ${note}` : ''}`;
+  $('#band-count').classList.toggle('bad', rx > MAX_BANDS || !!note);
+  $('#band-add').disabled = !may || list.filter((b) => b.on || setUp(b)).length >= MAX_LISTED;
 }
-// ticking a band on or off renumbers the receivers
+// ticking a band on or off renumbers the receivers; a ninth stays off
 on('#band-rows', 'change', (e) => {
-  if (e.target.dataset && e.target.dataset.k === 'on') drawBands(readBands());
+  const k = e.target.dataset && e.target.dataset.k;
+  if (k === 'on') {
+    const list = readBands();
+    if (e.target.checked && list.filter((b) => b.on).length > MAX_BANDS) {
+      e.target.checked = false;
+      drawBands(readBands(), `the radio has ${MAX_BANDS} receivers: turn one off first`);
+      return;
+    }
+    drawBands(list);
+  }
+});
+// a centre typed: its span follows
+on('#band-rows', 'input', (e) => {
+  if (!e.target.dataset || e.target.dataset.k !== 'khz') return;
+  const tr = e.target.closest('tr'), rate = bandRate();
+  const hz = e.target.value.trim() ? Math.round(parseKhz(e.target.value) * 1000) : Number(tr.dataset.def);
+  tr.querySelector('.span').textContent = Number.isFinite(hz) && hz > 0
+    ? `${fmtKhz((hz - rate / 2) / 1000, 0, ' ')} – ${fmtKhz((hz + rate / 2) / 1000, 0, ' ')}` : '–';
 });
 on('#band-rows', 'click', (e) => {
-  const a = e.target.dataset && e.target.dataset.a;
-  if (!a) return;
-  const list = readBands(), i = [...$('#band-rows').children].indexOf(e.target.closest('tr'));
-  if (a === 'del') list.splice(i, 1);
-  if (a === 'up' && i > 0) [list[i - 1], list[i]] = [list[i], list[i - 1]];
-  if (a === 'down' && i < list.length - 1) [list[i + 1], list[i]] = [list[i], list[i + 1]];
+  if (!(e.target.dataset && e.target.dataset.a === 'del')) return;
+  const list = readBands();
+  list.splice([...$('#band-rows').children].indexOf(e.target.closest('tr')), 1);
   drawBands(list);
   setDirty(true);
 });
 on('#band-add', 'click', () => {
   const list = readBands();
   const on = list.filter((b) => b.on).length < MAX_BANDS;   // a ninth line starts off
-  list.push({ name: '', khz: '', cw: true, engine: $('[name="decode.engine"]').value || 'v3', rtty: false, on });
+  list.push({ seg: false, def: 0, name: '', khz: '', cw: true, engine: $('[name="decode.engine"]').value || 'v3', rtty: false, on });
   drawBands(list);
   setDirty(true);
+});
+// another rate, other segments: the bands move to the new rate's segment of
+// the same name, a centre of their own kept
+on('[name="radio.rate"]', 'change', () => {
+  if (!cfg.data) return;
+  drawBands(withSegments(readBands(), bandRate()));
 });
 on('#settings', 'input', () => setDirty(true));
 
@@ -1058,9 +1142,9 @@ function fillSettings(d) {
   f.classList.toggle('locked', !d.may_change);
   $('#set-export').disabled = false;                 // anyone may read the file
   $('#lan-find').disabled = false;                   // a search changes nothing
-  drawBands(d.bands.map((b) => ({ name: b.name, khz: fmtKhz(b.centre_hz / 1000, null, ' '), cw: b.cw,
+  drawBands(withSegments(d.bands.map((b) => ({ name: b.name, khz: fmtKhz(b.centre_hz / 1000, null, ' '), cw: b.cw,
                                   engine: b.engine, rtty: b.rtty, on: b.on !== false,
-                                  worker: b.worker || '' })));
+                                  worker: b.worker || '' })), bandRate()));
   const lock = $('#set-lock');
   lock.hidden = d.may_change;
   if (!d.may_change) {
@@ -1097,7 +1181,8 @@ function formBody() {
   const lines = [];
   for (const b of readBands()) {
     if (!b.name && !b.khz) continue;
-    const hz = Math.round(parseFloat(b.khz.replace(/\s/g, '').replace(',', '.')) * 1000);
+    if (!b.on && !setUp(b)) continue;               // a segment off, nothing set: not a line
+    const hz = bandHz(b);
     const modes = [];
     if (b.cw) modes.push(b.engine === dflt ? 'cw' : `cw:${b.engine}`);
     if (b.rtty) modes.push('rtty');
@@ -1190,11 +1275,13 @@ function checkFields() {
   }
   for (const tr of document.querySelectorAll('#band-rows tr')) {
     const name = tr.querySelector('[data-k=name]'), khz = tr.querySelector('[data-k=khz]');
-    if (!name.value.trim() && !khz.value.trim()) continue;
-    const kv = parseFloat(khz.value.replace(/\s/g, '').replace(',', '.'));
-    const nm = name.value.trim() ? '' : 'a name';
+    if (tr.dataset.seg && !khz.value.trim()) { khz.classList.remove('bad'); continue; }   // the segment's centre
+    if (name && !name.value.trim() && !khz.value.trim()) continue;
+    const kv = parseKhz(khz.value);
+    const nm = !name || name.value.trim() ? '' : 'a name';
     const km = Number.isFinite(kv) && kv > 0 ? '' : 'kHz';
-    name.classList.toggle('bad', !!nm); khz.classList.toggle('bad', !!km);
+    if (name) name.classList.toggle('bad', !!nm);
+    khz.classList.toggle('bad', !!km);
     if (nm) wrong.push(name);
     if (km) wrong.push(khz);
   }
@@ -1206,7 +1293,7 @@ function markRefusal(msg) {
   const b = /band (\S+?):/.exec(msg);             // a band's line first ("band 20m: … [hub] port is 0")
   if (b) {
     const tr = [...document.querySelectorAll('#band-rows tr')]
-      .find((r) => r.querySelector('[data-k=name]').value.trim() === b[1]);
+      .find((r) => rowName(r) === b[1]);
     if (tr) { for (const i of tr.querySelectorAll('input:not([type=checkbox])')) i.classList.add('bad'); return tr; }
   }
   const k = /\[(\w+)\] (\w+)/.exec(msg);

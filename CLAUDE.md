@@ -156,7 +156,11 @@ here; what was done and why is in git.
   status.json without addresses, paths and switches; the locator leaves
   the skimmer as its square only (4 characters, everyone — the map's
   centre, else the call's DXCC). A blank config value is the default (the
-  form sends empty fields; `given()` in config.c). Rules and the audit:
+  form sends empty fields; `given()` in config.c). Settings → Bands lists
+  the Rate's segments as CW Skimmer has them (45.5/91/182 kHz from each
+  band's low edge, `segments()` in app.js; a second one is `80m-2`), up to
+  8 on, plus bands of the user's own; off segments with nothing set are no
+  [bands] line. Rules and the audit:
   `docs/WEB-SECURITY.md` — keep them when adding an endpoint. Frequencies show
   with a space after the MHz (`fmtKhz` in app.js); the charts share one plot
   frame and one crosshair.
