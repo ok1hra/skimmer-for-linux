@@ -210,6 +210,9 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .ladder td.eye button:hover { color: var(--fg); }
 .ladder tr.off-map td.eye button { color: var(--faint); }
 .ladder tr.off-map td:not(.eye) { opacity: .4; }
+/* every mode of the band paused (the thermal guard): grey, not its colour */
+.ladder tr.paused td.b, .ladder tr.paused td.last { color: var(--mut) !important; }
+.ladder tr.paused td.bar i { background: var(--faint) !important; opacity: 1; }
 .ladder tr.head-row th { padding: 2px 6px 4px; border-bottom: 1px solid var(--ln); color: var(--mut); font-weight: 400;
   font-size: 11px; letter-spacing: .1em; text-transform: uppercase; text-align: left; vertical-align: bottom; cursor: help; }
 .readouts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 16px; color: var(--mut); font-size: 13px;

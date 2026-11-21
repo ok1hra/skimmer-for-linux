@@ -195,13 +195,17 @@ function renderStatus(d) {
     const col = typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : '';   // the band's own colour
     const i = (frac) => `<i style="width:${(100 * frac).toFixed(0)}%;${col ? `background:${col}` : ''}"></i>`;
     // each number left of its bar — the bars start there
+    // a paused mode is grey OFF (why: its title); a band with every mode
+    // paused is grey all along its row — its spots are from before the pause
     const bar = (on, act, dec, cls, paused) => paused
-      ? `<td class="n ${offClass(paused)}" title="${esc(pausedText(paused))}">OFF</td><td class="bar off" title="${esc(pausedText(paused))}"></td>`
+      ? `<td class="n mut" title="${esc(pausedText(paused))}">OFF</td><td class="bar off" title="${esc(pausedText(paused))}"></td>`
       : on
       ? `<td class="n" title="${fmt(act)} of ${fmt(dec)} decoders active">${fmt(act)}</td><td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active">${i(act / maxAct)}</td>`
       : '<td class="n mut">–</td><td class="bar off"></td>';
     const off = mapHidden.has(b.band);
-    return `<tr${off ? ' class="off-map"' : ''}><td class="eye"><button type="button" data-band="${esc(b.band)}" ` +
+    const allOff = (cwOn || !!rt) && (!cwOn || !!b.paused) && (!rt || !!rt.paused);
+    const trCls = [off ? 'off-map' : '', allOff ? 'paused' : ''].filter(Boolean).join(' ');
+    return `<tr${trCls ? ` class="${trCls}"` : ''}><td class="eye"><button type="button" data-band="${esc(b.band)}" ` +
       `title="${off ? 'not on the map — click: show' : 'on the map — click: hide'} ${esc(b.band)}" ` +
       `aria-pressed="${off ? 'false' : 'true'}">${off ? EYE_OFF : EYE_ON}</button></td>` +
       `<td class="b" style="color:${col}">${esc(b.band)}</td>` +
