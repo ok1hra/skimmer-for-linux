@@ -494,6 +494,9 @@ on('#spots-y', 'click', (e) => {
 
 // The CW + RTTY decoders tile: every channel decoder running now, summed over
 // the bands, CW beside RTTY (live, from the status — the history has no count).
+// A paused mode (adaptive RTTY, the thermal guard) gets no IQ: its decoders
+// are not counted, the small line says how many bands are off and why; with
+// every band of a mode off the number is OFF.
 function renderDecTile(d) {
   const el = $('#stats-dec');
   if (!el || !d) return;
@@ -501,8 +504,18 @@ function renderDecTile(d) {
   const cw = all.filter((b) => b.cw !== false);
   const rt = all.filter((b) => b.rtty);
   const n = (list, f) => list.reduce((a, b) => a + (f(b) || 0), 0);
-  const part = (label, cls, list, f) => `<div class="part ${cls}"><div class="n">${list.length ? fmt(n(list, (b) => f(b).decoders)) : '–'}</div>` +
-    `<div class="l">${label}<small>${list.length ? `${fmt(n(list, (b) => f(b).active))} active · ${list.length} band${list.length === 1 ? '' : 's'}` : 'no band'}</small></div></div>`;
+  const part = (label, cls, list, f) => {
+    if (!list.length) return `<div class="part ${cls}"><div class="n">–</div><div class="l">${label}<small>no band</small></div></div>`;
+    const on = list.filter((b) => !f(b).paused);
+    const off = list.filter((b) => f(b).paused);
+    const whys = [...new Set(off.map((b) => f(b).paused))];
+    const offTxt = whys.map((w) => `${off.filter((b) => f(b).paused === w).length} off ${pausedShort(w)}`).join(' · ');
+    const num = on.length ? fmt(n(on, (b) => f(b).decoders))
+      : `<span class="${offClass(whys.includes('thermal') ? 'thermal' : whys[0])}">OFF</span>`;
+    const small = [on.length ? `${fmt(n(on, (b) => f(b).active))} active` : '',
+      on.length ? `${on.length} of ${list.length} band${list.length === 1 ? '' : 's'}` : '', offTxt].filter(Boolean).join(' · ');
+    return `<div class="part ${cls}"><div class="n">${num}</div><div class="l">${label}<small>${small}</small></div></div>`;
+  };
   el.innerHTML = '<div class="k">CW + RTTY decoders <small>running now</small></div><div class="parts">' +
     part('CW', 'cw', cw, (b) => b) + part('RTTY', 'rtty', rt, (b) => b.rtty) + '</div>';
 }
