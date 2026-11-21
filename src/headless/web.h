@@ -65,7 +65,7 @@ typedef char *(*SkimHdWebGet)(GHashTable *query, SkimHdWebWho who, guint *status
 typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
 typedef struct {
-  SkimHdWebGet  status, stats, log, config, skimmers, spots;
+  SkimHdWebGet  status, stats, log, config, skimmers, spots, skimsrv;
   SkimHdWebPost config_post, config_import, restart, rollback, deepcw;
   /* a WebSocket viewer of the waterfall (peer: its address, for the log;
    * visitor: its sign-in token, NULL for a free client); the hook takes its

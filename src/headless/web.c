@@ -364,7 +364,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
     /* the config, the log and the LAN search (0.8 s on the main loop) are
      * for those who may manage the skimmer only */
     if (!admin && (strcmp(path, "/api/config") == 0 || strcmp(path, "/api/log") == 0 ||
-                   strcmp(path, "/api/skimmers") == 0)) {
+                   strcmp(path, "/api/skimmers") == 0 || strcmp(path, "/api/skimsrv") == 0)) {
       reply_error(msg, SOUP_STATUS_FORBIDDEN, "only from an address that may change the settings");
       return;
     }
@@ -400,6 +400,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                       : strcmp(path, "/api/config") == 0  ? k->config
                       : strcmp(path, "/api/skimmers") == 0 ? k->skimmers
                       : strcmp(path, "/api/spots") == 0    ? k->spots
+                      : strcmp(path, "/api/skimsrv") == 0  ? k->skimsrv
                                                           : NULL;
     if (hook) {
       guint status = SOUP_STATUS_OK;

@@ -360,6 +360,14 @@ skimmer_visitors_test = executable('skimmer-visitors-test',
 )
 test('visitors', skimmer_visitors_test, timeout : 60)
 
+# SkimSrv.ini under wine: found, the newest wins, only the band keys leave.
+skimmer_skimsrv_test = executable('skimmer-skimsrv-test',
+  ['src/skimsrv_test.c', 'src/headless/skimsrv.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+)
+test('skimsrv', skimmer_skimsrv_test, timeout : 30)
+
 # Golden gate: real-air IQ + decode-tap slices through the whole engine with
 # no SKIM_* switches — every output byte-identical to tests/golden/
 # expected.sha256. Inputs live outside git (tests/golden/README.md); without
@@ -397,6 +405,7 @@ headless_sources = files(
   'src/headless/record.c',          # [record]: a band's IQ to disk
   'src/headless/scp_update.c',      # MASTER.SCP updater
   'src/headless/service.c',         # --install-service: the systemd user unit
+  'src/headless/skimsrv.c',         # CW Skimmer Server's bands, from its SkimSrv.ini
   'src/headless/source.c',          # IQ sources: the interface
   'src/headless/source_hpsdr_p1.c', # … a Red Pitaya (HPSDR P1)
   'src/headless/source_hub.c',      # … a worker: the bands its hub passes on

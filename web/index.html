@@ -309,6 +309,9 @@
         </table></div>
         <datalist id="worker-names"></datalist>
         <button type="button" id="band-add" class="small">Add band</button>
+        <button type="button" id="band-skimsrv" class="small" title="the bands CW Skimmer Server uses: its rate and the segments ticked there, from its SkimSrv.ini — found on this PC (wine), or a file you choose">From CW Skimmer</button>
+        <input type="file" id="band-skimsrv-file" accept=".ini" hidden>
+        <div id="band-from" class="band-from"></div>
         <small class="mut">the Rate (Radio, one for every receiver) sets the segments, as CW Skimmer has them: 45.5, 91 or 182 kHz each from a band's low edge — tick up to 8, one receiver each, in frequency order; a segment's centre can be moved (empty = its own); <i>Add band</i> = a band of your own anywhere. The Mb/s are the IQ the radio sends this PC over the network.</small>
       </fieldset>
       <fieldset>

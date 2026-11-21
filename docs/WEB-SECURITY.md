@@ -77,7 +77,7 @@ watched); not signed in, 401.
 |---|---|---|
 | Status (map, DX cluster, bands), Statistics, Waterfall with audio | yes | yes |
 | Settings and Log — in the menu and in the page's HTML | no (cut out on the server) | yes |
-| `GET /api/config`, `/api/log`, `/api/skimmers` | 403 | yes |
+| `GET /api/config`, `/api/log`, `/api/skimmers`, `/api/skimsrv` (CW Skimmer's band keys from its SkimSrv.ini on this PC — never its [User]) | 403 | yes |
 | every `POST` (config, import, restart, rollback, DeepCW fetch) | 403 | yes |
 | `POST /api/visitor` (sign in with a call, sign out) | yes (same origin) | yes |
 | `/api/visitors` (the visitors' log) | from outside: the last 24 h's calls, start and length only (signed in); from the LAN (free_from): whole | yes |

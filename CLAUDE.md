@@ -160,7 +160,9 @@ here; what was done and why is in git.
   the Rate's segments as CW Skimmer has them (45.5/91/182 kHz from each
   band's low edge, `segments()` in app.js; a second one is `80m-2`), up to
   8 on, plus bands of the user's own; off segments with nothing set are no
-  [bands] line. Rules and the audit:
+  [bands] line. *From CW Skimmer* takes SkimSrv's rate and ticked segments
+  (`/api/skimsrv`, `skimsrv.c`: its SkimSrv.ini under wine on this PC, the
+  band keys of [Skimmer] only; else a file chosen in the browser). Rules and the audit:
   `docs/WEB-SECURITY.md` — keep them when adding an endpoint. Frequencies show
   with a space after the MHz (`fmtKhz` in app.js); the charts share one plot
   frame and one crosshair.

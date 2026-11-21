@@ -265,6 +265,7 @@ static gpointer client(gpointer data) {
         !strstr(body, "addr") && !strstr(body, "failed"));
   g_free(body);
   check("… and without a cookie: 401", http("GET", "/api/visitors", NULL, NULL, NULL, NULL) == 401);
+  check("SkimSrv.ini's bands: 403 for a visitor", http("GET", "/api/skimsrv", hdr, NULL, NULL, NULL) == 403);
   g_free(forged);
   g_free(hdr);
   g_free(orig);

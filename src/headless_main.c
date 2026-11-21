@@ -77,6 +77,7 @@
 #include "headless/stats.h"
 #include "headless/switches.h"
 #include "headless/waterfall.h"
+#include "headless/skimsrv.h"
 #include "headless/visitors.h"
 #include "headless/web.h"
 #include "engine/callsign.h"
@@ -1587,6 +1588,14 @@ static char *disco_info(gpointer user) {
   return g_string_free(o, FALSE);
 }
 
+/* GET /api/skimsrv: CW Skimmer Server's bands from its SkimSrv.ini on this PC
+ * (wine), the band keys only — for Settings → Bands, "from CW Skimmer" */
+static char *web_skimsrv(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
+                         gpointer user) {
+  (void)q; (void)who; (void)st; (void)type; (void)user;
+  return skim_hd_skimsrv_json(g_get_home_dir(), g_getenv("WINEPREFIX"));
+}
+
 /* GET /api/skimmers: a search (0.8 s — the main loop waits it out) */
 static char *web_skimmers(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
                           gpointer user) {
@@ -2381,7 +2390,7 @@ int main(int argc, char **argv) {
     h->wf = skim_hd_waterfall_new(h->nb, names, centres, c->rate);
     const SkimHdWebHooks hooks = {
       .status = web_status, .stats = web_stats, .log = web_log, .config = web_config,
-      .skimmers = web_skimmers, .spots = web_spots,
+      .skimmers = web_skimmers, .spots = web_spots, .skimsrv = web_skimsrv,
       .config_post = web_config_post, .config_import = web_config_import,
       .restart = web_restart, .rollback = web_rollback,
       .deepcw = web_deepcw,

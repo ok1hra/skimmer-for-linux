@@ -394,6 +394,8 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .chart-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .chart-h .seg button { font-size: 12px; padding: 1px 8px; }
 .chart-tools { display: flex; gap: 10px; }
+.band-from { margin: 6px 0 4px; color: var(--hot); font-size: 13px; }
+.band-from:empty { display: none; }
 /* the totals table: a bar beside each value, in its mode's colour */
 .grid td .ml.tb { display: flex; align-items: center; justify-content: flex-start; gap: 8px; }
 .grid td .ml.tb .trk { flex: 1 1 60px; min-width: 40px; max-width: 120px; height: 7px; background: var(--grid); }

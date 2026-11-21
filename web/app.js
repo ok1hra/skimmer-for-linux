@@ -1129,6 +1129,78 @@ on('#band-add', 'click', () => {
   drawBands(list);
   setDirty(true);
 });
+// From CW Skimmer: the rate and the segments CW Skimmer Server has on (its
+// SkimSrv.ini, [Skimmer]: Rate=0/1/2 = 48/96/192 kHz, CenterFreqs48/96/192 the
+// centres in Hz, SegmentSel48/96/192 a 0/1 each). The skimmer finds the file
+// under wine on its PC (/api/skimsrv, the band keys only); else one is chosen.
+// The segments CW Skimmer has on go on (8 at most), the rest off; a band that
+// was on keeps its modes, one newly on gets CW and RTTY as most bands had it;
+// a centre no segment here has becomes a band of its own. Nothing is saved
+// until Save.
+function skimsrvParse(text) {
+  const kv = {};
+  let inS = false;
+  for (const raw of String(text).split(/\r?\n/)) {
+    const l = raw.trim();
+    if (l.startsWith('[')) { inS = /^\[skimmer\]$/i.test(l); continue; }
+    const i = l.indexOf('=');
+    if (inS && i > 0) kv[l.slice(0, i).trim()] = l.slice(i + 1).trim();
+  }
+  const rate = [48000, 96000, 192000][Number(kv.Rate)];
+  if (!rate || kv.Rate === '') return null;
+  const k = rate / 1000;
+  const cen = (kv[`CenterFreqs${k}`] || '').split(',').map(Number);
+  const sel = kv[`SegmentSel${k}`] || '';
+  return { rate, on: cen.filter((hz, i) => hz > 0 && sel[i] === '1'), cal: kv.FreqCalibration || '' };
+}
+function skimsrvApply(r, from) {
+  const dflt = $('[name="decode.engine"]').value || 'v3';
+  $('[name="radio.rate"]').value = String(r.rate);
+  const list = withSegments(readBands(), r.rate);
+  const was = new Set(list.filter((b) => b.on).map((b) => b.name));
+  const wasOn = list.filter((b) => b.on);
+  const rtty = wasOn.length > 0 && wasOn.filter((b) => b.rtty).length * 2 >= wasOn.length;
+  for (const b of list) b.on = false;
+  const want = r.on.slice(0, MAX_BANDS);
+  for (const hz of want) {
+    let b = list.find((x) => x.seg && x.def === hz);
+    if (b) b.khz = '';                                 // the segment, at its own centre
+    else b = list.find((x) => bandHz(x) === hz);
+    if (!b) {                                          // a centre of CW Skimmer's own
+      const band = [...SEG_BANDS].reverse().find((s) => hz >= s[1] && hz < s[1] + 2e6);
+      let name = band ? band[0] : `${Math.round(hz / 1000)}k`, n = 2;
+      while (list.some((x) => x.name === name)) name = `${band ? band[0] : Math.round(hz / 1000) + 'k'}-${n++}`;
+      b = { seg: false, def: 0, name, khz: fmtKhz(hz / 1000, null, ' '), cw: true, engine: dflt, rtty, on: false, worker: '' };
+      list.push(b);
+    }
+    if (!was.has(b.name)) { b.cw = true; b.rtty = rtty; }
+    b.on = true;
+  }
+  list.sort((a, b) => (bandHz(a) || Infinity) - (bandHz(b) || Infinity));
+  drawBands(list);
+  setDirty(true);
+  $('#band-from').textContent = `taken from ${from}: ${r.rate / 1000} kHz, ${want.length} segment${want.length === 1 ? '' : 's'} on` +
+    (r.on.length > MAX_BANDS ? ` (it has ${r.on.length}: the first ${MAX_BANDS})` : '') +
+    (r.cal ? ` · its FreqCalibration ${r.cal} is not taken (Clock ppm is measured here)` : '') + ' — check, then Save';
+}
+on('#band-skimsrv', 'click', async () => {
+  $('#band-from').textContent = 'looking for SkimSrv.ini …';
+  let j = null;
+  try { j = await getJSON('api/skimsrv'); } catch (e) { /* choose a file */ }
+  const r = j && j.found ? skimsrvParse(j.ini) : null;
+  if (r) { skimsrvApply(r, j.path.split('/').slice(-6).join('/')); return; }
+  $('#band-from').textContent = j && j.found ? 'SkimSrv.ini found, but without a rate — choose another'
+    : 'no SkimSrv.ini on this PC (wine) — choose the file';
+  $('#band-skimsrv-file').click();
+});
+on('#band-skimsrv-file', 'change', async (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  const r = skimsrvParse(await f.text());
+  if (r) skimsrvApply(r, f.name);
+  else $('#band-from').textContent = `${f.name}: no Rate in its [Skimmer] — not a SkimSrv.ini?`;
+});
 // another rate, other segments: the bands move to the new rate's segment of
 // the same name, a centre of their own kept
 on('[name="radio.rate"]', 'change', () => {
@@ -1192,6 +1264,7 @@ function fillSettings(d) {
   drawBands(withSegments(d.bands.map((b) => ({ name: b.name, khz: fmtKhz(b.centre_hz / 1000, null, ' '), cw: b.cw,
                                   engine: b.engine, rtty: b.rtty, on: b.on !== false,
                                   worker: b.worker || '' })), bandRate()));
+  $('#band-from').textContent = '';
   const lock = $('#set-lock');
   lock.hidden = d.may_change;
   if (!d.may_change) {
