@@ -138,13 +138,51 @@ const Charts = (() => {
     };
   }
 
+  // a series averaged with its neighbours: Gaussian weights of σ buckets, cut at
+  // 3σ; a bucket without data (null: a restart, a paused mode) counts as no
+  // spots — so a lone spot in a paused stretch stays a small hump, not a
+  // plateau — and only where the whole window is without data is it null
+  function gauss(v, sg) {
+    const r = Math.ceil(3 * sg), w = [];
+    for (let j = -r; j <= r; j++) w.push(Math.exp(-(j * j) / (2 * sg * sg)));
+    return v.map((_, i) => {
+      let s = 0, ws = 0, any = false;
+      for (let j = -r; j <= r; j++) {
+        if (i + j < 0 || i + j >= v.length) continue;
+        const x = v[i + j];
+        ws += w[j + r];
+        if (x == null) continue;
+        s += w[j + r] * x; any = true;
+      }
+      return any ? s / ws : null;
+    });
+  }
+  // the points joined by a Catmull-Rom spline (as cubic Béziers), from the first
+  function curve(p) {
+    let d = '';
+    for (let i = 0; i < p.length - 1; i++) {
+      const a = p[i - 1] || p[i], b = p[i], c = p[i + 1], e = p[i + 2] || c;
+      d += `C${(b[0] + (c[0] - a[0]) / 6).toFixed(1)},${(b[1] + (c[1] - a[1]) / 6).toFixed(1)} ` +
+        `${(c[0] - (e[0] - b[0]) / 6).toFixed(1)},${(c[1] - (e[1] - b[1]) / 6).toFixed(1)} ${c[0].toFixed(1)},${c[1].toFixed(1)}`;
+    }
+    return d;
+  }
+
   // ---- mirrored stacked columns: CW up, RTTY down from one zero line -----------------
   // halves: [{ name, series }, …] — the first grows up, the second (if any) down.
   // Each half has its own scale, its tallest column reaching 100 % of the half.
   // log: the column's height is log10(1 + total) — the quiet hours readable
   // beside a contest peak; its bands share the column in proportion as before,
   // the grid at the powers of ten.
-  function mirror(box, x, halves, fmtV, halfH = 160, log = false) {
+  // smooth: each band's values averaged with their neighbours (a Gaussian, σ =
+  // 1/100 of the range — 15 min of a day, 1.7 h of a week) and drawn as
+  // stacked areas with round edges instead of columns; the tooltip gives the
+  // averaged values.
+  function mirror(box, x, halves, fmtV, halfH = 160, log = false, smooth = false) {
+    if (smooth) {
+      const sg = Math.max(1, x.t.length / 100);
+      halves = halves.map((h) => ({ ...h, series: h.series.map((s) => ({ ...s, values: gauss(s.values, sg) })) }));
+    }
     const m = { l: ML, r: MR, t: 8, b: 22 };
     const two = halves.length > 1;
     const { svg, W, H } = frame(box, m.t + halfH * (two ? 2 : 1) + m.b);
@@ -176,6 +214,23 @@ const Charts = (() => {
                                'stroke-width': 3, 'paint-order': 'stroke' }, svg);
       lab.textContent = h.name;
       h.lab = lab;
+      if (smooth) {                                            // stacked areas, round edges
+        const cx = (i) => m.l + (i + 0.5) * slot;
+        const acc = x.t.map(() => 0);
+        let below = x.t.map((_, i) => [cx(i), zero]);
+        h.series.forEach((s) => {
+          if (!s.values.some((v) => v > 0)) return;
+          const top = x.t.map((_, i) => {
+            acc[i] += s.values[i] || 0;
+            return [cx(i), tot[k][i] > 0 ? zero + (dir * len(k, tot[k][i]) * acc[i]) / tot[k][i] : zero];
+          });
+          const back = [...below].reverse();
+          el('path', { d: `M${top[0][0].toFixed(1)},${top[0][1].toFixed(1)}${curve(top)}` +
+            `L${back[0][0].toFixed(1)},${back[0][1].toFixed(1)}${curve(back)}Z`, fill: s.color }, svg);
+          below = top;
+        });
+        return;
+      }
       for (let i = 0; i < n; i++) {
         let acc = 0;
         const x0 = m.l + i * slot + (slot - bw) / 2;

@@ -476,9 +476,18 @@ tabs.status = {
 const stats = { hours: 24, data: null, at: 0, end: null };   // end: unix s, null = now
 // the spots chart's y-axis, linear or log (kept in the browser)
 stats.logY = (() => { try { return localStorage.getItem('skimmer-spots-y') === 'log'; } catch (e) { return false; } })();
+// … and smoothed (averaged, round areas) or as it is, column by column
+stats.smooth = (() => { try { return localStorage.getItem('skimmer-spots-smooth') === 'on'; } catch (e) { return false; } })();
 function spotsYButtons() {
   for (const b of document.querySelectorAll('#spots-y button')) b.classList.toggle('on', (b.dataset.y === 'log') === stats.logY);
+  $('#spots-smooth').classList.toggle('on', stats.smooth);
 }
+on('#spots-smooth', 'click', () => {
+  stats.smooth = !stats.smooth;
+  try { localStorage.setItem('skimmer-spots-smooth', stats.smooth ? 'on' : 'off'); } catch (err) { /* private window */ }
+  spotsYButtons();
+  renderStats();
+});
 spotsYButtons();
 // the night under the charts (the grey line at the station), on unless turned off
 // (charts.js loads deferred, after this file: handed over in renderStats)
@@ -612,7 +621,7 @@ function renderStats() {
   Charts.mirror($('#chart-spots'), x,
     [{ name: 'CW', series, color: modeColor('cw') },
      ...(d.rtty ? [{ name: 'RTTY', series: perHour(d.rtty), color: modeColor('rtty') }] : [])],
-    (v) => fmt(v, v < 10 && v % 1 ? 1 : 0), 160, stats.logY);
+    (v) => fmt(v, v < 10 && v % 1 ? 1 : 0), 160, stats.logY, stats.smooth);
   // a band's block: CW over RTTY (a mode the band does not decode: an empty
   // strip), both in one ramp — the strip's place says the mode, each its own scale
   const decoded = (mm, b) => mm && mm.active[b] && mm.active[b].some((v) => v != null) ? mm.active[b] : null;

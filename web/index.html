@@ -104,8 +104,9 @@
     </div>
     <div class="chart-card">
       <div class="chart-h"><h2>Spots per hour, by band</h2>
-        <span class="seg" id="spots-y" title="the y-axis: linear, or logarithmic — the quiet hours readable beside a busy one">
-          <button type="button" data-y="lin">linear</button><button type="button" data-y="log">log</button></span></div>
+        <span class="chart-tools"><span class="seg" id="spots-y" title="the y-axis: linear, or logarithmic — the quiet hours readable beside a busy one">
+          <button type="button" data-y="lin">linear</button><button type="button" data-y="log">log</button></span>
+        <span class="seg"><button type="button" id="spots-smooth" title="averaged with the neighbouring buckets (σ = 1/100 of the range) and drawn round — the trend, not every bucket">smooth</button></span></span></div>
       <p class="sub mut">CW up, RTTY down from the same zero; each half scaled to its own highest column</p>
       <div class="legend" id="legend-spots"></div>
       <div class="chart" id="chart-spots"></div>
