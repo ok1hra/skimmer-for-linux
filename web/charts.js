@@ -247,8 +247,8 @@ const Charts = (() => {
   // rows: [{ name, parts: [{ label, values | null, lo, hi }, …], off }] — a band is
   // one block, its parts stacked inside it with no gap (CW over RTTY), a gap
   // between bands. Each part label has its own ramp and its own maximum. off: per
-  // bucket the share (0–1) the band was paused (the thermal guard) — red over the
-  // whole block, the deeper the longer.
+  // bucket the share (0–1) the band was paused (the thermal guard) — a faint red
+  // over the whole block (0.1–0.3), the deeper the longer.
   function heat(box, x, rows, fmtV, what) {
     const partH = 13, bandGap = 5;
     const np = Math.max(1, ...rows.map((r) => r.parts.length));
@@ -303,7 +303,7 @@ const Charts = (() => {
       r.off.forEach((f, i) => {
         if (!(f > 0)) return;
         const c = el('rect', { x: m.l + i * cw, y: yy, width: Math.max(0.5, cw - gap), height: blockH,
-                               fill: css('--bad'), opacity: (0.35 + 0.65 * Math.min(1, f)).toFixed(2) }, svg);
+                               fill: css('--bad'), opacity: (0.1 + 0.2 * Math.min(1, f)).toFixed(2) }, svg);   // muted: a note, not an alarm
         c.addEventListener('pointerenter', () => {
           tt.show(m.l + (i + 1) * cw, yy, `${r.name} · ${x.label(i)}`,
                   [{ value: `${Math.round(100 * f)} %`, label: 'of the time off — the thermal guard' }]);

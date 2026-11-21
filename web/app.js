@@ -631,7 +631,7 @@ function renderStats() {
   const span = (l) => (amax[l] ? ` <span class="mut">0–${fmt(amax[l], amax[l] < 10 ? 1 : 0)}</span>` : '');
   $('#legend-active').innerHTML = '<span><i class="ramp" style="background:linear-gradient(90deg,var(--seq-lo),var(--seq-hi))"></i>' +
     `${d.rtty ? 'upper strip ' : ''}CW${span('CW')}${d.rtty ? ` · lower strip RTTY${span('RTTY')}` : ''}</span>` +
-    (Object.values(offs).some((v) => v) ? '<span><i style="background:var(--bad)"></i>off — paused by the thermal guard</span>' : '');
+    (Object.values(offs).some((v) => v) ? '<span><i style="background:var(--bad);opacity:.3"></i>off — paused by the thermal guard</span>' : '');
   // CPU: the CW and RTTY pipelines' threads and the rest of the process, stacked
   // under the total (history before the split has the total line only)
   const g = d.global;
