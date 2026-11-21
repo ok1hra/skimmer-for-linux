@@ -498,8 +498,10 @@ on('#spots-y', 'click', (e) => {
   renderStats();
 });
 
-// The CW + RTTY decoders tile: every channel decoder running now, summed over
-// the bands, CW beside RTTY (live, from the status — the history has no count).
+// The CW + RTTY decoders tile: the active decoders (reading running text) now,
+// summed over the bands, CW beside RTTY, of how many channel decoders run — a
+// number fixed by the bands' spans, it tells nothing of the air (live, from
+// the status — the history has no count).
 // A paused mode (adaptive RTTY, the thermal guard) gets no IQ: its decoders
 // are not counted, the small line says how many bands are off and why; with
 // every band of a mode off the number is OFF.
@@ -516,13 +518,13 @@ function renderDecTile(d) {
     const off = list.filter((b) => f(b).paused);
     const whys = [...new Set(off.map((b) => f(b).paused))];
     const offTxt = whys.map((w) => `${off.filter((b) => f(b).paused === w).length} off ${pausedShort(w)}`).join(' · ');
-    const num = on.length ? fmt(n(on, (b) => f(b).decoders))
+    const num = on.length ? fmt(n(on, (b) => f(b).active))
       : `<span class="${offClass(whys.includes('thermal') ? 'thermal' : whys[0])}">OFF</span>`;
-    const small = [on.length ? `${fmt(n(on, (b) => f(b).active))} active` : '',
+    const small = [on.length ? `of ${fmt(n(on, (b) => f(b).decoders))}` : '',
       on.length ? `${on.length} of ${list.length} band${list.length === 1 ? '' : 's'}` : '', offTxt].filter(Boolean).join(' · ');
     return `<div class="part ${cls}"><div class="n">${num}</div><div class="l">${label}<small>${small}</small></div></div>`;
   };
-  el.innerHTML = '<div class="k">CW + RTTY decoders <small>running now</small></div><div class="parts">' +
+  el.innerHTML = '<div class="k">CW + RTTY decoders <small>active now</small></div><div class="parts">' +
     part('CW', 'cw', cw, (b) => b) + part('RTTY', 'rtty', rt, (b) => b.rtty) + '</div>';
 }
 // why the skimmer paused a band's mode on its own (status.json "paused")
