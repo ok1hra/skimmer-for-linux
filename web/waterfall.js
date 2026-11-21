@@ -183,9 +183,10 @@ const Wf = (() => {
     bytes += buf.byteLength;
   }
   // The strip over the scale: the spectrum's envelope (an option) and the
-  // calls spotted on the band in the last 15 minutes, small, upright at their
-  // frequency, hanging from the top edge (each fades and goes 15 min after
-  // its last spot). Shown while either is on.
+  // calls spotted on the band while the picture below was drawn (at most
+  // 15 minutes), small, upright at their frequency, hanging from the top edge
+  // (each fades and goes when its last spot leaves the picture). Shown while
+  // either is on.
   let lastFloor = -130;
   function topShown() { return opt.spec || opt.calls; }
   function drawTop(dbFloor) {
@@ -304,7 +305,16 @@ const Wf = (() => {
   }
 
   // ---- the calls ------------------------------------------------------------------
-  const CALL_KEEP_S = 15 * 60;
+  const CALL_KEEP_S = 15 * 60;                       // fetched; shown: what the picture covers
+  // how far back the picture reaches: its oldest row once it is full (a slow
+  // link brings fewer rows, so more time), else its height at the rows a
+  // second asked for; a minute at least, 15 at most
+  function shownS(now) {
+    let old = 0;
+    if (rowTimes.length >= H) for (let k = rowTimes.length - 1; k >= 0 && !old; k--) old = rowTimes[k];
+    const s = old ? now - old : H / (opt.rate || 5);
+    return Math.min(CALL_KEEP_S, Math.max(60, s));
+  }
   let skew = 0;                                      // the skimmer's clock − ours (s)
   async function fetchSpots(force) {
     if (!force && Date.now() - spotsAt < 5000) return;
@@ -317,15 +327,16 @@ const Wf = (() => {
       drawTop();
     } catch (e) { /* the next try */ }
   }
-  // the band's calls of the last 15 min, the newest spot of each, left to
-  // right; a call too close to its neighbour moves right of it (a tick
+  // the band's calls heard within the time the picture shows (each call a
+  // trace still on screen), the newest spot of each, left to right, fading
+  // with age; a call too close to its neighbour moves right of it (a tick
   // marks its true frequency)
   function drawCalls(w) {
     const b = bandInfo();
     if (!b || !view.hi) return;
-    const now = Date.now() / 1000 + skew, last = new Map();
+    const now = Date.now() / 1000 + skew, last = new Map(), keep = shownS(now);
     for (const s of spots) {
-      if (s.band !== b.name || now - s.t > CALL_KEEP_S) continue;
+      if (s.band !== b.name || now - s.t > keep) continue;
       const k = s.call;
       if (!last.has(k) || last.get(k).t < s.t) last.set(k, s);
     }
@@ -337,7 +348,7 @@ const Wf = (() => {
       const x = Math.max(c.x, prev + 11);
       if (x > w - 4) break;
       prev = x;
-      spg.globalAlpha = 1 - 0.6 * Math.min(1, (now - c.s.t) / CALL_KEEP_S);
+      spg.globalAlpha = 1 - 0.6 * Math.min(1, (now - c.s.t) / keep);
       spg.fillStyle = c.s.mode === 'RTTY' ? '#ffb88a' : '#e8eef6';
       spg.fillRect(Math.round(c.x), 0, 1, 3);           // its frequency
       spg.save();
