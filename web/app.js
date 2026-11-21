@@ -185,15 +185,21 @@ function renderStatus(d) {
   const maxAct = Math.max(1, ...decoded.map((b) => Math.max(b.cw !== false ? b.active : 0, b.rtty ? b.rtty.active : 0)));
   const per = (band) => window.spots ? window.spots.list.filter((s) => s.band === band) : [];
   const maxSpots = Math.max(1, ...decoded.map((b) => per(b.band).length));
-  $('#ladder').innerHTML = decoded.map((b) => {
+  // the head says what each number counts (each over its number and bar)
+  $('#ladder').innerHTML = '<tr class="head-row"><th title="on the map"></th><th class="l">band</th>' +
+    '<th colspan="2" class="l" title="CW channel decoders reading a signal now (of all the band has)">CW active decoders</th>' +
+    '<th colspan="2" class="l" title="RTTY channel decoders reading a signal now (of all the band has)">RTTY active decoders</th>' +
+    '<th colspan="2" class="l" title="spots the band sent in the last 30 min">spots 30 min</th>' +
+    '<th class="l" title="the band\'s newest spot">last spot</th><th></th></tr>' + decoded.map((b) => {
     const sp = per(b.band), cwOn = b.cw !== false, rt = b.rtty;
     const col = typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : '';   // the band's own colour
     const i = (frac) => `<i style="width:${(100 * frac).toFixed(0)}%;${col ? `background:${col}` : ''}"></i>`;
+    // each number left of its bar — the bars start there
     const bar = (on, act, dec, cls, paused) => paused
-      ? `<td class="bar off" title="${esc(pausedText(paused))}"></td><td class="n ${offClass(paused)}" title="${esc(pausedText(paused))}">OFF</td>`
+      ? `<td class="n ${offClass(paused)}" title="${esc(pausedText(paused))}">OFF</td><td class="bar off" title="${esc(pausedText(paused))}"></td>`
       : on
-      ? `<td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active">${i(act / maxAct)}</td><td class="n">${fmt(act)}</td>`
-      : '<td class="bar off"></td><td class="n mut">–</td>';
+      ? `<td class="n" title="${fmt(act)} of ${fmt(dec)} decoders active">${fmt(act)}</td><td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active">${i(act / maxAct)}</td>`
+      : '<td class="n mut">–</td><td class="bar off"></td>';
     const off = mapHidden.has(b.band);
     return `<tr${off ? ' class="off-map"' : ''}><td class="eye"><button type="button" data-band="${esc(b.band)}" ` +
       `title="${off ? 'not on the map — click: show' : 'on the map — click: hide'} ${esc(b.band)}" ` +
@@ -201,10 +207,11 @@ function renderStatus(d) {
       `<td class="b" style="color:${col}">${esc(b.band)}</td>` +
       bar(cwOn, b.active, b.decoders, 'cw', cwOn && b.paused) +
       bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty', rt && rt.paused) +
+      `<td class="n" title="${fmt(sp.length)} spots in 30 min">${fmt(sp.length)}</td>` +
       `<td class="bar spots" title="${fmt(sp.length)} spots in 30 min">${i(sp.length / maxSpots)}</td>` +
-      `<td class="n">${fmt(sp.length)}</td><td class="last">${sp.length ? esc(sp[0].call) : ''}</td>` +
+      `<td class="last" title="the band's newest spot">${sp.length ? esc(sp[0].call) : ''}</td>` +
       `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : ''}</td></tr>`;
-  }).join('') + '<tr class="legend-row"><td colspan="2" class="mut">map</td><td colspan="2" class="mut">CW</td><td colspan="2" class="mut">RTTY</td><td colspan="2" class="mut">spots</td><td colspan="2"></td></tr>';
+  }).join('');
   const sumDec = (f) => decoded.reduce((a, b) => a + (f(b) || 0), 0);
   const ro = (k, v) => `<span>${k} <b>${v}</b></span>`;
   // every number says over what: now, the last half hour, or since the start

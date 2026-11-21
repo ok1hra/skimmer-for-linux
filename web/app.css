@@ -201,7 +201,8 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .ladder td.bar.rtty i { background: var(--warn); opacity: .6; }
 .ladder td.bar.spots i { opacity: .75; }
 .ladder td.bar.cw, .ladder td.bar.rtty, .ladder td.bar.spots { background: linear-gradient(var(--deep), var(--deep)) center / 100% 7px no-repeat; }
-.ladder td.n { text-align: right; color: var(--mut); font-size: 13px; width: 44px; }
+.ladder td.n { text-align: right; color: var(--mut); font-size: 13px; width: 44px; padding-right: 4px; }
+.ladder td.bar { padding-left: 0; }
 .ladder td.last { color: var(--hot); letter-spacing: .03em; }
 .ladder td.w { font-size: 12px; }
 .ladder td.eye { width: 24px; padding: 2px 0; }
@@ -209,7 +210,8 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .ladder td.eye button:hover { color: var(--fg); }
 .ladder tr.off-map td.eye button { color: var(--faint); }
 .ladder tr.off-map td:not(.eye) { opacity: .4; }
-.ladder tr.legend-row td { border-bottom: 0; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; padding-top: 3px; }
+.ladder tr.head-row th { padding: 2px 6px 4px; border-bottom: 1px solid var(--ln); color: var(--mut); font-weight: 400;
+  font-size: 11px; letter-spacing: .1em; text-transform: uppercase; text-align: left; vertical-align: bottom; cursor: help; }
 .readouts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 16px; color: var(--mut); font-size: 13px;
             letter-spacing: .06em; text-transform: uppercase; }
 .readouts b { color: var(--fg); text-transform: none; letter-spacing: .02em; }
