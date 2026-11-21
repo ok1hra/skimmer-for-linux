@@ -16,7 +16,8 @@ actually sent.
           feed_port warning must be logged once each.
   run 4 — a moved local feed: /status.json names another feed port; the
           recorder follows it, while the feed is up (at the next
-          snapshot) and while it is down (at the next heartbeat).
+          snapshot) and while it is down (at the next heartbeat); and a
+          feed switched off and back on at another port.
   run 2 — the alarms: a read-only data file (WRITE ERROR), a truncated
           file (WRITE CHECK FAILED), the recorder frozen for 45 s like a
           suspended machine, and a killed recorder process; the RBN
@@ -71,6 +72,17 @@ class Feed(threading.Thread):
         self.conns = 0
         self.split_line = None
         self.stop = False
+        self.socks = []           # open connections, for shut()
+
+    def shut(self):
+        """The service goes away: no listener, every connection closed."""
+        self.stop = True
+        for c in [self.srv] + self.socks:
+            try:
+                c.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            c.close()
 
     def reader(self, c):
         buf = b""
@@ -104,6 +116,7 @@ class Feed(threading.Thread):
                 return
             self.conns += 1
             n = self.conns
+            self.socks.append(c)
             threading.Thread(target=self.reader, args=(c,), daemon=True).start()
             self.send(c, self.banner + self.prompt)          # no newline
             t = time.time()
@@ -443,6 +456,45 @@ def run4():
           "feed down: the heartbeat follows the move (%s s after the start)"
           % (None if lag is None else round(lag)))
     check(got == B.sent and B.sent, "B's spots recorded (%d of %d)" % (len(got), len(B.sent)))
+    print("  (files in %s)" % out)
+
+    # c: the feed is up on A; at 6 s it is switched off (status feed_port 0,
+    # A gone); at 16 s it is back on B; the heartbeat must follow it
+    out = tempfile.mkdtemp(prefix="capture-test4c-")
+    la, lb, rp, sp = free_port(), free_port(), free_port(), free_port()
+    A, B = local_feed("A", la), local_feed("B", lb)
+    remote = Feed("R", rp, "Welcome to the Skimmer Server Telnet cluster port!\r\n",
+                  "Please enter your callsign:", "OK1HRA de SKIMMER 2026-09-30 10:00Z CwSkimmer >",
+                  burst=20, more=20)
+    StatusPort.port = la
+    httpd = http.server.HTTPServer(("127.0.0.1", sp), StatusPort)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    for f in (A, B, remote):
+        f.start()
+    p = start_capture(out, la, rp, sp, 40, snap=300)
+    time.sleep(6)
+    StatusPort.port = 0
+    A.shut()
+    time.sleep(10)
+    StatusPort.port = lb
+    p.communicate(timeout=120)
+    B.stop = remote.stop = True
+    httpd.shutdown()
+    f = files(out)
+    ev = open(f["events"]).read()
+    got = [b for _, b in dx_lines(f["local"])]
+    i_off = ev.find("feed OFF (feed_port 0)")
+    i_mv = ev.find("feed moved to port %d — the recorder follows it" % lb)
+    check(ev.count("feed OFF (feed_port 0)") == 1 and ev.count("the recorder follows it") == 1
+          and 0 <= i_off < i_mv and "local skimmer feed confirmed on port %d" % lb in ev[i_mv:],
+          "feed off, then on at B: warned once, then followed to B and confirmed")
+    # A went off in the middle of its split line: the half that came is kept
+    mid = got[20:len(got) - len(B.sent)]
+    check(got[:20] == A.sent[:20] and B.sent and got[len(got) - len(B.sent):] == B.sent
+          and len(mid) <= 1 and all(A.split_line.startswith(m) for m in mid),
+          "A's spots before it went off (and the half line it cut), then every spot of B"
+          " (%d + %d + %d)" % (20, len(mid), len(B.sent)))
+    check("stopped — write check OK" in ev, "final write check OK")
     print("  (files in %s)" % out)
 
 

@@ -32,6 +32,7 @@ PORT_WRONG_RE = re.compile(r"WARNING: the local skimmer serves its feed on port 
                            r"but the recorder reads \S*?:?(\d+) \(-l\)")
 PORT_OFF = "reports its telnet feed OFF"
 PORT_OK = "local skimmer feed confirmed on port"
+PORT_FOLLOWED = "— the recorder follows it"     # capture-spots.sh moved to the new port
 FILE_RE = re.compile(r"^(local|remote|rbn|events|status)-(\d{8}-\d{6})\.(?:log|jsonl)$")
 # one regex for all three dialects:
 #   DX de OK1HRA-#:   1825.8  OK1CF        CW    30 dB  25 WPM  CQ      1727Z   skimmer-for-linux
@@ -308,7 +309,8 @@ class Store:
                 s.stopped = t
             elif RESUMED in line:
                 s.stopped = None
-            if PORT_OK in line or RESUMED in line or "recording as " in line:
+            if (PORT_OK in line or PORT_FOLLOWED in line or RESUMED in line
+                    or "recording as " in line):
                 s.port_warn = None       # a new start checks the port anew
             elif PORT_OFF in line:
                 s.port_warn = {"since": t, "served": 0, "read": None}

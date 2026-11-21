@@ -488,6 +488,18 @@ def feed_port_warning():
         fh.write("%s local skimmer feed confirmed on port 7373\n" % stamp(now - 60))
     store.poll()
     check(s.port_warn is None, "the port confirmed again: the warning goes")
+    with open(ev, "a") as fh:
+        fh.write("%s WARNING: the local skimmer reports its telnet feed OFF (feed_port 0) —"
+                 " headless.ini [feed] call= empty, or port= taken by another service (ss -tlnp)?\n"
+                 % stamp(now - 50))
+        fh.write("%s the local skimmer's feed moved to port 7400 — the recorder follows it"
+                 " (was 127.0.0.1:7373)\n" % stamp(now - 40))
+    store.poll()
+    check(s.port_warn is None, "off, then the recorder follows the feed to a new port: no warning")
+    with open(ev, "a") as fh:
+        fh.write("%s local skimmer feed confirmed on port 7400\n" % stamp(now - 40))
+    store.poll()
+    check(s.port_warn is None, "… nor once it is confirmed there")
 
 
 def epoch_of(z):
