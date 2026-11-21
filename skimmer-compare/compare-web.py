@@ -133,7 +133,13 @@ def view(cfg, S, feeds, engine, T_name, live, scp_n):
                                             "rbn_s")},
         "counts": {"spots_L": C["spots_L"], "spots_W": C["spots_R"], "spots_W_all": C["spots_R_all"],
                    "events": C["events"], "rbn_spots": C["rbn_spots"], "rbn_own": C["rbn_own"],
-                   "scp_calls": scp_n},
+                   "scp_calls": scp_n,
+                   "filtered_L": C["filtered_L"], "filtered_W": C["filtered_R"]},
+        # L's callsign filter (compare.ini [local filter]): both sides are
+        # compared only on the calls it lets through
+        "filter": {"about": cfg.filter_about,
+                   "since": next((s for s, p in cfg.call_filter.describe() if p), None),
+                   "on": bool(cfg.call_filter)},
         "bands": [{"band": b["band"], "lo": b["lo"], "hi": b["hi"], "n": b["n"],
                    "L": prop(b["L"]), "W": prop(b["R"]), "only_L": b["onlyL"], "only_W": b["onlyR"],
                    "bust_L": b["bustL"], "eps_L": b["epsL"], "bust_W": b["bustR"], "eps_W": b["epsR"],
@@ -329,7 +335,7 @@ class App:
             # the decoder of the newest compared time
             engine = max(E, key=lambda e: E[e]["last"]) if E else self.cfg.default_engine
             A = analyze(st, self.cfg.local_windows, self.cfg.remote_windows, self.scp, P,
-                        now, engine, self.cfg.default_engine)
+                        now, engine, self.cfg.default_engine, self.cfg.call_filter)
         live = [s for s in A.sessions if s["live"]] or A.sessions[-1:]
         ta, tb = (live[0]["start"], live[0]["end"]) if live else (now, now)
         T_name = live[0]["T"] if live else ""

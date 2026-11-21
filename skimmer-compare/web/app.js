@@ -169,7 +169,7 @@ function fact(term, ...kids) {
   return [el('dt', null, term), el('dd', null, ...kids)];
 }
 function renderFacts() {
-  const s = D.session, t = D.time, c = D.counts;
+  const s = D.session, t = D.time, c = D.counts, F = D.filter || {};
   const end = s.live ? 'now' : utc(s.end);
   const state = s.live ? 'recording' : s.stopped ? 'stopped' : 'not recording';
   const share = (a, b) => (b ? Math.round(100 * a / b) + ' %' : '—');
@@ -186,6 +186,11 @@ function renderFacts() {
     ...fact('Spots', el('b', null, `L ${num(c.spots_L)} · W ${num(c.spots_W)}`),
       el('span', { cls: 'muted' }, ` CQ spots compared (W sent ${num(c.spots_W_all)} in all, with DE or no comment)`
         + ` → ${num(D.recall.n)} real stations, ${num(c.events)} compared episodes`)),
+    ...(F.on && (c.filtered_L || c.filtered_W) ? fact('Call filter',
+      el('b', null, `W ${num(c.filtered_W)} · L ${num(c.filtered_L)}`),
+      el('span', { cls: 'muted' }, ` CQ spots left out: L spots only the calls its callsign filter lets through`
+        + (F.about ? ` (${F.about})` : '') + `, so both sides are compared on those calls only`
+        + (F.since != null ? ` (since ${utc(F.since)} UTC)` : ''))) : []),
   );
 }
 

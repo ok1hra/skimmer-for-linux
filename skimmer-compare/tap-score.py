@@ -82,7 +82,7 @@ def score(cfg, T, rowsdir, to, frm=None, bands=None):
         store.poll()
         now = time.time()
         A = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp),
-                    cfg.params, now, None, cfg.default_engine)
+                    cfg.params, now, None, cfg.default_engine, cfg.call_filter)
         if bands:                                 # only the bands replayed
             A.events = [e for e in A.events if e["band"] in bands]
         s = store.sessions[T]

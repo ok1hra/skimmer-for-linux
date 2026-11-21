@@ -43,6 +43,10 @@ checks that the comparison finds exactly that:
     RTTY) 12:30–13:00 → R's 20 m stations from the last snapshot without
     the pause to the first one after are not compared, 40 m is; RTTY: RBN's
     20 m spot in the pause is not counted
+  call filter: L filters RU/BY calls from 13:00 (compare.ini [local
+    filter]) → R's UA3BEF before 13:00 is only-R, its RA1AAA after is not
+    compared (one filtered R spot), OK1RRR after still only-R; a headless.ini
+    filtering with another regex is warned about
   dead feed: L's feed up and its status healthy, but no L spot for 45 min
     while R spots 12 stations → that time is not compared, R's 12 are no
     only-R and stay out of the histogram; session B's 30 min L silence
@@ -633,6 +637,55 @@ def remote_plan_test():
           "the bands shown: R's newest windows (%s)" % An.win.bands)
 
 
+def call_filter_test():
+    print("=== call filter — a call L may not spot is no miss of L")
+    root = tempfile.mkdtemp(prefix="compare-filter-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    rx = r"^(?!^(?:R[A-Z]?|U[A-I0]|E[UVW])[0-9]{1,3}[A-Z]{1,4}(?:/[A-Z0-9]+)?$).+"
+    with open(os.path.join(root, "headless.ini"), "w") as fh:
+        fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n[filter]\nregex=true\ncall=%s\n" % rx)
+    with open(os.path.join(root, "master.scp"), "w") as fh:
+        fh.write("# test\nUA3BEF\nRA1AAA\nOK1RRR\nOK1LLL\n")
+    ini = ("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\n"
+           "[remote]\nwindows = 7000-7091\n[local filter]\n2022-01-01 =\n"
+           "2026-10-01T13:00 = %s\n[rbn]\nexclude = OK1HRA\n")
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write(ini % rx)
+    T = "20261001-120000"
+    loc = [mark("12:00:00", "connected to 127.0.0.1:7302"), L("13:40:00", 7030.0, "OK1LLL")]
+    rem = [mark("12:00:00", "connected to 192.168.1.201:7301"),
+           R("12:30:00", 7010.0, "UA3BEF"), R("13:20:00", 7020.0, "RA1AAA"),
+           R("13:30:00", 7050.0, "OK1RRR")]
+    events = ["%s recording as OK1HRA since %s UTC\n" % (ts("12:00:00"), T),
+              "%s stopped — write check OK\n" % ts("14:00:00")]
+    for kind, lines in (("local", loc), ("remote", rem), ("rbn", []), ("events", events)):
+        with open(os.path.join(logs, "%s-%s.log" % (kind, T)), "w") as fh:
+            fh.writelines(lines)
+    cfg = Config(os.path.join(root, "compare.ini"))
+    check(cfg.call_filter and not cfg.filter_warning, "the filter read, the same as headless.ini's")
+    store = Store(cfg.logs, lambda: RbnIndex(loose_bands(cfg.local_windows, 2.0), cfg.exclude))
+    store.poll()
+    An = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
+                 epoch("23:00:00"), None, "cw-v2", cfg.call_filter)
+    ev = {e["call"]: e["cat"] for e in An.events}
+    check(ev.get("UA3BEF") == "only-R", "UA3BEF before the filter: only-R (%s)" % ev.get("UA3BEF"))
+    check("RA1AAA" not in ev, "RA1AAA after the filter: not compared")
+    check(ev.get("OK1RRR") == "only-R" and ev.get("OK1LLL") == "only-L",
+          "OK1RRR / OK1LLL after it: only-R / only-L")
+    S = summarize(An, epoch("12:00:00"), epoch("14:00:00"))
+    check((S["counts"]["filtered_R"], S["counts"]["filtered_L"]) == (1, 0),
+          "one R CQ spot left out, no L spot (%s/%s)"
+          % (S["counts"]["filtered_R"], S["counts"]["filtered_L"]))
+    Nf = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
+                 epoch("23:00:00"))
+    check({e["call"] for e in Nf.events} >= {"RA1AAA"}, "without call_filter: unchanged, RA1AAA only-R")
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write(ini % "^OK")
+    check("filters calls with" in Config(os.path.join(root, "compare.ini")).filter_warning,
+          "compare.ini ending with another regex than headless.ini's: warned")
+
+
 def dead_feed():
     print("=== dead feed — one side silent on every band is not compared")
     root = tempfile.mkdtemp(prefix="compare-dead-")
@@ -896,6 +949,7 @@ if __name__ == "__main__":
     rbn_overlap()
     split_episodes()
     remote_plan_test()
+    call_filter_test()
     dead_feed()
     rtty()
     paused_bands()

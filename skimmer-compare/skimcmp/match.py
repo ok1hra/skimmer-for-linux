@@ -252,12 +252,14 @@ def engine_summary(segs):
     return out
 
 
-def analyze(store, local_w, remote_w, scp, P, now, engine=None, default_engine="cw-v2"):
+def analyze(store, local_w, remote_w, scp, P, now, engine=None, default_engine="cw-v2",
+            call_filter=None):
     with store.lock:
-        return _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine)
+        return _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine,
+                        call_filter)
 
 
-def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
+def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine, call_filter):
     A = Analysis()
     A.params, A.version, A.computed = dict(P), store.version, now
     A.engine = engine
@@ -283,7 +285,15 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
                           remote_now, P["guard_khz"])
 
     # ---- spots inside the compared range ---------------------------------------
-    A.Lall, A.Rall = list(store.L), list(store.R)
+    # L's callsign filter applies to both sides: a call L may not spot is no
+    # miss of L and no catch of R (callfilter.py)
+    A.Lall, A.Rall, A.filtered = list(store.L), list(store.R), {"L": [], "R": []}
+    if call_filter:
+        for side, src in (("L", "Lall"), ("R", "Rall")):
+            keep, drop = [], A.filtered[side]
+            for sp in getattr(A, src):
+                (keep if call_filter.passes(sp.t, sp.call) else drop).append(sp)
+            setattr(A, src, keep)
     Lin, Rin = [], []
     A.off = paused_time(store, now, "cw")
     off = {b: Membership(iv) for b, iv in A.off.items()}

@@ -6,7 +6,10 @@ to the base value instead of failing.
 """
 import configparser
 import os
+import re
+import sys
 
+from .callfilter import CallFilter, filter_plan
 from .windows import load_local, remote_plan
 
 # name: (default, min, max, meaning) — the page shows the meaning as help
@@ -46,6 +49,42 @@ def clamp_params(src, base):
     return out
 
 
+def headless_filter(path):
+    """The regex skimmer-headless filters calls with now ([filter] call and
+    regex of its headless.ini; a plain call is a caseless substring), "" for
+    none, None when the file cannot be read."""
+    sec, kv = None, {}
+    try:
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("["):
+                    sec = line.strip("[]").strip()
+                elif sec == "filter" and "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    kv[k.strip()] = v.strip()
+    except OSError:
+        return None
+    call = kv.get("call", "")
+    if not call:
+        return ""
+    return call if kv.get("regex", "false").lower() in ("true", "1", "yes") else re.escape(call)
+
+
+def filter_drift(headless_ini, cf):
+    """A warning when the newest [local filter] entry is not what
+    headless.ini filters with now — compare would credit W with calls L may
+    not spot (or the other way round)."""
+    now = headless_filter(headless_ini)
+    if now is None:
+        return ""
+    last = cf.describe()[-1][1] if cf.describe() else ""
+    if now != last:
+        return ("the local skimmer filters calls with %r, but compare.ini [local filter] "
+                "ends with %r — add a line \"<UTC since> = <regex>\"" % (now, last))
+    return ""
+
+
 class Config:
     def __init__(self, path):
         self.path = os.path.abspath(path)
@@ -67,6 +106,11 @@ class Config:
         if not self.local_windows or not self.remote_windows:
             raise SystemExit("no local windows (%s) or no remote windows (%s)"
                              % (self.headless_ini, self.path))
+        self.call_filter = CallFilter(filter_plan(cp))    # L's [filter] by time
+        self.filter_about = cp.get("local", "filter_about", fallback="", raw=True)
+        self.filter_warning = filter_drift(self.headless_ini, self.call_filter)
+        if self.filter_warning:
+            sys.stderr.write("WARNING: %s\n" % self.filter_warning)
         self.local_name = cp.get("local", "name", fallback="Local skimmer")
         self.local_about = cp.get("local", "about", fallback="")
         self.remote_name = cp.get("remote", "name", fallback="Remote skimmer")

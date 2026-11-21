@@ -338,6 +338,12 @@ def overview(A, ta, tb):
             "latency": {k: lat[k] for k in ("n", "median", "L_first", "R_first", "p", "winner")}}
 
 
+def filtered(A, side, ta, tb):
+    inside = Membership(A.common)
+    return sum(1 for sp in getattr(A, "filtered", {}).get(side, ())
+               if ta <= sp.t < tb and sp.cm in ("CQ", "TEST", "QRZ") and sp.t in inside)
+
+
 def summarize(A, ta, tb):
     evs = [e for e in A.events if ta <= e["t0"] < tb]
     common = clip(A.common, ta, tb)
@@ -368,7 +374,9 @@ def summarize(A, ta, tb):
             "spots_L": sum(ta <= sp.t < tb for _, sp in A.Lin),
             "spots_R": sum(ta <= sp.t < tb for _, sp in A.Rcq),
             "spots_R_all": sum(ta <= sp.t < tb for _, sp in A.Rin),
-            "events": len(evs), "rbn_spots": A.rbn_n, "rbn_own": A.rbn_own},
+            "events": len(evs), "rbn_spots": A.rbn_n, "rbn_own": A.rbn_own,
+            # CQ spots of the compared time the local callsign filter left out
+            **{"filtered_" + k: filtered(A, k, ta, tb) for k in ("L", "R")}},
         "cats": cats,
         "recall": rec, "bust": bust, "latency": lat,
         "breakdown": breakdown_block(evs),
