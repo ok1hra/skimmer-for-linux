@@ -1077,11 +1077,12 @@ static gboolean tick(gpointer data) {
  * name), the SKIM_* switches' values. */
 static char *status_public(const char *full, gboolean outside) {
   static const struct { const char *re, *to; } RULES[] = {
-    /* from outside the LAN, no machine readings either: the CPU, its
-     * temperature (the thermal guard's too), IQ lost — here and in the
-     * workers' status the hub passes on */
-    { "\"(cpu_pct|cpu_cw_pct|cpu_rtty_pct|cpu_temp_c|lost_pct|packets_per_s|mean_c|limit_c|"
-      "at_c|drop_c|back_at_c)\":-?[0-9.eE+-]+", "\"\\1\":null" },
+    /* from outside the LAN, no machine readings either: the CPU load and
+     * IQ lost — here and in the workers' status the hub passes on. The
+     * temperature (the thermal guard's too) goes to everyone: Dan,
+     * 2026-11-21 — the visitors see why bands go OFF */
+    { "\"(cpu_pct|cpu_cw_pct|cpu_rtty_pct|lost_pct|packets_per_s)\":-?[0-9.eE+-]+",
+      "\"\\1\":null" },
     { "\"(host|addr|model|dir)\":\"(?:[^\"\\\\]|\\\\.)*\"", "\"\\1\":\"\"" },
     { "\"switches\":\\{[^{}]*\\}", "\"switches\":{}" },
     /* the locator as its square only: six characters are nearly an address */
@@ -1122,12 +1123,12 @@ static char *web_status(GHashTable *q, SkimHdWebWho who, guint *st, const char *
   return body;
 }
 
-/* The history without the machine readings (CPU, its temperature, IQ lost)
- * for a client from outside: those series as null. */
+/* The history without the machine readings (the CPU load, IQ lost) for a
+ * client from outside: those series as null. The CPU temperature stays. */
 static char *stats_public(const char *full) {
   static GRegex *re;
   if (!re) {
-    re = g_regex_new("\"(cpu|cpu_cw|cpu_rtty|cpu_temp|lost)\":\\[[^\\]]*\\]", G_REGEX_OPTIMIZE,
+    re = g_regex_new("\"(cpu|cpu_cw|cpu_rtty|lost)\":\\[[^\\]]*\\]", G_REGEX_OPTIMIZE,
                      0, NULL);
   }
   char *out = re ? g_regex_replace(re, full, -1, 0, "\"\\1\":null", 0, NULL) : NULL;

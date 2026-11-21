@@ -31,11 +31,12 @@ the waterfall's socket is closed with "login".
 
 A client from outside — not free in the sense above, signed in or not, and
 whether sign-in is on or off — gets no machine readings either: in
-`status.json` the CPU (total and per mode), its temperature, the thermal
-guard's temperatures, IQ lost and packets/s are `null` (the workers' status
-the hub passes on too), and in `stats.json` the `cpu*` and `lost` series
-are `null`; the page leaves those out (Dan, 2026-11-20: how hard the box
-runs is nobody else's business). `[feed] address` — the telnet address the
+`status.json` the CPU (total and per mode), IQ lost and packets/s are
+`null` (the workers' status the hub passes on too), and in `stats.json` the
+`cpu`, `cpu_cw`, `cpu_rtty` and `lost` series are `null`; the page leaves
+those out (Dan, 2026-11-20: how hard the box runs is nobody else's
+business). The CPU temperature and the thermal guard's temperatures go to
+everyone (Dan, 2026-11-21): the visitor sees why the guard took bands OFF. `[feed] address` — the telnet address the
 header shows — goes to everyone on purpose, added after the address
 rule, so an IP:port written there reaches the visitor as written.
 
@@ -75,8 +76,8 @@ tells the visitor what is logged. Managers read both in the Log tab
 | every `POST` (config, import, restart, rollback, DeepCW fetch) | 403 | yes |
 | `POST /api/visitor` (sign in with a call, sign out) | yes (same origin) | yes |
 | `/api/visitors` (the visitors' log) | 403 | yes |
-| `status.json` | without addresses, file paths and the `SKIM_*` values; from outside also without CPU, temperature, lost | whole |
-| `stats.json` | yes (from outside: once signed in, without the CPU, temperature and lost series) | yes |
+| `status.json` | without addresses, file paths and the `SKIM_*` values; from outside also without the CPU load and lost | whole |
+| `stats.json` | yes (from outside: once signed in, without the CPU load and lost series) | yes |
 | `/api/spots`, `/ws/waterfall` | yes (from outside free_from: once signed in) | yes |
 
 The station's locator goes to a viewer as its square only — the first

@@ -47,8 +47,8 @@ G_BEGIN_DECLS
 typedef struct _SkimHdWeb SkimHdWeb;
 
 /* Who asks: a client from outside (not a manager, not from free_from
- * without a proxy — it sees no machine readings: CPU, temperature, IQ
- * lost), one from the LAN, or a manager (may POST: its address is in
+ * without a proxy — it sees no machine readings: the CPU load, IQ lost;
+ * the temperature it does), one from the LAN, or a manager (may POST: its address is in
  * settings_from). */
 typedef enum {
   SKIM_HD_WEB_PUBLIC,

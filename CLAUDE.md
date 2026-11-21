@@ -208,7 +208,8 @@ here; what was done and why is in git.
   `visitors-failed.tsv` (≤ 30/min); the Log tab shows both. The visitor's
   call is in the header and, from another DXCC, a star on the map that AUTO
   zooms to. From outside (signed in or not) the status and history come
-  without the machine readings — CPU, temperature, IQ lost (`SkimHdWebWho`
+  without the machine readings — CPU load, IQ lost; the CPU temperature
+  and the thermal guard go to everyone since 2026-11-21 (`SkimHdWebWho`
   PUBLIC / LOCAL / MANAGER in the GET hooks). `[feed] address` (host:port or
   a telnet/http(s) URL) is the feed's address in the header, for everyone.
   Rules: `docs/WEB-SECURITY.md`.

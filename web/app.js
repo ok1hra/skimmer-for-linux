@@ -163,8 +163,10 @@ function renderStatus(d) {
   $('#call').textContent = d.call || 'SKIMMER';
   $('#version').textContent = d.locator || (d.version ? `v${d.version}` : '');
   renderFeedAddress(d.feed_address);
-  // the machine readings (CPU, its temperature, IQ lost) come to the LAN only
-  $('#hdr-stats').innerHTML = (d.cpu_pct != null ? `<span>CPU <b>${fmt(d.cpu_pct)}%</b>${d.cpu_temp_c != null ? ` <b class="temp ${tempClass(d.cpu_temp_c)}" title="the hottest CPU sensor: under 70 °C fine, 70–85 °C warm, 85 °C and more hot">${fmt(d.cpu_temp_c)} °C</b>` : ''}</span> ` : '') +
+  // the CPU load and IQ lost come to the LAN only; the temperature to everyone
+  const tC = d.cpu_temp_c != null ? `<b class="temp ${tempClass(d.cpu_temp_c)}" title="the hottest CPU sensor: under 70 °C fine, 70–85 °C warm, 85 °C and more hot">${fmt(d.cpu_temp_c)} °C</b>` : '';
+  $('#hdr-stats').innerHTML = (d.cpu_pct != null ? `<span>CPU <b>${fmt(d.cpu_pct)}%</b>${tC ? ` ${tC}` : ''}</span> `
+    : tC ? `<span>CPU ${tC}</span> ` : '') +
     (d.lost_pct != null ? `<span>lost <b>${fmt(d.lost_pct, 3)}%</b></span> ` : '') +
     `<span>feed <b>${d.feed_port ? fmt(d.feed_clients) : 'off'}</b></span> <span>${esc(d.engine || '')}</span> <span>v${esc(d.version || '')}</span>`;
   document.title = `${d.call ? `${d.call} · ` : ''}Skimmer for Linux`;
@@ -630,15 +632,27 @@ function renderStats() {
   // CPU: the CW and RTTY pipelines' threads and the rest of the process, stacked
   // under the total (history before the split has the total line only)
   const g = d.global;
-  // from outside the LAN the history comes without them (null): no card
-  $('#card-cpu').hidden = !g.cpu;
-  if (g.cpu) renderCpu(d, x, g);
+  // from outside the LAN the history comes without the CPU load and IQ lost
+  // (null): the card shows the temperature alone
+  $('#card-cpu').hidden = !g.cpu && !g.cpu_temp;
+  if (g.cpu || g.cpu_temp) renderCpu(d, x, g);
   ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-temp'].forEach((id) => loading(id, false));
   renderStatsTables(d);
 }
 // the CPU card: the decoders' share stacked under the total, IQ lost, and
 // the temperature below
 function renderCpu(d, x, g) {
+  $('#cpu-load').hidden = !g.cpu;
+  $('#cpu-h').textContent = g.cpu ? 'CPU, its temperature and IQ lost' : 'CPU temperature';
+  $('#cpu-sub').textContent = g.cpu
+    ? 'CPU in % of one core (left), what the CW and RTTY decoders take of it; IQ frames lost on the wire, ' +
+      '% in the worst minute of each bucket (right); below, the hottest CPU sensor in the hottest minute of each bucket'
+    : 'the hottest CPU sensor in the hottest minute of each bucket — over the thermal guard\'s limit the ' +
+      'band with the fewest spots goes OFF until the CPU cools';
+  if (g.cpu) renderLoad(x, g);
+  renderTemp(x, g);
+}
+function renderLoad(x, g) {
   const cpuCw = g.cpu_cw || g.cpu.map(() => null), cpuRt = g.cpu_rtty || g.cpu.map(() => null);
   const anyRt = cpuRt.some((v) => v != null);
   const layers = [
@@ -654,6 +668,8 @@ function renderCpu(d, x, g) {
   Charts.area($('#chart-cpu'), x, layers, g.cpu, (v) => `${fmt(v)} %`, 'CPU, all, % of a core',
     { name: 'IQ lost, worst minute', values: g.lost, color: lostColor,
       fmtV: (v) => `${fmt(v, 3)} %`, fmtTick: (v) => `${+v.toPrecision(2)} %` });
+}
+function renderTemp(x, g) {
   // the CPU temperature: the hottest minute of each bucket (from v0.8.2 on);
   // the line coloured by its height — green while fine, amber from 70 °C, red
   // at 85 °C and above (the header's colours)
@@ -664,7 +680,7 @@ function renderCpu(d, x, g) {
     `CPU temperature, the hottest minute — green fine, amber from 70 °C, red from 85 °C${nowT != null ? ` · now <b class="temp ${tempClass(nowT)}">${fmt(nowT)} °C</b>` : ''}</span>` +
     (status && status.thermal ? `<span><i class="line dash"></i>the thermal guard's limit (on the ${status.thermal.average_min}-min mean)</span>` : '');
   const guard = status && status.thermal ? status.thermal.limit_c : null;
-  Charts.line($('#chart-temp'), x, g.cpu_temp || g.cpu.map(() => null),
+  Charts.line($('#chart-temp'), x, g.cpu_temp || x.t.map(() => null),
     { name: 'CPU temperature, the hottest minute', color: css('--ok'), ramp: tempRamp, fmtV: (v) => `${fmt(v)} °C`,
       fmtTick: (v) => `${fmt(v)} °C`, height: 110, minSpan: 20,
       mark: guard == null ? null : { value: guard, label: `thermal guard ${fmt(guard)} °C (on the mean)` } });
