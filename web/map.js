@@ -81,11 +81,19 @@ const SkMap = (() => {
   // ---- state ----------------------------------------------------------------------------
   const store = (() => { try { return JSON.parse(localStorage.getItem('skmap') || '{}'); } catch (e) { return {}; } })();
   // every layer on by default; a viewer's choices are kept (v2: SNR joined them, on)
-  if (store.v !== 2) { store.db = true; store.v = 2; }
-  const opt = { grayline: true, borders: true, prefixes: true, lines: true, calls: true, db: true, zoom: 0, heat: false, ...store };
-  // HEAT takes the map alone: it turns the other layers off and keeps what
-  // they were, to give them back when it goes off
-  const LAYERS = ['grayline', 'borders', 'prefixes', 'lines', 'calls', 'db'];
+  if (!(store.v >= 2)) store.db = true;
+  // v3: HEAT no longer turns borders and DXCC off — a map left in HEAT by
+  // v2 gets them back as they were before it
+  if (!(store.v >= 3) && store.heatKeep) {
+    for (const k of ['borders', 'prefixes']) { if (k in store.heatKeep) store[k] = store.heatKeep[k]; delete store.heatKeep[k]; }
+    if (store.heat) { store.dots = false; store.heatKeep.dots = true; }   // DOTS came with v3
+  }
+  store.v = 3;
+  const opt = { grayline: true, borders: true, prefixes: true, lines: true, dots: true, calls: true, db: true, zoom: 0, heat: false, ...store };
+  // HEAT hides the spots' layers (and the grayline) and keeps what they were,
+  // to give them back when it goes off; borders and DXCC stay as they are
+  const LAYERS = ['grayline', 'borders', 'prefixes', 'lines', 'dots', 'calls', 'db'];
+  const HEAT_OFF = ['grayline', 'lines', 'dots', 'calls', 'db'];
   delete opt.center;                               // a typed-in centre (before v0.8.4) is gone
   const save = () => { try { localStorage.setItem('skmap', JSON.stringify(opt)); } catch (e) { /* private window */ } };
   let visitorCall = '';
@@ -292,7 +300,8 @@ const SkMap = (() => {
   // little to either side of it and further out step by step. A place is free
   // when the label is clear of the labels and leaders placed, of the dots and
   // of the rim, and its straight leader crosses no other leader and no label
-  // (it may pass over a dot of a crowded country). The marked station goes first, then the strongest. A label
+  // (it may pass over a dot of a crowded country). Without dots a label
+  // sits at the end of its line. The marked station goes first, then the strongest. A label
   // with no free place is left out (its dot and hover stay).
   const OUT = [16, 28, 42, 58, 76, 96, 120, 150, 185, 225];
   const FAN = [0, 10, -10, 20, -20, 32, -32, 45, -45, 60, -60, 75, -75, 90, -90].map((d) => (d * Math.PI) / 180);
@@ -313,7 +322,7 @@ const SkMap = (() => {
       marks.some((m) => m !== own && b[0] < m.x + m.r && b[2] > m.x - m.r && b[1] < m.y + m.r && b[3] > m.y - m.r) ||
       [[b[0], b[1]], [b[2], b[1]], [b[0], b[3]], [b[2], b[3]]].some(([px, py]) => Math.hypot(px - view.cx, py - view.cy) > view.rr - 2);
     const leaderFree = (p, q) => !leaders.some(([r, t]) => cross(p, q, r, t)) && !boxes.some((o) => segBox(p, q, o));
-    const todo = [...marks].filter((m) => (opt.calls || opt.db || m.s.hi) && (!m.crowd || m.s.hi)).sort((a, b) => (b.s.hi - a.s.hi) || (b.s.snr - a.s.snr));
+    const todo = [...marks].filter((m) => opt.calls || opt.db || m.s.hi).sort((a, b) => (b.s.hi - a.s.hi) || (b.s.snr - a.s.snr));
     for (const m of todo) {
       const s = m.s, col = s.hi ? '#fff' : bandColor(s.band);
       const call = opt.calls || s.hi ? s.call : '';           // SNR alone: the number only
@@ -451,7 +460,7 @@ const SkMap = (() => {
     const boxes = [];
     view.marks = [];
     view.heat = null;
-    if (opt.heat) {                                  // the heat map alone: no lines, dots or labels
+    if (opt.heat) {                                  // the heat map: no lines, dots or labels
       drawHeat(g, view);
       view.visitor = placeVisitor(g, view, boxes);
       if (view.visitor) paintVisitor(g, view.visitor);
@@ -471,27 +480,12 @@ const SkMap = (() => {
       groups.get(k).push(s);
     }
     const dotR = (s) => 2.5 + Math.max(0, s.snr) / 12;
-    const disc = [];                                       // each DXCC's spiral: [x, y, radius, spots]
     for (const g of groups.values()) {
       const [px, py] = view.P(g[0].where.lat, g[0].where.lon);
       g.sort((a, b) => b.snr - a.snr).forEach((s, k) => {
         const r = 8 * Math.sqrt(k), th = k * 2.39996;      // the golden angle
         at.set(s, [px + r * Math.cos(th), py + r * Math.sin(th)]);
       });
-      disc.push([px, py, 8 * Math.sqrt(g.length - 1) + Math.max(...g.map(dotR)), g]);
-    }
-    // a crowd: DXCCs whose spirals run into each other (a contest: Europe
-    // round the centre, W) — their dots would be one blot, so they are left
-    // out and only the lines stay (each to its own place in the spiral);
-    // the marked station keeps its dot. Lines off: the dots stay.
-    const crowd = new Set();
-    if (opt.lines) {
-      for (let i = 0; i < disc.length; i++) {
-        for (let j = i + 1; j < disc.length; j++) {
-          const [x1, y1, r1, g1] = disc[i], [x2, y2, r2, g2] = disc[j];
-          if (Math.hypot(x1 - x2, y1 - y2) < r1 + r2) { g1.forEach((s) => crowd.add(s)); g2.forEach((s) => crowd.add(s)); }
-        }
-      }
     }
     // lines and dots first (the strongest on top), the labels after them
     const order = [...spots].filter((s) => s.where).sort((a, b) => a.snr - b.snr);
@@ -502,8 +496,8 @@ const SkMap = (() => {
         g.strokeStyle = col; g.lineWidth = 0.6;
         g.beginPath(); g.moveTo(view.cx, view.cy); g.lineTo(x, y); g.stroke();
       }
-      if (crowd.has(s) && !s.hi) {                        // a line only (its hover stays)
-        view.marks.push({ x, y, r: 0, s, crowd: true });
+      if (!opt.dots && !s.hi) {                           // DOTS off: a line only (its hover and label stay)
+        view.marks.push({ x, y, r: 0, s });
         g.globalAlpha = 1;
         continue;
       }
@@ -517,8 +511,7 @@ const SkMap = (() => {
     if (view.visitor) paintVisitor(g, view.visitor);
     g.restore();
     g.fillStyle = '#39d98a'; g.beginPath(); g.arc(view.cx, view.cy, 4, 0, 7); g.fill();
-    const lines = view.marks.filter((m) => m.crowd).length;
-    foot(zoom, lines ? `${lines} in crowds as lines only (zoom in for their dots) · ` : '');
+    foot(zoom, '');
   }
   function foot(zoom, note) {
     el.querySelector('[data-k=zoom]').textContent = opt.zoom ? `${fmtKm(zoom)}` : `auto · ${fmtKm(zoom)}`;
@@ -557,9 +550,10 @@ const SkMap = (() => {
           <button type="button" data-o="borders">borders</button>
           <button type="button" data-o="prefixes">DXCC</button>
           <button type="button" data-o="lines">lines</button>
+          <button type="button" data-o="dots" title="a dot at each spot — off, the lines alone (a contest's crowd)">dots</button>
           <button type="button" data-o="calls">calls</button>
           <button type="button" data-o="db" title="the spot's SNR in dB — behind its call, or alone without calls">SNR</button>
-          <button type="button" data-o="heat" title="a heat map of the DXCCs: how many spots and how strong — the other layers go off while it is on and come back after">heat</button>
+          <button type="button" data-o="heat" title="a heat map of the DXCCs: how many spots and how strong — the spots' layers and the grayline go off while it is on and come back after">heat</button>
         </span>
         <span class="mut" data-k="zoom"></span>
       </div>
@@ -573,14 +567,17 @@ const SkMap = (() => {
       const o = e.target.dataset && e.target.dataset.o;
       if (!o) return;
       if (o === 'auto') opt.zoom = 0;
-      else if (o === 'heat' && !opt.heat) {          // on: the others off, remembered
-        opt.heatKeep = Object.fromEntries(LAYERS.map((k) => [k, !!opt[k]]));
-        LAYERS.forEach((k) => { opt[k] = false; });
+      else if (o === 'heat' && !opt.heat) {          // on: the spots' layers off, remembered
+        opt.heatKeep = Object.fromEntries(HEAT_OFF.map((k) => [k, !!opt[k]]));
+        HEAT_OFF.forEach((k) => { opt[k] = false; });
         opt.heat = true;
-      } else if (o === 'heat') {                     // off: the others as they were
-        Object.assign(opt, opt.heatKeep || Object.fromEntries(LAYERS.map((k) => [k, true])));
+      } else if (o === 'heat' || (opt.heat && HEAT_OFF.includes(o))) {
+        // off (or a layer HEAT hides pressed meanwhile): the layers as they
+        // were — the pressed one on — and the spots back
+        Object.assign(opt, opt.heatKeep || Object.fromEntries(HEAT_OFF.map((k) => [k, true])));
         delete opt.heatKeep;
         opt.heat = false;
+        if (o !== 'heat') opt[o] = true;
       } else opt[o] = !opt[o];
       buttons(); save(); draw();
     });
