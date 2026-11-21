@@ -13,7 +13,7 @@
 #   -c CALL       login callsign for all feeds           (default OK1HRA)
 #   -o DIR        output directory          (default <script dir>/logs)
 #   -t SECONDS    stop after this long             (default: until Ctrl+C)
-#   -l HOST:PORT  local feed                        (default 127.0.0.1:7302)
+#   -l HOST:PORT  local feed                        (default 127.0.0.1:7373)
 #   -r HOST:PORT  remote feed                       (default 127.0.0.1:7301)
 #   -b HOST:PORT  RBN feed, "" = off      (default telnet.reversebeacon.net:7000)
 #   -L REGEX      the local feed's greeting must match this (case-insensitive),
@@ -46,7 +46,7 @@
 # The recorder runs on the same PC as both skimmers, and that PC serves more
 # than one telnet port: 7300 is the filtering proxy in front of CW Skimmer
 # Server, 7301 the CW Skimmer Server itself, so skimmer-headless needs a port
-# of its own ([feed] port=7302 in headless.ini). A wrong port must not be
+# of its own ([feed] port=7373 in headless.ini). A wrong port must not be
 # recorded as the wrong skimmer: every connection is checked by its greeting
 # (-L/-R) before the first spot is accepted; a feed that answers with the
 # wrong greeting is dropped, logged as WRONG SERVICE and retried in 5 min.
@@ -58,7 +58,7 @@ set -u
 CALL=OK1HRA
 OUT="$(cd "$(dirname "$0")" && pwd)/logs"
 DURATION=0
-LOCAL=127.0.0.1:7302
+LOCAL=127.0.0.1:7373
 REMOTE=127.0.0.1:7301
 LOCAL_ID=skimmer-for-linux
 REMOTE_ID="skimmer server|de skimmer"
