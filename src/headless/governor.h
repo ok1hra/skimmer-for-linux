@@ -13,11 +13,14 @@
  *
  * The thermal guard ([thermal] enabled): the hottest CPU sensor, averaged
  * over average_min minutes (5: the heat sink's own pace — a burst of work
- * reads 95 °C for seconds on a machine whose mean is 78 °C). Over limit_c
- * for 5 minutes on end: the band (decoded here, not by a worker) with the
- * fewest spots in the last 30 minutes is paused, CW and RTTY; 10 minutes
- * later the drop of the mean since is recorded with it — and if the mean is
- * still over the limit the next one goes. One band always stays. A paused
+ * reads 95 °C for seconds on a machine whose mean is 78 °C). The mean over
+ * limit_c now and for 3 of the last 5 minutes (a dip under it does not
+ * start the count again: a mean that hovers at the limit, mostly over it,
+ * is hot — 2026-11-20 on hra2 it held one band off for 70 min at minute
+ * peaks of 85–100 °C, the next never went): the band (decoded here, not by
+ * a worker) with the fewest spots in the last 30 minutes is paused, CW and
+ * RTTY; 10 minutes later the drop of the mean since is recorded with it —
+ * and if the mean is still hot so the next one goes. One band always stays. A paused
  * band comes back last-in first-out once the mean has stayed at or under
  * limit − max(its drop, 5 °C) − restore_margin_c for 20 minutes, at most
  * one every 20 minutes: the reserve must exceed what the band itself costs,
@@ -47,10 +50,11 @@ typedef struct {
   double   restore_margin_c;           /* reserve beyond a band's drop, °C     */
 } SkimHdGovernorConfig;
 
-/* the guard's clock (s): over the limit this long pauses a band, at least
- * this long between two, the drop measured this long after, the reserve
- * held this long brings one back (and as long between two) */
+/* the guard's clock (s): over the limit OVER_NEED_S of the last OVER_S
+ * pauses a band, at least NEXT_S between two, the drop measured NEXT_S
+ * after, the reserve held RESTORE_S brings one back (and as long between two) */
 #define SKIM_GOV_OVER_S     300
+#define SKIM_GOV_OVER_NEED_S 180
 #define SKIM_GOV_NEXT_S     600
 #define SKIM_GOV_RESTORE_S 1200
 #define SKIM_GOV_MIN_DROP_C 5.0

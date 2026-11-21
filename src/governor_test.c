@@ -116,9 +116,9 @@ static void thermal(void) {
   check("a one-minute burst to 100 °C: nothing paused", !run(g, 100, 60) && !shed_count(g, 4));
   run(g, 70, 300);
   /* hot: 90 °C from now; the 5-min mean is over 85 from the 226th s, then
-   * 5 min on end */
-  check("hot, but not yet 5 min over the limit: nothing", !run(g, 90, 225 + 300) && !shed_count(g, 4));
-  check("5 min over the limit: a band paused", run(g, 90, 1) && shed_count(g, 4) == 1);
+   * 3 min of the last 5 */
+  check("hot, but not yet 3 min over the limit: nothing", !run(g, 90, 225 + 179) && !shed_count(g, 4));
+  check("3 min over the limit: a band paused", run(g, 90, 1) && shed_count(g, 4) == 1);
   check("… 40m, the fewest spots (not the worker's 15m)",
         skim_hd_governor_band_shed(g, 1) && !skim_hd_governor_band_shed(g, 3));
   /* still hot: the next one 10 min later, not sooner */
@@ -159,6 +159,36 @@ static void thermal(void) {
   check("73 °C is not reserve enough for it", shed_count(g, 3) == 1);
   run(g, 70, 1500);                                  /* ≤ 71 from the 200th s */
   check("70 °C for 20 min is", shed_count(g, 3) == 0);
+  skim_hd_governor_free(g);
+
+  /* hovering at the limit (the 1-min mean, as hra2 runs it): 90 s at 90 °C,
+   * 30 s at 75 — the mean dips under 85 each 2 min, over it most of the
+   * time. A dip does not start the count again: 40m at once, 80m 10 min on.
+   * (Counted on end, the guard held one band off for good, 2026-11-20.) */
+  SkimHdGovernorConfig c1 = { .thermal = TRUE, .limit_c = 85, .average_min = 1, .restore_margin_c = 3 };
+  g = skim_hd_governor_new(&c1, AT(10, 0));
+  skim_hd_governor_set_bands(g, 4, names, can);
+  for (int m = 0; m < 30; m++) { skim_hd_governor_minute(g, AT(10, m), 0, spots); }
+  now = AT(10, 30) * 60;
+  run(g, 70, 60);
+  for (int k = 0; k < 4; k++) { run(g, 90, 90); run(g, 75, 30); }       /* 8 min */
+  check("hovering, mostly over: a band paused", shed_count(g, 4) == 1 && skim_hd_governor_band_shed(g, 1));
+  for (int k = 0; k < 6; k++) { run(g, 90, 90); run(g, 75, 30); }       /* 12 min more */
+  check("… still mostly over 10 min on: the next too", shed_count(g, 4) == 2 && skim_hd_governor_band_shed(g, 0));
+  j = g_string_new(NULL);
+  skim_hd_governor_json(g, j);
+  check("status: the seconds over the limit in the last 5 min", strstr(j->str, "\"over_s\":") &&
+        strstr(j->str, "\"over_need_s\":180"));
+  g_string_free(j, TRUE);
+  skim_hd_governor_free(g);
+  /* over only briefly: 60 s at 95 °C, 120 s at 70 — the mean is over 85 for
+   * well under 3 of each 5 min: nothing */
+  g = skim_hd_governor_new(&c1, AT(10, 0));
+  skim_hd_governor_set_bands(g, 4, names, can);
+  now = AT(10, 30) * 60;
+  run(g, 70, 60);
+  for (int k = 0; k < 20; k++) { run(g, 95, 60); run(g, 70, 120); }    /* 1 h */
+  check("over the limit now and then, mostly under: nothing paused", !shed_count(g, 4));
   skim_hd_governor_free(g);
 
   /* off: nothing ever, no status */

@@ -32,7 +32,11 @@ struct _SkimHdGovernor {
   double   *temps;                     /* a ring of per-second readings        */
   guint     tcap, tlen, tpos;
   double    mean;                      /* NAN: under a minute of readings      */
-  gint64    over_since, below_since, last_change;            /* unix s, 0 = no */
+  guint8    over[SKIM_GOV_OVER_S];     /* a ring: the mean over the limit, a s */
+  guint     opos, on;                  /* … its next slot, its seconds over    */
+  gint64    over_since, below_since, last_change;            /* unix s, 0 = no;
+                                        * over_since: the hot spell's start,
+                                        * till 5 min without a second over     */
   Shed      shed[SKIM_GOV_MAX_BANDS];  /* the paused, oldest first             */
   guint     nshed;
   gboolean  told_none;                 /* "nothing left to pause" said         */
@@ -79,9 +83,10 @@ void skim_hd_governor_set_bands(SkimHdGovernor *g, guint n, const char *const *n
     guint k = 0;
     for (guint i = 0; i < g->nb; i++) { k += g->can[i]; }
     g_message("thermal: guard on — over %.1f °C (the %u-min mean of the hottest CPU sensor) "
-              "for %d min pauses the band with the fewest spots in %d min, %u of %u bands "
-              "may be paused (one always stays)", g->cfg.limit_c, g->cfg.average_min,
-              SKIM_GOV_OVER_S / 60, SKIM_GOV_SPOTS_MIN, k > 0 ? k - 1 : 0, g->nb);
+              "for %d of the last %d min pauses the band with the fewest spots in %d min, "
+              "%u of %u bands may be paused (one always stays)", g->cfg.limit_c,
+              g->cfg.average_min, SKIM_GOV_OVER_NEED_S / 60, SKIM_GOV_OVER_S / 60,
+              SKIM_GOV_SPOTS_MIN, k > 0 ? k - 1 : 0, g->nb);
   }
 }
 
@@ -188,10 +193,18 @@ gboolean skim_hd_governor_temp(SkimHdGovernor *g, gint64 now_s, double temp_c) {
     }
   }
   gboolean changed = FALSE;
-  if (g->mean > lim) {
+  const gboolean over = g->mean > lim;
+  g->on += (guint)over - g->over[g->opos];             /* the last 5 min's      */
+  g->over[g->opos] = (guint8)over;
+  g->opos = (g->opos + 1) % SKIM_GOV_OVER_S;
+  if (!g->on) {                                       /* 5 min under: cooled   */
+    g->over_since = 0;
+    g->told_none = FALSE;
+  }
+  if (over) {
     g->below_since = 0;
     if (!g->over_since) { g->over_since = now_s; }
-    if (now_s - g->over_since >= SKIM_GOV_OVER_S &&
+    if (g->on >= SKIM_GOV_OVER_NEED_S &&
         (!g->last_change || now_s - g->last_change >= SKIM_GOV_NEXT_S)) {
       const int b = pick(g);
       if (b >= 0) {
@@ -203,9 +216,9 @@ gboolean skim_hd_governor_temp(SkimHdGovernor *g, gint64 now_s, double temp_c) {
         g->shed_on[b] = TRUE;
         g->last_change = now_s;
         changed = TRUE;
-        g_message("thermal: %.1f °C (the %u-min mean) over %.1f °C for %" G_GINT64_FORMAT
-                  " min — %s paused (%u spots in %d min, the fewest)", g->mean,
-                  g->cfg.average_min, lim, (now_s - g->over_since) / 60, g->names[b],
+        g_message("thermal: %.1f °C (the %u-min mean) over %.1f °C for %.1f of the last %d "
+                  "min — %s paused (%u spots in %d min, the fewest)", g->mean,
+                  g->cfg.average_min, lim, g->on / 60.0, SKIM_GOV_OVER_S / 60, g->names[b],
                   spots30(g, (guint)b), SKIM_GOV_SPOTS_MIN);
       } else if (!g->told_none) {
         g->told_none = TRUE;
@@ -215,8 +228,6 @@ gboolean skim_hd_governor_temp(SkimHdGovernor *g, gint64 now_s, double temp_c) {
     }
     return changed;
   }
-  g->over_since = 0;
-  g->told_none = FALSE;
   if (!g->nshed) { return FALSE; }
   Shed *s = &g->shed[g->nshed - 1];                   /* the last one first     */
   if (g->mean > lim - need_c(g, s)) {
@@ -270,15 +281,16 @@ void skim_hd_governor_json(const SkimHdGovernor *g, GString *out) {
     g_string_append_printf(out, ",\"until\":%" G_GINT64_FORMAT "}", t * 60);
   }
   if (g->cfg.thermal) {
-    /* state: hot (over the limit), cooling (under it with bands paused, the
-     * reserve not yet held), ok */
-    const char *st = g->over_since ? "hot" : g->nshed ? "cooling" : "ok";
+    /* state: hot (over the limit now), cooling (under it with bands paused,
+     * the reserve not yet held), ok */
+    const char *st = g->mean > g->cfg.limit_c ? "hot" : g->nshed ? "cooling" : "ok";
     g_string_append(out, ",\"thermal\":{\"mean_c\":");
     num_or_null(out, "%.1f", g->mean);
     g_string_append(out, ",\"limit_c\":");
     num_or_null(out, "%.1f", g->cfg.limit_c);
     g_string_append_printf(out, ",\"average_min\":%u,\"state\":\"%s\",\"over_since\":%" G_GINT64_FORMAT
-                           ",\"shed\":[", g->cfg.average_min, st, g->over_since);
+                           ",\"over_s\":%u,\"over_need_s\":%d,\"shed\":[", g->cfg.average_min, st,
+                           g->over_since, g->on, SKIM_GOV_OVER_NEED_S);
     for (guint k = 0; k < g->nshed; k++) {
       const Shed *s = &g->shed[k];
       g_string_append_printf(out, "%s{\"band\":\"%s\",\"at\":%" G_GINT64_FORMAT ",\"at_c\":",
