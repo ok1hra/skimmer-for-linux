@@ -1612,7 +1612,7 @@ tabs.waterfall = {
 window.addEventListener('sk-listen', (e) => {
   if (typeof Wf === 'undefined') return;
   show('waterfall');
-  Wf.listen(e.detail.band, e.detail.hz);
+  Wf.listen(e.detail.band, e.detail.hz, e.detail.mode);
 });
 // a hidden window watches nothing: the skimmer stops computing for it
 document.addEventListener('visibilitychange', () => {

@@ -127,6 +127,16 @@ static const char DEFAULT_CONFIG[] =
   "# other, or missing from a cut call) — the busts of its own transmissions;\n"
   "# a call MASTER.SCP knows passes all the same\n"
   "mycall=false\nmycall_diff=2\n"
+  "\n[rtty_palette]\n# the web page's RTTY palette over the waterfall (the browser only):\n"
+  "# open_on_spot = a click on an RTTY spot opens it; bandwidth = the audio's\n"
+  "# passband while it decodes (250-500 Hz); autotune centres a steady\n"
+  "# mark/space pair once; afc follows it within afc_max_hz (10-180) at\n"
+  "# afc_rate Hz a character (5-85); squelch_db 0 = off (1-10 dB over the\n"
+  "# noise); usos = unshift on space; second_decoder = DEC 2 beside DEC 1;\n"
+  "# clean = plain text instead of the time tape; sound = heard while decoding\n"
+  "#open_on_spot=true\n#bandwidth=400\n#autotune=true\n#afc=true\n#afc_max_hz=60\n"
+  "#afc_rate=60\n#reverse=false\n#usos=true\n#squelch_db=0\n#second_decoder=true\n"
+  "#clean=false\n#sound=true\n"
   "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
   "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
   "bands=\nminutes=10\ndir=/var/tmp/skimmer-iq\nstart_utc=\n";
@@ -690,6 +700,31 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->thermal_average_min = (guint)avg;
   }
 
+  {
+    /* [rtty_palette]: the page's only, checked here so a bad value is a
+     * bad config like any other */
+    double bw, mx, rate, sq;
+    if (!opt_bool(kf, "rtty_palette", "open_on_spot", TRUE, &h->rtty_palette.open_on_spot, path, error) ||
+        !opt_bool(kf, "rtty_palette", "autotune", TRUE, &h->rtty_palette.autotune, path, error) ||
+        !opt_bool(kf, "rtty_palette", "afc", TRUE, &h->rtty_palette.afc, path, error) ||
+        !opt_bool(kf, "rtty_palette", "reverse", FALSE, &h->rtty_palette.reverse, path, error) ||
+        !opt_bool(kf, "rtty_palette", "usos", TRUE, &h->rtty_palette.usos, path, error) ||
+        !opt_bool(kf, "rtty_palette", "second_decoder", TRUE, &h->rtty_palette.second_decoder, path,
+                  error) ||
+        !opt_bool(kf, "rtty_palette", "clean", FALSE, &h->rtty_palette.clean, path, error) ||
+        !opt_bool(kf, "rtty_palette", "sound", TRUE, &h->rtty_palette.sound, path, error) ||
+        !opt_num(kf, "rtty_palette", "bandwidth", 400, 250, 500, TRUE, &bw, path, error) ||
+        !opt_num(kf, "rtty_palette", "afc_max_hz", 60, 10, 180, TRUE, &mx, path, error) ||
+        !opt_num(kf, "rtty_palette", "afc_rate", 60, 5, 85, TRUE, &rate, path, error) ||
+        !opt_num(kf, "rtty_palette", "squelch_db", 0, 0, 10, TRUE, &sq, path, error)) {
+      return FALSE;
+    }
+    h->rtty_palette.bandwidth = (guint)bw;
+    h->rtty_palette.afc_max_hz = (guint)mx;
+    h->rtty_palette.afc_rate = (guint)rate;
+    h->rtty_palette.squelch_db = (guint)sq;
+  }
+
   h->console_s = given(kf, "status", "console_s", NULL)
                      ? g_key_file_get_integer(kf, "status", "console_s", NULL) : -1;
   h->http_port = given(kf, "status", "http_port", NULL)
@@ -865,8 +900,23 @@ const char *const SKIM_HD_EDITABLE[] = {
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
   "archive.dir", "visitors.login", "visitors.free_from", "thermal.enabled", "thermal.limit_c", "thermal.average_min",
   "thermal.restore_margin_c", "filter.call", "filter.regex", "filter.mycall", "filter.mycall_diff",
+  "rtty_palette.open_on_spot", "rtty_palette.bandwidth", "rtty_palette.autotune", "rtty_palette.afc",
+  "rtty_palette.afc_max_hz", "rtty_palette.afc_rate", "rtty_palette.reverse", "rtty_palette.usos",
+  "rtty_palette.squelch_db", "rtty_palette.second_decoder", "rtty_palette.clean", "rtty_palette.sound",
   NULL,
 };
+
+char *skim_hd_config_rtty_palette_json(const SkimHdConfig *c) {
+  const char *const T = "true", *const F = "false";
+#define B(x) (c->rtty_palette.x ? T : F)
+  return g_strdup_printf("{\"open_on_spot\":%s,\"bandwidth\":%u,\"autotune\":%s,\"afc\":%s,"
+                         "\"afc_max_hz\":%u,\"afc_rate\":%u,\"reverse\":%s,\"usos\":%s,"
+                         "\"squelch_db\":%u,\"second_decoder\":%s,\"clean\":%s,\"sound\":%s}",
+                         B(open_on_spot), c->rtty_palette.bandwidth, B(autotune), B(afc),
+                         c->rtty_palette.afc_max_hz, c->rtty_palette.afc_rate, B(reverse), B(usos),
+                         c->rtty_palette.squelch_db, B(second_decoder), B(clean), B(sound));
+#undef B
+}
 
 static gboolean editable(const char *key) {
   for (const char *const *k = SKIM_HD_EDITABLE; *k; k++) {

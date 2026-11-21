@@ -286,6 +286,35 @@ int main(void) {
           !parse(&c, "[bands]\n20m=14045500\n[thermal]\nlimit_c=30\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[thermal]\nlimit_c=120\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[thermal]\naverage_min=0\n", NULL));
+    check("[rtty_palette] defaults: on a spot, 400 Hz, autotune, AFC 60/60, squelch off, sound",
+          parse(&c, "[bands]\n20m=14045500\n[rtty_palette]\nbandwidth=\n", NULL) &&
+          c.rtty_palette.open_on_spot && c.rtty_palette.bandwidth == 400 && c.rtty_palette.autotune &&
+          c.rtty_palette.afc && c.rtty_palette.afc_max_hz == 60 && c.rtty_palette.afc_rate == 60 &&
+          !c.rtty_palette.reverse && c.rtty_palette.usos && c.rtty_palette.squelch_db == 0 &&
+          c.rtty_palette.second_decoder && !c.rtty_palette.clean && c.rtty_palette.sound);
+    {
+      char *j = skim_hd_config_rtty_palette_json(&c);
+      check("[rtty_palette] as JSON for the page",
+            strcmp(j, "{\"open_on_spot\":true,\"bandwidth\":400,\"autotune\":true,\"afc\":true,"
+                      "\"afc_max_hz\":60,\"afc_rate\":60,\"reverse\":false,\"usos\":true,"
+                      "\"squelch_db\":0,\"second_decoder\":true,\"clean\":false,\"sound\":true}") == 0);
+      g_free(j);
+    }
+    skim_hd_config_clear(&c);
+    check("[rtty_palette] set: 300 Hz, AFC 120 Hz at 20, squelch 3, reverse, clean, silent",
+          parse(&c, "[bands]\n20m=14045500\n[rtty_palette]\nopen_on_spot=false\nbandwidth=300\n"
+                    "afc_max_hz=120\nafc_rate=20\nsquelch_db=3\nreverse=true\nclean=true\nsound=false\n",
+                NULL) &&
+          !c.rtty_palette.open_on_spot && c.rtty_palette.bandwidth == 300 &&
+          c.rtty_palette.afc_max_hz == 120 && c.rtty_palette.afc_rate == 20 &&
+          c.rtty_palette.squelch_db == 3 && c.rtty_palette.reverse && c.rtty_palette.clean &&
+          !c.rtty_palette.sound);
+    skim_hd_config_clear(&c);
+    check("[rtty_palette] refused: 200 Hz, AFC 200 Hz, squelch 11, sound=maybe",
+          !parse(&c, "[bands]\n20m=14045500\n[rtty_palette]\nbandwidth=200\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[rtty_palette]\nafc_max_hz=200\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[rtty_palette]\nsquelch_db=11\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[rtty_palette]\nsound=maybe\n", NULL));
     check("[feed] address: none by default, empty = none",
           parse(&c, "[bands]\n20m=14045500\n[feed]\naddress=\n", NULL) && !c.feed_address);
     skim_hd_config_clear(&c);

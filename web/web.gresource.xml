@@ -9,6 +9,12 @@
     <file>map.js</file>
     <file>dxc.js</file>
     <file>waterfall.js</file>
+    <file>rtty-palette.js</file>
+    <file>rtty/rtty-codec.js</file>
+    <file>rtty/rtty-afc.js</file>
+    <file>rtty/spectrum.js</file>
+    <file>rtty/rtty-scope.js</file>
+    <file>rtty/rtty-rxlog.js</file>
     <file compressed="true">map/map50.js</file>
     <file compressed="true">map/dxcc_prefix_aliases.js</file>
     <file compressed="true">map/states.js</file>

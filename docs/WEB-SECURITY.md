@@ -38,7 +38,9 @@ those out (Dan, 2026-11-20: how hard the box runs is nobody else's
 business). The CPU temperature and the thermal guard's temperatures go to
 everyone (Dan, 2026-11-21): the visitor sees why the guard took bands OFF. `[feed] address` — the telnet address the
 header shows — goes to everyone on purpose, added after the address
-rule, so an IP:port written there reaches the visitor as written.
+rule, so an IP:port written there reaches the visitor as written. `rtty_palette` — the
+RTTY palette's settings (`[rtty_palette]`: numbers and switches, nothing
+about the machine) — goes to everyone the same way.
 
 The callsign is checked on the server (`src/headless/visitors.c`): 3 to 15
 characters of A–Z, 0–9 and `/`, at least one digit and one letter. It comes

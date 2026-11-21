@@ -7,7 +7,8 @@
 // strength. The rows the filters leave are what the map draws too; a click on
 // a row marks the station on the map, a click on the map marks its row.
 // The speaker between kHz and DX opens the waterfall there, listening (a
-// peer's spot has none: its band is not received here).
+// peer's spot has none: its band is not received here); an RTTY spot opens
+// the RTTY palette over it too ([rtty_palette] open_on_spot).
 // Filters and columns are kept in the browser.
 'use strict';
 
@@ -148,7 +149,7 @@ const Dxc = (() => {
       case 'time': return `<td class="c-time">${utc(s.t)}</td>`;
       case 'khz': return `<td class="c-khz">${fmtKhz(s.khz)}</td>`;
       case 'play': return `<td class="c-play">${s.band && srcKind(s) !== 'peer'
-        ? `<button type="button" class="dxc-play" data-band="${esc(s.band)}" data-khz="${s.khz}" title="listen on the waterfall: ${fmtKhz(s.khz)} kHz" aria-label="listen">${SPK}</button>` : ''}</td>`;
+        ? `<button type="button" class="dxc-play" data-band="${esc(s.band)}" data-khz="${s.khz}" data-mode="${esc(s.mode)}" title="listen on the waterfall: ${fmtKhz(s.khz)} kHz${s.mode === 'RTTY' ? ' — the RTTY palette decodes it' : ''}" aria-label="listen">${SPK}</button>` : ''}</td>`;
       case 'call': return `<td class="c-call">${esc(s.call)}</td>`;
       case 'km': return `<td class="c-km">${s.km != null ? Math.round(s.km).toLocaleString('en-US') : ''}</td>`;
       case 'az': return `<td class="c-az" title="${s.az != null ? `${Math.round(s.az)}°` : ''}">${s.az != null ? `${ARR[Math.round(s.az / 45) % 8]} ${Math.round(s.az)}` : ''}</td>`;
@@ -196,7 +197,7 @@ const Dxc = (() => {
     el.querySelector('tbody').addEventListener('click', (e) => {
       const play = e.target.closest('.dxc-play');
       if (play) {                                      // to the waterfall (app.js), still in the click
-        window.dispatchEvent(new CustomEvent('sk-listen', { detail: { band: play.dataset.band, hz: Number(play.dataset.khz) * 1000 } }));
+        window.dispatchEvent(new CustomEvent('sk-listen', { detail: { band: play.dataset.band, hz: Number(play.dataset.khz) * 1000, mode: play.dataset.mode } }));
         return;
       }
       const tr = e.target.closest('tr[data-call]');

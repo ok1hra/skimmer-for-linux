@@ -66,6 +66,14 @@
  *            their places, so a call read backwards differs in all; the
  *            busts the skimmer makes of its own transmissions; a call
  *            MASTER.SCP knows passes all the same (but the own call itself)
+ *   [rtty_palette] the web page's RTTY palette over the waterfall (browser
+ *            only — the engine never reads it): open_on_spot (true: a click
+ *            on an RTTY spot opens it), bandwidth (400 Hz, 250–500: the
+ *            audio's passband while it decodes), autotune (true: a steady
+ *            pair is centred once by itself), afc (true), afc_max_hz (60,
+ *            10–180), afc_rate (60 Hz a character, 5–85), reverse (false),
+ *            usos (true), squelch_db (0 = off, 1–10), second_decoder (true),
+ *            clean (false: the time-aligned tape), sound (true: heard too)
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -177,6 +185,11 @@ typedef struct {
   char            *filter_up;         /* the text upper-cased (regex=false)  */
   gboolean         filter_mycall;     /* drop [feed] call and its near calls */
   guint            filter_mycall_diff;/* … within this many edits (0–3)      */
+  /* [rtty_palette] (the web page only) */
+  struct {
+    gboolean open_on_spot, autotune, afc, reverse, usos, second_decoder, clean, sound;
+    guint    bandwidth, afc_max_hz, afc_rate, squelch_db;
+  } rtty_palette;
 } SkimHdConfig;
 
 /* Write the commented default ini to path (its directory is created).
@@ -202,6 +215,9 @@ void skim_hd_config_clear(SkimHdConfig *cfg);
  * [modes]" per line, the whole [bands] group in receiver order). Everything
  * else in the file — comments, the feed policy, the gate, [web] — stays. */
 extern const char *const SKIM_HD_EDITABLE[];
+
+/* [rtty_palette] as a JSON object, for the page (status.json). */
+char *skim_hd_config_rtty_palette_json(const SkimHdConfig *cfg);
 
 /* The ini text with form's fields applied (a field not in the form keeps
  * its value). NULL + error on a key that is not editable or a value with a

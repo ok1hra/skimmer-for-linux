@@ -9,7 +9,8 @@
 // viewer just its window, a byte a pixel at the rows a second it asks for;
 // every row is acknowledged, so a slow link gets fewer rows, not a queue. The
 // socket is open only while this tab is shown in a visible window.
-// Per-viewer settings are kept in localStorage.
+// Per-viewer settings are kept in localStorage. The RTTY palette
+// (rtty-palette.js) decodes the audio heard; RTTY in the bar opens it.
 'use strict';
 
 const Wf = (() => {
@@ -22,12 +23,16 @@ const Wf = (() => {
   const opt = { ...DEF, ...store };
   const save = () => { try { localStorage.setItem('skwf', JSON.stringify(opt)); } catch (e) { /* private */ } };
   const $ = (s) => document.querySelector(s);
+  // the RTTY palette (rtty-palette.js): while it is open the audio has its
+  // passband, it gets every packet, and the markers stand on the scale
+  const pal = () => typeof RttyPal !== 'undefined' && RttyPal.isOpen();
+  const abw = () => (pal() ? RttyPal.bandwidth() : opt.abw);
 
   let ws = null, active = false, retry = 0, hello = null, band = -1, shownBand = '', leaveT = 0;
   let W = 0, H = 0, cv, g, sc, sg, sp, spg, rowCv, rowG;
   let view = { lo: 0, hi: 0 };                        // what the canvas shows now
   let floorB = null, envelope = null, rowTimes = [];
-  let spots = [], spotsAt = 0;
+  let spots = [], spotsAt = 0, callHits = [];
   let bytes = 0, bytesAt = Date.now(), sendT = 0;
 
   // ---- colours: dark → blue → cyan → yellow → red → white ----------------------
@@ -112,11 +117,20 @@ const Wf = (() => {
     }
     // the audio's passband: a trapezoid, its base the passband, on the scale
     if (au.f) {
-      const x0 = (au.f - opt.abw / 2 - view.lo) * px, x1 = (au.f + opt.abw / 2 - view.lo) * px;
+      const x0 = (au.f - abw() / 2 - view.lo) * px, x1 = (au.f + abw() / 2 - view.lo) * px;
       const inset = Math.min((x1 - x0) / 4, 6);
       sg.beginPath(); sg.moveTo(x0, 22); sg.lineTo(x0 + inset, 3); sg.lineTo(x1 - inset, 3); sg.lineTo(x1, 22); sg.closePath();
       sg.fillStyle = au.on ? 'rgba(255,196,64,.35)' : 'rgba(160,170,185,.25)'; sg.fill();
       sg.strokeStyle = au.on ? '#ffc440' : '#8796a8'; sg.lineWidth = 1; sg.stroke();
+      // the palette's mark (green) and space (red), where its AFC has them
+      if (pal()) {
+        const m = RttyPal.markers();
+        for (const [hz, c] of [[m.mark, m.reverse ? '#ff6b6b' : '#5ad18a'], [m.space, m.reverse ? '#5ad18a' : '#ff6b6b']]) {
+          const x = Math.round((au.f + hz - view.lo) * px) + 0.5;
+          sg.beginPath(); sg.moveTo(x, 3); sg.lineTo(x, 22); sg.strokeStyle = c; sg.lineWidth = 2; sg.stroke();
+        }
+        sg.lineWidth = 1;
+      }
     }
     placePass();
   }
@@ -127,7 +141,7 @@ const Wf = (() => {
     el.hidden = !au.f || !view.hi;
     if (el.hidden) return;
     const w = cv.clientWidth, span = view.hi - view.lo;
-    const x0 = ((au.f - opt.abw / 2 - view.lo) / span) * w, x1 = ((au.f + opt.abw / 2 - view.lo) / span) * w;
+    const x0 = ((au.f - abw() / 2 - view.lo) / span) * w, x1 = ((au.f + abw() / 2 - view.lo) / span) * w;
     el.style.left = `${x0}px`; el.style.width = `${Math.max(1, x1 - x0)}px`;
     el.classList.toggle('on', au.on);
   }
@@ -137,6 +151,7 @@ const Wf = (() => {
   // (µ-law, 8 kHz, ~8 kB/s) is played as it comes, a little ahead, the delay
   // kept short (a backlog is dropped). The speaker mutes: the skimmer stops.
   const au = { f: 0, on: false, ctx: null, next: 0 };
+  let markT = 0;
   const ULAW = (() => {
     const t = new Float32Array(256);
     for (let i = 0; i < 256; i++) {
@@ -147,7 +162,7 @@ const Wf = (() => {
   })();
   function audioSend() {
     if (!ws || ws.readyState !== 1) return;
-    ws.send(au.on && au.f ? `audio=1&af=${au.f.toFixed(1)}&bw=${opt.abw}` : 'audio=0');
+    ws.send(au.on && au.f ? `audio=1&af=${au.f.toFixed(1)}&bw=${abw()}` : 'audio=0');
   }
   function audioUi() {
     const b = $('#wf-audio');
@@ -161,6 +176,7 @@ const Wf = (() => {
   function audioTune(f) {
     au.f = f;
     au.on = true;
+    if (pal()) RttyPal.tuned();
     if (!au.ctx) au.ctx = new (window.AudioContext || window.webkitAudioContext)();
     au.ctx.resume();
     au.next = 0;
@@ -173,6 +189,7 @@ const Wf = (() => {
   let tuneT = 0;
   function audioMove(f) {
     au.f = f;
+    if (pal()) RttyPal.tuned();
     if (au.on) { clearTimeout(tuneT); tuneT = setTimeout(audioSend, 60); }
     follow(f);
     audioUi();
@@ -183,23 +200,65 @@ const Wf = (() => {
     const m = (view.hi - view.lo) * 0.05;
     if (f < view.lo + m || f > view.hi - m) { opt.centre = f; reframe(false); }
   }
+  // the palette moves the frequency heard (its click, AUTOTUNE)
+  function retune(f) {
+    const b = bandInfo();
+    if (!b || !f) return;
+    const half = hello.rate / 2;
+    au.f = Math.max(b.centre_hz - half + 100, Math.min(b.centre_hz + half - 100, f));
+    if (au.on) audioSend();
+    follow(au.f);
+    audioUi();
+  }
+  function state() {
+    const b = bandInfo();
+    return { band: b ? b.name : '', f: au.f, on: au.on, live: !!(ws && ws.readyState === 1 && hello) };
+  }
+  // opened: its passband, the audio on where it was tuned; closed: the
+  // passband chosen here again
+  function paletteChanged(open) {
+    if (open && au.f && !au.on) audioTune(au.f);
+    else if (au.on) audioSend();
+    rttyUi();
+    audioUi();
+  }
+  function rttyUi() {
+    const b = $('#wf-rtty'), bw = $('#wf-bw');
+    if (!b) return;
+    b.classList.toggle('on', pal());
+    // while it is open the list shows the palette's passband (one of its own if need be)
+    const own = bw.querySelector('option[data-pal]');
+    if (own) own.remove();
+    if (pal() && !BWS.includes(abw())) bw.insertAdjacentHTML('beforeend', `<option data-pal value="${abw()}">${abw()} Hz</option>`);
+    bw.value = String(abw());
+    bw.disabled = pal();
+    bw.title = pal() ? `the RTTY palette's passband, ${abw()} Hz (Settings → RTTY palette)` : "the audio's passband";
+  }
   function audioOff(forget) {
     if (au.on) { au.on = false; audioSend(); }
     if (forget) au.f = 0;
     audioUi();
   }
   function onAudio(buf) {
-    if (!au.on || !au.ctx) return;
+    if (!au.on) return;
     const dv = new DataView(buf), n = dv.getUint16(2, true);
     if (dv.getUint8(1) !== band || !n) return;
-    const u = new Uint8Array(buf, 8, n), ab = au.ctx.createBuffer(1, n, 8000), d = ab.getChannelData(0);
+    const u = new Uint8Array(buf, 8, n), d = new Float32Array(n);
     for (let i = 0; i < n; i++) d[i] = ULAW[u[i]];
+    bytes += buf.byteLength;
+    if (pal()) {
+      RttyPal.samples(d);
+      const t = Date.now();                            // its markers follow the AFC
+      if (t - markT > 400) { markT = t; drawScale(); }
+    }
+    if (!au.ctx || (pal() && !RttyPal.sound())) return;
+    const ab = au.ctx.createBuffer(1, n, 8000);
+    ab.copyToChannel(d, 0);
     const now = au.ctx.currentTime;
     if (au.next < now + 0.05 || au.next > now + 0.8) au.next = now + 0.2;   // start, or drop a backlog
     const src = au.ctx.createBufferSource();
     src.buffer = ab; src.connect(au.ctx.destination); src.start(au.next);
     au.next += n / 8000;
-    bytes += buf.byteLength;
   }
   // The strip over the scale: the spectrum's envelope (an option) and the
   // calls spotted on the band while the picture below was drawn (at most
@@ -363,10 +422,12 @@ const Wf = (() => {
       .filter((c) => c.x >= 0 && c.x <= w).sort((a, b) => a.x - b.x);
     spg.font = '600 10px RC, sans-serif'; spg.textAlign = 'right'; spg.textBaseline = 'middle';
     let prev = -100;
+    callHits = [];
     for (const c of list) {
       const x = Math.max(c.x, prev + 11);
       if (x > w - 4) break;
       prev = x;
+      callHits.push({ x, s: c.s });
       spg.globalAlpha = 1 - 0.6 * Math.min(1, (now - c.s.t) / keep);
       spg.fillStyle = c.s.mode === 'RTTY' ? '#ffb88a' : '#e8eef6';
       spg.fillRect(Math.round(c.x), 0, 1, 3);           // its frequency
@@ -485,15 +546,17 @@ const Wf = (() => {
     if (i !== band) { setBand(i, p.hz); send(false); }   // the band first, then the audio in it
     else follow(p.hz);
     audioTune(p.hz);
+    // an RTTY spot: the palette decodes it
+    if (p.mode === 'RTTY' && typeof RttyPal !== 'undefined' && RttyPal.onSpot()) RttyPal.open();
   }
-  function listen(name, hz) {
+  function listen(name, hz, mode) {
     mount();
     // made now, in the click: a browser lets the audio start only from one
     try {
       if (!au.ctx) au.ctx = new (window.AudioContext || window.webkitAudioContext)();
       au.ctx.resume();
     } catch (e) { /* no audio here */ }
-    pending = { name, hz: Math.round(hz) };
+    pending = { name, hz: Math.round(hz), mode: mode || '' };
     if (hello && ws && ws.readyState === 1) applyPending();
   }
   // the field: kHz as shown; a number under 100 is MHz, from 100 000 Hz
@@ -604,6 +667,29 @@ const Wf = (() => {
       down = null; drag = null;
     });
     cv.addEventListener('pointercancel', () => { down = null; drag = null; });
+    $('#wf-rtty').addEventListener('click', () => {
+      if (typeof RttyPal === 'undefined') return;
+      // made in the click: a browser lets the audio start only from one
+      try {
+        if (!au.ctx) au.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        au.ctx.resume();
+      } catch (e) { /* no audio here */ }
+      RttyPal.toggle();
+    });
+    rttyUi();
+    // a click on a call over the waterfall: listen there (RTTY: the palette too)
+    sp.addEventListener('click', (e) => {
+      const x = e.clientX - sp.getBoundingClientRect().left;
+      let best = null;
+      for (const h of callHits) if (Math.abs(h.x - x) <= 6 && (!best || Math.abs(h.x - x) < Math.abs(best.x - x))) best = h;
+      if (!best || !opt.calls) return;
+      pending = { name: best.s.band, hz: Math.round(best.s.khz * 1000), mode: best.s.mode };
+      applyPending();
+    });
+    sp.addEventListener('mousemove', (e) => {
+      const x = e.clientX - sp.getBoundingClientRect().left;
+      sp.style.cursor = opt.calls && callHits.some((h) => Math.abs(h.x - x) <= 6) ? 'pointer' : '';
+    });
     $('#wf-audio').addEventListener('click', () => {
       if (au.on) audioOff(false); else if (au.f) audioTune(au.f);
     });
@@ -644,5 +730,5 @@ const Wf = (() => {
     clearTimeout(leaveT);
     leaveT = setTimeout(close, 30000);
   }
-  return { enter, leave, listen };
+  return { enter, leave, listen, retune, state, paletteChanged };
 })();

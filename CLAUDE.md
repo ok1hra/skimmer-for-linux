@@ -172,6 +172,15 @@ here; what was done and why is in git.
   192 kHz), half overlapping, into a 32-frame ring; each viewer asks for
   band/lo/hi/w/rate and gets bytes (0.5 dB from -160 dBFS), acks each row
   (no ack → fewer rows). Gate `waterfall`: a tone's pixel and level.
+- **The RTTY palette** (`web/rtty-palette.js`, `[rtty_palette]`): decodes
+  the waterfall's audio (8 kHz µ-law, the tuned frequency at the 600 Hz BFO,
+  so mark = +85 Hz) in the browser with WIFILT's RTTY-ICOM modules, copied
+  unchanged into `web/rtty/` (`VENDOR.md`: a fix goes to ok1hra/wifilt
+  first). A click on an RTTY spot (the DX cluster's speaker, a call over the
+  waterfall) or RTTY in the bar opens it; while open the audio takes its
+  passband, AUTOTUNE centres a steady pair once after each tuning, AFC
+  follows. Its settings reach the page in status.json (`rtty_palette`);
+  the engine never reads them.
 - **The spot archive** (`[archive] dir=`, `src/headless/archive.c`): every
   spot the feed tap sees, a gzip file a UTC day (`YYYYMMDD-spots.gz`, TSV),
   one more gzip member a minute from the main loop; a refused disk keeps

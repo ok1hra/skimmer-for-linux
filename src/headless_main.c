@@ -1121,6 +1121,15 @@ static char *web_status(GHashTable *q, SkimHdWebWho who, guint *st, const char *
     g_free(body);
     body = with;
   }
+  /* [rtty_palette]: the page's palette settings, for everyone who may see
+   * the waterfall (nothing in them names the machine) */
+  if (body[0] == '{') {
+    char *rp = skim_hd_config_rtty_palette_json(&h->cfg);
+    char *with = g_strdup_printf("{\"rtty_palette\":%s%s%s", rp, body[1] == '}' ? "" : ",", body + 1);
+    g_free(rp);
+    g_free(body);
+    body = with;
+  }
   return body;
 }
 

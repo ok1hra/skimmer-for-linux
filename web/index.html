@@ -11,6 +11,12 @@
 <script src="map/states.js" defer></script>
 <script src="map.js" defer></script>
 <script src="dxc.js" defer></script>
+<script src="rtty/rtty-codec.js" defer></script>
+<script src="rtty/rtty-afc.js" defer></script>
+<script src="rtty/spectrum.js" defer></script>
+<script src="rtty/rtty-scope.js" defer></script>
+<script src="rtty/rtty-rxlog.js" defer></script>
+<script src="rtty-palette.js" defer></script>
 <script src="waterfall.js" defer></script>
 </head>
 <body>
@@ -155,13 +161,14 @@
         <input id="wf-freq" class="wf-freq" inputmode="decimal" placeholder="kHz" autocomplete="off" spellcheck="false"
           aria-label="the frequency heard, kHz" title="the frequency heard (kHz; Enter tunes there, on any band shown here) — or the wheel over the spectrum"><span class="wf-unit">kHz</span>
         <select id="wf-bw" title="the audio's passband"></select></span>
+      <button type="button" class="wf-auto wf-rtty" id="wf-rtty" title="the RTTY palette: decodes the frequency heard">RTTY</button>
       <span class="wf-read" id="wf-read"></span>
       <span class="wf-net mut" id="wf-net"></span>
     </div>
-    <canvas id="wf-spec-cv" class="wf-spec" hidden title="wheel: tune (Shift: 10 Hz steps)"></canvas>
+    <canvas id="wf-spec-cv" class="wf-spec" hidden title="wheel: tune (Shift: 10 Hz steps) · a call: listen there (RTTY: the palette decodes it)"></canvas>
     <canvas id="wf-scale" class="wf-scale"></canvas>
     <div id="wf-box" class="wf-box"><canvas id="wf-cv"></canvas><div id="wf-pass" class="wf-pass" hidden></div></div>
-    <p class="mut note">click: listen there (CW, the passband chosen beside the speaker) · wheel: zoom around the cursor —
+    <p class="mut note">click: listen there (CW, the passband chosen beside the speaker; RTTY: the palette decodes it) · wheel: zoom around the cursor —
       over the spectrum it tunes (Shift: 10 Hz) · the frequency field: type it, Enter · drag: move · double click: centre · computed by the skimmer
       only while this tab is open, and sent at the speed chosen</p>
   </section>
@@ -302,6 +309,29 @@
             <small>seconds, 0 = quiet; always off as a service</small></label>
           <label>Web port <input name="status.http_port" inputmode="numeric" placeholder="8073">
             <small>this page moves with it</small></label>
+        </fieldset>
+        <fieldset>
+          <legend>RTTY palette</legend>
+          <label class="check"><input type="checkbox" name="rtty_palette.open_on_spot" data-default="true"> opens on a click on an RTTY spot</label>
+          <label>Passband Hz <input name="rtty_palette.bandwidth" inputmode="numeric" placeholder="400">
+            <small>the audio while it decodes, 250–500: mark and space (170 Hz apart) and room for the AFC</small></label>
+          <label class="check"><input type="checkbox" name="rtty_palette.autotune" data-default="true"> autotune — centre a steady pair</label>
+          <label class="check"><input type="checkbox" name="rtty_palette.afc" data-default="true"> AFC — follow a drift</label>
+          <label>AFC within Hz <input name="rtty_palette.afc_max_hz" inputmode="numeric" placeholder="60">
+            <small>10–180, either way</small></label>
+          <label>AFC speed <input name="rtty_palette.afc_rate" inputmode="numeric" placeholder="60">
+            <small>Hz a character, 5–85</small></label>
+          <label>Squelch dB <input name="rtty_palette.squelch_db" inputmode="numeric" placeholder="0">
+            <small>over the noise, 1–10; 0 = off (a weak caller is never cut)</small></label>
+          <label class="check"><input type="checkbox" name="rtty_palette.reverse"> reverse — mark and space swapped</label>
+          <label class="check"><input type="checkbox" name="rtty_palette.usos" data-default="true"> unshift on space</label>
+          <label class="check"><input type="checkbox" name="rtty_palette.second_decoder" data-default="true"> DEC 2 beside DEC 1</label>
+          <label class="check"><input type="checkbox" name="rtty_palette.clean"> clean text — no time tape</label>
+          <label class="check"><input type="checkbox" name="rtty_palette.sound" data-default="true"> heard while it decodes</label>
+          <small class="note-s">Decodes in the browser (WIFILT's RTTY-ICOM decoder) what the waterfall's audio brings:
+            45.45 Bd, 170 Hz shift. RTTY in the waterfall's bar opens it too. Autotune moves the frequency heard once after
+            each tuning, when a pair holds still; DEC 2 averages each bit and holds the rhythm. For everyone who watches
+            the waterfall; CLEAN and REV in the palette are that browser's own.</small>
         </fieldset>
       </div>
       <fieldset>
