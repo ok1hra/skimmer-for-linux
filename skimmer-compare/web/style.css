@@ -86,6 +86,7 @@ main.busy { opacity: .55; }
   max-width: 1168px; margin: 8px auto 0; padding: 10px 14px; border-radius: 10px;
   border: 1px solid var(--border); background: var(--hl); color: var(--ink);
 }
+.notice.warn { border-color: var(--bad); border-left-width: 4px; }
 @media (max-width: 1200px) { .notice { margin: 8px 16px 0; } }
 
 .facts {

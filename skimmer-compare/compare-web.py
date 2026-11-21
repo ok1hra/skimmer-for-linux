@@ -124,6 +124,9 @@ def view(cfg, S, feeds, engine, T_name, live, scp_n):
                     "live": live, "stopped": bool(feeds.get("stopped"))},
         "feeds": {k: bool((feeds.get(src) or {}).get("up"))
                   for k, src in (("L", "local"), ("W", "remote"), ("RBN", "rbn"))},
+        # the recorder's word on the local feed's port: numbers only
+        "warnings": [{"kind": "feed_port", "since": w["since"], "served": w["served"],
+                      "read": w["read"]} for w in [feeds.get("port_warn")] if w],
         "names": {"L_about": cfg.local_about, "W_about": cfg.remote_about,
                   "decoder": label, "decoder_what": what},
         "time": {k: S["time"][k] for k in ("span_s", "common_s", "common_from", "common_to",
@@ -310,6 +313,7 @@ class App:
                 ev = s.conn[kind]
                 out[kind] = {"up": bool(ev and ev[-1][1]) and s.stopped is None}
             out["stopped"] = s.stopped
+            out["port_warn"] = s.port_warn if s.stopped is None else None
         return out
 
     def snapshot(self):

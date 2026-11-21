@@ -46,6 +46,7 @@ checks that the comparison finds exactly that:
 
   ./test-compare.py            exit 0 = everything passed
 """
+import calendar
 import json
 import os
 import socket
@@ -328,6 +329,8 @@ def web(root, A_T, B_T):
         check(set(D["recall"]) >= {"L", "W"} and "R" not in D["recall"]
               and all({"L", "W", "bustL", "bustW"} <= set(b) for b in D["snr"]["bins"]),
               "the sides are L and W; every SNR bin has recall and bust rate of both")
+        check(D.get("warnings") == [], "a stopped session warns about no feed port (%s)"
+              % D.get("warnings"))
         raw = get("/data.json").read().decode()
         check(not any(x in raw for x in ("ZZ0ZZ", "192.168", "127.0.0.1", root, "OK1HRA")),
               "data.json carries no call, address or path")
@@ -442,6 +445,53 @@ def resumed_session():
     cat = catalog(logs, time.time())
     check(len(cat) == 1 and cat[0]["live"] and cat[0]["stopped"] is None,
           "catalog() sees the resumed session live (%s)" % cat)
+
+
+def feed_port_warning():
+    print("=== feed port — the recorder reads another port than the local feed is on")
+    root = tempfile.mkdtemp(prefix="compare-port-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    now = time.time()
+    stamp = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+    run = time.strftime("%Y%m%d-%H%M%S", time.gmtime(now - 600))
+    ev = os.path.join(logs, "events-%s.log" % run)
+    with open(ev, "w") as fh:
+        fh.write("%s recording as OK1HRA since %s UTC\n" % (stamp(now - 600), run))
+        fh.write("%s local skimmer feed confirmed on port 7302\n" % stamp(now - 590))
+    store = Store(logs, lambda: RbnIndex(loose_bands([("40m", 7000, 7091)], 2.0), set()))
+    store.poll()
+    s = store.sessions[run]
+    check(s.port_warn is None, "a confirmed port: no warning")
+    with open(ev, "a") as fh:
+        fh.write("%s WARNING: the local skimmer serves its feed on port 7373, but the recorder"
+                 " reads 127.0.0.1:7302 (-l)\n" % stamp(now - 300))
+        fh.write("%s local up: 1 spots (+0)\n" % stamp(now - 240))
+    store.poll()
+    w = s.port_warn
+    check(w == {"since": epoch_of(stamp(now - 300)), "served": 7373, "read": 7302},
+          "a moved feed port: warned with both ports and the time (%s)" % w)
+    with open(ev, "a") as fh:
+        fh.write("%s WARNING: the local skimmer reports its telnet feed OFF (feed_port 0) —"
+                 " headless.ini [feed] call= empty, or port= taken by another service (ss -tlnp)?\n"
+                 % stamp(now - 200))
+    store.poll()
+    check(s.port_warn is not None and s.port_warn["served"] == 0, "the feed off: warned (%s)" % s.port_warn)
+    with open(ev, "a") as fh:
+        fh.write("%s stopped — write check OK\n" % stamp(now - 100))
+        fh.write("%s resumed session %s as OK1HRA — appending to its files\n" % (stamp(now - 99), run))
+    store.poll()
+    check(s.port_warn is None, "a resumed recorder checks the port anew: the warning goes")
+    with open(ev, "a") as fh:
+        fh.write("%s WARNING: the local skimmer serves its feed on port 7373, but the recorder"
+                 " reads 127.0.0.1:7302 (-l)\n" % stamp(now - 90))
+        fh.write("%s local skimmer feed confirmed on port 7373\n" % stamp(now - 60))
+    store.poll()
+    check(s.port_warn is None, "the port confirmed again: the warning goes")
+
+
+def epoch_of(z):
+    return calendar.timegm(time.strptime(z, "%Y-%m-%dT%H:%M:%SZ"))
 
 
 def rbn_overlap():
@@ -765,6 +815,7 @@ if __name__ == "__main__":
     web(root, A, Bs)
     current_session()
     resumed_session()
+    feed_port_warning()
     band_plan()
     rbn_overlap()
     split_episodes()

@@ -106,10 +106,11 @@ async function load() {
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 
-function showNotice(text) {
+function showNotice(text, warn) {
   const box = $('#notice');
   box.textContent = text;
   box.hidden = !text;
+  box.classList.toggle('warn', !!warn);
 }
 function renderNotice() {
   if (!D) return;
@@ -118,14 +119,21 @@ function renderNotice() {
     showNotice(`A new session is being loaded (${p} %) — the numbers follow shortly.`);
     return;
   }
+  const say = [];
+  for (const w of D.warnings || []) {
+    if (w.kind !== 'feed_port') continue;
+    const what = w.served
+      ? `The Linux skimmer (L) serves its telnet feed on port ${w.served}, but the recorder reads port ${w.read}`
+      : 'The Linux skimmer (L) reports its telnet feed off';
+    say.push(`${what} (since ${utc(w.since)} UTC): L's spots are not recorded and this time is not compared.`);
+  }
   const age = Date.now() / 1000 - D.generated;
   if (age > 3 * (D.every_s || 60) + 60) {
-    showNotice(`These numbers are ${dur(age)} old: the comparison is not being updated at the moment.`);
+    say.push(`These numbers are ${dur(age)} old: the comparison is not being updated at the moment.`);
   } else if (D.session && D.session.stopped) {
-    showNotice('The recording of this session has stopped; the numbers are final.');
-  } else {
-    showNotice('');
+    say.push('The recording of this session has stopped; the numbers are final.');
   }
+  showNotice(say.join(' '), say.length && (D.warnings || []).length);
 }
 
 // ---- render -------------------------------------------------------------------------

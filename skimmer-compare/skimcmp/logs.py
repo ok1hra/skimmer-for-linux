@@ -26,6 +26,12 @@ import threading
 from .windows import snapshot_windows
 
 RESUMED = "resumed session"   # capture-spots.sh -C: the session goes on
+# what capture-spots.sh says about the local skimmer's telnet feed port (from
+# its /status.json "feed_port"): a port other than the one it reads, or off
+PORT_WRONG_RE = re.compile(r"WARNING: the local skimmer serves its feed on port (\d+), "
+                           r"but the recorder reads \S*?:?(\d+) \(-l\)")
+PORT_OFF = "reports its telnet feed OFF"
+PORT_OK = "local skimmer feed confirmed on port"
 FILE_RE = re.compile(r"^(local|remote|rbn|events|status)-(\d{8}-\d{6})\.(?:log|jsonl)$")
 # one regex for all three dialects:
 #   DX de OK1HRA-#:   1825.8  OK1CF        CW    30 dB  25 WPM  CQ      1727Z   skimmer-for-linux
@@ -125,6 +131,9 @@ class Session:
         self.stopped = None       # time of "stopped — write check"
         self.last_t = self.start  # newest timestamp seen in any of its files
         self.last_event = None    # newest events-log line
+        # the recorder reads another port than the local feed is on (or the
+        # feed is off): {"since", "served" (0 = off), "read"}, else None
+        self.port_warn = None
 
     def seen(self, t):
         if t is not None and t > self.last_t:
@@ -299,6 +308,14 @@ class Store:
                 s.stopped = t
             elif RESUMED in line:
                 s.stopped = None
+            if PORT_OK in line or RESUMED in line or "recording as " in line:
+                s.port_warn = None       # a new start checks the port anew
+            elif PORT_OFF in line:
+                s.port_warn = {"since": t, "served": 0, "read": None}
+            else:
+                m = PORT_WRONG_RE.search(line)
+                if m:
+                    s.port_warn = {"since": t, "served": int(m.group(1)), "read": int(m.group(2))}
             return
         if kind == "status":
             ts, _, js = line.partition("\t")
