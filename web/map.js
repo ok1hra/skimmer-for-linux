@@ -11,7 +11,8 @@
 // Paris (JN18) without either. A spot is placed by its DXCC
 // (the prefix's label point), so the spots of one country share a point:
 // they are fanned out around it, a dot each. The cursor reads azimuth,
-// distance and locator.
+// distance and locator. HEAT shows the DXCCs as a heat map instead (spots
+// weighted by SNR), alone: the other layers go off and come back after.
 // Per-viewer choices (layers, zoom) are kept in localStorage.
 'use strict';
 
@@ -81,7 +82,10 @@ const SkMap = (() => {
   const store = (() => { try { return JSON.parse(localStorage.getItem('skmap') || '{}'); } catch (e) { return {}; } })();
   // every layer on by default; a viewer's choices are kept (v2: SNR joined them, on)
   if (store.v !== 2) { store.db = true; store.v = 2; }
-  const opt = { grayline: true, borders: true, prefixes: true, lines: true, calls: true, db: true, zoom: 0, ...store };
+  const opt = { grayline: true, borders: true, prefixes: true, lines: true, calls: true, db: true, zoom: 0, heat: false, ...store };
+  // HEAT takes the map alone: it turns the other layers off and keeps what
+  // they were, to give them back when it goes off
+  const LAYERS = ['grayline', 'borders', 'prefixes', 'lines', 'calls', 'db'];
   delete opt.center;                               // a typed-in centre (before v0.8.4) is gone
   const save = () => { try { localStorage.setItem('skmap', JSON.stringify(opt)); } catch (e) { /* private window */ } };
   let visitorCall = '';
@@ -358,6 +362,74 @@ const SkMap = (() => {
     }
   }
 
+  // ---- the heat map ------------------------------------------------------------------------
+  // Each DXCC's weight: its spots, each counted by its SNR (0.5 at 0 dB or
+  // less, 1.5 at 40 dB and more). A Gaussian round each DXCC's point — its
+  // width in km grows with the zoom, so neighbours run into each other — summed
+  // on a coarse grid, on a log scale (a DXCC of one spot still shows beside
+  // a crowd of hundreds): blue, green, yellow, red, see-through so the map
+  // stays readable under it.
+  const HEAT_RAMP = [[0, [43, 108, 255]], [0.35, [24, 190, 200]], [0.55, [60, 200, 90]],
+                     [0.75, [235, 215, 50]], [1, [255, 70, 50]]];
+  function heatColor(t) {
+    let i = 1;
+    while (i < HEAT_RAMP.length - 1 && t > HEAT_RAMP[i][0]) i++;
+    const [t0, a] = HEAT_RAMP[i - 1], [t1, b] = HEAT_RAMP[i], f = Math.max(0, Math.min(1, (t - t0) / (t1 - t0)));
+    return a.map((v, k) => Math.round(v + (b[k] - v) * f));
+  }
+  const unit = (lat, lon) => [Math.cos(rad(lat)) * Math.cos(rad(lon)), Math.cos(rad(lat)) * Math.sin(rad(lon)), Math.sin(rad(lat))];
+  function heatGroups() {
+    const by = new Map();
+    for (const s of spots) {
+      if (!s.where) continue;
+      const k = `${s.where.lat},${s.where.lon}`;
+      if (!by.has(k)) by.set(k, { lat: s.where.lat, lon: s.where.lon, name: s.where.name, prefix: s.where.prefix, n: 0, w: 0, snr: 0 });
+      const d = by.get(k), snr = Number(s.snr) || 0;
+      d.n += 1; d.snr += snr; d.w += 0.5 + Math.max(0, Math.min(40, snr)) / 40;
+    }
+    return [...by.values()].map((d) => ({ ...d, snr: d.snr / d.n, u: unit(d.lat, d.lon) }));
+  }
+  function drawHeat(g, v) {
+    const groups = heatGroups();
+    view.heat = groups.map((d) => { const [x, y] = v.P(d.lat, d.lon); return { ...d, x, y }; });
+    if (!groups.length) return;
+    const sigma = Math.max(250, v.zoom * 0.05) / R;             // radians on the sphere
+    const k2 = 1 / (2 * sigma * sigma), cut = Math.cos(Math.min(Math.PI, 4 * sigma));
+    const step = Math.max(3, Math.round(v.size / 220)), n = Math.ceil(v.size / step);
+    const H = new Float32Array(n * n);
+    let max = 0;
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const q = v.inv((i + 0.5) * step, (j + 0.5) * step);
+        if (!q) continue;
+        const [x, y, z] = unit(q.lat, q.lon);
+        let h = 0;
+        for (const d of groups) {
+          const dot = x * d.u[0] + y * d.u[1] + z * d.u[2];
+          if (dot < cut) continue;
+          h += d.w * Math.exp(-(2 - 2 * dot) * k2);          // chord² ≈ angle² near the point
+        }
+        H[j * n + i] = h;
+        if (h > max) max = h;
+      }
+    }
+    if (!(max > 0)) return;
+    const c = document.createElement('canvas');
+    c.width = c.height = n;
+    const cg = c.getContext('2d'), img = cg.createImageData(n, n), lm = Math.log1p(max);
+    for (let p = 0; p < n * n; p++) {
+      const t = Math.log1p(H[p]) / lm;
+      if (t < 0.02) continue;
+      const [r, gg, b] = heatColor(t);
+      img.data.set([r, gg, b, Math.round(255 * Math.min(0.62, 0.18 + 0.5 * t) * Math.min(1, t / 0.08))], p * 4);
+    }
+    cg.putImageData(img, 0, 0);
+    g.save();
+    g.imageSmoothingEnabled = true;
+    g.drawImage(c, 0, 0, n * step, n * step);
+    g.restore();
+  }
+
   function draw() {
     if (!el) return;
     const box = el.querySelector('.map-canvas');
@@ -378,6 +450,16 @@ const SkMap = (() => {
     g.save(); g.beginPath(); g.arc(view.cx, view.cy, view.rr, 0, Math.PI * 2); g.clip();
     const boxes = [];
     view.marks = [];
+    view.heat = null;
+    if (opt.heat) {                                  // the heat map alone: no lines, dots or labels
+      drawHeat(g, view);
+      view.visitor = placeVisitor(g, view, boxes);
+      if (view.visitor) paintVisitor(g, view.visitor);
+      g.restore();
+      g.fillStyle = '#39d98a'; g.beginPath(); g.arc(view.cx, view.cy, 4, 0, 7); g.fill();
+      foot(zoom, `heat: ${(view.heat || []).length} DXCC — spots weighted by their SNR, log scale · `);
+      return;
+    }
     view.visitor = placeVisitor(g, view, boxes);    // its label keeps the spots' labels off
     // the spots of one DXCC share its point: fan them out on a sunflower
     // spiral around it (the strongest in the middle), a dot each
@@ -435,12 +517,15 @@ const SkMap = (() => {
     if (view.visitor) paintVisitor(g, view.visitor);
     g.restore();
     g.fillStyle = '#39d98a'; g.beginPath(); g.arc(view.cx, view.cy, 4, 0, 7); g.fill();
+    const lines = view.marks.filter((m) => m.crowd).length;
+    foot(zoom, lines ? `${lines} in crowds as lines only (zoom in for their dots) · ` : '');
+  }
+  function foot(zoom, note) {
     el.querySelector('[data-k=zoom]').textContent = opt.zoom ? `${fmtKm(zoom)}` : `auto · ${fmtKm(zoom)}`;
     el.querySelector('[data-o=auto]').classList.toggle('on', !opt.zoom);
     const un = spots.filter((s) => !s.where).length;
-    const lines = view.marks.filter((m) => m.crowd).length;
     el.querySelector('.map-count').textContent = `${spots.length} spot${spots.length === 1 ? '' : 's'} · ` +
-      `${lines ? `${lines} in crowds as lines only (zoom in for their dots) · ` : ''}${un ? `${un} unplaced · ` : ''}centre ${centerOf().what}`;
+      `${note}${un ? `${un} unplaced · ` : ''}centre ${centerOf().what}`;
   }
   const fmtKm = (km) => `${Math.round(km).toLocaleString('en-US')} km`;
 
@@ -452,10 +537,12 @@ const SkMap = (() => {
     if (!q) { out.hidden = true; return; }
     const d = geo(view.c, q.lat, q.lon);
     const near = (view.marks || []).find((m) => Math.hypot(m.x - x, m.y - y) < 8);
+    const hd = (view.heat || []).reduce((b, h) => { const dd = Math.hypot(h.x - x, h.y - y); return dd < 24 && (!b || dd < b.dd) ? { h, dd } : b; }, null);
     out.hidden = false;
     const vv = view.visitor && Math.hypot(view.visitor.x - x, view.visitor.y - y) < 12 ? view.visitor : null;
     out.innerHTML = `<span>AZ <b>${Math.round(d.az)}°</b></span><span>QRB <b>${fmtKm(d.km)}</b></span><span>LOC <b>${llToLoc(q.lat, q.lon)}</b></span>` +
       (vv ? `<span class="spot">you: <b>${esc(visitorCall)}</b> · ${esc(vv.w.name)} · ${fmtKm(vv.km)}</span>` : '') +
+      (hd ? `<span class="spot"><b>${esc(hd.h.prefix || '')}</b> ${esc(hd.h.name || '')} · <b>${hd.h.n}</b> spot${hd.h.n === 1 ? '' : 's'} · mean SNR <b>${Math.round(hd.h.snr)} dB</b></span>` : '') +
       (near ? `<span class="spot" style="color:${bandColor(near.s.band)}"><b>${esc(near.s.call)}</b> ${fmtKhz(near.s.khz)} ${esc(near.s.mode)} ${esc(near.s.snr)} dB${near.s.where ? ` · ${esc(near.s.where.name)}` : ''}</span>` : '');
   }
 
@@ -472,20 +559,30 @@ const SkMap = (() => {
           <button type="button" data-o="lines">lines</button>
           <button type="button" data-o="calls">calls</button>
           <button type="button" data-o="db" title="the spot's SNR in dB — behind its call, or alone without calls">SNR</button>
+          <button type="button" data-o="heat" title="a heat map of the DXCCs: how many spots and how strong — the other layers go off while it is on and come back after">heat</button>
         </span>
         <span class="mut" data-k="zoom"></span>
       </div>
       <div class="map-canvas"><canvas></canvas><div class="map-read" hidden></div></div>
       <div class="map-foot"><span class="map-count mut"></span><span class="mut">wheel: zoom · auto: 2,000 km or out to the farthest spot</span></div>`;
-    for (const k of ['grayline', 'borders', 'prefixes', 'lines', 'calls', 'db']) {
-      el.querySelector(`[data-o=${k}]`).classList.toggle('on', !!opt[k]);
-    }
+    const buttons = () => {
+      for (const k of [...LAYERS, 'heat']) el.querySelector(`[data-o=${k}]`).classList.toggle('on', !!opt[k]);
+    };
+    buttons();
     el.querySelector('.map-bar').addEventListener('click', (e) => {
       const o = e.target.dataset && e.target.dataset.o;
       if (!o) return;
       if (o === 'auto') opt.zoom = 0;
-      else { opt[o] = !opt[o]; e.target.classList.toggle('on', opt[o]); }
-      save(); draw();
+      else if (o === 'heat' && !opt.heat) {          // on: the others off, remembered
+        opt.heatKeep = Object.fromEntries(LAYERS.map((k) => [k, !!opt[k]]));
+        LAYERS.forEach((k) => { opt[k] = false; });
+        opt.heat = true;
+      } else if (o === 'heat') {                     // off: the others as they were
+        Object.assign(opt, opt.heatKeep || Object.fromEntries(LAYERS.map((k) => [k, true])));
+        delete opt.heatKeep;
+        opt.heat = false;
+      } else opt[o] = !opt[o];
+      buttons(); save(); draw();
     });
     const cv = el.querySelector('canvas');
     cv.addEventListener('wheel', (e) => {
