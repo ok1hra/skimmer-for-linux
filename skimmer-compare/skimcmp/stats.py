@@ -8,7 +8,7 @@ chance (p < 0.05) and there is enough data; otherwise "undecided".
 import math
 from statistics import median
 
-from .intervals import Membership, clip, normalize, subtract, total
+from .intervals import Membership, clip, intersect, normalize, subtract, total
 
 ALPHA = 0.05
 MIN_DISCORDANT = 20
@@ -240,7 +240,7 @@ def snr_edges(evs):
     return list(range(lo + SNR_STEP, hi, SNR_STEP)) or [lo + SNR_STEP]
 
 
-def band_rows(A, evs):
+def band_rows(A, evs, common):
     rows = []
     for band, lo, hi in A.win.bands:
         g = [e for e in evs if e["band"] == band]
@@ -259,7 +259,9 @@ def band_rows(A, evs):
             "epsR": sum(e["R"] is not None for e in g),
             "p": binom_two_sided(sum(e["cL"] and not e["cR"] for e in U),
                                  sum(e["cL"] != e["cR"] for e in U)),
-            "lat": median(lat) if lat else None})
+            "lat": median(lat) if lat else None,
+            # compared time the local skimmer had this band paused (not compared)
+            "off_s": total(intersect(common, getattr(A, "off", {}).get(band, [])))})
     return rows
 
 
@@ -375,7 +377,7 @@ def summarize(A, ta, tb):
                 "curve": [list(p) for p in A.snr_curve],
                 "bins": bins_block(evs, "snr", snr_edges(evs))},
         "wpm": {"bins": bins_block(evs, "wpm", WPM_EDGES)},
-        "bands": band_rows(A, evs),
+        "bands": band_rows(A, evs, common),
         "timeline": timeline(A, evs, ta, tb, common),
         "hist": histograms(A, ta, tb),
         "verdicts": [{"metric": m, "winner": w, "text": t} for m, w, t in verdicts],

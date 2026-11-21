@@ -22,7 +22,7 @@ from collections import defaultdict
 from .arbiter import Arbiter
 from .intervals import Membership, intersect, normalize, subtract, total
 from .logs import Spot
-from .match import CQ_WORDS, episodes
+from .match import CQ_WORDS, episodes, paused_time
 
 STRONG = 3                     # RBN spotters that make a station "strong"
 
@@ -77,6 +77,9 @@ def analyze_rtty(store, scp, P, now, t0=None, t1=None):
     if t0 is not None or t1 is not None:
         lo, hi = t0 if t0 is not None else float("-inf"), t1 if t1 is not None else float("inf")
         segs = [(max(a, lo), min(b, hi), w) for a, b, w in segs if b > lo and a < hi]
+    # a band whose RTTY the local skimmer paused (adaptive RTTY, the thermal
+    # guard) is not compared meanwhile: neither its nor RBN's spots there
+    off = {b: Membership(iv) for b, iv in paused_time(store, now, "rtty").items()}
     common = normalize([(a, b) for a, b, _ in segs])
     inside = Membership(common)
 
@@ -84,9 +87,10 @@ def analyze_rtty(store, scp, P, now, t0=None, t1=None):
     for sp in store.Lr:
         if sp.t in inside and sp.cm in CQ_WORDS:
             b = _band(segs, sp.t, sp.f)
-            if b:
+            if b and not (b in off and sp.t in off[b]):
                 Lin.append((b, sp))
-    Rin = _rbn_spots(store.rbn_rtty, segs)
+    Rin = [(b, sp) for b, sp in _rbn_spots(store.rbn_rtty, segs)
+           if not (b in off and sp.t in off[b])]
     Leps, Reps = episodes("L", Lin, gap), episodes("R", Rin, gap)
 
     by = defaultdict(list)

@@ -23,7 +23,8 @@
 #   -w URL        local skimmer status JSON, "" = off
 #                                   (default http://127.0.0.1:8074/status.json)
 #   -k SECONDS    keepalive: an empty line to each feed this often (300)
-#   -S SECONDS    status JSON snapshot this often (300)
+#   -S SECONDS    status JSON snapshot this often (300); also at the next
+#                 heartbeat after a band was paused or came back
 #   -C T          continue session T (YYYYMMDD-HHMMSS): append to its files
 #                 instead of starting a new session, so a restart (a new
 #                 option, a moved port) does not start the comparison anew;
@@ -312,13 +313,22 @@ check_feed() {        # name file
   PREV_SPOTS[$name]=$spots
 }
 
-snapshot() {
+# The bands and what the local skimmer paused on its own (the thermal guard,
+# adaptive RTTY): "band" and "paused" in the status's order. Compare leaves a
+# paused band out while it is off, so a change is written at once.
+pause_sig() {          # status JSON
+  grep -o '"band":"[^"]*"\|"paused":[^,}]*' <<<"$1" | tr '\n' ' '
+}
+PAUSE_SIG=
+
+snapshot() {          # [status JSON already fetched]
   [[ -z $STATUS_URL ]] && return
-  local j
-  if j=$(curl -s --max-time 5 "$STATUS_URL" 2>/dev/null) && [[ $j == \{* ]]; then
+  local j=${1-}
+  if [[ -n $j ]] || { j=$(curl -s --max-time 5 "$STATUS_URL" 2>/dev/null) && [[ $j == \{* ]]; }; then
     printf '%s\t%s\n' "$(ts)" "$j" 2>/dev/null >>"$SNAPS" ||
       note "WRITE ERROR — $SNAPS not writable"
     SNAP_FAILED=0
+    PAUSE_SIG=$(pause_sig "$j")
     check_feed_port "$j"
   elif ((!SNAP_FAILED)); then
     note "local skimmer status $STATUS_URL unavailable (is skimmer-headless running?)"
@@ -461,6 +471,11 @@ while :; do
   note "$line · write $([[ $WRITE_OK == 1 ]] && echo OK || echo FAILED) · ${free_mb:-?} MB free"
   if ((SNAP_EVERY > 0 && now - last_snap >= SNAP_EVERY)); then
     snapshot
+    last_snap=$now
+  elif [[ -n $STATUS_URL ]] && ((SNAP_EVERY > 0)) &&
+       j=$(curl -s --max-time 5 "$STATUS_URL" 2>/dev/null) && [[ $j == \{* ]] &&
+       [[ $(pause_sig "$j") != "$PAUSE_SIG" ]]; then
+    snapshot "$j"                 # a band paused or back (or the plan changed)
     last_snap=$now
   fi
   if ((DURATION > 0 && EPOCHSECONDS - T0 >= DURATION)); then stop; fi

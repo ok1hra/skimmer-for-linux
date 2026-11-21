@@ -39,6 +39,10 @@ checks that the comparison finds exactly that:
     7035–7045) until 13:00, then the whole band inside its receiver → L's
     calls in the hole and above 7070 count only after 13:00; one below
     7000 never does (R's windows stop at the band edge)
+  paused bands: L's status says 20 m paused (the thermal guard, CW and
+    RTTY) 12:30–13:00 → R's 20 m stations from the last snapshot without
+    the pause to the first one after are not compared, 40 m is; RTTY: RBN's
+    20 m spot in the pause is not counted
   dead feed: L's feed up and its status healthy, but no L spot for 45 min
     while R spots 12 stations → that time is not compared, R's 12 are no
     only-R and stay out of the histogram; session B's 30 min L silence
@@ -743,6 +747,66 @@ def band_plan():
           "the bands shown: 40 m and 17 m (%s)" % [n for n, _, _ in An.win.common])
 
 
+def paused_bands():
+    print("=== paused bands — a band the local skimmer paused on its own is not compared")
+    root = tempfile.mkdtemp(prefix="compare-paused-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    with open(os.path.join(root, "headless.ini"), "w") as fh:
+        fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n20m=14040000\n")
+    with open(os.path.join(root, "master.scp"), "w") as fh:
+        fh.write("# test\nUA9AAA\nUA9BBB\nUA9CCC\nUA9DDD\nUA9EEE\n")
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\n"
+                 "[remote]\nwindows = 7000-7091 14000-14091\n[rbn]\nexclude = OK1HRA\n")
+    T = "20261001-120000"
+    loc = [mark("12:00:00", "connected to 127.0.0.1:7302")]
+    rem = [mark("12:00:00", "connected to 192.168.1.201:7301"),
+           R("12:27:00", 14020.0, "UA9CCC"),     # 20 m, between "on" 12:25 and "off" 12:30
+           R("12:40:00", 14020.0, "UA9AAA"),     # 20 m paused (the thermal guard)
+           R("12:40:00", 7020.0, "UA9DDD"),      # 40 m runs on
+           R("13:30:00", 14030.0, "UA9BBB")]     # 20 m back
+    rbn = [mark("12:00:00", "connected to telnet.reversebeacon.net:7000"),
+           RT("12:41:00", "DK0XX-#", 14085.0, "UA9EEE"),    # RTTY on 20 m while paused
+           RT("13:41:00", "DK0XX-#", 14085.0, "UA9EEE")]    # … and after
+    events = ["%s recording as OK1HRA since %s UTC\n" % (ts("12:00:00"), T),
+              "%s stopped — write check OK\n" % ts("14:00:00")]
+    for kind, lines in (("local", loc), ("remote", rem), ("rbn", rbn), ("events", events)):
+        with open(os.path.join(logs, "%s-%s.log" % (kind, T)), "w") as fh:
+            fh.writelines(lines)
+    with open(os.path.join(logs, "status-%s.jsonl" % T), "w") as fh:
+        for m in range(0, 120, 5):
+            off = "thermal" if 30 <= m <= 60 else None
+            bands = [{"band": "40m", "centre_hz": 7040000, "paused": None,
+                      "rtty": {"paused": None}},
+                     {"band": "20m", "centre_hz": 14040000, "paused": off,
+                      "rtty": {"paused": off}}]
+            fh.write("%s\t%s\n" % (ts("%02d:%02d:00" % (12 + m // 60, m % 60)), json.dumps(
+                {"streaming": True, "lost_pct": 0, "rate": 96000, "bands": bands})))
+    cfg = Config(os.path.join(root, "compare.ini"))
+    store = Store(cfg.logs, lambda: RbnIndex(loose_bands(cfg.local_windows, 2.0), cfg.exclude))
+    store.poll()
+    An = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
+                 epoch("23:00:00"))
+    ev = {e["call"]: e for e in An.events}
+    check(An.off.get("20m") == [(epoch("12:25:00"), epoch("13:05:00"))] and "40m" not in An.off,
+          "20 m off from the last snapshot without the pause to the first one after (%s)" % An.off)
+    check("UA9AAA" not in ev and "UA9CCC" not in ev,
+          "R's 20 m stations while L had 20 m paused (and at its edge) are no only-R")
+    check("UA9DDD" in ev and ev["UA9DDD"]["cat"] == "only-R",
+          "40 m at the same time is compared: R's UA9DDD is only-R")
+    check("UA9BBB" in ev and ev["UA9BBB"]["cat"] == "only-R",
+          "20 m back: R's UA9BBB is only-R")
+    S = summarize(An, epoch("12:00:00"), epoch("14:00:00") + 1)
+    off = {b["band"]: b["off_s"] for b in S["bands"]}
+    check(off.get("20m") == 2400 and off.get("40m") == 0,
+          "the band table: 20 m off 40 min, 40 m 0 (%s)" % off)
+    X = analyze_rtty(store, load_scp(cfg.scp), cfg.params, epoch("23:00:00"))
+    b = X["bands"].get("20m", {})
+    check(b.get("rbn") == 1 and b.get("matched") == 0,
+          "RTTY: RBN's UA9EEE on 20 m counts only after the pause (%s)" % b.get("rbn"))
+
+
 def RT(hms, spotter, f, call, cm="CQ"):
     """An RTTY line: skimmer-headless and RBN name the mode, 45 BPS."""
     return "%s\tDX de %-9s %7.2f  %-12s RTTY  20 dB  45 BPS  %-6s 1200Z\n" % (
@@ -834,6 +898,7 @@ if __name__ == "__main__":
     remote_plan_test()
     dead_feed()
     rtty()
+    paused_bands()
     print("  (files in %s)" % root)
     print("\n%s (%d failure%s)" % ("FAIL" if fails else "PASS", fails, "" if fails == 1 else "s"))
     sys.exit(1 if fails else 0)

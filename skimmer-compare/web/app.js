@@ -231,19 +231,29 @@ function renderTiles() {
 
 function renderBands() {
   const t = $('#bands');
-  const head = ['Band', 'Stations', 'Recall L', 'Recall W', 'Bust L', 'Bust W', 'First W − L'];
+  // L off: the compared time the Linux skimmer had the band paused on its own
+  // (the thermal guard) — neither side is compared on that band meanwhile
+  const anyOff = D.bands.some((b) => b.off_s > 0);
+  const head = ['Band', 'Stations', 'Recall L', 'Recall W', 'Bust L', 'Bust W', 'First W − L',
+    ...(anyOff ? ['L off'] : [])];
+  const tip = 'compared time the Linux skimmer had this band paused (its CPU ran hot) — ' +
+    'neither skimmer is compared on the band meanwhile';
   t.replaceChildren(el('thead', null, el('tr', null,
-    head.map((h, i) => el('th', { cls: i ? 'num' : '' }, h)))));
+    head.map((h, i) => el('th', { cls: i ? 'num' : '', title: h === 'L off' ? tip : null }, h)))));
+  const dur = (s) => (!s ? '—' : s < 3600 ? `${Math.round(s / 60)} min`
+    : `${Math.floor(s / 3600)} h ${String(Math.round((s % 3600) / 60)).padStart(2, '0')} min`);
   const share = (k, n) => (n ? pctShort(k / n) : '—');
-  const row = (name, n, L, W, bL, eL, bW, eW, lat, cls) => el('tr', { cls },
+  const row = (name, n, L, W, bL, eL, bW, eW, lat, cls, off) => el('tr', { cls },
     el('td', null, name),
     ...[num(n), L.p == null ? '—' : pctShort(L.p), W.p == null ? '—' : pctShort(W.p),
-      share(bL, eL), share(bW, eW), lat == null ? '—' : signed(Math.round(lat), ' s')]
+      share(bL, eL), share(bW, eW), lat == null ? '—' : signed(Math.round(lat), ' s'),
+      ...(anyOff ? [cls === 'total' ? '' : dur(off)] : [])]
       .map((v) => el('td', { cls: 'num' }, v)));
   const tb = el('tbody');
   for (const b of D.bands) {
     if (!b.n && !b.eps_L && !b.eps_W) continue;
-    tb.append(row(b.band, b.n, b.L, b.W, b.bust_L, b.eps_L, b.bust_W, b.eps_W, b.median_W_minus_L));
+    tb.append(row(b.band, b.n, b.L, b.W, b.bust_L, b.eps_L, b.bust_W, b.eps_W, b.median_W_minus_L,
+      '', b.off_s));
   }
   const r = D.recall, bu = D.bust;
   tb.append(row('all', r.n, r.L, r.W, bu.L.k, bu.L.n, bu.W.k, bu.W.n, D.latency.median_W_minus_L, 'total'));

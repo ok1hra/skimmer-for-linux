@@ -138,7 +138,8 @@ def view(cfg, S, feeds, engine, T_name, live, scp_n):
                    "L": prop(b["L"]), "W": prop(b["R"]), "only_L": b["onlyL"], "only_W": b["onlyR"],
                    "bust_L": b["bustL"], "eps_L": b["epsL"], "bust_W": b["bustR"], "eps_W": b["epsR"],
                    "nonCQ": b["nonCQ"], "p": b["p"],
-                   "median_W_minus_L": b["lat"]} for b in S["bands"]],
+                   "median_W_minus_L": b["lat"], "off_s": b.get("off_s", 0)}
+                  for b in S["bands"]],
         "recall": {"L": prop(rec["L"]), "W": prop(rec["R"]), "n": rec["n"],
                    "only_L": rec["b"], "only_W": rec["c"], "p": rec["p"]},
         "bust": {"L": prop(bust["L"]), "W": prop(bust["R"]), "p": bust["p"]},

@@ -18,6 +18,8 @@ actually sent.
           recorder follows it, while the feed is up (at the next
           snapshot) and while it is down (at the next heartbeat); and a
           feed switched off and back on at another port.
+  run 5 — a band paused and back (status "paused"): a snapshot at each
+          change, though -S is far off.
   run 2 — the alarms: a read-only data file (WRITE ERROR), a truncated
           file (WRITE CHECK FAILED), the recorder frozen for 45 s like a
           suspended machine, and a killed recorder process; the RBN
@@ -176,6 +178,20 @@ class StatusPort(Status):
 
     def do_GET(self):
         body = ('{"radio":"mock","feed_port":%d,"bands":[]}' % StatusPort.port).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class StatusPaused(Status):
+    """A band paused (StatusPaused.paused) — the thermal guard's word."""
+    paused = "null"
+
+    def do_GET(self):
+        body = ('{"radio":"mock","feed_port":0,"bands":[{"band":"20m","paused":%s,'
+                '"rtty":{"paused":%s}}]}' % (StatusPaused.paused, StatusPaused.paused)).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -498,7 +514,31 @@ def run4():
     print("  (files in %s)" % out)
 
 
+def run5():
+    print("=== run 5 — a band paused or back is snapshotted at the next heartbeat")
+    out = tempfile.mkdtemp(prefix="capture-test5-")
+    lp, rp, sp = free_port(), free_port(), free_port()
+    StatusPaused.paused = "null"
+    httpd = http.server.HTTPServer(("127.0.0.1", sp), StatusPaused)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    p = start_capture(out, lp, rp, sp, 35, snap=1000)
+    time.sleep(5)
+    StatusPaused.paused = '"thermal"'
+    time.sleep(12)
+    StatusPaused.paused = "null"
+    p.communicate(timeout=120)
+    httpd.shutdown()
+    f = files(out)
+    snaps = open(f["status"]).read().splitlines() if f["status"] else []
+    said = ["thermal" in l for l in snaps]
+    check(said == [False, True, False],
+          "-S 1000: the first snapshot, then one when 20 m was paused and one when it came back"
+          " (%s)" % said)
+    print("  (files in %s)" % out)
+
+
 if __name__ == "__main__":
+    run5()
     run1()
     run2()
     run3()

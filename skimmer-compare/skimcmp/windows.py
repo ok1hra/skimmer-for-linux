@@ -49,6 +49,26 @@ def snapshot_windows(d, rtty=False):
     return tuple(sorted(out, key=lambda w: w[1])) or None
 
 
+def snapshot_paused(d):
+    """{"cw": {band: why}, "rtty": {band: why}} of the bands whose mode the
+    local skimmer has paused on its own (v0.8.6+: the thermal guard, adaptive
+    RTTY — "paused" in /status.json; such a mode gets no IQ), or None for a
+    snapshot without bands."""
+    bands = d.get("bands")
+    if not isinstance(bands, list):
+        return None
+    out = {"cw": {}, "rtty": {}}
+    for b in bands:
+        if not isinstance(b, dict) or "band" not in b:
+            continue
+        if b.get("cw") is not False and b.get("paused"):
+            out["cw"][str(b["band"])] = str(b["paused"])
+        r = b.get("rtty")
+        if isinstance(r, dict) and r.get("paused"):
+            out["rtty"][str(b["band"])] = str(r["paused"])
+    return out
+
+
 def parse_ranges(text):
     """'1800-1891 3500-3591' → [(1800.0, 1891.0), (3500.0, 3591.0)]"""
     out = []

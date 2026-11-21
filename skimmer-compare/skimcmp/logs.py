@@ -23,7 +23,8 @@ import os
 import re
 import threading
 
-from .windows import snapshot_windows
+from .intervals import normalize
+from .windows import snapshot_paused, snapshot_windows
 
 RESUMED = "resumed session"   # capture-spots.sh -C: the session goes on
 # what capture-spots.sh says about the local skimmer's telnet feed port (from
@@ -43,6 +44,9 @@ SPOT_RE = re.compile(
     r"(-?\d+)\s+dB\s+(\d+)\s+(WPM|BPS)\b\s*(.*?)\s*\d{4}Z\s*$")
 
 STALE_S = 180          # a live session whose events log is this quiet has died
+PAUSE_EDGE_S = 600     # a pause seen in one status snapshot reaches at most this far
+                       # towards a neighbour that does not show it (snapshots: 300 s,
+                       # and at once on a change since 2026-11-21)
 CHUNK = 8 << 20        # bytes a Tail reads at a time
 
 _day = {}
@@ -128,7 +132,9 @@ class Session:
         self.start = session_epoch(T)
         self.tails = {}
         self.conn = {"local": [], "remote": [], "rbn": []}   # [(t, up)]
-        self.health = []          # [(t, streaming, lost_pct, engine or None, windows or None)]
+        # [(t, streaming, lost_pct, engine or None, windows or None,
+        #   RTTY windows or None, paused or None)] — windows.snapshot_paused
+        self.health = []
         self.stopped = None       # time of "stopped — write check"
         self.last_t = self.start  # newest timestamp seen in any of its files
         self.last_event = None    # newest events-log line
@@ -192,6 +198,28 @@ class Session:
         old one without bands."""
         return [(a, b, next((h[4] for h in self.health if a <= h[0] <= b and h[4]), None))
                 for a, b in local_up]
+
+    def paused(self, mode, end):
+        """{band: [(a, b)]} while the local skimmer had that band's mode
+        ("cw" / "rtty") paused on its own — the thermal guard, adaptive RTTY.
+        A snapshot says paused: from the last one that did not (at most
+        PAUSE_EDGE_S back) to the next one that does not (at most
+        PAUSE_EDGE_S on, and not past the session end) — the pause began and
+        ended somewhere in there, and neither side is compared in that time."""
+        snaps = [(h[0], h[6].get(mode, {})) for h in self.health if len(h) > 6 and h[6] is not None]
+        out = {}
+        for k, (t, off) in enumerate(snaps):
+            for band in off:
+                if k and band in snaps[k - 1][1]:
+                    a = snaps[k - 1][0]               # paused in both: all of it
+                else:
+                    a = max(snaps[k - 1][0] if k else t - PAUSE_EDGE_S, t - PAUSE_EDGE_S)
+                if k + 1 < len(snaps):
+                    b = snaps[k + 1][0] if band in snaps[k + 1][1] else min(snaps[k + 1][0], t + PAUSE_EDGE_S)
+                else:
+                    b = min(t + PAUSE_EDGE_S, max(end, t))
+                out.setdefault(band, []).append((a, b))
+        return {band: normalize(iv) for band, iv in out.items()}
 
     def unhealthy(self, lost_limit):
         """[(a, b)] covered by a status snapshot that says the local skimmer
@@ -330,7 +358,8 @@ class Store:
                 return
             s.health.append((t, bool(d.get("streaming", True)),
                              float(d.get("lost_pct") or 0.0), d.get("engine") or None,
-                             snapshot_windows(d), snapshot_windows(d, rtty=True)))
+                             snapshot_windows(d), snapshot_windows(d, rtty=True),
+                             snapshot_paused(d)))
             s.seen(t)
             return
         if line.startswith("#"):

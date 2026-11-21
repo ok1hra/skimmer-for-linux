@@ -202,6 +202,20 @@ def compared_time(store, P, now, default_engine, default_windows=()):
     return info, spans, normalize(rbn_up), segs, wsegs, sorted(dead)
 
 
+def paused_time(store, now, mode="cw"):
+    """{band: [(a, b)]} while the local skimmer had the band's mode paused on
+    its own (the thermal guard, adaptive RTTY): no IQ, no spots — neither
+    side is compared there, as if the band were not in the plan."""
+    cur = store.current(now)
+    latest = cur.T if cur else None
+    out = defaultdict(list)
+    for s in store.ordered():
+        end = s.end(s.T == latest, now)
+        for band, iv in s.paused(mode, end).items():
+            out[band] += iv
+    return {band: normalize(iv) for band, iv in out.items()}
+
+
 class BandPlan:
     """The band plan in force at time t — the local one, and what R could
     spot then: the common-window band of a spot heard then, or None. Adding
@@ -271,10 +285,12 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine):
     # ---- spots inside the compared range ---------------------------------------
     A.Lall, A.Rall = list(store.L), list(store.R)
     Lin, Rin = [], []
+    A.off = paused_time(store, now, "cw")
+    off = {b: Membership(iv) for b, iv in A.off.items()}
     for src, dst in ((A.Lall, Lin), (A.Rall, Rin)):
         for sp in src:
             b = plan.band(sp.t, sp.f) if sp.t in inside else None
-            if b:
+            if b and not (b in off and sp.t in off[b]):
                 dst.append((b, sp))
     Lin = [(b, sp) for b, sp in Lin if sp.cm in CQ_WORDS]
     Rcq = [(b, sp) for b, sp in Rin if sp.cm in CQ_WORDS]
