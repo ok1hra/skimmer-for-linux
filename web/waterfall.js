@@ -153,6 +153,9 @@ const Wf = (() => {
     const b = $('#wf-audio');
     b.classList.toggle('on', au.on);
     b.title = au.on ? `listening on ${fmtKhz(au.f / 1000, 2)} kHz — click to mute` : (au.f ? 'muted — click to listen' : 'click in the waterfall to listen there');
+    const fi = $('#wf-freq');
+    if (fi && document.activeElement !== fi) fi.value = au.f ? fmtKhz(au.f / 1000, 2) : '';
+    if (fi) fi.classList.toggle('on', au.on);
     drawScale();
   }
   function audioTune(f) {
@@ -163,6 +166,22 @@ const Wf = (() => {
     au.next = 0;
     audioSend();
     audioUi();
+  }
+  // Tuning the frequency heard without a click (the wheel over the spectrum):
+  // the marker moves, a listening demodulator follows a moment later (one
+  // retune for a burst of notches), a muted one stays muted.
+  let tuneT = 0;
+  function audioMove(f) {
+    au.f = f;
+    if (au.on) { clearTimeout(tuneT); tuneT = setTimeout(audioSend, 60); }
+    follow(f);
+    audioUi();
+  }
+  // zoomed in, the view moves along when the frequency nears its edge
+  function follow(f) {
+    if (!opt.span || !view.hi) return;
+    const m = (view.hi - view.lo) * 0.05;
+    if (f < view.lo + m || f > view.hi - m) { opt.centre = f; reframe(false); }
   }
   function audioOff(forget) {
     if (au.on) { au.on = false; audioSend(); }
@@ -386,6 +405,8 @@ const Wf = (() => {
       retry = 0;
       const sel = $('#wf-band');
       sel.innerHTML = m.bands.map((b, i) => `<option value="${i}">${b.name} · ${fmtKhz(b.centre_hz / 1000, 0)}</option>`).join('');
+      const pi = pending ? m.bands.findIndex((b) => b.name === pending.name) : -1;
+      if (pi >= 0) { opt.band = pending.name; if (opt.span) opt.centre = pending.hz; }
       const i = m.bands.findIndex((b) => b.name === opt.band);
       band = i >= 0 ? i : 0;
       sel.value = String(band);
@@ -397,6 +418,7 @@ const Wf = (() => {
       shownBand = opt.band;
       send(true);                                        // whatever the skimmer still keeps
       if (au.on) audioSend();                           // back: listening again
+      if (pending) applyPending();                      // a row of the DX cluster sent us here
     };
     ws.onclose = (e) => {
       ws = null;
@@ -442,6 +464,56 @@ const Wf = (() => {
     $('#wf-calls').checked = opt.calls;
     $('#wf-spec-cv').hidden = !topShown();
   }
+  // another band: its own audio, the picture anew (centre: where to look)
+  function setBand(i, centre) {
+    audioOff(true);                                    // the audio stays with its band
+    band = i;
+    opt.band = hello.bands[band].name; opt.centre = centre || 0;
+    shownBand = opt.band;
+    $('#wf-band').value = String(band);
+    reframe(true);
+  }
+  // Listen to hz on the band named (a row of the DX cluster, or the field):
+  // that band, the view on it, the audio on. Before the hello it waits for it.
+  let pending = null;
+  function applyPending() {
+    const p = pending;
+    pending = null;
+    if (!p || !hello) return;
+    const i = hello.bands.findIndex((b) => b.name === p.name);
+    if (i < 0) { status(`${p.name} is not on this waterfall`, true); return; }
+    if (i !== band) { setBand(i, p.hz); send(false); }   // the band first, then the audio in it
+    else follow(p.hz);
+    audioTune(p.hz);
+  }
+  function listen(name, hz) {
+    mount();
+    // made now, in the click: a browser lets the audio start only from one
+    try {
+      if (!au.ctx) au.ctx = new (window.AudioContext || window.webkitAudioContext)();
+      au.ctx.resume();
+    } catch (e) { /* no audio here */ }
+    pending = { name, hz: Math.round(hz) };
+    if (hello && ws && ws.readyState === 1) applyPending();
+  }
+  // the field: kHz as shown; a number under 100 is MHz, from 100 000 Hz
+  function parseFreq(text) {
+    const v = Number(String(text).replace(/[\s\u00a0]/g, '').replace(',', '.'));
+    if (!Number.isFinite(v) || v <= 0) return 0;
+    return v < 100 ? v * 1e6 : v < 100000 ? v * 1000 : v;
+  }
+  function freqEntered(fi) {
+    const hz = Math.round(parseFreq(fi.value));
+    if (!hello || !hz) { fi.classList.add('bad'); return; }
+    const inBand = (b) => Math.abs(hz - b.centre_hz) < hello.rate / 2;
+    const i = bandInfo() && inBand(bandInfo()) ? band : hello.bands.findIndex(inBand);
+    if (i < 0) { fi.classList.add('bad'); status(`${fmtKhz(hz / 1000, 2)} kHz is in no band here`, true); return; }
+    fi.classList.remove('bad');
+    pending = { name: hello.bands[i].name, hz };
+    applyPending();
+    fi.value = fmtKhz(hz / 1000, 2);
+  }
+
   let mounted = false;
   function mount() {
     if (mounted) return;
@@ -456,13 +528,7 @@ const Wf = (() => {
     $('#wf-bw').value = String(opt.abw);
     audioUi();
     bar();
-    $('#wf-band').addEventListener('change', (e) => {
-      audioOff(true);                                  // the audio stays with its band
-      band = Number(e.target.value);
-      opt.band = hello.bands[band].name; opt.centre = 0;
-      shownBand = opt.band;
-      reframe(true);
-    });
+    $('#wf-band').addEventListener('change', (e) => setBand(Number(e.target.value), 0));
     $('#wf-span').addEventListener('change', (e) => { opt.span = Number(e.target.value); reframe(false); });
     $('#wf-rate').addEventListener('change', (e) => { opt.rate = Number(e.target.value); save(); send(); });
     $('#wf-range').addEventListener('input', (e) => { opt.range = Number(e.target.value); save(); bar(); });
@@ -489,6 +555,33 @@ const Wf = (() => {
     for (const el of [cv, sc]) {
       el.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(xIn(e), e.deltaY < 0 ? 1 : -1); }, { passive: false });
     }
+    // the wheel over the spectrum tunes: a notch a step of 10–100 Hz (finer
+    // the closer the zoom), Shift 10 Hz; up is higher. Nothing tuned yet: it
+    // starts at the cursor. A touchpad's small moves add up to a notch.
+    let tuneAcc = 0;
+    sp.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const b = bandInfo();
+      if (!b || !view.hi) return;
+      const d = e.deltaY || e.deltaX;                  // Shift turns the wheel sideways
+      tuneAcc += e.deltaMode ? d * 33 : d;
+      if (Math.abs(tuneAcc) < 30) return;
+      const dir = tuneAcc < 0 ? 1 : -1;
+      tuneAcc = 0;
+      const hzPx = (view.hi - view.lo) / (sp.clientWidth || W);
+      const step = e.shiftKey ? 10 : [10, 20, 50, 100].find((s) => s >= hzPx * 2) || 100;
+      const x = ((e.clientX - sp.getBoundingClientRect().left) / sp.clientWidth) * W;
+      const f = au.f ? Math.round((au.f + dir * step) / step) * step : Math.round(hzOf(x) / step) * step;
+      const half = hello.rate / 2;
+      audioMove(Math.max(b.centre_hz - half + 100, Math.min(b.centre_hz + half - 100, f)));
+    }, { passive: false });
+    const fi = $('#wf-freq');
+    fi.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); freqEntered(fi); }
+      if (e.key === 'Escape') { fi.classList.remove('bad'); fi.blur(); }
+    });
+    fi.addEventListener('focus', () => fi.select());
+    fi.addEventListener('blur', () => { fi.classList.remove('bad'); audioUi(); });
     let drag = null;
     let down = null;                                   // a press: a click, or the start of a drag
     cv.addEventListener('pointerdown', (e) => {
@@ -551,5 +644,5 @@ const Wf = (() => {
     clearTimeout(leaveT);
     leaveT = setTimeout(close, 30000);
   }
-  return { enter, leave };
+  return { enter, leave, listen };
 })();

@@ -6,12 +6,14 @@
 // made the spot. Columns can be switched off. dB is a meter coloured by the
 // strength. The rows the filters leave are what the map draws too; a click on
 // a row marks the station on the map, a click on the map marks its row.
+// The speaker between kHz and DX opens the waterfall there, listening (a
+// peer's spot has none: its band is not received here).
 // Filters and columns are kept in the browser.
 'use strict';
 
 const Dxc = (() => {
   const COLS = [
-    ['time', 'UTC'], ['khz', 'kHz'], ['call', 'DX'], ['km', 'km'], ['az', '°'], ['db', 'dB'],
+    ['time', 'UTC'], ['khz', 'kHz'], ['play', ''], ['call', 'DX'], ['km', 'km'], ['az', '°'], ['db', 'dB'],
     ['speed', 'WPM'], ['mode', 'Mode'], ['band', 'Band'], ['country', 'Country'], ['src', 'From'],
   ];
   const DEF = { bands: {}, call: '', regex: false, kmMin: 0, kmMax: 20000, azMin: 0, azMax: 360,
@@ -29,6 +31,8 @@ const Dxc = (() => {
   const meter = (db) => '|'.repeat(Math.max(1, Math.min(8, Math.round((db + 5) / 5))));
   const ARR = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];
   const utc = (t) => { const d = new Date(t * 1000); return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`; };
+  const SPK = '<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M3 7.5h3.2L10.5 4v12L6.2 12.5H3z" fill="currentColor"/>' +
+    '<path d="M13.2 7.2a4 4 0 0 1 0 5.6M15.6 5a7.2 7.2 0 0 1 0 10" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>';
   const srcKind = (s) => (!s.src ? 'here' : workers.has(s.src) ? 'worker' : 'peer');
 
   function callRe() {
@@ -143,6 +147,8 @@ const Dxc = (() => {
     switch (c) {
       case 'time': return `<td class="c-time">${utc(s.t)}</td>`;
       case 'khz': return `<td class="c-khz">${fmtKhz(s.khz)}</td>`;
+      case 'play': return `<td class="c-play">${s.band && srcKind(s) !== 'peer'
+        ? `<button type="button" class="dxc-play" data-band="${esc(s.band)}" data-khz="${s.khz}" title="listen on the waterfall: ${fmtKhz(s.khz)} kHz" aria-label="listen">${SPK}</button>` : ''}</td>`;
       case 'call': return `<td class="c-call">${esc(s.call)}</td>`;
       case 'km': return `<td class="c-km">${s.km != null ? Math.round(s.km).toLocaleString('en-US') : ''}</td>`;
       case 'az': return `<td class="c-az" title="${s.az != null ? `${Math.round(s.az)}°` : ''}">${s.az != null ? `${ARR[Math.round(s.az / 45) % 8]} ${Math.round(s.az)}` : ''}</td>`;
@@ -161,13 +167,13 @@ const Dxc = (() => {
     const shown = rows.filter(pass);
     el.querySelector('.dxc-count').textContent = `${shown.length} of ${rows.length}`;
     el.querySelector('.dxc-clear').disabled = !Object.values(active).some((f) => f());
-    el.querySelector('thead').innerHTML = `<tr>${vis.map(([c, n]) =>
+    el.querySelector('thead').innerHTML = `<tr>${vis.map(([c, n]) => c === 'play' ? '<th class="c-play"></th>' :
       `<th data-c="${c}" class="c-${c}"><span>${n}</span><button type="button" class="fbtn${active[c] && active[c]() ? ' on' : ''}" title="filter">▾</button></th>`).join('')}</tr>`;
     el.querySelector('tbody').innerHTML = shown.length ? shown.map((s) =>
       `<tr data-call="${esc(s.call)}" class="${s.age > 900 ? 'old' : ''}${s.call === marked ? ' hi' : ''}">${vis.map(([c]) => cell(c, s)).join('')}</tr>`).join('')
       : `<tr><td colspan="${vis.length}" class="mut">${rows.length ? 'the filters leave nothing' : 'no spots in the last half hour'}</td></tr>`;
     el.querySelector('.dxc-cols').innerHTML = COLS.map(([c, n]) =>
-      `<label><input type="checkbox" data-col="${c}"${F.hidden[c] ? '' : ' checked'}> ${n === '°' ? 'bearing' : n}</label>`).join('');
+      `<label><input type="checkbox" data-col="${c}"${F.hidden[c] ? '' : ' checked'}> ${n === '°' ? 'bearing' : c === 'play' ? 'listen' : n}</label>`).join('');
     onChange(shown, marked);
   }
 
@@ -188,6 +194,11 @@ const Dxc = (() => {
       if (menu && menu.dataset.c === c) closeMenu(); else openMenu(c, b);
     });
     el.querySelector('tbody').addEventListener('click', (e) => {
+      const play = e.target.closest('.dxc-play');
+      if (play) {                                      // to the waterfall (app.js), still in the click
+        window.dispatchEvent(new CustomEvent('sk-listen', { detail: { band: play.dataset.band, hz: Number(play.dataset.khz) * 1000 } }));
+        return;
+      }
       const tr = e.target.closest('tr[data-call]');
       if (!tr) return;
       marked = marked === tr.dataset.call ? '' : tr.dataset.call;

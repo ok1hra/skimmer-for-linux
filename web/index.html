@@ -152,14 +152,17 @@
       <label class="chk"><input type="checkbox" id="wf-spec"> spectrum</label>
       <label class="chk" title="the calls spotted on the band while the picture below was drawn (15 min at most)"><input type="checkbox" id="wf-calls"> calls</label>
       <span class="wf-listen"><button type="button" id="wf-audio" class="wf-spk" aria-label="listen"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3 7.5h3.2L10.5 4v12L6.2 12.5H3z" fill="currentColor"/><path d="M13 6.5l5 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M13 13.5l5-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <input id="wf-freq" class="wf-freq" inputmode="decimal" placeholder="kHz" autocomplete="off" spellcheck="false"
+          aria-label="the frequency heard, kHz" title="the frequency heard (kHz; Enter tunes there, on any band shown here) — or the wheel over the spectrum"><span class="wf-unit">kHz</span>
         <select id="wf-bw" title="the audio's passband"></select></span>
       <span class="wf-read" id="wf-read"></span>
       <span class="wf-net mut" id="wf-net"></span>
     </div>
-    <canvas id="wf-spec-cv" class="wf-spec" hidden></canvas>
+    <canvas id="wf-spec-cv" class="wf-spec" hidden title="wheel: tune (Shift: 10 Hz steps)"></canvas>
     <canvas id="wf-scale" class="wf-scale"></canvas>
     <div id="wf-box" class="wf-box"><canvas id="wf-cv"></canvas><div id="wf-pass" class="wf-pass" hidden></div></div>
-    <p class="mut note">click: listen there (CW, the passband chosen beside the speaker) · wheel: zoom around the cursor · drag: move · double click: centre · computed by the skimmer
+    <p class="mut note">click: listen there (CW, the passband chosen beside the speaker) · wheel: zoom around the cursor —
+      over the spectrum it tunes (Shift: 10 Hz) · the frequency field: type it, Enter · drag: move · double click: centre · computed by the skimmer
       only while this tab is open, and sent at the speed chosen</p>
   </section>
 

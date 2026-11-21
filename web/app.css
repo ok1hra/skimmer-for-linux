@@ -386,6 +386,19 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .wf-spk:hover { color: var(--fg); }
 .wf-spk.on { color: var(--ok); border-color: var(--ok); }
 .wf-spk.on path + path { display: none; }
+/* the frequency heard: big, and a field to type one in */
+.wf-freq { width: 7.2em; font: 700 20px RC, sans-serif; letter-spacing: .02em; text-transform: none; text-align: right;
+           font-variant-numeric: tabular-nums; padding: 1px 6px; color: var(--mut); background: var(--deep);
+           border: 1px solid var(--ln2); }
+.wf-freq.on { color: var(--ok); }
+.wf-freq:focus { color: var(--fg); border-color: var(--fg); outline: 0; }
+.wf-freq.bad { border-color: var(--bad); color: var(--bad); }
+.wf-unit { text-transform: none; margin-left: -2px; }
+.wf-spec { cursor: ns-resize; }
+/* the DX cluster's listen button: the waterfall, tuned to the spot */
+.dxc td.c-play { padding: 0 0 0 4px; width: 1px; }
+.dxc .dxc-play { line-height: 0; border: 0; background: transparent; padding: 3px 4px; cursor: pointer; color: #4f8f69; }
+.dxc .dxc-play:hover { color: var(--ok); }
 /* a field the save refused: red, with what is wrong under it */
 #settings small.ferr { color: var(--bad); font-weight: 700; letter-spacing: 0; }
 .bands-edit input.bad { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--deep)); }

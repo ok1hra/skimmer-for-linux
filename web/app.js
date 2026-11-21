@@ -1606,6 +1606,12 @@ tabs.waterfall = {
   enter() { if (typeof Wf !== 'undefined') Wf.enter(); else setTimeout(() => tab === 'waterfall' && Wf.enter(), 300); },
   leave() { if (typeof Wf !== 'undefined') Wf.leave(); },
 };
+// the DX cluster's speaker: the waterfall, listening to that spot
+window.addEventListener('sk-listen', (e) => {
+  if (typeof Wf === 'undefined') return;
+  show('waterfall');
+  Wf.listen(e.detail.band, e.detail.hz);
+});
 // a hidden window watches nothing: the skimmer stops computing for it
 document.addEventListener('visibilitychange', () => {
   if (tab !== 'waterfall' || typeof Wf === 'undefined') return;
