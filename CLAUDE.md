@@ -144,8 +144,10 @@ here; what was done and why is in git.
   `web/map/` from IP-rotator) + the DX cluster with column filters
   (`web/dxc.js`), both from `/api/spots`; statistics (`stats.c`, three
   rings: 1 min × 7 d, 15 min × 90 d, 1 h × 2 y, saved in place; file
-  version 4 = with the CPU temperature, a version 3 file is carried over and
-  kept as `stats.bin.v3` for an older build), settings (one parser:
+  version 5 = with the thermal guard's pauses per band (`thermal`, the
+  share of the bucket off — red in "active decoders by band"); a version 3
+  or 4 file is carried over and kept as `stats.bin.v3` / `.v4` for an older
+  build), settings (one parser:
   `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
   backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
   Managers only (settings_from, no proxy headers, a Host that is this
@@ -218,7 +220,10 @@ here; what was done and why is in git.
   `rx_iq_cb`; its engine thread idles) and is NaN in the stats.
 - **The thermal guard** (`[thermal] enabled`, default off; `governor.c`):
   the 5-min mean of the hottest CPU sensor over `limit_c` (empty = the
-  sensor's crit − 15 °C, 85 on coretemp; else 80) for 5 min pauses the
+  sensor's crit − 15 °C, 85 on coretemp; else 80) now and for 3 of the
+  last 5 min (counted in a window — a dip under the limit does not restart
+  it; counted on end, 2026-11-20 it held one band off for 70 min at minute
+  peaks of 85–100 °C and never paused the next) pauses the
   local band with the fewest spots in 30 min (CW + RTTY), 10 min later the
   next; one always stays. The drop each pause brought (10 min after) is
   its hysteresis: it comes back (LIFO) once the mean holds ≤ limit −

@@ -49,10 +49,13 @@
 #include "json.h"
 
 #define MAGIC   "SKIMSTAT"
-#define VERSION 4                    /* 3: the 15-minute and hour rings;
-                                      * 4: the CPU temperature               */
+#define VERSION 5                    /* 3: the 15-minute and hour rings;
+                                      * 4: the CPU temperature;
+                                      * 5: the thermal guard's pauses        */
+#define V4_SM_N 6                    /* versions 1–4's band metrics          */
 #define V1_SG_N 5                    /* version 1's global metrics           */
 #define V3_SG_N 7                    /* versions 2 and 3's                   */
+#define V4_SG_N 8                    /* version 4's                          */
 #define NV      (SKIM_STATS_BANDS * SKIM_STATS_MODES * SKIM_SM_N + SKIM_SG_N)
 #define NTIER   3
 
@@ -68,6 +71,7 @@ static const struct { const char *name; Agg agg; } BAND_M[SKIM_SM_N] = {
   [SKIM_SM_SPOTS] = { "spots", AGG_SUM },       [SKIM_SM_STATIONS] = { "stations", AGG_SUM },
   [SKIM_SM_ACTIVE] = { "active", AGG_MEAN },    [SKIM_SM_FOLDED] = { "folded", AGG_SUM },
   [SKIM_SM_GATE_BELOW] = { "gate_below", AGG_SUM }, [SKIM_SM_SNR] = { "snr", AGG_MEAN },
+  [SKIM_SM_THERMAL] = { "thermal", AGG_MEAN },
 };
 static const struct { const char *name; Agg agg; } GLOB_M[SKIM_SG_N] = {
   [SKIM_SG_CPU] = { "cpu", AGG_MEAN },          [SKIM_SG_LOST] = { "lost", AGG_MAX },
@@ -84,7 +88,7 @@ typedef struct {
 } Header;                                      /* versions 1 and 2           */
 
 typedef struct {
-  Header  h;                                   /* versions 3 and 4, minutes = 0 */
+  Header  h;                                   /* versions 3–5, minutes = 0  */
   guint32 ntier, tier_res[NTIER], tier_len[NTIER], pad;
 } Header3;
 
@@ -98,10 +102,22 @@ typedef struct {
 
 /* A minute record of versions 2 and 3 (7 global metrics). */
 typedef struct {
-  float band[SKIM_STATS_BANDS][SKIM_STATS_MODES][SKIM_SM_N];
+  float band[SKIM_STATS_BANDS][SKIM_STATS_MODES][V4_SM_N];
   float glob[V3_SG_N];
 } MinuteV3;
-#define NV3 (SKIM_STATS_BANDS * SKIM_STATS_MODES * SKIM_SM_N + V3_SG_N)
+#define NV3 (SKIM_STATS_BANDS * SKIM_STATS_MODES * V4_SM_N + V3_SG_N)
+
+/* Version 4: a ring slot (8 global metrics, no thermal pauses). */
+typedef struct {
+  float band[SKIM_STATS_BANDS][SKIM_STATS_MODES][V4_SM_N];
+  float glob[V4_SG_N];
+} MinuteV4;
+#define NV4 (SKIM_STATS_BANDS * SKIM_STATS_MODES * V4_SM_N + V4_SG_N)
+typedef struct {
+  gint64   start;
+  MinuteV4 m;
+  guint8   n[NV4];
+} SlotV4;
 
 /* Version 3: a ring slot of those. */
 typedef struct {
@@ -117,7 +133,7 @@ typedef struct {
 } SlotV2;
 typedef struct {
   gint64 minute;
-  float  band[SKIM_STATS_BANDS][SKIM_STATS_MODES][SKIM_SM_N];
+  float  band[SKIM_STATS_BANDS][SKIM_STATS_MODES][V4_SM_N];
   float  glob[V1_SG_N];
 } SlotV1;
 
@@ -196,16 +212,20 @@ static gsize ring_offset_of(guint t, gsize slot) {
 }
 static gsize ring_offset(guint t) { return ring_offset_of(t, sizeof(Slot)); }
 
-/* A version 2/3 record (and its merge counts) as this version's: the CPU
- * temperature empty. */
-static void from_v3(SkimStatsMinute *o, guint8 *on, const MinuteV3 *in, const guint8 *in_n) {
+/* A version 1–4 record (and its merge counts, NULL: none) as this
+ * version's: its V4_SM_N band metrics and sg_n globals in place, the newer
+ * ones empty. */
+static void from_old(SkimStatsMinute *o, guint8 *on, const float *band, const float *glob,
+                     guint sg_n, const guint8 *in_n) {
   empty_minute(o);
-  memcpy(o->band, in->band, sizeof(o->band));
-  memcpy(o->glob, in->glob, sizeof(in->glob));
-  if (on) {
-    memset(on, 0, NV);
-    memcpy(on, in_n, NV3);           /* the band values, then the globals */
+  if (on) { memset(on, 0, NV); }
+  const guint bk = SKIM_STATS_BANDS * SKIM_STATS_MODES;
+  for (guint c = 0; c < bk; c++) {
+    memcpy(&o->band[0][0][0] + c * SKIM_SM_N, band + c * V4_SM_N, V4_SM_N * sizeof(float));
+    if (on) { memcpy(on + c * SKIM_SM_N, in_n + c * V4_SM_N, V4_SM_N); }
   }
+  memcpy(o->glob, glob, sg_n * sizeof(float));
+  if (on) { memcpy(on + bk * SKIM_SM_N, in_n + bk * V4_SM_N, sg_n); }
 }
 
 /* The file's band column for each of ours (by name), -1 = none. */
@@ -261,11 +281,10 @@ static void load_old(SkimStats *s, const char *data, const Header *h, gboolean v
     gint64 minute;
     if (v1) {                                  /* the CPU split stays NaN    */
       minute = in1[i].minute;
-      memcpy(src.band, in1[i].band, sizeof(src.band));
-      memcpy(src.glob, in1[i].glob, sizeof(in1[i].glob));
+      from_old(&src, NULL, &in1[i].band[0][0][0], in1[i].glob, V1_SG_N, NULL);
     } else {
       minute = in[i].minute;
-      from_v3(&src, NULL, &in[i].m, NULL);
+      from_old(&src, NULL, &in[i].m.band[0][0][0], in[i].m.glob, V3_SG_N, NULL);
     }
     remap(&mm, &src, from, s->nb, NULL, NULL);
     for (guint t = 0; t < NTIER; t++) { merge(s, t, minute, &mm); }
@@ -275,7 +294,14 @@ static void load_old(SkimStats *s, const char *data, const Header *h, gboolean v
             "15-minute and hour rings", s->path, h->version);
 }
 
-/* TRUE when the file can be written in place as it is (version 4, these
+/* Keep the file as it was beside it (path.vN), for an older build that
+ * reads that version only (and would start afresh on this one). */
+static void keep_old(const SkimStats *s, const char *data, gsize len, guint version, char **kept) {
+  *kept = g_strdup_printf("%s.v%u", s->path, version);
+  if (!g_file_test(*kept, G_FILE_TEST_EXISTS)) { g_file_set_contents(*kept, data, (gssize)len, NULL); }
+}
+
+/* TRUE when the file can be written in place as it is (this version, these
  * bands). */
 static gboolean load(SkimStats *s) {
   char *data = NULL;
@@ -284,7 +310,7 @@ static gboolean load(SkimStats *s) {
   const Header *h = (const Header *)data;
   const gboolean head_ok = len >= sizeof(Header) && memcmp(h->magic, MAGIC, 8) == 0 &&
                            h->bands == SKIM_STATS_BANDS && h->modes == SKIM_STATS_MODES &&
-                           h->sm_n == SKIM_SM_N;
+                           h->sm_n == (h->version >= 5 ? SKIM_SM_N : V4_SM_N);
   const gboolean v1 = head_ok && h->version == 1 && h->sg_n == V1_SG_N &&
                       h->minutes == SKIM_STATS_MINUTES &&
                       len == sizeof(Header) + SKIM_STATS_MINUTES * sizeof(SlotV1);
@@ -298,35 +324,42 @@ static gboolean load(SkimStats *s) {
   }
   const gboolean v3 = head_ok && rings_ok && h->version == 3 && h->sg_n == V3_SG_N &&
                       len == file_len_of(sizeof(SlotV3));
-  const gboolean v4 = head_ok && rings_ok && h->version == VERSION && h->sg_n == SKIM_SG_N &&
+  const gboolean v4 = head_ok && rings_ok && h->version == 4 && h->sg_n == V4_SG_N &&
+                      len == file_len_of(sizeof(SlotV4));
+  const gboolean v5 = head_ok && rings_ok && h->version == VERSION && h->sg_n == SKIM_SG_N &&
                       len == file_len();
   gboolean same = FALSE;
   if (v1 || v2) {
     load_old(s, data, h, v1);
-    s->dirty = TRUE;                           /* written as version 4      */
-  } else if (v3) {                             /* slot by slot, temp empty  */
+    s->dirty = TRUE;                           /* written as this version   */
+  } else if (v3 || v4) {                             /* slot by slot, temp empty  */
     int from[SKIM_STATS_BANDS];
     columns(h->names, s, from);
     for (guint t = 0; t < NTIER; t++) {
-      const SlotV3 *in = (const SlotV3 *)(data + ring_offset_of(t, sizeof(SlotV3)));
+      const gsize at = ring_offset_of(t, v3 ? sizeof(SlotV3) : sizeof(SlotV4));
+      const SlotV3 *in3 = (const SlotV3 *)(data + at);
+      const SlotV4 *in4 = (const SlotV4 *)(data + at);
       for (guint i = 0; i < TIER[t].len; i++) {
         SkimStatsMinute m;
         guint8 n[NV];
-        from_v3(&m, n, &in[i].m, in[i].n);
+        if (v3) {
+          from_old(&m, n, &in3[i].m.band[0][0][0], in3[i].m.glob, V3_SG_N, in3[i].n);
+        } else {
+          from_old(&m, n, &in4[i].m.band[0][0][0], in4[i].m.glob, V4_SG_N, in4[i].n);
+        }
         Slot *o = &s->ring[t][i];
-        o->start = in[i].start;
+        o->start = v3 ? in3[i].start : in4[i].start;
         remap(&o->m, &m, from, s->nb, o->n, n);
       }
     }
-    s->dirty = TRUE;                           /* written as version 4      */
-    /* an older build reads version 3 only (and would start afresh on 4):
-     * the file as it was stays beside it */
-    char *keep = g_strconcat(s->path, ".v3", NULL);
-    if (!g_file_test(keep, G_FILE_TEST_EXISTS)) { g_file_set_contents(keep, data, (gssize)len, NULL); }
-    g_message("stats: %s is a version 3 history — carried over, the CPU temperature "
-              "starts now (the old file kept as %s, for an older build)", s->path, keep);
-    g_free(keep);
-  } else if (v4) {
+    s->dirty = TRUE;                           /* written as this version   */
+    char *kept;
+    keep_old(s, data, len, h->version, &kept);
+    g_message("stats: %s is a version %u history — carried over, %s start now (the old "
+              "file kept as %s, for an older build)", s->path, h->version,
+              v3 ? "the CPU temperature and the thermal pauses" : "the thermal pauses", kept);
+    g_free(kept);
+  } else if (v5) {
     int from[SKIM_STATS_BANDS];
     columns(h->names, s, from);
     for (guint t = 0; t < NTIER; t++) {

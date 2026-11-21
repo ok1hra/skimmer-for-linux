@@ -244,9 +244,11 @@ const Charts = (() => {
     const A = p(a), B = p(b);
     return `rgb(${A.map((c, i) => Math.round(c + (B[i] - c) * t)).join(',')})`;
   }
-  // rows: [{ name, parts: [{ label, values | null, lo, hi }, …] }] — a band is one
-  // block, its parts stacked inside it with no gap (CW over RTTY), a gap between
-  // bands. Each part label has its own ramp and its own maximum.
+  // rows: [{ name, parts: [{ label, values | null, lo, hi }, …], off }] — a band is
+  // one block, its parts stacked inside it with no gap (CW over RTTY), a gap
+  // between bands. Each part label has its own ramp and its own maximum. off: per
+  // bucket the share (0–1) the band was paused (the thermal guard) — red over the
+  // whole block, the deeper the longer.
   function heat(box, x, rows, fmtV, what) {
     const partH = 13, bandGap = 5;
     const np = Math.max(1, ...rows.map((r) => r.parts.length));
@@ -294,6 +296,22 @@ const Charts = (() => {
     // the shared crosshair: the bucket under the cursor anywhere in the rows
     const plotB = m.t + rows.length * (blockH + bandGap) - bandGap;
     night(svg, m.l, m.t, pw, plotB - m.t, x, 0.6);   // over the cells (they fill the plot), lighter
+    // the pauses over the night: they must read in any light
+    rows.forEach((r, j) => {
+      if (!r.off) return;
+      const yy = m.t + j * (blockH + bandGap);
+      r.off.forEach((f, i) => {
+        if (!(f > 0)) return;
+        const c = el('rect', { x: m.l + i * cw, y: yy, width: Math.max(0.5, cw - gap), height: blockH,
+                               fill: css('--bad'), opacity: (0.35 + 0.65 * Math.min(1, f)).toFixed(2) }, svg);
+        c.addEventListener('pointerenter', () => {
+          tt.show(m.l + (i + 1) * cw, yy, `${r.name} · ${x.label(i)}`,
+                  [{ value: `${Math.round(100 * f)} %`, label: 'of the time off — the thermal guard' }]);
+          c.setAttribute('stroke', css('--fg'));
+        });
+        c.addEventListener('pointerleave', () => { tt.hide(); c.removeAttribute('stroke'); });
+      });
+    });
     crossLine(box, svg, m.t, plotB, (i) => Math.round(m.l + (i + 0.5) * cw) + 0.5);
     svg.addEventListener('pointermove', (e) => {
       const r = svg.getBoundingClientRect(), mx = ((e.clientX - r.left) * W) / r.width;

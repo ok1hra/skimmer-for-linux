@@ -140,6 +140,7 @@ typedef struct {
   const char   *worker;        /* "@name": decoded by that worker, or NULL    */
   volatile gint remote_spots[M_N]; /* … the spots it sent, CW / RTTY (link thread) */
   gint          remote_prev[M_N];   /* main loop: at the last minute's end    */
+  guint         shed_s;        /* main loop: the minute's s the thermal guard had it off */
 } Band;
 
 typedef struct {
@@ -187,6 +188,7 @@ typedef struct {
   GPtrArray      *temp_paths;  /* the CPU's temperature sensors (°C × 1000)  */
   double          temp_c;      /* the hottest of them now; NAN = none        */
   float           temp_peak;   /* … the minute's hottest (the history)       */
+  guint           guard_s;     /* the minute's s the thermal guard watched   */
   guint           ticks;
 
   SkimStats *stats;            /* the 7-day history (stats.h)                 */
@@ -920,8 +922,13 @@ static void stats_minute(Hd *h) {
       if (g_atomic_int_get(&b->paused)) {
         for (guint j = 0; j < SKIM_SM_N; j++) { v[j] = NAN; }
       }
+      /* … and how much of it the thermal guard had the band off (red in the
+       * Statistics; NaN while the guard is off) */
+      if (h->guard_s) { v[SKIM_SM_THERMAL] = (float)rb->shed_s / (float)h->guard_s; }
     }
+    rb->shed_s = 0;
   }
+  h->guard_s = 0;
   if (h->gov && skim_hd_governor_minute(h->gov, h->minute, rtty_spots, band_spots)) { pause_apply(h); }
   const SkimIqSourceStatus *src = &h->src_st;
   const guint64 frames = h->nb ? h->band[0].frames : 0;
@@ -1025,6 +1032,10 @@ static gboolean tick(gpointer data) {
   if (!isnan(h->temp_c) && !(h->temp_c <= h->temp_peak)) { h->temp_peak = (float)h->temp_c; }
   if (h->gov && skim_hd_governor_temp(h->gov, g_get_real_time() / G_USEC_PER_SEC, h->temp_c)) {
     pause_apply(h);                                    /* the thermal guard     */
+  }
+  if (h->gov && h->cfg.thermal) {                      /* its share, a minute   */
+    h->guard_s++;
+    for (guint i = 0; i < h->nb; i++) { h->band[i].shed_s += skim_hd_governor_band_shed(h->gov, i); }
   }
 
   const gint64 minute = g_get_real_time() / (60 * G_USEC_PER_SEC);

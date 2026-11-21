@@ -3,7 +3,8 @@
  *
  * Per band and mode (CW, RTTY): spots sent, stations that appeared, active
  * decoders, calls the fold held back, spots the learned gate scored below
- * its threshold, the median SNR of the spots. Globally: CPU (all, and the
+ * its threshold, the median SNR of the spots, the share of the minute the
+ * thermal guard had the band paused. Globally: CPU (all, and the
  * CW and RTTY pipelines' share), the CPU temperature (peak), lost IQ, feed
  * clients, whether the radio streamed and which one.
  *
@@ -13,8 +14,8 @@
  * a restart — every settings change is one — keeps the graphs.
  * Bands are matched by name: a band added later starts empty, a band
  * dropped from the config loses its history at the next save. Older files
- * are read and carried over: version 1 (no CPU split) and 3 (no CPU
- * temperature) with those empty.
+ * are read and carried over: version 1 (no CPU split), 3 (no CPU
+ * temperature) and 4 (no thermal pauses) with those empty.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -35,6 +36,8 @@ typedef enum {
   SKIM_SM_FOLDED,          /* calls the twin fold held back                  */
   SKIM_SM_GATE_BELOW,      /* spots the learned gate scored below threshold  */
   SKIM_SM_SNR,             /* median SNR of the minute's spots (NaN: none)   */
+  SKIM_SM_THERMAL,         /* share of the minute the thermal guard had the
+                            * band paused, 0–1 (NaN: the guard is off)       */
   SKIM_SM_N,
 } SkimStatsBandMetric;
 

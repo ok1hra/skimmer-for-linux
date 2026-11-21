@@ -527,7 +527,10 @@ function thermalText(t) {
   const shed = (t.shed || []).map((s) => `${esc(s.band)} off${s.drop_c == null ? ''
     : ` (−${fmt(s.drop_c, 1)} °C)`}, back ≤ ${fmt(s.back_at_c, 1)} °C`).join(' · ');
   return `${m} / ${fmt(t.limit_c, 1)} °C, ${t.average_min}-min mean` +
-    (t.state === 'hot' ? ' — <span class="bad">over the limit</span>' : '') + (shed ? ` · ${shed}` : '');
+    (t.state === 'hot' ? ' — <span class="bad">over the limit</span>' : '') +
+    // how close the next pause is: the seconds over in the last 5 min against the need
+    (t.over_s ? ` · over ${fmt(t.over_s / 60, 1)} of 5 min (a pause at ${fmt(t.over_need_s / 60)})` : '') +
+    (shed ? ` · ${shed}` : '');
 }
 // adaptive RTTY's state, one line: testing, on (a contest) or off till the hour
 function rttyAdaptiveText(a) {
@@ -584,13 +587,22 @@ function renderStats() {
   // a band's block: CW over RTTY (a mode the band does not decode: an empty
   // strip), both in one ramp — the strip's place says the mode, each its own scale
   const decoded = (mm, b) => mm && mm.active[b] && mm.active[b].some((v) => v != null) ? mm.active[b] : null;
-  const amax = Charts.heat($('#chart-active'), x, d.bands.map((b) => ({ name: b, parts: [
+  // the thermal guard's pauses: the band's share off per bucket (CW and RTTY
+  // go together; an older history has none)
+  const offOf = (b) => {
+    const s = [d.cw, d.rtty].map((mm) => (mm && mm.thermal && mm.thermal[b]) || []);
+    const v = Array.from({ length: d.n }, (_, i) => Math.max(s[0][i] || 0, s[1][i] || 0));
+    return v.some((f) => f > 0) ? v : null;
+  };
+  const offs = Object.fromEntries(d.bands.map((b) => [b, offOf(b)]));
+  const amax = Charts.heat($('#chart-active'), x, d.bands.map((b) => ({ name: b, off: offs[b], parts: [
     { label: 'CW', values: decoded(d.cw, b), lo: '--seq-lo', hi: '--seq-hi' },
     ...(d.rtty ? [{ label: 'RTTY', values: decoded(d.rtty, b), lo: '--seq-lo', hi: '--seq-hi' }] : []),
   ] })), (v) => fmt(v, 1), 'active decoders');
   const span = (l) => (amax[l] ? ` <span class="mut">0–${fmt(amax[l], amax[l] < 10 ? 1 : 0)}</span>` : '');
   $('#legend-active').innerHTML = '<span><i class="ramp" style="background:linear-gradient(90deg,var(--seq-lo),var(--seq-hi))"></i>' +
-    `${d.rtty ? 'upper strip ' : ''}CW${span('CW')}${d.rtty ? ` · lower strip RTTY${span('RTTY')}` : ''}</span>`;
+    `${d.rtty ? 'upper strip ' : ''}CW${span('CW')}${d.rtty ? ` · lower strip RTTY${span('RTTY')}` : ''}</span>` +
+    (Object.values(offs).some((v) => v) ? '<span><i style="background:var(--bad)"></i>off — paused by the thermal guard</span>' : '');
   // CPU: the CW and RTTY pipelines' threads and the rest of the process, stacked
   // under the total (history before the split has the total line only)
   const g = d.global;
