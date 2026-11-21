@@ -128,7 +128,7 @@ here; what was done and why is in git.
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 25 gates** (DeepCW skips without the model, golden skips
+- **`meson test` = 26 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).
 - **Hub, workers, peers** (`docs/HUB.md`): the PC with the radio passes the
@@ -247,6 +247,22 @@ here; what was done and why is in git.
   its hysteresis: it comes back (LIFO) once the mean holds ≤ limit −
   max(drop, 5) − `restore_margin_c` (3) for 20 min. hra2 (2026-11-20):
   mean ~78 °C, minute peaks up to 100 — so the mean, never the peak.
+- **WSPR** (`[wspr] enabled`, default off; `src/headless/wspr.c`,
+  2026-11-21 at Dan's request): every WSPR-2 dial (WSJT-X's list) whose
+  dial + 1500 ± 150 Hz lies inside 45 % of the rate around a received
+  band's centre (the first receiver once) — at 96 kHz from the low edge
+  that leaves out 20/15/10 m. `rx_iq_cb` → shift, WDSP to 12 kHz, then 375 Hz;
+  a 114 s capture from each even UTC minute (the wall clock, the arrival
+  smoothed) → a `.c2` file → `skimmer-wsprd` (WSJT-X 3.0.2's wsprd,
+  `vendor/wsprd/`, C only: the Fortran OSD is a stub, never called; `-C 500
+  -w`, nice 10) on one thread, band after band. Spots 24 h in memory +
+  `<state>/wspr.tsv`; `/api/wspr` = the stations (Statistics, under the
+  bands' table); `upload=true` posts each spot to WSPRnet
+  (`function=wspr`, as WSJT-X) under `[wspr] call`/`locator` (empty = the
+  feed's call, the station's locator — needed then); a failed post waits
+  for the next cycle. The `.c2` stores Q negated (wsprd's convention) —
+  the `wspr` gate decodes two synthetic signals at 48 and 192 kHz, so a
+  mirrored spectrum fails it. Needs a live check on air.
 - Opt-in and without a live verdict: the tone splitter (`SKIM_TONE_SPLIT=1`)
   and the narrow focus slot (`SKIM_TONE_FOCUS=1`, implies the splitter).
 
@@ -281,11 +297,13 @@ src/headless/ the product layer: config (headless.ini, one parser), source
               source_hub (a worker), hub (bands to workers), peers (other
               feeds), discovery (UDP 8075), record ([record] IQ to disk),
               switches (SKIM_* visibility), stats (7-day history), web
-              (libsoup server), logring, scp_update (MASTER.SCP updater)
+              (libsoup server), logring, scp_update (MASTER.SCP updater),
+              wspr ([wspr]: WSPR beside, WSPRnet)
 web/          the web page (HTML, CSS, JS — built in as a GResource)
 src/headless_main.c  skimmer-headless: multi-band, no GUI (HPSDR P1 → N pipelines)
 weights/      learned weights built into skimmer-headless (feed-gate.ini)
 tests/golden/ the golden gate: real-air replay, byte for byte
 vendor/wdsp/  in-tree WDSP copy (FFT + resampler)
+vendor/wsprd/ WSJT-X's wsprd (the WSPR decoder → skimmer-wsprd, a helper)
 vendor/onnxruntime/  ONNX Runtime C API header only (MIT) — dlopen at run time
 ```

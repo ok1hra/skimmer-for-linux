@@ -390,7 +390,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
     }
     /* the data: for a visitor from outside only once signed in */
     if ((strcmp(path, "/status.json") == 0 || strcmp(path, "/stats.json") == 0 ||
-         strcmp(path, "/api/spots") == 0) && !may_see(w, msg, admin)) {
+         strcmp(path, "/api/spots") == 0 || strcmp(path, "/api/wspr") == 0) && !may_see(w, msg, admin)) {
       reply_error(msg, SOUP_STATUS_UNAUTHORIZED, "login");
       return;
     }
@@ -401,6 +401,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                       : strcmp(path, "/api/skimmers") == 0 ? k->skimmers
                       : strcmp(path, "/api/spots") == 0    ? k->spots
                       : strcmp(path, "/api/skimsrv") == 0  ? k->skimsrv
+                      : strcmp(path, "/api/wspr") == 0     ? k->wspr
                                                           : NULL;
     if (hook) {
       guint status = SOUP_STATUS_OK;

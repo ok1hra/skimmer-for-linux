@@ -140,6 +140,11 @@
       <div class="wrap"><table id="stats-table" class="grid"></table></div>
       <p class="mut note" id="stats-cols"></p>
     </details>
+    <details class="more" id="stats-wspr" open hidden>
+      <summary id="stats-wspr-h">WSPR: the stations heard in the last 24 h</summary>
+      <div class="wrap"><table id="stats-wspr-t" class="grid wspr-t"></table></div>
+      <p class="mut note" id="stats-wspr-note"></p>
+    </details>
     <details class="more" id="stats-vis" open hidden>
       <summary id="stats-vis-h">Visitors from outside</summary>
       <div class="wrap"><table id="stats-vis-t" class="grid"></table></div>
@@ -332,6 +337,20 @@
             45.45 Bd, 170 Hz shift. RTTY in the waterfall's bar opens it too. Autotune moves the frequency heard once after
             each tuning, when a pair holds still; DEC 2 averages each bit and holds the rhythm. For everyone who watches
             the waterfall; CLEAN and REV in the palette are that browser's own.</small>
+        </fieldset>
+        <fieldset>
+          <legend>WSPR</legend>
+          <label class="check"><input type="checkbox" name="wspr.enabled"> decode WSPR on every WSPR frequency inside the bands received</label>
+          <label class="check"><input type="checkbox" name="wspr.upload"> send the spots to WSPRnet (wsprnet.org)</label>
+          <label>Call <input name="wspr.call" class="upper" placeholder="as Station and feed" autocapitalize="characters">
+            <small>the receiver's call on WSPRnet; empty = Station and feed → Call</small></label>
+          <label>Locator <input name="wspr.locator" class="upper" placeholder="as Station and feed" maxlength="6" autocapitalize="characters">
+            <small>the receiver's locator on WSPRnet, public there as written (6 characters: a few km); empty = Station and feed → Locator</small></label>
+          <small class="note-s" id="wspr-note"></small>
+          <small class="note-s">WSPR-2 on WSJT-X's dial frequencies (USB, the signals 1400–1600 Hz above), each even UTC minute,
+            WSJT-X's own decoder (wsprd) one band after the other — the radio's IQ, no extra receiver. A frequency counts when
+            its 300 Hz lie inside 45 % of the rate around a band's centre (Bands below). The stations heard in the last 24 h:
+            Statistics, under the bands' table.</small>
         </fieldset>
       </div>
       <fieldset>

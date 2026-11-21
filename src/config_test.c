@@ -286,6 +286,22 @@ int main(void) {
           !parse(&c, "[bands]\n20m=14045500\n[thermal]\nlimit_c=30\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[thermal]\nlimit_c=120\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[thermal]\naverage_min=0\n", NULL));
+    check("[wspr] default: off, no upload",
+          parse(&c, "[bands]\n20m=14045500\n", NULL) && !c.wspr && !c.wspr_upload &&
+          !c.wspr_call && !c.wspr_locator[0]);
+    skim_hd_config_clear(&c);
+    check("[wspr] on, upload with [feed] call and [station] locator; call/locator in capitals",
+          parse(&c, "[bands]\n20m=14045500\n[feed]\ncall=ok1hra\n[station]\nlocator=jo70\n"
+                    "[wspr]\nenabled=true\nupload=true\n", NULL) && c.wspr && c.wspr_upload &&
+          parse(&c, "[bands]\n20m=14045500\n[wspr]\nenabled=true\nupload=true\ncall=ok1hra/p\n"
+                    "locator=jo70ab\n", NULL) &&
+          g_strcmp0(c.wspr_call, "OK1HRA/P") == 0 && strcmp(c.wspr_locator, "JO70AB") == 0);
+    skim_hd_config_clear(&c);
+    check("[wspr] refused: an upload without a call or a locator, a bad call, a bad locator",
+          !parse(&c, "[bands]\n20m=14045500\n[station]\nlocator=JO70\n[wspr]\nenabled=true\nupload=true\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[feed]\ncall=OK1HRA\n[wspr]\nenabled=true\nupload=true\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[wspr]\ncall=OK-1\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[wspr]\nlocator=JO7\n", NULL));
     check("[rtty_palette] defaults: on a spot, 400 Hz, autotune, AFC 60/60, squelch off, sound",
           parse(&c, "[bands]\n20m=14045500\n[rtty_palette]\nbandwidth=\n", NULL) &&
           c.rtty_palette.open_on_spot && c.rtty_palette.bandwidth == 400 && c.rtty_palette.autotune &&

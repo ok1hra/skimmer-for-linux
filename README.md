@@ -176,6 +176,14 @@ streaming from unless told to (`--take-over`).
   at 96 kHz. `[decode] suppress_cw_on_rtty=true` keeps the band's CW
   decoders off the RTTY stations it copies (an FSK tone reads as junk CW);
   off until measured live.
+- **WSPR** beside it (`[wspr] enabled=true`, Settings → WSPR): every WSPR-2
+  frequency inside a band received is decoded each even minute by WSJT-X's
+  own decoder (built in as `skimmer-wsprd`) from the same IQ — no extra
+  receiver. The stations heard in the last 24 h are listed under
+  Statistics; `upload=true` sends the spots to [WSPRnet](https://wsprnet.org)
+  under the station's call and locator. At 96 kHz from each band's low edge
+  this takes 160/80/40/30/17/12 m; 20, 15 and 10 m need 192 kHz or a centre
+  of their own.
 - **The RBN feed** sends only validated CQ calls that were read twice (or are
   in MASTER.SCP), settled in the station table, and were read lately. A
   **learned feed gate** (a logistic model over what the pipeline knew when it
@@ -469,6 +477,7 @@ It needs bash, curl and Python 3, standard library only.
 | `~/.local/share/skimmer-for-linux/headless/` | Decode logs (`[decode] log=true`), decode taps (`learn/`) |
 | `~/.local/share/skimmer-for-linux/models/deepcw/` | DeepCW model (`--fetch-deepcw-model`), its LICENSE and NOTICE |
 | `~/.local/state/skimmer-for-linux/stats.bin` | Seven days of statistics for the web page |
+| `~/.local/state/skimmer-for-linux/wspr.tsv`, `wspr/` | The WSPR spots of the last 24 h; the decoder's work directory (its hash table) |
 
 ## Environment variables
 
@@ -498,6 +507,8 @@ The decoder and the feed have more `SKIM_*` switches for the live-air work;
   thanks.
 - **Pavel Demin** wrote [red-pitaya-notes](https://github.com/pavel-demin/red-pitaya-notes)
   and its `sdr_receiver_hpsdr`, the receiver this fork talks to.
+- **Joe Taylor, K1JT, and Steven Franke, K9AN** wrote wsprd (WSJT-X), the WSPR
+  decoder built in (`vendor/wsprd/`).
 - **VE3NEA** wrote CW Skimmer Server, the reference used for the comparisons.
 - The fork's changes were written by Dan, OK1HRA, with the help of Claude Code.
 

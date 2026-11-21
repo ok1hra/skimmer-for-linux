@@ -25,7 +25,7 @@ runuser -u builder -- meson test -C b --print-errorlogs
 # with CUDA), the licences
 A=/build/AppDir
 mkdir -p $A/usr/bin $A/usr/lib $A/usr/share/doc/skimmer-for-linux $A/usr/share/doc/onnxruntime
-cp b/skimmer-headless $A/usr/bin/
+cp b/skimmer-headless b/vendor/wsprd/skimmer-wsprd $A/usr/bin/   # + WSJT-X's wsprd ([wspr])
 tar -xzf /dl/onnxruntime-linux-x64-1.21.0.tgz -C /build
 ORT=/build/onnxruntime-linux-x64-1.21.0
 cp $ORT/lib/libonnxruntime.so.1.21.0 $A/usr/lib/
@@ -35,6 +35,7 @@ cp src/LICENSE src/README.md $A/usr/share/doc/skimmer-for-linux/
 cp /dl/linuxdeploy-x86_64.AppImage /build/linuxdeploy && chmod +x /build/linuxdeploy
 /build/linuxdeploy --appdir $A \
   -e $A/usr/bin/skimmer-headless \
+  -e $A/usr/bin/skimmer-wsprd \
   -l $A/usr/lib/libonnxruntime.so.1.21.0 \
   -d /pkg/skimmer-headless.desktop -i /pkg/skimmer-headless.svg
 ln -sf libonnxruntime.so.1.21.0 $A/usr/lib/libonnxruntime.so.1

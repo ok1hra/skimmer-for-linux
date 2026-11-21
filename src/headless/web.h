@@ -10,6 +10,7 @@
  *   GET  /api/log               the last log lines
  *   GET  /api/config            the config: the ini, what may be edited, backups
  *   GET  /api/spots             the spots the feed sent (?minutes=N, default 30, ≤ 120)
+ *   GET  /api/wspr              the WSPR stations heard in the last 24 h (wspr.h)
  *   GET  /api/skimmers          the skimmer instances on the LAN (a 0.8 s search)
  *   POST /api/config            a new config (settings_from only)
  *   POST /api/config/import    an exported ini (ini=…) as the config (settings_from)
@@ -24,8 +25,8 @@
  *
  * With visitors on (skim_hd_web_set_visitors), a client that is not free —
  * not a manager, and not from [visitors] free_from without a proxy — gets
- * the page itself but no data (/status.json, /stats.json, /api/spots, the
- * waterfall: 401 {"error":"login"}) until it signs in with a callsign.
+ * the page itself but no data (/status.json, /stats.json, /api/spots, /api/wspr,
+ * the waterfall: 401 {"error":"login"}) until it signs in with a callsign.
  *
  * Every body comes from the owner's hooks — this module only routes, checks
  * who may change things and answers. A POST is refused (403) unless the
@@ -65,7 +66,7 @@ typedef char *(*SkimHdWebGet)(GHashTable *query, SkimHdWebWho who, guint *status
 typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
 typedef struct {
-  SkimHdWebGet  status, stats, log, config, skimmers, spots, skimsrv;
+  SkimHdWebGet  status, stats, log, config, skimmers, spots, skimsrv, wspr;
   SkimHdWebPost config_post, config_import, restart, rollback, deepcw;
   /* a WebSocket viewer of the waterfall (peer: its address, for the log;
    * visitor: its sign-in token, NULL for a free client); the hook takes its

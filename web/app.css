@@ -469,3 +469,8 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .rp-rx .rtty-rx-char { color: var(--rtty-rx-char-color, inherit); }
 .wf-rtty.on { color: var(--rtty); border-bottom-color: var(--rtty); }
 .wf-bar select:disabled { opacity: .6; }
+
+/* the WSPR stations (Statistics): a column head sorts */
+.grid th.sort { cursor: pointer; user-select: none; }
+.grid th.sort.on { color: var(--fg); }
+.wspr-t td { white-space: nowrap; }

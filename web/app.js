@@ -789,6 +789,78 @@ async function renderStatsVisitors(force) {
     (!open.length && !past.length ? `<tr><td colspan="${full ? 5 : 3}" class="mut">no visitor${v.public ? ' in 24 h' : ' yet'}</td></tr>` : '');
 }
 
+// Under the bands' table, the WSPR stations of the last 24 h (/api/wspr):
+// newest first, or by a column clicked; the distance from the station's place
+const wspr = { at: 0, data: null, sort: 'last', down: true, all: false };
+async function renderStatsWspr(force) {
+  if (force || Date.now() - wspr.at >= 60000) {
+    wspr.at = Date.now();
+    try { wspr.data = await getJSON('api/wspr'); } catch (e) { return; }
+  }
+  const d = wspr.data, box = $('#stats-wspr');
+  box.hidden = !d || !!d.off;
+  if (box.hidden) return;
+  const site = status && typeof SkMap !== 'undefined' ? SkMap.site(status.locator, status.call) : null;
+  const rows = d.stations.map((s) => {
+    const ll = typeof SkMap !== 'undefined' ? SkMap.locToLL(s.grid) : null;
+    return { ...s, km: site && ll ? SkMap.geo(site, ll.lat, ll.lon).km : null };
+  });
+  const key = wspr.sort, dir = wspr.down ? -1 : 1;
+  rows.sort((a, b) => {
+    const x = a[key], y = b[key];
+    if (x == null || y == null) return x == null ? (y == null ? 0 : 1) : -1;
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * dir || b.last - a.last;
+  });
+  const cols = [
+    ['call', 'call', 'l', 'the station heard'],
+    ['grid', 'locator', 'l', 'the locator it sends (the longest heard)'],
+    ['km', 'km', '', 'the distance from this station (its locator, else its call\'s DXCC)'],
+    ['bands', 'bands', 'l', 'every band it was heard on in 24 h'],
+    ['last', 'last heard UTC', 'l', 'the even minute of its newest decode — the band and the frequency beside'],
+    ['snr', 'SNR', '', 'dB in 2500 Hz, the newest decode (wsprd)'],
+    ['best', 'best', '', 'the best SNR in 24 h'],
+    ['dbm', 'power', '', 'the power it sends, dBm (and in W)'],
+    ['n', 'decodes', '', 'its decodes in 24 h, all bands'],
+    ['drift', 'drift', '', 'Hz a minute, the newest decode'],
+  ];
+  const watt = (dbm) => { const w = 10 ** ((dbm - 30) / 10); return w >= 1 ? `${fmt(w, w < 10 ? 1 : 0)} W` : `${fmt(w * 1000, w < 0.01 ? 1 : 0)} mW`; };
+  const cell = (r, k) => k === 'call' ? `<b>${esc(r.call)}</b>`
+    : k === 'grid' ? esc(r.grid || '–')
+    : k === 'km' ? (r.km == null ? '–' : fmt(r.km))
+    : k === 'bands' ? esc(r.bands.replace(/,/g, ', '))
+    : k === 'last' ? `${new Date(r.last * 1000).toISOString().slice(11, 16)} <span class="mut">${esc(r.band)} ${fmtKhz(r.freq / 1000, 3)}</span>`
+    : k === 'snr' || k === 'best' ? `${fmt(r[k])} dB`
+    : k === 'dbm' ? `${fmt(r.dbm)} <span class="mut">${watt(r.dbm)}</span>`
+    : fmt(r[k]);
+  const shown = wspr.all ? rows : rows.slice(0, 200);
+  const calls = rows.length;
+  $('#stats-wspr-h').textContent = `WSPR: the stations heard in the last ${d.hours} h · ${fmt(calls)} call${calls === 1 ? '' : 's'} · ${fmt(d.spots)} decodes`;
+  $('#stats-wspr-t').innerHTML = '<tr>' + cols.map(([k, n, c, t]) =>
+    `<th class="${c} sort${k === key ? ' on' : ''}" data-k="${k}" title="${esc(t)} — click: sort">${n}${k === key ? (wspr.down ? ' ▾' : ' ▴') : ''}</th>`).join('') + '</tr>' +
+    (shown.length ? shown.map((r) => '<tr>' + cols.map(([k, , c]) => `<td class="${c}">${cell(r, k)}</td>`).join('') + '</tr>').join('')
+      : `<tr><td colspan="${cols.length}" class="mut">no WSPR station decoded in ${d.hours} h${status && status.wspr && status.wspr.on && !status.wspr.dials.length ? ' — no WSPR frequency inside the bands received' : ''}</td></tr>`);
+  $('#stats-wspr-note').innerHTML = (rows.length > shown.length
+    ? `the first ${fmt(shown.length)} of ${fmt(rows.length)} · <a href="#" id="wspr-all">show all</a> · ` : '') +
+    (status && status.wspr && status.wspr.on
+      ? `decoded on ${status.wspr.dials.map((x) => `${esc(x.band)} ${fmtKhz(x.dial_hz / 1000)}`).join(', ') || 'no frequency'}` +
+        (status.wspr.upload ? ` · sent to WSPRnet as ${esc(status.wspr.call)}` : '')
+      : 'WSPR is off now (Settings → WSPR) — the stations heard before');
+}
+on('#stats-wspr-t', 'click', (e) => {
+  const th = e.target.closest('th[data-k]');
+  if (!th) return;
+  const k = th.dataset.k;
+  if (wspr.sort === k) wspr.down = !wspr.down;
+  else { wspr.sort = k; wspr.down = !['call', 'grid', 'bands'].includes(k); }
+  renderStatsWspr();
+});
+on('#stats-wspr-note', 'click', (e) => {
+  if (e.target.id !== 'wspr-all') return;
+  e.preventDefault();
+  wspr.all = true;
+  renderStatsWspr();
+});
+
 tabs.stats = {
   enter() { this.refresh(true); },
   async refresh(force) {
@@ -801,6 +873,7 @@ tabs.stats = {
     stats.at = Date.now();
     renderStats();
     renderStatsVisitors(force);
+    renderStatsWspr(force);
   },
 };
 // The time slider: shown while the range is shorter than the history kept;
@@ -1065,6 +1138,43 @@ function bandRow(b, may, rx, rate) {
   if (!may) applyLock(tr, false);
   return tr;
 }
+// WSPR (Settings → WSPR): the WSPR-2 dials (WSJT-X's) that the bands as
+// edited take — dial + 1500 ± 150 Hz inside 45 % of the rate around a
+// centre, the first receiver once (wspr.c's rule) — and, from status, how it runs
+const WSPR_DIALS = [['2200m', 136000], ['630m', 474200], ['160m', 1836600], ['80m', 3568600], ['60m', 5287200],
+  ['60m', 5364700], ['40m', 7038600], ['30m', 10138700], ['20m', 14095600], ['17m', 18104600], ['15m', 21094600],
+  ['12m', 24924600], ['10m', 28124600], ['6m', 50293000], ['4m', 70091000], ['2m', 144489000]];
+function wsprDials(centres, rate) {
+  const edge = 0.45 * rate, got = [];
+  for (const c of centres) {
+    for (const [band, dial] of WSPR_DIALS) {
+      const mid = dial + 1500;
+      if (mid - 150 >= c - edge && mid + 150 <= c + edge && !got.some((g) => g[1] === dial)) got.push([band, dial]);
+    }
+  }
+  return got;
+}
+function wsprShow() {
+  const el = $('#wspr-note');
+  if (!el || !document.querySelector('#band-rows tr')) return;
+  const centres = readBands().filter((b) => b.on).map((b) => (b.khz ? Math.round(parseKhz(b.khz) * 1000) : b.def))
+    .filter((hz) => Number.isFinite(hz) && hz > 0);
+  const got = wsprDials(centres, bandRate());
+  const w = status && status.wspr;
+  let run = '';
+  if (w && w.on) {
+    const last = w.last_cycle ? new Date(w.last_cycle * 1000).toISOString().slice(11, 16) + ' UTC' : '';
+    run = ` · running: ${w.dials.length ? w.dials.map((d) => esc(d.band)).join(', ') : 'no frequency'}` +
+      (w.decoder ? '' : ' — <b class="bad">no decoder (skimmer-wsprd) found</b>') +
+      ` · ${fmt(w.cycles)} band cycles decoded, ${fmt(w.decodes)} spots${last ? `, the last at ${last} (${fmt(w.last_decodes)})` : ''}` +
+      (w.upload ? ` · WSPRnet: ${fmt(w.uploaded)} sent${w.queued ? `, ${fmt(w.queued)} waiting` : ''}` : '') +
+      (w.error ? ` · <span class="bad">${esc(w.error)}</span>` : '');
+  }
+  el.innerHTML = (got.length
+    ? `The bands below take ${got.map(([b, d]) => `<b>${esc(b)}</b> ${fmtKhz(d / 1000)}`).join(', ')}`
+    : 'No WSPR frequency inside the bands below at this rate (20 m, 15 m and 10 m need 192 kHz from the band\'s low edge, or a centre of their own)') + run;
+}
+
 const rowName = (tr) => tr.dataset.seg || tr.querySelector('[data-k=name]').value.trim();
 function readBands() {
   return [...document.querySelectorAll('#band-rows tr')].map((tr) => ({
@@ -1093,6 +1203,7 @@ function drawBands(list, note) {
     `${rx ? ` · ≈ ${Math.round(mbps)} Mb/s of IQ on the wire` : ''}${note ? ` · ${note}` : ''}`;
   $('#band-count').classList.toggle('bad', rx > MAX_BANDS || !!note);
   $('#band-add').disabled = !may || list.filter((b) => b.on || setUp(b)).length >= MAX_LISTED;
+  wsprShow();
 }
 // ticking a band on or off renumbers the receivers; a ninth stays off
 on('#band-rows', 'change', (e) => {
@@ -1114,6 +1225,7 @@ on('#band-rows', 'input', (e) => {
   const hz = e.target.value.trim() ? Math.round(parseKhz(e.target.value) * 1000) : Number(tr.dataset.def);
   tr.querySelector('.span').textContent = Number.isFinite(hz) && hz > 0
     ? `${fmtKhz((hz - rate / 2) / 1000, 0, ' ')} – ${fmtKhz((hz + rate / 2) / 1000, 0, ' ')}` : '–';
+  wsprShow();
 });
 on('#band-rows', 'click', (e) => {
   if (!(e.target.dataset && e.target.dataset.a === 'del')) return;

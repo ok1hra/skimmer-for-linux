@@ -74,6 +74,11 @@
  *            10–180), afc_rate (60 Hz a character, 5–85), reverse (false),
  *            usos (true), squelch_db (0 = off, 1–10), second_decoder (true),
  *            clean (false: the time-aligned tape), sound (true: heard too)
+ *   [wspr]   enabled (default false): WSPR-2 decoded on every WSPR frequency
+ *            inside a band received (wspr.h); upload (false): the spots to
+ *            WSPRnet under call (empty = [feed] call) and locator (empty =
+ *            [station] locator) — both needed then; upload_url (the gate's
+ *            stand-in; not on the page)
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -190,6 +195,12 @@ typedef struct {
     gboolean open_on_spot, autotune, afc, reverse, usos, second_decoder, clean, sound;
     guint    bandwidth, afc_max_hz, afc_rate, squelch_db;
   } rtty_palette;
+  /* [wspr] (wspr.h) */
+  gboolean         wspr;              /* decode WSPR beside                   */
+  gboolean         wspr_upload;       /* … and post the spots to WSPRnet      */
+  char            *wspr_call;         /* NULL = [feed] call                   */
+  char             wspr_locator[8];   /* "" = [station] locator               */
+  char            *wspr_upload_url;   /* NULL = wsprnet.org (the gate's own)  */
 } SkimHdConfig;
 
 /* Write the commented default ini to path (its directory is created).

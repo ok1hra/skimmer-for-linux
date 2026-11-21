@@ -137,6 +137,12 @@ static const char DEFAULT_CONFIG[] =
   "#open_on_spot=true\n#bandwidth=400\n#autotune=true\n#afc=true\n#afc_max_hz=60\n"
   "#afc_rate=60\n#reverse=false\n#usos=true\n#squelch_db=0\n#second_decoder=true\n"
   "#clean=false\n#sound=true\n"
+  "\n[wspr]\n# WSPR decoded beside CW/RTTY: every WSPR-2 frequency (dial + 1400-1600 Hz)\n"
+  "# inside a band received, each even minute (WSJT-X's wsprd, built in);\n"
+  "# the stations heard in the last 24 h are on the web page (Statistics).\n"
+  "# upload=true posts the spots to WSPRnet (wsprnet.org) under call and\n"
+  "# locator (empty = [feed] call, [station] locator)\n"
+  "enabled=false\nupload=false\ncall=\nlocator=\n"
   "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
   "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
   "bands=\nminutes=10\ndir=/var/tmp/skimmer-iq\nstart_utc=\n";
@@ -170,6 +176,8 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_free(cfg->archive_dir);
   g_free(cfg->filter_call);
   g_free(cfg->filter_up);
+  g_free(cfg->wspr_call);
+  g_free(cfg->wspr_upload_url);
   if (cfg->filter_re) { g_regex_unref(cfg->filter_re); }
   memset(cfg, 0, sizeof(*cfg));
 }
@@ -725,6 +733,45 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->rtty_palette.squelch_db = (guint)sq;
   }
 
+  {
+    /* [wspr]: call and locator empty = [feed] call, [station] locator;
+     * an upload needs both (WSPRnet files the spots under them) */
+    if (!opt_bool(kf, "wspr", "enabled", FALSE, &h->wspr, path, error) ||
+        !opt_bool(kf, "wspr", "upload", FALSE, &h->wspr_upload, path, error)) {
+      return FALSE;
+    }
+    char *wc = g_key_file_get_string(kf, "wspr", "call", NULL);
+    char *wl = g_key_file_get_string(kf, "wspr", "locator", NULL);
+    char *wu = g_key_file_get_string(kf, "wspr", "upload_url", NULL);
+    if (wc) { g_strstrip(wc); for (char *x = wc; *x; x++) { *x = g_ascii_toupper(*x); } }
+    if (wl) { g_strstrip(wl); for (char *x = wl; *x; x++) { *x = g_ascii_toupper(*x); } }
+    if (wu) { g_strstrip(wu); }
+    gboolean ok_call = !wc || !*wc || (strlen(wc) >= 3 && strlen(wc) <= 15);
+    for (const char *x = wc; ok_call && x && *x; x++) { ok_call = g_ascii_isalnum(*x) || *x == '/'; }
+    const gsize nl = wl ? strlen(wl) : 0;
+    const gboolean ok_loc = nl == 0 ||
+        ((nl == 4 || nl == 6) && wl[0] >= 'A' && wl[0] <= 'R' && wl[1] >= 'A' && wl[1] <= 'R' &&
+         g_ascii_isdigit(wl[2]) && g_ascii_isdigit(wl[3]) &&
+         (nl == 4 || (wl[4] >= 'A' && wl[4] <= 'X' && wl[5] >= 'A' && wl[5] <= 'X')));
+    if (!ok_call || !ok_loc) {
+      bad(error, path, !ok_call ? "[wspr] call \"%s\" (3-15 of A-Z, 0-9, /)"
+                                : "[wspr] locator \"%s\" (a Maidenhead locator: JN18 or JN18EU)",
+          !ok_call ? wc : wl);
+      g_free(wc); g_free(wl); g_free(wu);
+      return FALSE;
+    }
+    h->wspr_call = wc && *wc ? g_strdup(wc) : NULL;
+    g_strlcpy(h->wspr_locator, wl ? wl : "", sizeof h->wspr_locator);
+    h->wspr_upload_url = wu && *wu ? g_strdup(wu) : NULL;
+    g_free(wc); g_free(wl); g_free(wu);
+    const char *rc = h->wspr_call ? h->wspr_call : h->feed_call;
+    const char *rl = h->wspr_locator[0] ? h->wspr_locator : h->locator;
+    if (h->wspr && h->wspr_upload && (!rc || !*rc || !rl[0])) {
+      return bad(error, path, "[wspr] upload: WSPRnet needs the receiver's call and locator — "
+                              "[wspr] call (or [feed] call) and [wspr] locator (or [station] locator)");
+    }
+  }
+
   h->console_s = given(kf, "status", "console_s", NULL)
                      ? g_key_file_get_integer(kf, "status", "console_s", NULL) : -1;
   h->http_port = given(kf, "status", "http_port", NULL)
@@ -903,6 +950,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "rtty_palette.open_on_spot", "rtty_palette.bandwidth", "rtty_palette.autotune", "rtty_palette.afc",
   "rtty_palette.afc_max_hz", "rtty_palette.afc_rate", "rtty_palette.reverse", "rtty_palette.usos",
   "rtty_palette.squelch_db", "rtty_palette.second_decoder", "rtty_palette.clean", "rtty_palette.sound",
+  "wspr.enabled", "wspr.upload", "wspr.call", "wspr.locator",
   NULL,
 };
 
@@ -971,7 +1019,8 @@ char *skim_hd_config_apply_form(const char *text, gsize len, GHashTable *form,
     } else {
       char *group = g_strndup(key, (gsize)(strchr(key, '.') - key));
       /* a call and a locator go into the file in capitals */
-      char *v = strcmp(key, "feed.call") == 0 || strcmp(key, "station.locator") == 0
+      char *v = strcmp(key, "feed.call") == 0 || strcmp(key, "station.locator") == 0 ||
+                        strcmp(key, "wspr.call") == 0 || strcmp(key, "wspr.locator") == 0
                     ? g_ascii_strup(val, -1) : g_strdup(val);
       g_key_file_set_value(kf, group, strchr(key, '.') + 1, v);
       g_free(v);

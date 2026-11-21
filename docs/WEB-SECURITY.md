@@ -26,7 +26,7 @@ networks, loopback, link-local) and that no proxy forwarded — through a
 proxy every visitor signs in, the same reason a proxy never makes a
 manager. A visitor that has not signed in gets the page itself (HTML, JS,
 CSS, fonts, the map's data, so the sign-in form can show) and nothing else:
-`status.json`, `stats.json` and `/api/spots` answer 401 `{"error":"login"}`,
+`status.json`, `stats.json`, `/api/spots` and `/api/wspr` answer 401 `{"error":"login"}`,
 the waterfall's socket is closed with "login".
 
 A client from outside — not free in the sense above, signed in or not, and
@@ -85,11 +85,12 @@ watched); not signed in, 401.
 | `/api/visitors` (the visitors' log) | from outside: the last 24 h's calls, start and length only (signed in); from the LAN (free_from): whole | yes |
 | `status.json` | without addresses, file paths and the `SKIM_*` values; from outside also without the CPU load and lost | whole |
 | `stats.json` | yes (from outside: once signed in, without the CPU load and lost series) | yes |
-| `/api/spots`, `/ws/waterfall` | yes (from outside free_from: once signed in) | yes |
+| `/api/spots`, `/api/wspr` (the WSPR stations of 24 h: calls and locators heard on the air), `/ws/waterfall` | yes (from outside free_from: once signed in) | yes |
 
 The station's locator goes to a viewer as its square only — the first
-four characters (JN18), in `status.json` and `/api/spots`: a
-six-character locator is a few kilometres, nearly an address. A manager
+four characters (JN18), in `status.json` and `/api/spots` (and
+`status.json`'s `wspr` block, for a manager too: the Settings form has the
+whole one): a six-character locator is a few kilometres, nearly an address. A manager
 gets it whole there too, so the map sits on the station itself.
 
 Each answer carries a Content-Security-Policy (the page's own scripts,

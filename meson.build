@@ -36,6 +36,8 @@ soup_dep  = dependency('libsoup-3.0', version : '>=3.0') # the web page
 # WDSP subset (FIR designer + resampler) — declares wdsp_dep. VENDOR.md there
 # records provenance and the subset rationale.
 subdir('vendor/wdsp')
+# WSJT-X's wsprd (the WSPR decoder, a helper program) — VENDOR.md there.
+subdir('vendor/wsprd')
 
 engine_inc = include_directories('src/engine', 'vendor/onnxruntime')
 # ONNX Runtime is NEVER linked: decode_deepcw dlopen()s it at run time
@@ -343,6 +345,18 @@ skimmer_waterfall_test = executable('skimmer-waterfall-test',
 )
 test('waterfall', skimmer_waterfall_test, timeout : 30)
 
+# WSPR: the dials, wsprd's lines, the WSPRnet form; two synthetic WSPR
+# signals at 48 and 192 kHz through the shift, the resamplers, the capture,
+# the .c2 file and skimmer-wsprd; the decoder thread, the stations of 24 h,
+# the upload to a local stand-in for WSPRnet.
+skimmer_wspr_test = executable('skimmer-wspr-test',
+  ['src/wspr_test.c', 'src/headless/wspr.c'],
+  include_directories : [include_directories('src'), engine_inc, wsprd_enc_inc],
+  dependencies : engine_deps + [soup_dep],
+  link_with : wsprd_enc_lib,
+)
+test('wspr', skimmer_wspr_test, args : [skimmer_wsprd], timeout : 120)
+
 # The governor: adaptive RTTY's hourly test (and the thermal guard).
 skimmer_governor_test = executable('skimmer-governor-test',
   ['src/governor_test.c', 'src/headless/governor.c'],
@@ -415,6 +429,7 @@ headless_sources = files(
   'src/headless/visitors.c',        # the page's visitors: sign-in, their log
   'src/headless/waterfall.c',       # the page's waterfall (only while watched)
   'src/headless/web.c',             # the web page (libsoup 3)
+  'src/headless/wspr.c',            # [wspr]: WSPR decoded beside, WSPRnet
 )
 
 # The web page's static files (web/), built in.
