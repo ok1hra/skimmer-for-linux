@@ -198,8 +198,10 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .ladder td.b { font-weight: 700; font-size: 17px; width: 56px; }
 .ladder td.bar { width: 20%; min-width: 56px; }
 .ladder td.bar i { display: block; height: 7px; background: var(--hot); min-width: 1px; }
-.ladder td.bar.rtty i { background: var(--warn); opacity: .6; }
-.ladder td.bar.spots i { opacity: .75; }
+.ladder td.bar.rtty i { background: var(--warn); }
+/* the decoders' bars muted: how busy, not what came out — the spots are */
+.ladder td.bar.cw i, .ladder td.bar.rtty i { opacity: .38; filter: saturate(.5); }
+.ladder td.n.sp { color: var(--fg); }
 .ladder td.bar.cw, .ladder td.bar.rtty, .ladder td.bar.spots { background: linear-gradient(var(--deep), var(--deep)) center / 100% 7px no-repeat; }
 .ladder td.n { text-align: right; color: var(--mut); font-size: 13px; width: 44px; padding-right: 4px; }
 .ladder td.bar { padding-left: 0; }
@@ -392,7 +394,7 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .chart-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .chart-h .seg button { font-size: 12px; padding: 1px 8px; }
 /* the totals table: a bar beside each value, in its mode's colour */
-.grid td .ml.tb { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.grid td .ml.tb { display: flex; align-items: center; justify-content: flex-start; gap: 8px; }
 .grid td .ml.tb .trk { flex: 1 1 60px; min-width: 40px; max-width: 120px; height: 7px; background: var(--grid); }
 .grid td .ml.tb .trk i { display: block; height: 100%; background: currentColor; opacity: .7; }
-.grid td .ml.tb .tv { min-width: 4.5em; text-align: right; font-variant-numeric: tabular-nums; }
+.grid td .ml.tb .tv { min-width: 4.5em; text-align: right; font-variant-numeric: tabular-nums; flex: none; }

@@ -20,7 +20,8 @@ const SkMap = (() => {
   const R = 6371, rad = (d) => (d * Math.PI) / 180, deg = (r) => (r * 180) / Math.PI;
   const BAND_COLOR = { '160m': '#8e6cff', '80m': '#4f8dff', '60m': '#7fa3c8', '40m': '#18b0c9', '30m': '#27c26b',
     '20m': '#c7d23a', '17m': '#ffb21f', '15m': '#ff7a2f', '12m': '#ff4f6d', '10m': '#e24fd8', '6m': '#ff9ad5' };
-  const bandColor = (b) => BAND_COLOR[b] || '#b8c4d2';
+  // a band's second segment (80m-2) wears the band's colour
+  const bandColor = (b) => BAND_COLOR[b] || BAND_COLOR[String(b).replace(/-\d+$/, '')] || '#b8c4d2';
 
   // ---- geography --------------------------------------------------------------------
   function locToLL(l) {

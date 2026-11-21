@@ -446,6 +446,50 @@ static void json_row(GString *o, const char *line, const char *const *names, gui
   g_strfreev(f);
 }
 
+/* A log line's end (its second field) in unix s, 0 when it does not parse. */
+static gint64 line_end(const char *line) {
+  const char *t = strchr(line, '\t');
+  if (!t) { return 0; }
+  char *e = g_strndup(t + 1, strcspn(t + 1, "\t"));
+  GDateTime *d = g_date_time_new_from_iso8601(e, NULL);
+  g_free(e);
+  if (!d) { return 0; }
+  const gint64 u = g_date_time_to_unix(d);
+  g_date_time_unref(d);
+  return u;
+}
+
+char *skim_hd_visitors_public_json(SkimHdVisitors *v, guint hours, gint64 now) {
+  static const char *const VN[] = { "start", "end", "secs", "call" };
+  GString *o = g_string_new(NULL);
+  g_string_append_printf(o, "{\"public\":true,\"hours\":%u,\"open\":[", hours);
+  GHashTableIter it;
+  gpointer k, p;
+  guint c = 0;
+  g_hash_table_iter_init(&it, v->visits);
+  while (g_hash_table_iter_next(&it, &k, &p)) {
+    Visit *s = p;
+    char a[24];
+    iso(s->first, a);
+    g_string_append_printf(o, "%s{\"start\":\"%s\",\"secs\":%" G_GINT64_FORMAT ",\"call\":\"%s\"}",
+                           c++ ? "," : "", a, s->last - s->first, s->call);
+  }
+  g_string_append(o, "],\"visits\":[");
+  /* the files are in end order: newest first, until one ended too long ago */
+  GPtrArray *t = tail(v->log, 20000);
+  const gint64 since = now - (gint64)hours * 3600;
+  c = 0;
+  for (guint i = 0; i < t->len; i++) {
+    const gint64 end = line_end(t->pdata[i]);
+    if (end && end < since) { break; }
+    if (c++) { g_string_append_c(o, ','); }
+    json_row(o, t->pdata[i], VN, G_N_ELEMENTS(VN));
+  }
+  g_ptr_array_unref(t);
+  g_string_append(o, "]}");
+  return g_string_free(o, FALSE);
+}
+
 char *skim_hd_visitors_json(SkimHdVisitors *v, guint n, gint64 now) {
   static const char *const VN[] = { "start", "end", "secs", "call", "addr", "fwd", "freqs" };
   static const char *const FN[] = { "time", "addr", "fwd", "typed", "why" };

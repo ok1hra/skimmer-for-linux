@@ -209,7 +209,9 @@ here; what was done and why is in git.
   call (3–15 of A–Z0–9/, a digit and a letter) — an HMAC-signed HttpOnly
   cookie, 30 days, key in the state dir. Visits (call, address, time, the
   waterfall windows/audio watched ≥ 10 s) go to `visitors.tsv`, refusals to
-  `visitors-failed.tsv` (≤ 30/min); the Log tab shows both. The visitor's
+  `visitors-failed.tsv` (≤ 30/min); the Log tab shows both, and Statistics
+  lists the visitors under its table: whole at home (LAN, manager), from
+  outside the last 24 h's calls and how long they stayed only. The visitor's
   call is in the header and, from another DXCC, a star on the map that AUTO
   zooms to. From outside (signed in or not) the status and history come
   without the machine readings — CPU load, IQ lost; the CPU temperature

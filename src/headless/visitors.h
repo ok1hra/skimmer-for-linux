@@ -83,6 +83,11 @@ void skim_hd_visitors_tick(SkimHdVisitors *v, gint64 now);
  * visits and the last n lines of each file, newest first. */
 char *skim_hd_visitors_json(SkimHdVisitors *v, guint n, gint64 now);
 
+/* For the visitors from outside (Statistics): {"public":true,"hours":H,
+ * "open":[…],"visits":[…]} — the open visits and those that ended in the
+ * last `hours`, newest first, each its start, seconds and call only. */
+char *skim_hd_visitors_public_json(SkimHdVisitors *v, guint hours, gint64 now);
+
 /* The files (for messages). */
 const char *skim_hd_visitors_path(const SkimHdVisitors *v);
 

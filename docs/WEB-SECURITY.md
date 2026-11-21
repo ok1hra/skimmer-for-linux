@@ -64,7 +64,12 @@ waterfall windows and audio frequencies watched for 10 s or more;
 `visitors-failed.tsv` — time, address, forwarded-for, what was typed
 (control characters escaped, 32 characters at most), why. The sign-in form
 tells the visitor what is logged. Managers read both in the Log tab
-(`/api/visitors`, 403 for viewers).
+(`/api/visitors`). Since 2026-11-21 (Dan) Statistics lists the visitors
+under its table from the same endpoint, by who asks: at home (a manager, an
+address in free_from without a proxy) the whole log — addresses, what was
+watched, the refusals; from outside, signed in, only the calls of the last
+24 h with their start and how long they stayed (no address, nothing
+watched); not signed in, 401.
 
 ## What a viewer gets
 
@@ -75,7 +80,7 @@ tells the visitor what is logged. Managers read both in the Log tab
 | `GET /api/config`, `/api/log`, `/api/skimmers` | 403 | yes |
 | every `POST` (config, import, restart, rollback, DeepCW fetch) | 403 | yes |
 | `POST /api/visitor` (sign in with a call, sign out) | yes (same origin) | yes |
-| `/api/visitors` (the visitors' log) | 403 | yes |
+| `/api/visitors` (the visitors' log) | from outside: the last 24 h's calls, start and length only (signed in); from the LAN (free_from): whole | yes |
 | `status.json` | without addresses, file paths and the `SKIM_*` values; from outside also without the CPU load and lost | whole |
 | `stats.json` | yes (from outside: once signed in, without the CPU load and lost series) | yes |
 | `/api/spots`, `/ws/waterfall` | yes (from outside free_from: once signed in) | yes |

@@ -181,17 +181,18 @@ function renderStatus(d) {
   ]);
   const spots = modes.reduce((a, b) => a + b.spots, 0);
   const workers = (d.hub && d.hub.workers) || [];
-  // beside the map: the bands as a ladder — CW and RTTY activity, the spots of
-  // the last half hour and the last call — then one line of readouts
+  // beside the map: the bands as a ladder — the spots of the last half hour
+  // first (what the skimmer gives), then CW and RTTY activity in muted bars
+  // (how busy the decoders are) and the last call — then one line of readouts
   const decoded = bandsDecoded(d);
   const maxAct = Math.max(1, ...decoded.map((b) => Math.max(b.cw !== false ? b.active : 0, b.rtty ? b.rtty.active : 0)));
   const per = (band) => window.spots ? window.spots.list.filter((s) => s.band === band) : [];
   const maxSpots = Math.max(1, ...decoded.map((b) => per(b.band).length));
   // the head says what each number counts (each over its number and bar)
   $('#ladder').innerHTML = '<tr class="head-row"><th title="on the map"></th><th class="l">band</th>' +
+    '<th colspan="2" class="l" title="spots the band sent in the last 30 min">spots 30 min</th>' +
     '<th colspan="2" class="l" title="CW channel decoders reading a signal now (of all the band has)">CW active decoders</th>' +
     '<th colspan="2" class="l" title="RTTY channel decoders reading a signal now (of all the band has)">RTTY active decoders</th>' +
-    '<th colspan="2" class="l" title="spots the band sent in the last 30 min">spots 30 min</th>' +
     '<th class="l" title="the band\'s newest spot">last spot</th><th></th></tr>' + decoded.map((b) => {
     const sp = per(b.band), cwOn = b.cw !== false, rt = b.rtty;
     const col = typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : '';   // the band's own colour
@@ -211,10 +212,10 @@ function renderStatus(d) {
       `title="${off ? 'not on the map — click: show' : 'on the map — click: hide'} ${esc(b.band)}" ` +
       `aria-pressed="${off ? 'false' : 'true'}">${off ? EYE_OFF : EYE_ON}</button></td>` +
       `<td class="b" style="color:${col}">${esc(b.band)}</td>` +
+      `<td class="n sp" title="${fmt(sp.length)} spots in 30 min">${fmt(sp.length)}</td>` +
+      `<td class="bar spots" title="${fmt(sp.length)} spots in 30 min">${i(sp.length / maxSpots)}</td>` +
       bar(cwOn, b.active, b.decoders, 'cw', cwOn && b.paused) +
       bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty', rt && rt.paused) +
-      `<td class="n" title="${fmt(sp.length)} spots in 30 min">${fmt(sp.length)}</td>` +
-      `<td class="bar spots" title="${fmt(sp.length)} spots in 30 min">${i(sp.length / maxSpots)}</td>` +
       `<td class="last" title="the band's newest spot">${sp.length ? esc(sp[0].call) : ''}</td>` +
       `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : ''}</td></tr>`;
   }).join('');
@@ -712,35 +713,71 @@ function renderStatsTables(d) {
   ].join('');
 
   const hrs = (d.n * d.step_min) / 60;
+  // the range in words, for the heads: "24 h", "7 days", and when a past window
+  const span = hrs < 48 ? `${fmt(hrs)} h` : `${fmt(hrs / 24)} days`;
+  const upTo = stats.end ? ` to ${new Date(stats.end * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC` : '';
+  $('#stats-table-h').textContent = `Table: the bands over the last ${span}${upTo}`;
   const has = (mm, b) => ['spots', 'active'].some((k) => mm[k][b].some((v) => v != null));
   // the columns, each with what it counts (the note under the table too) and
   // its number for the bar beside the value (longest bar = the column's most)
   const cols = [
-    ['spots', 'spots sent to the telnet feed in the range', (b, mm) => sum(mm.spots[b]), (v) => fmt(v)],
-    ['spots per hour', 'the spots divided by the hours of the range', (b, mm) => sum(mm.spots[b]) / hrs, (v) => fmt(v, 1)],
-    ['calls decoded', 'calls that came into the band\'s station list — read and validated, spotted or not',
+    [`spots in ${span}`, 'spots sent to the telnet feed in the range', (b, mm) => sum(mm.spots[b]), (v) => fmt(v)],
+    ['spots per hour', `the spots divided by the ${span} of the range`, (b, mm) => sum(mm.spots[b]) / hrs, (v) => fmt(v, 1)],
+    [`calls decoded in ${span}`, 'calls that came into the band\'s station list — read and validated, spotted or not',
       (b, mm) => sum(mm.stations[b]), (v) => fmt(v)],
-    ['busy decoders', 'channel decoders reading running text, on average over the range', (b, mm) => mean(mm.active[b]),
+    [`busy decoders, mean of ${span}`, 'channel decoders reading running text, on average over the range', (b, mm) => mean(mm.active[b]),
       (v) => fmt(v, 1)],
-    ['SNR', 'the typical SNR of the spots: the median of each minute\'s spots, averaged',
+    [`SNR, mean of ${span}`, 'the typical SNR of the spots: the median of each minute\'s spots, averaged',
       (b, mm) => mean(mm.snr[b]), (v) => `${fmt(v)} dB`],
   ];
   const top = cols.map(([, , f]) => Math.max(0, ...d.bands.flatMap((b) => modes.map(([, mm]) => (has(mm, b) ? f(b, mm) || 0 : 0)))));
   const cell = (b, c) => modes.map(([l, mm]) => {
     const v = has(mm, b) ? cols[c][2](b, mm) : null;
     const w = v == null || !(top[c] > 0) ? 0 : Math.max(0, (100 * v) / top[c]);
-    return `<div class="ml ${l.toLowerCase()} tb"><span class="trk"><i style="width:${w.toFixed(1)}%"></i></span>` +
-      `<span class="tv">${v == null ? '–' : cols[c][3](v)}</span></div>`;
+    return `<div class="ml ${l.toLowerCase()} tb"><span class="tv">${v == null ? '–' : cols[c][3](v)}</span>` +
+      `<span class="trk"><i style="width:${w.toFixed(1)}%"></i></span></div>`;
   }).join('');
-  $('#stats-table').innerHTML = '<tr><th>band</th><th class="l">mode</th>' +
-    `${cols.map(([n, t]) => `<th title="${esc(t)}">${n}</th>`).join('')}</tr>` +
-    d.bands.map((b) => `<tr><td>${esc(b)}</td>` +
+  $('#stats-table').innerHTML = '<tr><th class="l">band</th><th class="l">mode</th>' +
+    `${cols.map(([n, t]) => `<th class="l" title="${esc(t)}">${n}</th>`).join('')}</tr>` +
+    d.bands.map((b) => `<tr><td class="l">${esc(b)}</td>` +
       `<td class="l">${modes.map(([l]) => {
         const p = stats.end ? null : pausedNow(b, l);
         return `<div class="ml ${l.toLowerCase()}">${l}${p ? ` <span class="${offClass(p)}" title="${esc(pausedText(p))}">OFF now</span>` : ''}</div>`;
       }).join('')}</td>` +
       cols.map((_, c) => `<td>${cell(b, c)}</td>`).join('') + '</tr>').join('');
   $('#stats-cols').innerHTML = cols.map(([n, t]) => `<b>${n}</b> = ${esc(t)}`).join(' · ');
+}
+
+// Under the table, the visitors: at home (the LAN, a manager) the whole log —
+// address, what they watched; from outside the calls of the last 24 h and
+// how long each stayed (/api/visitors answers by who asks)
+let statsVisAt = 0;
+async function renderStatsVisitors(force) {
+  if (!force && Date.now() - statsVisAt < 30000) return;
+  statsVisAt = Date.now();
+  let v;
+  try { v = await getJSON('api/visitors'); } catch (e) { return; }
+  const box = $('#stats-vis');
+  box.hidden = !!v.off;
+  if (v.off) return;
+  const t = (s) => esc(String(s || '').replace('T', ' ').replace(/:\d\dZ$/, ''));
+  const dur = (s) => { s = Number(s) || 0; return s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor(s / 60) % 60} min` : s >= 60 ? `${Math.floor(s / 60)} min` : `${s} s`; };
+  const open = v.open || [], past = v.visits || [];
+  const calls = new Set([...open, ...past].map((r) => r.call));
+  const total = [...open, ...past].reduce((a, r) => a + (Number(r.secs) || 0), 0);
+  $('#stats-vis-h').textContent = v.public
+    ? `Visitors from outside · the last ${v.hours} h · ${calls.size} call${calls.size === 1 ? '' : 's'}`
+    : `Visitors from outside · the last ${fmt(past.length + open.length)} visits · ${calls.size} call${calls.size === 1 ? '' : 's'} · ${dur(total)} together`;
+  const full = !v.public;
+  const freqs = (f) => esc(f || '').replace(/,/g, ', ').replace(/=(\d+)/g, ' $1 s');
+  const addr = (r) => `${esc(r.addr)}${r.fwd ? ` <span class="mut">for ${esc(r.fwd)}</span>` : ''}`;
+  const row = (r, now) => `<tr${now ? ' class="ok"' : ''}><td class="l">${t(r.start)}${now ? ' <b>now</b>' : ''}</td>` +
+    `<td class="l"><b>${esc(r.call)}</b></td><td>${dur(r.secs)}</td>` +
+    (full ? `<td class="l">${addr(r)}</td><td class="l">${freqs(r.freqs)}</td>` : '') + '</tr>';
+  $('#stats-vis-t').innerHTML = '<tr><th class="l">start UTC</th><th class="l">call</th><th>stayed</th>' +
+    (full ? '<th class="l">address</th><th class="l">watched on the waterfall (10 s or more)</th>' : '') + '</tr>' +
+    open.map((r) => row(r, true)).join('') + past.map((r) => row(r, false)).join('') +
+    (!open.length && !past.length ? `<tr><td colspan="${full ? 5 : 3}" class="mut">no visitor${v.public ? ' in 24 h' : ' yet'}</td></tr>` : '');
 }
 
 tabs.stats = {
@@ -754,6 +791,7 @@ tabs.stats = {
     stats.data = await getJSON(`stats.json?hours=${stats.hours}${stats.end ? `&end=${stats.end}` : ''}`);
     stats.at = Date.now();
     renderStats();
+    renderStatsVisitors(force);
   },
 };
 // The time slider: shown while the range is shorter than the history kept;

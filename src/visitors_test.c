@@ -156,6 +156,14 @@ static void visits(const char *dir) {
         strstr(j, "\"visits\":[{\"start\"") && strstr(j, "\"call\":\"DL1XYZ\"") &&
         strstr(j, "\"failed\":[{\"time\""));
   g_free(j);
+  j = skim_hd_visitors_public_json(v, 24, now + 100);
+  check("the public JSON: the visits of 24 h, call and seconds, no address",
+        strstr(j, "\"call\":\"DL1XYZ\",") == NULL && strstr(j, "\"secs\":\"5\",\"call\":\"DL1XYZ\"") &&
+        strstr(j, "\"call\":\"OK1ABC\"") && !strstr(j, "203.0.113") && !strstr(j, "wf:"));
+  g_free(j);
+  j = skim_hd_visitors_public_json(v, 24, now + 2 * 86400);
+  check("… two days later: none", strstr(j, "\"visits\":[]") != NULL);
+  g_free(j);
   skim_hd_visitors_seen(v, "tokD", "OK2QQ", "203.0.113.6", NULL, now);
   skim_hd_visitors_free(v);
   log = slurp(dir, "visitors.tsv");
@@ -251,7 +259,12 @@ static gpointer client(gpointer data) {
   g_free(body);
   char *forged = g_strdup_printf("Cookie: skv=OK1ABD%s\r\n", ck ? ck + 6 : "");
   check("a forged cookie: 401", http("GET", "/status.json", forged, NULL, NULL, NULL) == 401);
-  check("the managers' log: 403 for a visitor", http("GET", "/api/visitors", hdr, NULL, NULL, NULL) == 403);
+  http("GET", "/api/visitors", hdr, NULL, &body, NULL);
+  check("the visitors' log from outside: the last 24 h, calls and times, no address",
+        body && strstr(body, "\"public\":true") && strstr(body, "\"call\":\"OK1ABC\"") &&
+        !strstr(body, "addr") && !strstr(body, "failed"));
+  g_free(body);
+  check("… and without a cookie: 401", http("GET", "/api/visitors", NULL, NULL, NULL, NULL) == 401);
   g_free(forged);
   g_free(hdr);
   g_free(orig);
@@ -260,6 +273,10 @@ static gpointer client(gpointer data) {
   skim_hd_web_set_visitors(web, gvis, LO);
   check("loopback in free_from: 200 without a cookie, asked as at home",
         http("GET", "/status.json", NULL, NULL, &body, NULL) == 200 && strstr(body, "\"who\":1"));
+  g_free(body);
+  http("GET", "/api/visitors", NULL, NULL, &body, NULL);
+  check("… the visitors' log whole at home (addresses, refusals)",
+        body && strstr(body, "\"addr\":") && strstr(body, "\"failed\":") && !strstr(body, "\"public\""));
   g_free(body);
   check("… but not through a proxy",
         http("GET", "/status.json", "X-Forwarded-For: 198.51.100.7\r\n", NULL, NULL, NULL) == 401);

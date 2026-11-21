@@ -364,7 +364,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
     /* the config, the log and the LAN search (0.8 s on the main loop) are
      * for those who may manage the skimmer only */
     if (!admin && (strcmp(path, "/api/config") == 0 || strcmp(path, "/api/log") == 0 ||
-                   strcmp(path, "/api/skimmers") == 0 || strcmp(path, "/api/visitors") == 0)) {
+                   strcmp(path, "/api/skimmers") == 0)) {
       reply_error(msg, SOUP_STATUS_FORBIDDEN, "only from an address that may change the settings");
       return;
     }
@@ -372,12 +372,19 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
       visitor_get(w, msg, admin);
       return;
     }
+    /* the visitors' log: whole at home (a manager, the LAN — Dan,
+     * 2026-11-21); from outside, signed in, the last 24 h's calls and
+     * how long they stayed */
     if (strcmp(path, "/api/visitors") == 0) {
+      const gint64 now = g_get_real_time() / G_USEC_PER_SEC;
       if (!w->vis) {
         reply(msg, SOUP_STATUS_OK, "application/json", g_strdup("{\"off\":true}"));
+      } else if (client_local(w, msg, admin)) {
+        reply(msg, SOUP_STATUS_OK, "application/json", skim_hd_visitors_json(w->vis, 200, now));
+      } else if (!may_see(w, msg, admin)) {
+        reply_error(msg, SOUP_STATUS_UNAUTHORIZED, "login");
       } else {
-        reply(msg, SOUP_STATUS_OK, "application/json",
-              skim_hd_visitors_json(w->vis, 200, g_get_real_time() / G_USEC_PER_SEC));
+        reply(msg, SOUP_STATUS_OK, "application/json", skim_hd_visitors_public_json(w->vis, 24, now));
       }
       return;
     }
