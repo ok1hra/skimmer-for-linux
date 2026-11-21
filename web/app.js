@@ -1603,7 +1603,9 @@ async function checkRollback(d) {
 // ---- waterfall -------------------------------------------------------------------
 // waterfall.js loads after this file (deferred): reach it when the tab opens.
 tabs.waterfall = {
-  enter() { if (typeof Wf !== 'undefined') Wf.enter(); else setTimeout(() => tab === 'waterfall' && Wf.enter(), 300); },
+  // from the top: the page may come scrolled down (the DX cluster's speaker),
+  // and the waterfall takes its height from where it starts on the screen
+  enter() { scrollTo(0, 0); if (typeof Wf !== 'undefined') Wf.enter(); else setTimeout(() => tab === 'waterfall' && Wf.enter(), 300); },
   leave() { if (typeof Wf !== 'undefined') Wf.leave(); },
 };
 // the DX cluster's speaker: the waterfall, listening to that spot
