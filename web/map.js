@@ -309,7 +309,7 @@ const SkMap = (() => {
       marks.some((m) => m !== own && b[0] < m.x + m.r && b[2] > m.x - m.r && b[1] < m.y + m.r && b[3] > m.y - m.r) ||
       [[b[0], b[1]], [b[2], b[1]], [b[0], b[3]], [b[2], b[3]]].some(([px, py]) => Math.hypot(px - view.cx, py - view.cy) > view.rr - 2);
     const leaderFree = (p, q) => !leaders.some(([r, t]) => cross(p, q, r, t)) && !boxes.some((o) => segBox(p, q, o));
-    const todo = [...marks].filter((m) => opt.calls || opt.db || m.s.hi).sort((a, b) => (b.s.hi - a.s.hi) || (b.s.snr - a.s.snr));
+    const todo = [...marks].filter((m) => (opt.calls || opt.db || m.s.hi) && (!m.crowd || m.s.hi)).sort((a, b) => (b.s.hi - a.s.hi) || (b.s.snr - a.s.snr));
     for (const m of todo) {
       const s = m.s, col = s.hi ? '#fff' : bandColor(s.band);
       const call = opt.calls || s.hi ? s.call : '';           // SNR alone: the number only
@@ -388,12 +388,28 @@ const SkMap = (() => {
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(s);
     }
+    const dotR = (s) => 2.5 + Math.max(0, s.snr) / 12;
+    const disc = [];                                       // each DXCC's spiral: [x, y, radius, spots]
     for (const g of groups.values()) {
       const [px, py] = view.P(g[0].where.lat, g[0].where.lon);
       g.sort((a, b) => b.snr - a.snr).forEach((s, k) => {
         const r = 8 * Math.sqrt(k), th = k * 2.39996;      // the golden angle
         at.set(s, [px + r * Math.cos(th), py + r * Math.sin(th)]);
       });
+      disc.push([px, py, 8 * Math.sqrt(g.length - 1) + Math.max(...g.map(dotR)), g]);
+    }
+    // a crowd: DXCCs whose spirals run into each other (a contest: Europe
+    // round the centre, W) — their dots would be one blot, so they are left
+    // out and only the lines stay (each to its own place in the spiral);
+    // the marked station keeps its dot. Lines off: the dots stay.
+    const crowd = new Set();
+    if (opt.lines) {
+      for (let i = 0; i < disc.length; i++) {
+        for (let j = i + 1; j < disc.length; j++) {
+          const [x1, y1, r1, g1] = disc[i], [x2, y2, r2, g2] = disc[j];
+          if (Math.hypot(x1 - x2, y1 - y2) < r1 + r2) { g1.forEach((s) => crowd.add(s)); g2.forEach((s) => crowd.add(s)); }
+        }
+      }
     }
     // lines and dots first (the strongest on top), the labels after them
     const order = [...spots].filter((s) => s.where).sort((a, b) => a.snr - b.snr);
@@ -404,7 +420,12 @@ const SkMap = (() => {
         g.strokeStyle = col; g.lineWidth = 0.6;
         g.beginPath(); g.moveTo(view.cx, view.cy); g.lineTo(x, y); g.stroke();
       }
-      const r = 2.5 + Math.max(0, s.snr) / 12;
+      if (crowd.has(s) && !s.hi) {                        // a line only (its hover stays)
+        view.marks.push({ x, y, r: 0, s, crowd: true });
+        g.globalAlpha = 1;
+        continue;
+      }
+      const r = dotR(s);
       g.fillStyle = col; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
       if (s.hi) { g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.beginPath(); g.arc(x, y, r + 4, 0, 7); g.stroke(); }
       view.marks.push({ x, y, r, s });
@@ -417,7 +438,9 @@ const SkMap = (() => {
     el.querySelector('[data-k=zoom]').textContent = opt.zoom ? `${fmtKm(zoom)}` : `auto · ${fmtKm(zoom)}`;
     el.querySelector('[data-o=auto]').classList.toggle('on', !opt.zoom);
     const un = spots.filter((s) => !s.where).length;
-    el.querySelector('.map-count').textContent = `${spots.length} spot${spots.length === 1 ? '' : 's'} · ${un ? `${un} unplaced · ` : ''}centre ${centerOf().what}`;
+    const lines = view.marks.filter((m) => m.crowd).length;
+    el.querySelector('.map-count').textContent = `${spots.length} spot${spots.length === 1 ? '' : 's'} · ` +
+      `${lines ? `${lines} in crowds as lines only (zoom in for their dots) · ` : ''}${un ? `${un} unplaced · ` : ''}centre ${centerOf().what}`;
   }
   const fmtKm = (km) => `${Math.round(km).toLocaleString('en-US')} km`;
 
