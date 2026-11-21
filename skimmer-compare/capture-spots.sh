@@ -8,7 +8,7 @@
 #
 #   capture-spots.sh [-c CALL] [-o DIR] [-t SECONDS] [-l HOST:PORT]
 #                    [-r HOST:PORT] [-b HOST:PORT] [-w URL] [-k SECONDS]
-#                    [-S SECONDS] [-L REGEX] [-R REGEX] [-C T] [-n]
+#                    [-S SECONDS] [-L REGEX] [-R REGEX] [-C T] [-F] [-n]
 #
 #   -c CALL       login callsign for all feeds           (default OK1HRA)
 #   -o DIR        output directory          (default <script dir>/logs)
@@ -28,6 +28,11 @@
 #                 instead of starting a new session, so a restart (a new
 #                 option, a moved port) does not start the comparison anew;
 #                 its events log gets a "resumed session" line
+#   -F            do not follow the local feed's port: when the local
+#                 skimmer's status (-w) names another feed port than -l,
+#                 only warn (by default the recorder moves to that port,
+#                 same host, at the next snapshot, or within a heartbeat
+#                 while the local feed is down)
 #   -n            do not hold a sleep inhibitor (by default the machine is
 #                 kept from suspending while recording)
 #
@@ -72,7 +77,8 @@ READ_T=${CAPTURE_READ_T:-10}      # socket read wake-up (keepalive, state)
 IDLE_NOTE=1800                    # heartbeat mentions a feed silent this long
 
 RESUME=
-while getopts "c:o:t:l:r:b:w:k:S:L:R:C:nh" opt; do
+FOLLOW=1
+while getopts "c:o:t:l:r:b:w:k:S:L:R:C:Fnh" opt; do
   case $opt in
     c) CALL=$OPTARG ;;
     o) OUT=$OPTARG ;;
@@ -86,6 +92,7 @@ while getopts "c:o:t:l:r:b:w:k:S:L:R:C:nh" opt; do
     L) LOCAL_ID=$OPTARG ;;
     R) REMOTE_ID=$OPTARG ;;
     C) RESUME=$OPTARG ;;
+    F) FOLLOW=0 ;;
     n) INHIBIT=0 ;;
     *) sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
@@ -320,7 +327,8 @@ snapshot() {
 }
 
 # Is the local skimmer's telnet feed on the port we record? Its status says
-# which port it serves ("feed_port", 0 = feed off). Noted on every change.
+# which port it serves ("feed_port", 0 = feed off). Noted on every change;
+# a moved feed is followed (same host, the new port) unless -F.
 FEED_PORT_SEEN=
 check_feed_port() {   # status JSON
   local fp
@@ -330,11 +338,37 @@ check_feed_port() {   # status JSON
   FEED_PORT_SEEN=$fp
   if ((fp == 0)); then
     note "WARNING: the local skimmer reports its telnet feed OFF (feed_port 0) — headless.ini [feed] call= empty, or port= taken by another service (ss -tlnp)?"
+  elif [[ $fp != "${LOCAL##*:}" ]] && ((FOLLOW)); then
+    follow_local "$fp"
+    note "local skimmer feed confirmed on port $fp"
   elif [[ $fp != "${LOCAL##*:}" ]]; then
     note "WARNING: the local skimmer serves its feed on port $fp, but the recorder reads ${LOCAL} (-l)"
   else
     note "local skimmer feed confirmed on port $fp"
   fi
+}
+
+# The local feed moved: stop its recorder, start one on the new port (the
+# same host and file). PIDS[0] is the local recorder.
+follow_local() {      # new port
+  local was=$LOCAL
+  note "the local skimmer's feed moved to port $1 — the recorder follows it (was $was)"
+  kill "${PIDS[0]}" 2>/dev/null
+  wait "${PIDS[0]}" 2>/dev/null
+  printf '#%s\t%s\n' "$(ts)" "disconnected — the feed moved to port $1" 2>/dev/null >>"$LOCAL_FILE"
+  LOCAL=${LOCAL%:*}:$1
+  capture local "${LOCAL%:*}" "${LOCAL##*:}" "$LOCAL_FILE" "$LOCAL_ID" & PIDS[0]=$!
+  PREV_SPOTS[local]=0
+}
+
+# While the local feed is down, ask its status every heartbeat (not only every
+# -S seconds) whether it moved — the feed is not recorded meanwhile.
+probe_feed_port() {
+  local rx wr spots werr last_rx connected j
+  ((FOLLOW)) && [[ -n $STATUS_URL ]] || return
+  read -r rx wr spots werr last_rx connected <"$STATE/local" 2>/dev/null || return
+  ((connected == 1)) && return
+  j=$(curl -s --max-time 5 "$STATUS_URL" 2>/dev/null) && [[ $j == \{* ]] && check_feed_port "$j"
 }
 
 summary() {
@@ -417,6 +451,7 @@ while :; do
   for p in "${PIDS[@]}"; do
     kill -0 "$p" 2>/dev/null || note "ERROR: a recorder process ($p) died"
   done
+  probe_feed_port
   WRITE_OK=1
   check_feed local "$LOCAL_FILE"; line=$FIELD
   check_feed remote "$REMOTE_FILE"; line+=" · $FIELD"

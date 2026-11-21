@@ -14,6 +14,9 @@ actually sent.
           remote one as skimmer-for-linux, and /status.json says the
           local feed is off; nothing may be recorded, WRONG SERVICE and the
           feed_port warning must be logged once each.
+  run 4 — a moved local feed: /status.json names another feed port; the
+          recorder follows it, while the feed is up (at the next
+          snapshot) and while it is down (at the next heartbeat).
   run 2 — the alarms: a read-only data file (WRITE ERROR), a truncated
           file (WRITE CHECK FAILED), the recorder frozen for 45 s like a
           suspended machine, and a killed recorder process; the RBN
@@ -21,6 +24,7 @@ actually sent.
 
   ./test-capture.py            exit 0 = everything passed
 """
+import calendar
 import http.server
 import os
 import re
@@ -153,6 +157,19 @@ class StatusFeedOff(Status):
         self.wfile.write(body)
 
 
+class StatusPort(Status):
+    """feed_port as the test sets it now (StatusPort.port)."""
+    port = 0
+
+    def do_GET(self):
+        body = ('{"radio":"mock","feed_port":%d,"bands":[]}' % StatusPort.port).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
 def can_inhibit():
     """A sleep inhibitor may be refused here (polkit, a session over ssh)."""
     return subprocess.run(["systemd-inhibit", "--what=sleep", "--who=test",
@@ -168,11 +185,11 @@ def free_port():
     return p
 
 
-def start_capture(out, lport, rport, sport, seconds, bport=None, extra_env=None):
+def start_capture(out, lport, rport, sport, seconds, bport=None, extra_env=None, snap=20):
     env = dict(os.environ, CAPTURE_TICK="10", CAPTURE_READ_T="3")
     env.update(extra_env or {})
     return subprocess.Popen(
-        [SCRIPT, "-t", str(seconds), "-o", out, "-k", "15", "-S", "20",
+        [SCRIPT, "-t", str(seconds), "-o", out, "-k", "15", "-S", str(snap),
          "-l", "127.0.0.1:%d" % lport, "-r", "127.0.0.1:%d" % rport,
          "-b", "127.0.0.1:%d" % bport if bport else "",
          "-w", "http://127.0.0.1:%d/status.json" % sport],
@@ -355,9 +372,84 @@ def run3():
     print("  (files in %s)" % out)
 
 
+def local_feed(tag, port):
+    return Feed(tag, port, "skimmer-for-linux telnet feed\r\n", "Please enter your call: ",
+                "OK1HRA-#: Hello OK1HRA, spots follow.", burst=20, more=20)
+
+
+def run4():
+    print("=== run 4 — the local feed moves to another port")
+    # a: the feed is up on A; at 8 s the status names B; the snapshot at 20 s follows
+    out = tempfile.mkdtemp(prefix="capture-test4a-")
+    la, lb, rp, sp = free_port(), free_port(), free_port(), free_port()
+    A, B = local_feed("A", la), local_feed("B", lb)
+    remote = Feed("R", rp, "Welcome to the Skimmer Server Telnet cluster port!\r\n",
+                  "Please enter your callsign:", "OK1HRA de SKIMMER 2026-09-30 10:00Z CwSkimmer >",
+                  burst=20, more=20)
+    StatusPort.port = la
+    httpd = http.server.HTTPServer(("127.0.0.1", sp), StatusPort)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    for f in (A, B, remote):
+        f.start()
+    p = start_capture(out, la, rp, sp, 45)
+    time.sleep(8)
+    StatusPort.port = lb
+    p.communicate(timeout=120)
+    A.stop = B.stop = remote.stop = True
+    httpd.shutdown()
+    f = files(out)
+    ev = open(f["events"]).read()
+    got = [b for _, b in dx_lines(f["local"])]
+    check(ev.count("feed moved to port %d — the recorder follows it" % lb) == 1
+          and "local skimmer feed confirmed on port %d" % lb in ev
+          and "WARNING: the local skimmer serves" not in ev,
+          "feed up: moved to B, followed once, confirmed, no warning")
+    check(got == A.sent + B.sent and B.sent,
+          "every spot of A before the move and of B after it, once, in order (%d + %d, got %d)"
+          % (len(A.sent), len(B.sent), len(got)))
+    loc = open(f["local"]).read()
+    check(re.search(r"disconnected — the feed moved to port %d\n.*connected to 127\.0\.0\.1:%d" % (lb, lb),
+                    loc, re.S),
+          "the data file: disconnected from A, then connected to B")
+    check("stopped — write check OK" in ev, "final write check OK")
+    print("  (files in %s)" % out)
+
+    # b: -l names a dead port the status agrees with; at 5 s the status names
+    # B; the snapshot is 300 s away, so the heartbeat (10 s) must follow it
+    out = tempfile.mkdtemp(prefix="capture-test4b-")
+    dead, lb, rp, sp = free_port(), free_port(), free_port(), free_port()
+    B = local_feed("B", lb)
+    remote = Feed("R", rp, "Welcome to the Skimmer Server Telnet cluster port!\r\n",
+                  "Please enter your callsign:", "OK1HRA de SKIMMER 2026-09-30 10:00Z CwSkimmer >",
+                  burst=20, more=20)
+    StatusPort.port = dead
+    httpd = http.server.HTTPServer(("127.0.0.1", sp), StatusPort)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    B.start()
+    remote.start()
+    t0 = time.time()
+    p = start_capture(out, dead, rp, sp, 35, snap=300)
+    time.sleep(5)
+    StatusPort.port = lb
+    p.communicate(timeout=120)
+    B.stop = remote.stop = True
+    httpd.shutdown()
+    f = files(out)
+    ev = open(f["events"]).read()
+    got = [b for _, b in dx_lines(f["local"])]
+    m = re.search(r"^(\S+) the local skimmer's feed moved to port %d" % lb, ev, re.M)
+    lag = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ")) - t0 if m else None
+    check(m is not None and lag < 20,
+          "feed down: the heartbeat follows the move (%s s after the start)"
+          % (None if lag is None else round(lag)))
+    check(got == B.sent and B.sent, "B's spots recorded (%d of %d)" % (len(got), len(B.sent)))
+    print("  (files in %s)" % out)
+
+
 if __name__ == "__main__":
     run1()
     run2()
     run3()
+    run4()
     print("\n%s (%d failure%s)" % ("FAIL" if fails else "PASS", fails, "" if fails == 1 else "s"))
     sys.exit(1 if fails else 0)
