@@ -190,7 +190,7 @@ function renderStatus(d) {
     const col = typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : '';   // the band's own colour
     const i = (frac) => `<i style="width:${(100 * frac).toFixed(0)}%;${col ? `background:${col}` : ''}"></i>`;
     const bar = (on, act, dec, cls, paused) => paused
-      ? `<td class="bar off" title="${esc(pausedText(paused))}"></td><td class="n mut" title="${esc(pausedText(paused))}">off</td>`
+      ? `<td class="bar off" title="${esc(pausedText(paused))}"></td><td class="n ${offClass(paused)}" title="${esc(pausedText(paused))}">OFF</td>`
       : on
       ? `<td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active">${i(act / maxAct)}</td><td class="n">${fmt(act)}</td>`
       : '<td class="bar off"></td><td class="n mut">–</td>';
@@ -233,11 +233,14 @@ function renderStatus(d) {
     : b.mode === 'CW' && b.engine_wanted === 'deepcw' && b.engine !== 'deepcw'
     ? `<td class="bad" title="DeepCW not available: ${esc(dc.fallback || '')}">${esc(b.engine)} · DeepCW not available</td>`
     : b.paused
-    ? `<td class="mut" title="${esc(pausedText(b.paused))}">${esc(b.engine || d.engine)} · paused</td>`
+    ? `<td class="${offClass(b.paused)}" title="${esc(pausedText(b.paused))}">${esc(b.engine || d.engine)} · OFF ${esc(pausedShort(b.paused))}</td>`
     : `<td>${esc(b.engine || d.engine)}</td>`;
+  // a paused mode decodes nothing now: OFF over its live counters (its spots
+  // and drops since the start stay — they happened)
+  const live = (b, v) => b.paused ? `<td class="${offClass(b.paused)}" title="${esc(pausedText(b.paused))}">OFF</td>` : `<td>${fmt(v)}</td>`;
   $('#bands').innerHTML = head + modes.map((b) =>
     `<tr><td>${esc(b.band)}</td><td class="l">${b.mode}</td><td>${fmtKhz(b.centre_hz / 1000, 1)}</td>${engineCell(b)}` +
-    `<td>${fmt(b.decoders)}</td><td>${fmt(b.active)}</td><td>${fmt(b.stations)}</td>` +
+    `${live(b, b.decoders)}${live(b, b.active)}${live(b, b.stations)}` +
     `<td>${fmt(b.spots)}</td><td>${fmt(b.drops)}</td><td>${fmt(b.ksps)}</td></tr>`).join('');
 
   $('#workers-box').hidden = !workers.length;
@@ -502,6 +505,17 @@ function pausedText(why) {
     : why === 'thermal' ? 'off: the CPU runs hot — the band with the fewest spots is paused until it cools'
     : `paused (${why})`;
 }
+// a pause in a few words (the bands table) and its cell's class: the thermal
+// guard's in amber — it is what the operator must see — adaptive RTTY's grey
+function pausedShort(why) {
+  return why === 'thermal' ? '(CPU hot)' : why === 'rtty-adaptive' ? '(no contest)' : `(${why})`;
+}
+function offClass(why) { return why === 'thermal' ? 'off-hot' : 'mut'; }
+// a band's mode paused right now (status.json), for the Statistics table
+function pausedNow(band, mode) {
+  const b = status && (status.bands || []).find((x) => x.band === band);
+  return !b ? null : mode === 'CW' ? (b.cw !== false ? b.paused : null) : (b.rtty ? b.rtty.paused : null);
+}
 // the thermal guard, one line: the mean against the limit, the bands paused
 // (each with the drop its pause brought and the mean it waits for)
 function thermalText(t) {
@@ -667,7 +681,10 @@ function renderStatsTables(d) {
   $('#stats-table').innerHTML = '<tr><th>band</th><th class="l">mode</th>' +
     `${cols.map(([n, t]) => `<th title="${esc(t)}">${n}</th>`).join('')}</tr>` +
     d.bands.map((b) => `<tr><td>${esc(b)}</td>` +
-      `<td class="l">${modes.map(([l]) => `<div class="ml ${l.toLowerCase()}">${l}</div>`).join('')}</td>` +
+      `<td class="l">${modes.map(([l]) => {
+        const p = stats.end ? null : pausedNow(b, l);
+        return `<div class="ml ${l.toLowerCase()}">${l}${p ? ` <span class="${offClass(p)}" title="${esc(pausedText(p))}">OFF now</span>` : ''}</div>`;
+      }).join('')}</td>` +
       cols.map((_, c) => `<td>${cell(b, c)}</td>`).join('') + '</tr>').join('');
   $('#stats-cols').innerHTML = cols.map(([n, t]) => `<b>${n}</b> = ${esc(t)}`).join(' · ');
 }

@@ -64,6 +64,7 @@ main > section { padding: 0; }
 footer { padding: 10px 18px 24px; font-size: 12px; color: var(--faint); letter-spacing: .06em; }
 footer a { color: inherit; }
 .mut { color: var(--mut); }
+.off-hot, .ladder td.n.off-hot { color: var(--warn); font-weight: 700; }
 h2 { font-size: 12px; margin: 0 0 8px; letter-spacing: .14em; text-transform: uppercase; color: var(--mut);
      font-weight: 700; }
 h2 .mut, h2 small { font-weight: 400; letter-spacing: .06em; text-transform: none; font-size: 13px; }
