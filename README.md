@@ -61,8 +61,10 @@ grown far from it:*
 5. Point a logger or cluster client at `telnet localhost 7300`.
 6. After a while, correct the Red Pitaya's clock (`clock_ppm`). See
    [First start](#first-start).
-7. Optional: run it as a service
-   (`--install-service`, [As a service](#as-a-service)).
+7. Choose how it runs. Started by hand in a terminal, it runs until Ctrl+C
+   or until the terminal closes. As a systemd user service it starts at boot,
+   comes back by itself after a crash or a lost stream, and logs to the
+   journal (`--install-service`, [As a service](#as-a-service)).
 
 **Limits — hardware (Red Pitaya)**
 
@@ -220,7 +222,7 @@ fetched on request ([DeepCW](#deepcw)).
 chmod +x skimmer-headless-*-x86_64.AppImage
 ./skimmer-headless-*-x86_64.AppImage --find-radios      # the Red Pitayas on the LAN
 ./skimmer-headless-*-x86_64.AppImage                    # first run writes the config and starts
-./skimmer-headless-*-x86_64.AppImage --install-service  # optional: run it as a service
+./skimmer-headless-*-x86_64.AppImage --install-service  # optional: run it as a service (see As a service)
 ```
 
 Then [First start](#first-start): your call, the clock correction. Without
@@ -345,18 +347,49 @@ the radio with synthetic CW on every band (the headless gate uses it).
 
 ### As a service
 
+There are two ways to run the skimmer:
+
+- **In a terminal** (`./skimmer-headless-x86_64.AppImage`, in `tmux` or
+  `screen` to leave it running). The console shows a table of the bands.
+  Ctrl+C stops it. Nothing starts it after a reboot or a crash.
+- **As a systemd user service.** It starts at boot, even before anyone logs
+  in (with linger on). It starts again a minute after a crash or a lost
+  stream. Its log is in the journal. An [update](#updates) that crashes
+  goes back to the version before it, which needs exactly this restart.
+
+To set it up:
+
 ```sh
 skimmer-headless --install-service                # [--config FILE] to run another config
-systemctl --user enable --now skimmer-headless
-journalctl --user -u skimmer-headless -f
-loginctl enable-linger $USER                      # once: keep running while logged out
+systemctl --user enable --now skimmer-headless    # start now and at every boot
+loginctl enable-linger $USER                      # once: start at boot, keep running while logged out
 ```
 
 `--install-service` writes `~/.config/systemd/user/skimmer-headless.service`
 for this program (an AppImage puts its own path there) and an empty
 `~/.config/skimmer-for-linux/headless.env` for `SKIM_*` variables. It starts
-nothing. `--uninstall-service` stops the service and removes the unit; the
-config and `headless.env` stay.
+nothing. Name the AppImage without its version before you run it
+(`skimmer-headless-x86_64.AppImage`). Updates keep that name, so the unit
+always runs the current version. After moving the file, run
+`--install-service` again.
+
+Stop a skimmer running in a terminal before you start the service. Two of
+them would fight over the radio and the web port.
+
+To run it:
+
+```sh
+journalctl --user -u skimmer-headless -f          # the log, live
+systemctl --user status skimmer-headless          # running? since when, which PID
+systemctl --user restart skimmer-headless         # e.g. after editing headless.ini by hand
+systemctl --user stop skimmer-headless            # stop; it starts again at the next boot
+systemctl --user disable --now skimmer-headless   # stop, and no longer at boot
+```
+
+Settings of your own (e.g. `LimitNOFILE=`, `Nice=`) belong in a drop-in:
+`systemctl --user edit skimmer-headless`. A new `--install-service`
+rewrites the unit but keeps the drop-in. `--uninstall-service` stops the
+service and removes the unit; the config and `headless.env` stay.
 
 The exit codes drive the service:
 
