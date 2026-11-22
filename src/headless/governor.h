@@ -25,6 +25,22 @@
  * limit − max(its drop, 5 °C) − restore_margin_c for 20 minutes, at most
  * one every 20 minutes: the reserve must exceed what the band itself costs,
  * so that it does not heat the CPU straight back over the limit.
+ * "The fewest spots" is spots a minute over the minutes of the last 30 the
+ * band decoded (one back from a pause 5 min ago is judged by those 5).
+ *
+ * The rotation (probe_every_min, probe_min): a paused band has no spots,
+ * so it could never show that its band opened — on a machine that stays
+ * hot for hours (hra2) the guard would keep the bands it paused in the
+ * morning off all day. A band paused probe_every_min (30; since its pause
+ * or its last test) is tested: on for probe_min (5) minutes in place of
+ * the band decoding now with the fewest spots a minute (the same CPU). It
+ * wins with more spots a minute than that band had before and 2 spots at
+ * least: the two change places (the pause keeps its drop and its place in
+ * the order of return); else each goes back. One test at a time, the band
+ * waiting longest first; pausing and bringing back wait meanwhile. Five
+ * minutes are enough: a band that is open spots in the first minute (hra2
+ * 2026-11-22, after a restart: 80 m and 40 m 10+ in it), and the one it
+ * would replace — the quietest — spots about 0–1 a minute.
  *
  * The owner pauses a paused mode's pipeline by not pushing it IQ (its
  * engine thread idles, the stations age out); it asks here after each call.
@@ -48,6 +64,8 @@ typedef struct {
   double   limit_c;                    /* the mean's limit, °C                  */
   guint    average_min;                /* the mean's window (≥ 1 min)           */
   double   restore_margin_c;           /* reserve beyond a band's drop, °C     */
+  guint    probe_every_min;            /* a paused band tested after (0: never) */
+  guint    probe_min;                  /* … for this long (0: never)            */
 } SkimHdGovernorConfig;
 
 /* the guard's clock (s): over the limit OVER_NEED_S of the last OVER_S
@@ -72,7 +90,8 @@ void skim_hd_governor_set_bands(SkimHdGovernor *g, guint n, const char *const *n
 
 /* Minute `minute` (unix) just ended; rtty_spots: the RTTY spots all the
  * bands decoded here sent in it; band_spots: each band's spots, CW + RTTY
- * (NULL: none). TRUE when the RTTY decoders' state changed. */
+ * (NULL: none). TRUE when the RTTY decoders' state changed, or the
+ * thermal guard's test of a paused band started or ended. */
 gboolean skim_hd_governor_minute(SkimHdGovernor *g, gint64 minute, guint rtty_spots,
                                  const guint *band_spots);
 

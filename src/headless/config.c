@@ -113,8 +113,11 @@ static const char DEFAULT_CONFIG[] =
   "# later the next, if it is still hot (one band always stays). A band comes\n"
   "# back once the mean has stayed under limit_c by what pausing it saved (5 C\n"
   "# at least) plus restore_margin_c for 20 minutes. limit_c empty = the\n"
-  "# sensor's critical temperature - 15 C (85 C on most Intel CPUs), else 80\n"
-  "enabled=false\nlimit_c=\n#average_min=5\n#restore_margin_c=3\n"
+  "# sensor's critical temperature - 15 C (85 C on most Intel CPUs), else 80.\n"
+  "# A band paused probe_every_min minutes is tested: on for probe_min minutes\n"
+  "# in place of the band with the fewest spots; with more spots a minute the\n"
+  "# two change places, else each goes back (probe_every_min=0: never)\n"
+  "enabled=false\nlimit_c=\n#average_min=5\n#restore_margin_c=3\n#probe_every_min=30\n#probe_min=5\n"
   "\n[archive]\n# every spot the feed sends, kept in this directory: a gzip file a UTC\n"
   "# day, YYYYMMDD-spots.gz (zcat reads it), a tab-separated line a spot;\n"
   "# empty = off\ndir=\n"
@@ -704,16 +707,25 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   {
     /* [thermal]: limit_c blank = 0, the start takes the sensor's critical
      * temperature − 15 °C (80 °C without one) */
-    double lim, avg;
+    double lim, avg, pev, pmin;
     if (!opt_bool(kf, "thermal", "enabled", FALSE, &h->thermal, path, error) ||
         !opt_num(kf, "thermal", "limit_c", 0, 40, 110, FALSE, &lim, path, error) ||
         !opt_num(kf, "thermal", "average_min", 5, 1, 30, TRUE, &avg, path, error) ||
         !opt_num(kf, "thermal", "restore_margin_c", 3, 0, 20, FALSE, &h->thermal_margin_c, path,
-                 error)) {
+                 error) ||
+        /* 0 = no rotation; else 10 min at least — a pause's drop is measured
+         * 10 min after it */
+        !opt_num(kf, "thermal", "probe_every_min", 30, 0, 1440, TRUE, &pev, path, error) ||
+        !opt_num(kf, "thermal", "probe_min", 5, 1, 30, TRUE, &pmin, path, error)) {
       return FALSE;
+    }
+    if (pev > 0 && pev < 10) {
+      return bad(error, path, "[thermal] probe_every_min: 0, or 10 to 1440");
     }
     h->thermal_limit_c = lim;
     h->thermal_average_min = (guint)avg;
+    h->thermal_probe_every_min = (guint)pev;
+    h->thermal_probe_min = (guint)pmin;
   }
 
   {
@@ -977,7 +989,8 @@ const char *const SKIM_HD_EDITABLE[] = {
   "status.console_s", "status.http_port",
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
   "archive.dir", "visitors.login", "visitors.free_from", "thermal.enabled", "thermal.limit_c", "thermal.average_min",
-  "thermal.restore_margin_c", "filter.call", "filter.regex", "filter.mycall", "filter.mycall_diff",
+  "thermal.restore_margin_c", "thermal.probe_every_min", "thermal.probe_min",
+  "filter.call", "filter.regex", "filter.mycall", "filter.mycall_diff",
   "rtty_palette.open_on_spot", "rtty_palette.bandwidth", "rtty_palette.autotune", "rtty_palette.afc",
   "rtty_palette.afc_max_hz", "rtty_palette.afc_rate", "rtty_palette.reverse", "rtty_palette.usos",
   "rtty_palette.squelch_db", "rtty_palette.second_decoder", "rtty_palette.clean", "rtty_palette.sound",

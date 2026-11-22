@@ -7,7 +7,7 @@
 :root {
   color-scheme: dark;
   --bg: #0d1520; --panel: #111c2a; --deep: #0a111a; --well: #05090e; --ln: #1f2e42; --ln2: #2c3f57;
-  --fg: #d7e2ee; --mut: #7d8fa6; --faint: #4d5f76;
+  --fg: #d7e2ee; --mut: #7d8fa6; --faint: #4d5f76; --off-bg: #262c34;
   --hot: #39d98a; --hot-ink: #04140b; --ok: #39d98a; --warn: #f2b33d; --bad: #ff5d5d; --cq: #5fc8ff;
   --accent: #39d98a;
   --mono: 'RC', ui-monospace, monospace;
@@ -222,6 +222,8 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 /* every mode of the band paused (the thermal guard): grey, not its colour */
 .ladder tr.paused td.b, .ladder tr.paused td.last { color: var(--mut) !important; }
 .ladder tr.paused td.bar i { background: var(--faint) !important; opacity: 1; }
+/* … and on a dark grey ground, the whole row; one paused mode: its two cells */
+.ladder tr.paused td, .ladder td.pz { background-color: var(--off-bg) !important; }
 .ladder tr.head-row th { padding: 2px 6px 4px; border-bottom: 1px solid var(--ln); color: var(--mut); font-weight: 400;
   font-size: 11px; letter-spacing: .1em; text-transform: uppercase; text-align: left; vertical-align: bottom; cursor: help; }
 .readouts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 16px; color: var(--mut); font-size: 13px;

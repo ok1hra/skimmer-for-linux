@@ -52,8 +52,10 @@
  *            the refused sign-ins are logged (visitors.h)
  *   [thermal] enabled (default false), limit_c (40–110 °C; empty = the CPU
  *            sensor's critical temperature − 15 °C, else 80), average_min
- *            (5), restore_margin_c (3): the thermal guard (governor.h) —
- *            the band with the fewest spots paused while the CPU runs hot
+ *            (5), restore_margin_c (3), probe_every_min (30; 0 = never),
+ *            probe_min (5): the thermal guard (governor.h) — the band with
+ *            the fewest spots paused while the CPU runs hot, a paused one
+ *            tested in place of the weakest now and then
  *   [filter] call — only the calls that match go anywhere (empty = all):
  *            part of a call, any case; regex=true: a regular expression
  *            (PCRE, any case). Dropped where they are decoded — no station,
@@ -186,6 +188,8 @@ typedef struct {
   double           thermal_limit_c;   /* 0 = the sensor's critical − 15 °C   */
   guint            thermal_average_min;
   double           thermal_margin_c;
+  guint            thermal_probe_every_min;   /* 0 = no rotation              */
+  guint            thermal_probe_min;
   /* [filter] */
   char            *filter_call;       /* as written; NULL = no filter        */
   gboolean         filter_regex;

@@ -2486,6 +2486,8 @@ int main(int argc, char **argv) {
       .limit_c = lim,
       .average_min = c->thermal_average_min,
       .restore_margin_c = c->thermal_margin_c,
+      .probe_every_min = c->thermal_probe_every_min,
+      .probe_min = c->thermal_probe_min,
     };
     h->gov = skim_hd_governor_new(&gc, g_get_real_time() / (60 * G_USEC_PER_SEC));
     gboolean can[SKIM_HD_MAX_BANDS];

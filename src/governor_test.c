@@ -5,6 +5,8 @@
  * the start not counted); a test at or under the limit turns it off until
  * the next full hour, over it keeps it on; each full hour tests again, on or
  * off; without rtty_adaptive it is always on and says nothing.
+ * The thermal guard: pauses, returns, and the rotation (a paused band
+ * tested in place of the weakest, the two swapped when it spots more).
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -203,10 +205,114 @@ static void thermal(void) {
   skim_hd_governor_free(g);
 }
 
+/* ---- the rotation: a paused band tested in place of the weakest ---------------- */
+
+/* a minute: 60 s at temp, then the minute's spots — a paused band's none */
+static gint64 mnow;
+static guint want[4];
+static gboolean tick(SkimHdGovernor *g, double temp) {
+  gboolean ch = run(g, temp, 60);
+  guint sp[4];
+  for (guint i = 0; i < 4; i++) { sp[i] = skim_hd_governor_band_shed(g, i) ? 0 : want[i]; }
+  ch |= skim_hd_governor_minute(g, mnow++, 0, sp);
+  return ch;
+}
+static gboolean has(SkimHdGovernor *g, const char *what) {
+  GString *j = g_string_new(NULL);
+  skim_hd_governor_json(g, j);
+  const gboolean ok = strstr(j->str, what) != NULL;
+  if (!ok && g_getenv("GOVERNOR_VERBOSE")) { printf("    | %s\n", j->str); }
+  g_string_free(j, TRUE);
+  return ok;
+}
+/* 80m 20 spots a minute, 40m 5, 20m 90, 15m (a worker's) 0; hot until 40m
+ * is paused, then 84 °C: under the limit, not by enough to bring it back */
+static SkimHdGovernor *hot_40m(guint every, guint len) {
+  SkimHdGovernorConfig c = { .thermal = TRUE, .limit_c = 85, .average_min = 1,
+                             .restore_margin_c = 3, .probe_every_min = every, .probe_min = len };
+  mnow = AT(10, 0);
+  now = mnow * 60;
+  SkimHdGovernor *g = skim_hd_governor_new(&c, mnow);
+  const char *names[] = { "80m", "40m", "20m", "15m" };
+  const gboolean can[] = { TRUE, TRUE, TRUE, FALSE };
+  skim_hd_governor_set_bands(g, 4, names, can);
+  want[0] = 20; want[1] = 5; want[2] = 90; want[3] = 0;
+  for (int m = 0; m < 30; m++) { tick(g, 70); }
+  while (!skim_hd_governor_band_shed(g, 1)) { tick(g, 95); }
+  return g;
+}
+/* minutes until a test starts (-1: none within `max`) */
+static int until_test(SkimHdGovernor *g, int max) {
+  for (int m = 1; m <= max; m++) {
+    if (tick(g, 84)) { return m; }
+  }
+  return -1;
+}
+
+static void rotation(void) {
+  printf("thermal guard: the rotation\n");
+  SkimHdGovernor *g = hot_40m(30, 5);
+  check("40m paused, a test due in 30 min", skim_hd_governor_band_shed(g, 1) && has(g, "\"probe\":null"));
+  int m = until_test(g, 40);
+  check("the test starts 30 min after the pause", m >= 29 && m <= 30);
+  check("… 40m on, 80m (the fewest spots a minute decoding; not the worker's 15m) off",
+        !skim_hd_governor_band_shed(g, 1) && skim_hd_governor_band_shed(g, 0) &&
+        !skim_hd_governor_band_shed(g, 3));
+  check("… status: probe 40m vs 80m at 20.00/min", has(g, "\"probe\":{\"band\":\"40m\",\"vs\":\"80m\"") &&
+        has(g, "\"vs_rate\":20.00"));
+  /* hot during the test: no pause till it ends */
+  gboolean ch = FALSE;
+  for (int k = 0; k < 4; k++) { ch |= tick(g, 99); }
+  check("hot during the test: nothing paused meanwhile", !ch && !skim_hd_governor_band_shed(g, 2));
+  check("5 min: 25 spots = 5/min < 20/min: 40m paused again, 80m back", tick(g, 99) &&
+        skim_hd_governor_band_shed(g, 1) && !skim_hd_governor_band_shed(g, 0));
+  check("… and, hot, the guard pauses again right after", run(g, 99, 2) && skim_hd_governor_band_shed(g, 0));
+  skim_hd_governor_free(g);
+
+  /* the band opened: 40m now 30 a minute */
+  g = hot_40m(30, 5);
+  want[1] = 30;
+  until_test(g, 40);
+  for (int k = 0; k < 4; k++) { tick(g, 84); }
+  check("40m 30/min > 80m 20/min: they change places", tick(g, 84) &&
+        !skim_hd_governor_band_shed(g, 1) && skim_hd_governor_band_shed(g, 0));
+  check("… the pause is 80m's now, its drop kept", has(g, "\"band\":\"80m\"") && !has(g, "\"band\":\"40m\"") &&
+        has(g, "\"probe\":null"));
+  /* 80m waits its 30 min; it is now the quietest of the two, so the test
+   * at 20/min loses against 40m's 30 */
+  m = until_test(g, 40);
+  check("80m tested 30 min later, in place of the weakest: 40m (30/min) < 20m (90/min)",
+        m >= 29 && m <= 31 && !skim_hd_governor_band_shed(g, 0) && skim_hd_governor_band_shed(g, 1));
+  for (int k = 0; k < 5; k++) { tick(g, 84); }
+  check("… 20/min < 30/min: 80m off again", skim_hd_governor_band_shed(g, 0) && !skim_hd_governor_band_shed(g, 1));
+  skim_hd_governor_free(g);
+
+  /* two dead bands: one stray spot is no reason to swap */
+  g = hot_40m(60, 5);
+  want[0] = 0;                                         /* 80m dies after the pause */
+  for (int k = 0; k < 30; k++) { tick(g, 84); }        /* … its rate falls to 0 */
+  want[1] = 0;
+  until_test(g, 40);
+  want[1] = 1;                                         /* 40m: 1 spot in the first minute */
+  tick(g, 84);
+  want[1] = 0;
+  for (int k = 0; k < 4; k++) { tick(g, 84); }
+  check("1 spot in 5 min vs 0/min: no swap (2 at least)", skim_hd_governor_band_shed(g, 1) &&
+        !skim_hd_governor_band_shed(g, 0));
+  skim_hd_governor_free(g);
+
+  /* probe_every_min=0: never */
+  g = hot_40m(0, 5);
+  check("probe_every_min=0: no test in 3 h", until_test(g, 180) < 0 && skim_hd_governor_band_shed(g, 1) &&
+        has(g, "\"test_at\":null"));
+  skim_hd_governor_free(g);
+}
+
 int main(void) {
   g_log_set_default_handler(quiet, NULL);
   rtty();
   thermal();
+  rotation();
   printf("%d/%d checks passed\n", checks - fails, checks);
   return fails ? 1 : 0;
 }

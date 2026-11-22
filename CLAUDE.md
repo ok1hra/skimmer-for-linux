@@ -256,11 +256,19 @@ here; what was done and why is in git.
   last 5 min (counted in a window — a dip under the limit does not restart
   it; counted on end, 2026-11-20 it held one band off for 70 min at minute
   peaks of 85–100 °C and never paused the next) pauses the
-  local band with the fewest spots in 30 min (CW + RTTY), 10 min later the
+  local band with the fewest spots a minute (CW + RTTY, over the minutes
+  of the last 30 it decoded), 10 min later the
   next; one always stays. The drop each pause brought (10 min after) is
   its hysteresis: it comes back (LIFO) once the mean holds ≤ limit −
   max(drop, 5) − `restore_margin_c` (3) for 20 min. hra2 (2026-11-20):
   mean ~78 °C, minute peaks up to 100 — so the mean, never the peak.
+  The rotation (2026-11-22 at Dan's request; `probe_every_min` 30, 0 =
+  off, `probe_min` 5): a paused band has no spots, so on a machine hot
+  all day it never came back; one paused that long is on for 5 min in
+  place of the weakest band decoding (same CPU) and stays if it spotted
+  more a minute (≥ 2 spots), else each goes back. 5 min, because an open
+  band spots in its first minute (hra2 11-22 after a restart). The
+  Status table marks it TEST; pause/restore wait during a test.
 - **WSPR** (`[wspr] enabled`, default off; `src/headless/wspr.c`,
   2026-11-21 at Dan's request): every WSPR-2 dial (WSJT-X's list) whose
   dial + 1500 ± 150 Hz lies inside 45 % of the rate around a received

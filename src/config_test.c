@@ -272,9 +272,20 @@ int main(void) {
     skim_hd_config_clear(&c);
     check("[visitors] free_from refused when it is no network",
           !parse(&c, "[bands]\n20m=14045500\n[visitors]\nfree_from=lan\n", NULL));
-    check("[thermal] off by default: limit from the sensor, 5 min, margin 3",
+    check("[thermal] off by default: limit from the sensor, 5 min, margin 3, a test 5 min each 30",
           parse(&c, "[bands]\n20m=14045500\n[thermal]\nlimit_c=\n", NULL) && !c.thermal &&
-          c.thermal_limit_c == 0 && c.thermal_average_min == 5 && c.thermal_margin_c == 3);
+          c.thermal_limit_c == 0 && c.thermal_average_min == 5 && c.thermal_margin_c == 3 &&
+          c.thermal_probe_every_min == 30 && c.thermal_probe_min == 5);
+    skim_hd_config_clear(&c);
+    check("[thermal] probe_every_min=0 (no rotation), =60 with probe_min=10",
+          parse(&c, "[bands]\n20m=14045500\n[thermal]\nprobe_every_min=0\n", NULL) &&
+          c.thermal_probe_every_min == 0 &&
+          parse(&c, "[bands]\n20m=14045500\n[thermal]\nprobe_every_min=60\nprobe_min=10\n", NULL) &&
+          c.thermal_probe_every_min == 60 && c.thermal_probe_min == 10);
+    skim_hd_config_clear(&c);
+    check("[thermal] refused: probe_every_min=5, probe_min=0",
+          !parse(&c, "[bands]\n20m=14045500\n[thermal]\nprobe_every_min=5\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[thermal]\nprobe_min=0\n", NULL));
     skim_hd_config_clear(&c);
     check("[thermal] on at 82.5 °C, 10 min, margin 2",
           parse(&c, "[bands]\n20m=14045500\n[thermal]\nenabled=true\nlimit_c=82.5\naverage_min=10\n"

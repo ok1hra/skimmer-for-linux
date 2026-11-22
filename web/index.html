@@ -235,7 +235,11 @@
             <small>short bursts of work do not count</small></label>
           <label>Margin °C <input name="thermal.restore_margin_c" inputmode="decimal" placeholder="3">
             <small>a band comes back once the mean stays under the limit by what pausing it saved (5 °C at least) plus this, for 20 min</small></label>
-          <small class="note-s">Over the limit now and for 3 of the last 5 min (a dip under it does not start the count again): the band with the fewest spots in the last 30 min stops decoding (CW and RTTY); still hot 10 min later, the next — one band always stays. The drop each pause brought is shown on Status.</small>
+          <label>Test every min <input name="thermal.probe_every_min" inputmode="numeric" placeholder="30">
+            <small>a band paused this long is tested in place of the band with the fewest spots; 0 = never (10 at least)</small></label>
+          <label>Test for min <input name="thermal.probe_min" inputmode="numeric" placeholder="5">
+            <small>with more spots a minute than that band had (2 at least) the two change places, else each goes back</small></label>
+          <small class="note-s">Over the limit now and for 3 of the last 5 min (a dip under it does not start the count again): the band with the fewest spots in the last 30 min stops decoding (CW and RTTY); still hot 10 min later, the next — one band always stays. A paused band has no spots, so it is tested now and then: a band that opened takes the place of the quietest. The drop each pause brought is shown on Status.</small>
         </fieldset>
         <fieldset>
           <legend>Station and feed</legend>

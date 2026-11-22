@@ -206,6 +206,8 @@ function renderStatus(d) {
     '<th colspan="2" class="l" title="RTTY channel decoders reading a signal now (of all the band has)">RTTY active decoders</th>' +
     (wsprOn ? '<th colspan="2" class="l" title="the WSPR stations decoded on the band in the last 30 min">WSPR stations 30 min</th>' : '') +
     '<th class="l" title="the band\'s newest spot">last spot</th><th></th></tr>' + decoded.map((b) => {
+    // the thermal guard testing this paused band in place of the quietest one
+    const pr = d.thermal && d.thermal.probe && d.thermal.probe.band === b.band ? d.thermal.probe : null;
     const sp = per(b.band), cwOn = b.cw !== false, rt = b.rtty;
     const col = typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : '';   // the band's own colour
     const i = (frac) => `<i style="width:${(100 * frac).toFixed(0)}%;${col ? `background:${col}` : ''}"></i>`;
@@ -213,7 +215,7 @@ function renderStatus(d) {
     // a paused mode is grey OFF (why: its title); a band with every mode
     // paused is grey all along its row — its spots are from before the pause
     const bar = (on, act, dec, cls, paused) => paused
-      ? `<td class="n mut" title="${esc(pausedText(paused))}">OFF</td><td class="bar off" title="${esc(pausedText(paused))}"></td>`
+      ? `<td class="n mut pz" title="${esc(pausedText(paused))}">OFF</td><td class="bar off pz" title="${esc(pausedText(paused))}"></td>`
       : on
       ? `<td class="n" title="${fmt(act)} of ${fmt(dec)} decoders active">${fmt(act)}</td><td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active">${i(act / maxAct)}</td>`
       : '<td class="n mut">–</td><td class="bar off"></td>';
@@ -230,7 +232,9 @@ function renderStatus(d) {
       bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty', rt && rt.paused) +
       (wsprOn ? wsprCells(wsprRx.get(b.band), maxWspr, i) : '') +
       `<td class="last" title="the band's newest spot">${sp.length ? esc(sp[0].call) : ''}</td>` +
-      `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : ''}</td></tr>`;
+      `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : pr
+        ? `<span class="off-hot" title="paused by the thermal guard, on for a test in place of ${esc(pr.vs)} (the fewest spots) until ${hmUtc(pr.until)} UTC: with more spots a minute it stays on">TEST</span> ${fmt(pr.spots)} sp.`
+        : ''}</td></tr>`;
   }).join('');
   $('#wspr-link').hidden = !wsprOn;
   const sumDec = (f) => decoded.reduce((a, b) => a + (f(b) || 0), 0);
@@ -378,6 +382,8 @@ function renderDcw(dc) {
 // Updates (Settings → Updates): what runs, the latest release, a version
 // downloaded and checked, the file kept from before — and the header's note.
 let upd = null, updPoll = 0;
+// a unix s as HH:MM UTC
+const hmUtc = (t) => { const x = new Date(t * 1000); return `${String(x.getUTCHours()).padStart(2, '0')}:${String(x.getUTCMinutes()).padStart(2, '0')}`; };
 const utcMin = (t) => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
 
 function updBadge(u) {
@@ -662,12 +668,16 @@ function pausedNow(band, mode) {
 // (each with the drop its pause brought and the mean it waits for)
 function thermalText(t) {
   if (t.limit_c == null) {           // from outside: no temperatures, what it did
-    const off = (t.shed || []).map((s) => esc(s.band)).join(', ');
+    const off = (t.shed || []).map((s) => esc(t.probe && t.probe.band === s.band ? t.probe.vs : s.band)).join(', ');
     return `on${t.state === 'hot' ? ' — the CPU runs hot' : ''}${off ? ` · paused: ${off}` : ''}`;
   }
   const m = t.mean_c == null ? '–' : `${fmt(t.mean_c, 1)} °C`;
-  const shed = (t.shed || []).map((s) => `${esc(s.band)} off${s.drop_c == null ? ''
-    : ` (−${fmt(s.drop_c, 1)} °C)`}, back ≤ ${fmt(s.back_at_c, 1)} °C`).join(' · ');
+  const pr = t.probe;
+  const shed = (t.shed || []).map((s) => (pr && pr.band === s.band
+    ? `${esc(s.band)} on test in place of ${esc(pr.vs)} till ${hmUtc(pr.until)}`
+    : `${esc(s.band)} off${s.drop_c == null ? '' : ` (−${fmt(s.drop_c, 1)} °C)`}`) +
+    `, back ≤ ${fmt(s.back_at_c, 1)} °C` +
+    (s.test_at && !(pr && pr.band === s.band) ? `, test ${hmUtc(Math.max(s.test_at, Date.now() / 1000))}` : '')).join(' · ');
   return `${m} / ${fmt(t.limit_c, 1)} °C, ${t.average_min}-min mean` +
     (t.state === 'hot' ? ' — <span class="bad">over the limit</span>' : '') +
     // how close the next pause is: the seconds over in the last 5 min against the need

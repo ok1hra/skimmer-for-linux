@@ -12,6 +12,7 @@ typedef struct {
   gint64   at;                         /* unix s it was paused                 */
   double   at_c;                       /* the mean then                        */
   double   drop_c;                     /* the mean's drop 10 min later; NAN    */
+  gint64   tried;                      /* unix s: paused, or its last test end */
 } Shed;
 
 struct _SkimHdGovernor {
@@ -28,6 +29,7 @@ struct _SkimHdGovernor {
   gboolean  can[SKIM_GOV_MAX_BANDS];
   gboolean  shed_on[SKIM_GOV_MAX_BANDS];
   guint     spots[SKIM_GOV_MAX_BANDS][SKIM_GOV_SPOTS_MIN];   /* a ring a band  */
+  gboolean  live[SKIM_GOV_MAX_BANDS][SKIM_GOV_SPOTS_MIN];    /* … on that minute */
   guint     spos;
   double   *temps;                     /* a ring of per-second readings        */
   guint     tcap, tlen, tpos;
@@ -40,6 +42,12 @@ struct _SkimHdGovernor {
   Shed      shed[SKIM_GOV_MAX_BANDS];  /* the paused, oldest first             */
   guint     nshed;
   gboolean  told_none;                 /* "nothing left to pause" said         */
+  /* the test of a paused band (the rotation): shed[probe_k]'s band on in
+   * place of probe_vs, the weakest live one, for probe_min minutes */
+  int       probe_k;                   /* -1: none                             */
+  guint     probe_band, probe_vs, probe_spots;
+  gint64    probe_from, probe_end;     /* unix minutes: the first, the one after */
+  double    vs_rate;                   /* probe_vs's spots a minute before it  */
 };
 
 static gint64 next_hour(gint64 minute) { return (minute + 59) / 60 * 60; }
@@ -50,6 +58,7 @@ SkimHdGovernor *skim_hd_governor_new(const SkimHdGovernorConfig *cfg, gint64 now
   if (g->cfg.rtty_minutes < 1) { g->cfg.rtty_minutes = 1; }
   if (g->cfg.average_min < 1) { g->cfg.average_min = 1; }
   g->last = -1;
+  g->probe_k = -1;
   /* the start tests at once: the minute running now is partial, so the test
    * counts from the next one (the decoders run from now on) */
   g->rt = RT_TEST;
@@ -83,10 +92,15 @@ void skim_hd_governor_set_bands(SkimHdGovernor *g, guint n, const char *const *n
     guint k = 0;
     for (guint i = 0; i < g->nb; i++) { k += g->can[i]; }
     g_message("thermal: guard on — over %.1f °C (the %u-min mean of the hottest CPU sensor) "
-              "for %d of the last %d min pauses the band with the fewest spots in %d min, "
-              "%u of %u bands may be paused (one always stays)", g->cfg.limit_c,
+              "for %d of the last %d min pauses the band with the fewest spots a minute "
+              "(the last %d min), %u of %u bands may be paused (one always stays)", g->cfg.limit_c,
               g->cfg.average_min, SKIM_GOV_OVER_NEED_S / 60, SKIM_GOV_OVER_S / 60,
               SKIM_GOV_SPOTS_MIN, k > 0 ? k - 1 : 0, g->nb);
+    if (g->cfg.probe_every_min && g->cfg.probe_min) {
+      g_message("thermal: a band paused %u min is tested for %u min in place of the one with "
+                "the fewest spots; with more spots a minute (2 at least) they change places",
+                g->cfg.probe_every_min, g->cfg.probe_min);
+    }
   }
 }
 
@@ -95,11 +109,17 @@ static void hm(gint64 minute, char out[8]) {
   g_snprintf(out, 8, "%02d:%02d", (int)(m / 60), (int)(m % 60));
 }
 
+static gboolean rotate(SkimHdGovernor *g, gint64 minute, const guint *band_spots);
+
 gboolean skim_hd_governor_minute(SkimHdGovernor *g, gint64 minute, guint rtty_spots,
                                  const guint *band_spots) {
   g->spos = (g->spos + 1) % SKIM_GOV_SPOTS_MIN;               /* the 30-min ring */
-  for (guint i = 0; i < g->nb; i++) { g->spots[i][g->spos] = band_spots ? band_spots[i] : 0; }
-  if (!g->cfg.rtty_adaptive) { return FALSE; }
+  for (guint i = 0; i < g->nb; i++) {
+    g->spots[i][g->spos] = band_spots ? band_spots[i] : 0;
+    g->live[i][g->spos] = !(g->cfg.thermal && g->shed_on[i]);
+  }
+  const gboolean rot = rotate(g, minute, band_spots);
+  if (!g->cfg.rtty_adaptive) { return rot; }
   const gboolean was_on = skim_hd_governor_rtty_on(g);
   const gint64 next = minute + 1;                       /* the minute starting */
   if (g->rt == RT_TEST) {
@@ -128,7 +148,7 @@ gboolean skim_hd_governor_minute(SkimHdGovernor *g, gint64 minute, guint rtty_sp
     g->test_from = next;
     g->count = 0;
   }
-  return was_on != skim_hd_governor_rtty_on(g);
+  return rot || was_on != skim_hd_governor_rtty_on(g);
 }
 
 gboolean skim_hd_governor_rtty_on(const SkimHdGovernor *g) {
@@ -137,24 +157,87 @@ gboolean skim_hd_governor_rtty_on(const SkimHdGovernor *g) {
 
 /* ---- the thermal guard ----------------------------------------------------------- */
 
-static guint spots30(const SkimHdGovernor *g, guint i) {
-  guint s = 0;
-  for (guint k = 0; k < SKIM_GOV_SPOTS_MIN; k++) { s += g->spots[i][k]; }
-  return s;
+/* A band's spots a minute over the minutes of the last 30 it decoded (a
+ * band back from a pause 5 min ago is judged by those 5, not by 30 with 25
+ * of them empty); 0 without one. */
+static double rate(const SkimHdGovernor *g, guint i) {
+  guint s = 0, n = 0;
+  for (guint k = 0; k < SKIM_GOV_SPOTS_MIN; k++) {
+    if (g->live[i][k]) { s += g->spots[i][k]; n++; }
+  }
+  return n ? (double)s / n : 0;
 }
 
-/* The band to pause: the fewest spots in 30 min among those that may go
- * (a tie: the later one); -1 when only one would be left. */
-static int pick(const SkimHdGovernor *g) {
+/* The band to pause: the fewest spots a minute among those that may go and
+ * decode now (a tie: the later one); -1 when fewer than `keep` + 1 decode —
+ * `keep` must stay. */
+static int weakest(const SkimHdGovernor *g, guint keep) {
   int best = -1;
-  guint live = 0, low = G_MAXUINT;
+  guint live = 0;
+  double low = INFINITY;
   for (guint i = 0; i < g->nb; i++) {
     if (!g->can[i] || g->shed_on[i]) { continue; }
     live++;
-    const guint s = spots30(g, i);
-    if (s <= low) { low = s; best = (int)i; }
+    const double r = rate(g, i);
+    if (r <= low) { low = r; best = (int)i; }
   }
-  return live > 1 ? best : -1;
+  return live > keep ? best : -1;
+}
+
+/* ---- the rotation: a band paused long is tested now and then ---------------------- *
+ * Paused, a band has no spots, so it could never prove its band opened. Each
+ * one paused probe_every_min (since its pause or its last test) is tested:
+ * on for probe_min minutes in place of the weakest band decoding (the same
+ * CPU), its spots a minute against what that band did before. More (and 2
+ * spots at least — two dead bands are not swapped for one stray spot): the
+ * two change places; else both go back. One test at a time, the band
+ * waiting longest first; the pause/restore decisions wait meanwhile. */
+static gboolean rotate(SkimHdGovernor *g, gint64 minute, const guint *band_spots) {
+  if (!g->cfg.thermal || !g->cfg.probe_every_min || !g->cfg.probe_min) { return FALSE; }
+  const gint64 now_s = (minute + 1) * 60;               /* the minute starting  */
+  if (g->probe_k >= 0) {
+    if (minute >= g->probe_from && band_spots) { g->probe_spots += band_spots[g->probe_band]; }
+    if (minute + 1 < g->probe_end) { return FALSE; }
+    Shed *s = &g->shed[g->probe_k];
+    const double r = (double)g->probe_spots / g->cfg.probe_min;
+    const char *pb = g->names[g->probe_band], *vb = g->names[g->probe_vs];
+    if (g->probe_spots >= 2 && r > g->vs_rate) {
+      s->band = g->probe_vs;                            /* the slot keeps its drop */
+      g_message("thermal: test — %s %u spots in %u min (%.1f/min) > %s %.1f/min: %s stays on, "
+                "%s paused in its place", pb, g->probe_spots, g->cfg.probe_min, r, vb, g->vs_rate,
+                pb, vb);
+    } else {
+      g->shed_on[g->probe_band] = TRUE;
+      g->shed_on[g->probe_vs] = FALSE;
+      g_message("thermal: test — %s %u spots in %u min (%.1f/min), %s %.1f/min: %s paused again, "
+                "%s back on", pb, g->probe_spots, g->cfg.probe_min, r, vb, g->vs_rate, pb, vb);
+    }
+    s->tried = now_s;
+    g->probe_k = -1;
+    return TRUE;
+  }
+  int k = -1;
+  for (guint j = 0; j < g->nshed; j++) {              /* the one waiting longest */
+    if (now_s - g->shed[j].tried >= (gint64)g->cfg.probe_every_min * 60 &&
+        (k < 0 || g->shed[j].tried < g->shed[k].tried)) {
+      k = (int)j;
+    }
+  }
+  if (k < 0) { return FALSE; }
+  const int vs = weakest(g, 0);
+  if (vs < 0) { return FALSE; }
+  g->probe_k = k;
+  g->probe_band = g->shed[k].band;
+  g->probe_vs = (guint)vs;
+  g->vs_rate = rate(g, (guint)vs);
+  g->probe_spots = 0;
+  g->probe_from = minute + 1;
+  g->probe_end = minute + 1 + g->cfg.probe_min;
+  g->shed_on[g->probe_band] = FALSE;
+  g->shed_on[vs] = TRUE;
+  g_message("thermal: test — %s on for %u min in place of %s (%.1f spots/min, the fewest)",
+            g->names[g->probe_band], g->cfg.probe_min, g->names[vs], g->vs_rate);
+  return TRUE;
 }
 
 /* The reserve under the limit a paused band needs before it comes back:
@@ -206,21 +289,22 @@ gboolean skim_hd_governor_temp(SkimHdGovernor *g, gint64 now_s, double temp_c) {
     if (!g->over_since) { g->over_since = now_s; }
     if (g->on >= SKIM_GOV_OVER_NEED_S &&
         (!g->last_change || now_s - g->last_change >= SKIM_GOV_NEXT_S)) {
-      const int b = pick(g);
+      const int b = g->probe_k >= 0 ? -1 : weakest(g, 1);   /* not during a test */
       if (b >= 0) {
         Shed *s = &g->shed[g->nshed++];
         s->band = (guint)b;
         s->at = now_s;
         s->at_c = g->mean;
         s->drop_c = NAN;
+        s->tried = now_s;
         g->shed_on[b] = TRUE;
         g->last_change = now_s;
         changed = TRUE;
         g_message("thermal: %.1f °C (the %u-min mean) over %.1f °C for %.1f of the last %d "
-                  "min — %s paused (%u spots in %d min, the fewest)", g->mean,
+                  "min — %s paused (%.1f spots/min in the last %d min, the fewest)", g->mean,
                   g->cfg.average_min, lim, g->on / 60.0, SKIM_GOV_OVER_S / 60, g->names[b],
-                  spots30(g, (guint)b), SKIM_GOV_SPOTS_MIN);
-      } else if (!g->told_none) {
+                  rate(g, (guint)b), SKIM_GOV_SPOTS_MIN);
+      } else if (g->probe_k < 0 && !g->told_none) {
         g->told_none = TRUE;
         g_warning("thermal: %.1f °C over %.1f °C, and only one band is left — it stays on",
                   g->mean, lim);
@@ -228,7 +312,7 @@ gboolean skim_hd_governor_temp(SkimHdGovernor *g, gint64 now_s, double temp_c) {
     }
     return changed;
   }
-  if (!g->nshed) { return FALSE; }
+  if (!g->nshed || g->probe_k >= 0) { return changed; }          /* a test: later */
   Shed *s = &g->shed[g->nshed - 1];                   /* the last one first     */
   if (g->mean > lim - need_c(g, s)) {
     g->below_since = 0;
@@ -289,8 +373,21 @@ void skim_hd_governor_json(const SkimHdGovernor *g, GString *out) {
     g_string_append(out, ",\"limit_c\":");
     num_or_null(out, "%.1f", g->cfg.limit_c);
     g_string_append_printf(out, ",\"average_min\":%u,\"state\":\"%s\",\"over_since\":%" G_GINT64_FORMAT
-                           ",\"over_s\":%u,\"over_need_s\":%d,\"shed\":[", g->cfg.average_min, st,
+                           ",\"over_s\":%u,\"over_need_s\":%d,", g->cfg.average_min, st,
                            g->over_since, g->on, SKIM_GOV_OVER_NEED_S);
+    /* the rotation: its clock, and the test running (null: none) */
+    g_string_append_printf(out, "\"probe_every_min\":%u,\"probe_min\":%u,\"probe\":",
+                           g->cfg.probe_every_min, g->cfg.probe_min);
+    if (g->probe_k >= 0) {
+      g_string_append_printf(out, "{\"band\":\"%s\",\"vs\":\"%s\",\"spots\":%u,\"vs_rate\":",
+                             g->names[g->probe_band], g->names[g->probe_vs], g->probe_spots);
+      num_or_null(out, "%.2f", g->vs_rate);
+      g_string_append_printf(out, ",\"from\":%" G_GINT64_FORMAT ",\"until\":%" G_GINT64_FORMAT "}",
+                             g->probe_from * 60, g->probe_end * 60);
+    } else {
+      g_string_append(out, "null");
+    }
+    g_string_append(out, ",\"shed\":[");
     for (guint k = 0; k < g->nshed; k++) {
       const Shed *s = &g->shed[k];
       g_string_append_printf(out, "%s{\"band\":\"%s\",\"at\":%" G_GINT64_FORMAT ",\"at_c\":",
@@ -300,6 +397,13 @@ void skim_hd_governor_json(const SkimHdGovernor *g, GString *out) {
       num_or_null(out, "%.1f", s->drop_c);
       g_string_append(out, ",\"back_at_c\":");
       num_or_null(out, "%.1f", g->cfg.limit_c - need_c(g, s));
+      /* its next test (unix s; null: no rotation) */
+      g_string_append(out, ",\"test_at\":");
+      if (g->cfg.probe_every_min && g->cfg.probe_min) {
+        g_string_append_printf(out, "%" G_GINT64_FORMAT, s->tried + (gint64)g->cfg.probe_every_min * 60);
+      } else {
+        g_string_append(out, "null");
+      }
       g_string_append_c(out, '}');
     }
     g_string_append(out, "]}");
