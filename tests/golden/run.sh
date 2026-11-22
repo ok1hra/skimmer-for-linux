@@ -36,7 +36,9 @@ OUT=$(mktemp -d "${TMPDIR:-/tmp}/skimmer-golden.XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 mkdir -p "$OUT/cfg/skimmer-for-linux"
 cp "$G/scp/master.scp" "$OUT/cfg/skimmer-for-linux/"
-run() { env -i HOME="$OUT" PATH=/usr/bin:/bin XDG_CONFIG_HOME="$OUT/cfg" "$@"; }
+# SKIM_DCW4_ISA=generic: CW v4's encoders round differently (FMA, rcpps —
+# Intel against AMD), the plain-array one alike everywhere (docs/DEEPCW-V4.md)
+run() { env -i HOME="$OUT" PATH=/usr/bin:/bin XDG_CONFIG_HOME="$OUT/cfg" SKIM_DCW4_ISA=generic "$@"; }
 
 # <output dir>:<slice>:<mode>[:pairs[:engine]] — CW on every slice; RTTY on the
 # contest slice (g40m-rtty, JARTS) and on a 20 m evening with an RTTY net
@@ -48,10 +50,11 @@ IQ=(g20m-day:g20m-day:cw g20m-eve:g20m-eve:cw g30m-day:g30m-day:cw
     rtty-g40m-rtty:g40m-rtty:rtty rtty-g20m-eve:g20m-eve:rtty
     pairs-g40m-rtty:g40m-rtty:cw:pairs
     v3-g20m-day:g20m-day:cw::v3 v3-g20m-eve:g20m-eve:cw::v3 v3-g30m-day:g30m-day:cw::v3
-    v3-g40m-night:g40m-night:cw::v3 v3-g40m-rtty:g40m-rtty:cw::v3)
+    v3-g40m-night:g40m-night:cw::v3 v3-g40m-rtty:g40m-rtty:cw::v3
+    v4-g20m-day:g20m-day:cw::v4 v4-g40m-night:g40m-night:cw::v4)
 BANDS=(160m 80m 40m 30m 20m 17m 15m 40m-rtty)
 
-# IQ → channelizer → CW v2 or v3 / RTTY → extractor → station table → feed
+# IQ → channelizer → CW v2, v3 or v4 / RTTY → extractor → station table → feed
 # (stderr feed:)
 for job in "${IQ[@]}"; do
   IFS=: read -r d s mode pairs engine <<< "$job"

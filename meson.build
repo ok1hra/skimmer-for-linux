@@ -490,7 +490,7 @@ test('skimsrv', skimmer_skimsrv_test, timeout : 30)
 # them the gate SKIPs.
 test('golden', find_program('tests/golden/run.sh'),
   args : [skimmer_replay, skimmer_tap_replay],
-  timeout : 900,
+  timeout : 1800,     # CW v4 on the generic encoder: ~10 min a slice
 )
 
 # gh#15: offline gate — the MASTER.SCP updater against a mock HTTP server:
