@@ -210,7 +210,7 @@ function renderStatus(d) {
     '<th colspan="2" class="l" title="RTTY channel decoders reading a signal now (of all the band has)">RTTY active decoders</th>' +
     (wsprOn ? '<th colspan="2" class="l" title="the WSPR stations decoded on the band in the last 30 min">WSPR stations 30 min</th>' : '') +
     CONT.map((c) => `<th class="hm" title="${CONT_NAME[c]}: the stations heard on the band in the last 30 min — CW, RTTY and WSPR, each call once">${c}</th>`).join('') +
-    '<th></th></tr>' + decoded.map((b) => {
+    '<th></th></tr>' + ladderOrder(decoded).map((b) => {
     // the thermal guard testing this paused band in place of the quietest one
     const pr = d.thermal && d.thermal.probe && d.thermal.probe.band === b.band ? d.thermal.probe : null;
     const sp = per(b.band), cwOn = b.cw !== false, rt = b.rtty;
@@ -653,6 +653,12 @@ function renderDecTile(d) {
   };
   el.innerHTML = '<div class="k">CW + RTTY decoders <small>active now</small></div><div class="parts">' +
     part('CW', 'cw', cw, (b) => b) + part('RTTY', 'rtty', rt, (b) => b.rtty) + '</div>';
+}
+// the ladder's rows: the highest band on top, 160 m at the bottom (as a
+// band map stands); a band without a centre keeps its place at the end
+function ladderOrder(bands) {
+  return bands.map((b, i) => [b, i])
+    .sort(([a, i], [b, j]) => (b.centre_hz || -1) - (a.centre_hz || -1) || i - j).map(([b]) => b);
 }
 // The heatmap beside the bands: per band, per continent, the calls heard in
 // 30 min — spotted (CW, RTTY: the spots list) or decoded by WSPR (its

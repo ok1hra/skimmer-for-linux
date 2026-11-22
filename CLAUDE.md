@@ -142,7 +142,10 @@ here; what was done and why is in git.
   offline; the look of IP-rotator/wifilt, Roboto Condensed built in):
   status = an azimuthal map of the last 30 min of spots (`web/map.js`, data
   `web/map/` from IP-rotator) + the DX cluster with column filters
-  (`web/dxc.js`), both from `/api/spots`; statistics (`stats.c`, three
+  (`web/dxc.js`), both from `/api/spots`, + the bands table (10 m on top)
+  with a heat map of the continents each band is open to (CW/RTTY spots
+  and WSPR, 30 min; how open, not how busy — two loud stations are an open
+  band; `web/cont.js`: a call's continent from the map's DXCC labels); statistics (`stats.c`, three
   rings: 1 min × 7 d, 15 min × 90 d, 1 h × 2 y, saved in place; file
   version 5 = with the thermal guard's pauses per band (`thermal`, the
   share of the bucket off — red in "active decoders by band"); a version 3
