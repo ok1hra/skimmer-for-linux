@@ -201,7 +201,6 @@ function renderStatus(d) {
   const wsprRx = new Map(wsprOn ? (d.wspr.rx || []).map((r) => [r.band, r]) : []);
   if (wsprOn) wsprFetch();
   const heat = heatByBand(decoded.map((b) => b.band), per, wsprOn ? wspr.data : null);
-  const heatMax = Math.max(1, ...[...heat.values()].flatMap((m) => [...m.values()].map((x) => x.calls.size)));
   const heatRows = [];
   const maxWspr = Math.max(1, ...[...wsprRx.values()].map((r) => r.stations));
   // the head says what each number counts (each over its number and bar)
@@ -237,7 +236,7 @@ function renderStatus(d) {
       bar(cwOn, b.active, b.decoders, 'cw', cwOn && b.paused) +
       bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty', rt && rt.paused) +
       (wsprOn ? wsprCells(wsprRx.get(b.band), maxWspr, i) : '') +
-      heatCells(heat.get(b.band), heatMax, heatRows, allOff) +
+      heatCells(heat.get(b.band), heatRows, allOff) +
       `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : pr
         ? `<span class="off-hot" title="paused by the thermal guard, on for a test in place of ${esc(pr.vs)} (the fewest spots) until ${hmUtc(pr.until)} UTC: with more spots a minute it stays on">TEST</span> ${fmt(pr.spots)} sp.`
         : ''}</td></tr>`;
@@ -657,41 +656,54 @@ function renderDecTile(d) {
 }
 // The heatmap beside the bands: per band, per continent, the calls heard in
 // 30 min — spotted (CW, RTTY: the spots list) or decoded by WSPR (its
-// stations' newest decode on the band); each call once.
+// stations' newest decode on the band); each call once, at its strongest.
+// A call's weight is how loud it came in (as the map's heat: 0.5 at 0 dB,
+// 1.5 at 40 dB and more; WSPR's dB in 2500 Hz from −30 to +10).
 const HEAT_S = 1800;
 const CONT = ['EU', 'NA', 'SA', 'AS', 'AF', 'OC'];
 const CONT_NAME = { EU: 'Europe', AS: 'Asia', AF: 'Africa', NA: 'North America', SA: 'South America', OC: 'Oceania' };
 function heatByBand(bands, per, w) {
   const now = Date.now() / 1000, out = new Map();
-  const add = (band, call, how) => {
+  const add = (band, call, how, w, db) => {
     const m = out.get(band), c = typeof Cont !== 'undefined' ? Cont.of(call) : '';
     if (!m || !c) return;
     const x = m.get(c);
     x.calls.add(call);
     x[how].add(call);
+    if (!(x.w.get(call) >= w)) x.w.set(call, w);
+    if (db != null && !(x.top && x.top.w >= w)) x.top = { call, db, how, w };
   };
+  const wt = (db) => 0.5 + Math.max(0, Math.min(40, Number(db) || 0)) / 40;
   for (const b of bands) {
-    out.set(b, new Map(CONT.map((c) => [c, { calls: new Set(), cw: new Set(), rtty: new Set(), wspr: new Set() }])));
-    for (const s of per(b)) add(b, s.call, s.mode === 'RTTY' ? 'rtty' : 'cw');
+    out.set(b, new Map(CONT.map((c) => [c, { calls: new Set(), cw: new Set(), rtty: new Set(), wspr: new Set(), w: new Map(), top: null }])));
+    for (const s of per(b)) add(b, s.call, s.mode === 'RTTY' ? 'rtty' : 'cw', wt(s.snr), s.snr);
   }
   for (const s of (w && w.stations) || []) {
-    for (const [band, t] of Object.entries(s.seen || {})) if (now - t <= HEAT_S) add(band, s.call, 'wspr');
+    for (const [band, t] of Object.entries(s.seen || {})) {
+      if (now - t > HEAT_S) continue;
+      const db = s.band === band ? s.snr : s.best;          // its newest there, else its best
+      add(band, s.call, 'wspr', wt(Number(db) + 30), db);
+    }
   }
   return out;
 }
-// a band's cells: empty, each with its tip; their shares (log scale of the
-// table's largest: one station shows, Europe's dozens do not drown the
-// rest) go to rows[] for the heat map drawn over them
-function heatCells(m, max, rows, dim) {
+// a band's cells: empty, each with its tip; how open the band is to each
+// continent goes to rows[] for the heat map drawn over them. Open, not how
+// busy: two loud stations through say the band is open (there is just no
+// one else on), so it saturates fast and does not scale to the busiest
+// cell — 1 − e^(−Σweight/1.5): one weak station ~0.3, two loud ~0.85.
+function heatCells(m, rows, dim) {
   const t = [];
   const cells = CONT.map((c) => {
     const x = m && m.get(c), n = x ? x.calls.size : 0;
-    t.push(n ? Math.log1p(n) / Math.log1p(max) : 0);
+    const sw = x ? [...x.w.values()].reduce((a, v) => a + v, 0) : 0;
+    t.push(n ? 1 - Math.exp(-sw / 1.5) : 0);
     if (!n) return `<td class="hm" title="${CONT_NAME[c]}: none in 30 min"></td>`;
     const parts = [['CW', x.cw], ['RTTY', x.rtty], ['WSPR', x.wspr]].filter(([, s]) => s.size)
       .map(([k, s]) => `${k} ${s.size}`).join(', ');
     const some = [...x.calls].slice(0, 12).join(' ') + (n > 12 ? ' …' : '');
-    return `<td class="hm" title="${CONT_NAME[c]}: ${n} station${n > 1 ? 's' : ''} in 30 min (${parts}) — ${esc(some)}"></td>`;
+    const top = x.top ? ` · loudest ${esc(x.top.call)} ${x.top.db} dB${x.top.how === 'wspr' ? ' (WSPR)' : ''}` : '';
+    return `<td class="hm" title="${CONT_NAME[c]}: ${n} station${n > 1 ? 's' : ''} in 30 min (${parts})${top} — ${esc(some)}"></td>`;
   }).join('');
   rows.push({ t, dim });
   return cells;
@@ -724,9 +736,9 @@ function drawLadderHeat() {
     blobs.push({ x: (c.left + c.right) / 2 - a.left, y: (c.top + c.bottom) / 2 - a.top, t, dim: r.dim });
   }));
   const cw = a.width, ch = cells.length > 1 ? (b.bottom - a.top) / cells.length : a.height;
-  // wide enough that neighbours meet: half a cell each way (an ellipse in a
-  // tall cell)
-  const sx = 0.6 * cw, sy = 0.6 * ch, kx = 1 / (2 * sx * sx), ky = 1 / (2 * sy * sy), rx = 3 * sx, ry = 3 * sy;
+  // wide enough that neighbours meet halfway, narrow enough that a strong
+  // cell does not cover the next (an ellipse in a tall cell)
+  const sx = 0.38 * cw, sy = 0.38 * ch, kx = 1 / (2 * sx * sx), ky = 1 / (2 * sy * sy), rx = 3 * sx, ry = 3 * sy;
   const step = 2, w = Math.ceil(W / step), h = Math.ceil(H / step);
   cv.width = w; cv.height = h;
   const g = cv.getContext('2d'), img = g.createImageData(w, h);
