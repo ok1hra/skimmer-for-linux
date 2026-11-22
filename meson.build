@@ -39,6 +39,8 @@ soup_dep  = dependency('libsoup-3.0', version : '>=3.0') # the web page
 subdir('vendor/wdsp')
 # WSJT-X's wsprd (the WSPR decoder, a helper program) — VENDOR.md there.
 subdir('vendor/wsprd')
+# WSJT-X's FT8/FT4 decoders (Fortran, a helper program) — VENDOR.md there.
+subdir('vendor/wsjtx-ft')
 
 engine_inc = include_directories('src/engine', 'vendor/onnxruntime')
 # ONNX Runtime is NEVER linked: decode_deepcw dlopen()s it at run time
@@ -357,6 +359,17 @@ skimmer_wspr_test = executable('skimmer-wspr-test',
   link_with : wsprd_enc_lib,
 )
 test('wspr', skimmer_wspr_test, args : [skimmer_wsprd], timeout : 120)
+
+# FT8/FT4: skimmer-ft8d (WSJT-X's decoders, vendor/wsjtx-ft) on synthetic
+# air — tones from upstream's ft8code/ft4code (so our CRC-14 stub is checked
+# by the decoder's Fortran one), two messages a cycle with their SNR, DT and
+# frequency, two cycles in one run, noise alone, a WAV at the wrong rate.
+if ft8_enabled
+  skimmer_ft8d_test = executable('skimmer-ft8d-test', 'src/ft8d_test.c',
+    dependencies : [glib_dep, m_dep])
+  test('ft8d', skimmer_ft8d_test,
+       args : [skimmer_ft8d, skimmer_ft8code, skimmer_ft4code], timeout : 120)
+endif
 
 # The governor: adaptive RTTY's hourly test (and the thermal guard).
 skimmer_governor_test = executable('skimmer-governor-test',

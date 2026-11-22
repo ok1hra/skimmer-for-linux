@@ -52,6 +52,11 @@ miss=$(ldd "$R/usr/bin/skimmer-headless" "$R/usr/lib/libonnxruntime.so.1" 2>&1 |
 [[ -x $R/usr/bin/skimmer-headless && -z $miss ]]; check "every library found (ldd) ${miss:+— $miss}" $?
 [[ -f $R/usr/share/doc/onnxruntime/LICENSE && -f $R/usr/share/doc/skimmer-for-linux/LICENSE ]]
 check "licences inside" $?
+# WSJT-X's FT8/FT4 decoder: its own libgfortran found, and it runs (usage = exit 2)
+miss=$(ldd "$R/usr/bin/skimmer-ft8d" 2>&1 | grep "not found")
+[[ -x $R/usr/bin/skimmer-ft8d && -z $miss ]]; check "skimmer-ft8d's libraries found ${miss:+— $miss}" $?
+out=$("$R/usr/bin/skimmer-ft8d" 2>&1); rc=$?
+[[ $rc == 2 && $out == *Usage:\ skimmer-ft8d* ]]; check "skimmer-ft8d runs" $?
 
 # the whole skimmer on the mock source: streaming, the web page answers
 HTTP=$((30000 + RANDOM % 5000))

@@ -4,3 +4,8 @@
 # (src/headless/update.h); a development build reports one.
 option('build_suffix', type : 'string', value : '',
        description : 'build suffix after the version, empty for a release')
+
+# FT8/FT4 (src/headless/ft8.c) decodes with WSJT-X's Fortran core
+# (vendor/wsjtx-ft → skimmer-ft8d). auto = only when gfortran is there.
+option('ft8', type : 'feature', value : 'auto',
+       description : 'build skimmer-ft8d (needs a Fortran compiler)')
