@@ -77,10 +77,35 @@ engine_sources = [
 ]
 engine_deps = [glib_dep, gio_dep, lws_dep, wdsp_dep, fftw3f_dep, m_dep, dl_dep]
 
+# CW v4's network (src/engine/dcw4_kernel.h): e04's DeepCW v2 narrow model
+# as a hand-written forward pass, its weights built in (weights/dcw4.*).
+# The encoder (dcw4_encoder.inc) is compiled once per instruction set and
+# picked at run time: AVX2 + FMA in a library of its own (only that file
+# may hold AVX2 code), SSE2 (x86-64's baseline) and plain arrays beside the
+# loader. -ffp-contract=off: the front end must round as ONNX Runtime does.
+dcw4_res = gnome.compile_resources('skimmer-dcw4-weights',
+  'weights/dcw4.gresource.xml',
+  source_dir : 'weights',
+  c_name : 'skim_dcw4_weights',
+)
+dcw4_x86_64 = host_machine.cpu_family() == 'x86_64'
+dcw4_avx2_lib = static_library('dcw4-avx2',
+  'src/engine/dcw4_enc_avx2.c',
+  c_args : dcw4_x86_64 ? ['-mavx2', '-mfma'] : [],
+)
+dcw4_lib = static_library('dcw4',
+  ['src/engine/dcw4_kernel.c', 'src/engine/dcw4_enc_sse.c',
+   'src/engine/dcw4_enc_generic.c', dcw4_res],
+  c_args : ['-ffp-contract=off'],
+  dependencies : [glib_dep, gio_dep, m_dep],
+  link_with : dcw4_avx2_lib,
+)
+
 engine_lib = static_library('skimmer-engine',
   engine_sources,
   include_directories : engine_inc,
   dependencies : engine_deps,
+  link_with : dcw4_lib,
 )
 
 # --- Gates (offline tests + live probes, sdr-for-linux house style) ---------
@@ -208,6 +233,27 @@ skimmer_deepcw_test = executable('skimmer-deepcw-test',
 # inline makes the gate a test of the decode logic, which is what it asserts.
 test('deepcw-decode', skimmer_deepcw_test, timeout : 300,
   env : ['SKIM_DEEPCW_SYNC=1'])
+
+# CW v4's network: the built-in blob and its pin, every encoder this CPU
+# runs against the plain-array one (|Δ logp| ≤ 1e-4, the same greedy text),
+# a keyed tile read back; with SKIM_DCW4_ONNX=<model_narrow.onnx> and an
+# ONNX Runtime also against the model itself (said SKIP otherwise).
+skimmer_dcw4_kernel_test = executable('skimmer-dcw4-kernel-test',
+  ['src/dcw4_kernel_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('dcw4-kernel', skimmer_dcw4_kernel_test, timeout : 120)
+
+# What CW v4's network costs here: windows/s per encoder on 1 and N threads,
+# keyed channels carried, CPU per channel-second.
+executable('skimmer-dcw4-bench',
+  ['src/dcw4_bench_main.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
 
 # Tone splitter: offline gate — sideband immunity, Δf 50/30 Hz splits with
 # both texts copied, Δf 15 Hz contested, slot TTL collapse/re-engage, and the

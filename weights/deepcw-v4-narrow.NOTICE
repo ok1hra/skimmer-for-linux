@@ -1,0 +1,36 @@
+weights/deepcw-v4-narrow.bin — the network of CW v4 (src/engine/dcw4_kernel.c)
+
+The weights in deepcw-v4-narrow.bin are e04's: model_narrow.onnx from
+e04/deepcw-engine (https://github.com/e04/deepcw-engine), commit
+79104fbe1ea0abd09eb27c6ebf9c6bab364d0d7f, sha256
+fc80c4baec72d756af1dbce9b70357a731b0b1a6b8306815bcfc61b6403c46e5, converted
+to another layout by tools/deepcw_narrow_extract.py (from SDRIAK,
+bubnikv/sdriak 850a08d, GPL-3.0-or-later):
+
+    tools/deepcw_narrow_extract.py model_narrow.onnx deepcw-v4-narrow.bin --check
+
+The blob's sha256 is
+253ffb73161a09f3ee7d2c23d03106e4d64ecd8b846ac6a7ec7f48fe81820dc3; it carries
+the notice below as its "notice" tensor too.
+
+MIT License
+
+Copyright (c) 2026 e04
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

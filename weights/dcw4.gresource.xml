@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <!-- CW v4's network, built into the engine (src/engine/dcw4_kernel.c):
+       e04's DeepCW v2 narrow model (deepcw-engine model_narrow.onnx
+       fc80c4ba…, MIT) in the fused kernel's layout, written by
+       tools/deepcw_narrow_extract.py. A new model = a new blob here and a
+       new SKIM_DCW4_BLOB_SHA256. Its licence: deepcw-v4-narrow.NOTICE. -->
+  <gresource prefix="/skimmer-for-linux/dcw4">
+    <file>deepcw-v4-narrow.bin</file>
+  </gresource>
+</gresources>
