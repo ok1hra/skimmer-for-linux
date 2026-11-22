@@ -220,10 +220,17 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .ladder tr.off-map td.eye button { color: var(--faint); }
 .ladder tr.off-map td:not(.eye) { opacity: .4; }
 /* every mode of the band paused (the thermal guard): grey, not its colour */
-.ladder tr.paused td.b, .ladder tr.paused td.last { color: var(--mut) !important; }
+.ladder tr.paused td.b { color: var(--mut) !important; }
 .ladder tr.paused td.bar i { background: var(--faint) !important; opacity: 1; }
-/* … and on a dark grey ground, the whole row; one paused mode: its two cells */
-.ladder tr.paused td, .ladder td.pz { background-color: var(--off-bg) !important; }
+/* … and on a dark grey ground, the whole row */
+.ladder tr.paused td { background-color: var(--off-bg) !important; }
+/* where the band goes: a thin cell a continent, the stations heard from it
+ * in 30 min (CW, RTTY, WSPR) — the darker, the fewer */
+.ladder th.hm { width: 22px; padding: 2px 0 4px; text-align: center; letter-spacing: 0; }
+.ladder td.hm { width: 22px; padding: 0; text-align: center; font-size: 11px; color: var(--mut);
+  border-left: 1px solid var(--bg); }
+.ladder td.hm.ink { color: var(--hot-ink); font-weight: 700; }
+.ladder tr.paused td.hm { color: var(--faint); }
 .ladder tr.head-row th { padding: 2px 6px 4px; border-bottom: 1px solid var(--ln); color: var(--mut); font-weight: 400;
   font-size: 11px; letter-spacing: .1em; text-transform: uppercase; text-align: left; vertical-align: bottom; cursor: help; }
 .readouts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 16px; color: var(--mut); font-size: 13px;

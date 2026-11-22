@@ -815,6 +815,7 @@ typedef struct {
   guint n;
   int   best;
   guint bands;                          /* bit k = SKIM_WSPR_DIALS[k]'s band name  */
+  gint64 seen[32];                      /* [k]: its newest decode there, unix s  */
   char  grid[8];                        /* the longest locator heard             */
 } Station;
 
@@ -850,7 +851,7 @@ char *skim_hd_wspr_stations_json(SkimHdWspr *w, guint hours, gint64 now) {
     st->n++;
     st->best = MAX(st->best, p->snr);
     const int bit = band_bit(p->band);
-    if (bit >= 0) { st->bands |= 1u << bit; }
+    if (bit >= 0) { st->bands |= 1u << bit; st->seen[bit] = MAX(st->seen[bit], p->t); }
     if (strlen(p->grid) >= strlen(st->grid)) { g_strlcpy(st->grid, p->grid, sizeof st->grid); }
   }
   GPtrArray *list = g_ptr_array_new();
@@ -879,8 +880,17 @@ char *skim_hd_wspr_stations_json(SkimHdWspr *w, guint hours, gint64 now) {
     g_string_append(s, ",\"band\":");
     jstr(s, p->band);
     g_string_append_printf(s, ",\"dbm\":%d,\"n\":%u,\"snr\":%d,\"best\":%d,\"last\":%" G_GINT64_FORMAT
-                           ",\"freq\":%.0f,\"drift\":%d}",
+                           ",\"freq\":%.0f,\"drift\":%d,\"seen\":{",
                            p->dbm, st->n, p->snr, st->best, p->t, p->freq_hz, p->drift);
+    /* each band's newest decode (the band's name once: 60m has two dials) */
+    gboolean first = TRUE;
+    for (int k = 0; SKIM_WSPR_DIALS[k].band; k++) {
+      if (!(st->bands & (1u << k)) || band_bit(SKIM_WSPR_DIALS[k].band) != k) { continue; }
+      g_string_append_printf(s, "%s\"%s\":%" G_GINT64_FORMAT, first ? "" : ",",
+                             SKIM_WSPR_DIALS[k].band, st->seen[k]);
+      first = FALSE;
+    }
+    g_string_append(s, "}}");
   }
   g_mutex_unlock(&w->lock);
   g_string_append(s, "]}");

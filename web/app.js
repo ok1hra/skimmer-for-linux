@@ -190,7 +190,8 @@ function renderStatus(d) {
   const workers = (d.hub && d.hub.workers) || [];
   // beside the map: the bands as a ladder — the spots of the last half hour
   // first (what the skimmer gives), then CW and RTTY activity in muted bars
-  // (how busy the decoders are) and the last call — then one line of readouts
+  // (how busy the decoders are) and where the band goes: a heatmap of the
+  // continents heard — then one line of readouts
   const decoded = bandsDecoded(d);
   const maxAct = Math.max(1, ...decoded.map((b) => Math.max(b.cw !== false ? b.active : 0, b.rtty ? b.rtty.active : 0)));
   const per = (band) => window.spots ? window.spots.list.filter((s) => s.band === band) : [];
@@ -198,6 +199,9 @@ function renderStatus(d) {
   // WSPR, while its decoder runs: the stations each receiver heard in 30 min
   const wsprOn = !!(d.wspr && d.wspr.on && d.wspr.decoder);
   const wsprRx = new Map(wsprOn ? (d.wspr.rx || []).map((r) => [r.band, r]) : []);
+  if (wsprOn) wsprFetch();
+  const heat = heatByBand(decoded.map((b) => b.band), per, wsprOn ? wspr.data : null);
+  const heatMax = Math.max(1, ...[...heat.values()].flatMap((m) => [...m.values()].map((x) => x.calls.size)));
   const maxWspr = Math.max(1, ...[...wsprRx.values()].map((r) => r.stations));
   // the head says what each number counts (each over its number and bar)
   $('#ladder').innerHTML = '<tr class="head-row"><th title="on the map"></th><th class="l">band</th>' +
@@ -205,7 +209,8 @@ function renderStatus(d) {
     '<th colspan="2" class="l" title="CW channel decoders reading a signal now (of all the band has)">CW active decoders</th>' +
     '<th colspan="2" class="l" title="RTTY channel decoders reading a signal now (of all the band has)">RTTY active decoders</th>' +
     (wsprOn ? '<th colspan="2" class="l" title="the WSPR stations decoded on the band in the last 30 min">WSPR stations 30 min</th>' : '') +
-    '<th class="l" title="the band\'s newest spot">last spot</th><th></th></tr>' + decoded.map((b) => {
+    CONT.map((c) => `<th class="hm" title="${CONT_NAME[c]}: the stations heard on the band in the last 30 min — CW, RTTY and WSPR, each call once">${c}</th>`).join('') +
+    '<th></th></tr>' + decoded.map((b) => {
     // the thermal guard testing this paused band in place of the quietest one
     const pr = d.thermal && d.thermal.probe && d.thermal.probe.band === b.band ? d.thermal.probe : null;
     const sp = per(b.band), cwOn = b.cw !== false, rt = b.rtty;
@@ -215,7 +220,7 @@ function renderStatus(d) {
     // a paused mode is grey OFF (why: its title); a band with every mode
     // paused is grey all along its row — its spots are from before the pause
     const bar = (on, act, dec, cls, paused) => paused
-      ? `<td class="n mut pz" title="${esc(pausedText(paused))}">OFF</td><td class="bar off pz" title="${esc(pausedText(paused))}"></td>`
+      ? `<td class="n mut" title="${esc(pausedText(paused))}">OFF</td><td class="bar off" title="${esc(pausedText(paused))}"></td>`
       : on
       ? `<td class="n" title="${fmt(act)} of ${fmt(dec)} decoders active">${fmt(act)}</td><td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active">${i(act / maxAct)}</td>`
       : '<td class="n mut">–</td><td class="bar off"></td>';
@@ -231,7 +236,7 @@ function renderStatus(d) {
       bar(cwOn, b.active, b.decoders, 'cw', cwOn && b.paused) +
       bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty', rt && rt.paused) +
       (wsprOn ? wsprCells(wsprRx.get(b.band), maxWspr, i) : '') +
-      `<td class="last" title="the band's newest spot">${sp.length ? esc(sp[0].call) : ''}</td>` +
+      heatCells(heat.get(b.band), heatMax) +
       `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : pr
         ? `<span class="off-hot" title="paused by the thermal guard, on for a test in place of ${esc(pr.vs)} (the fewest spots) until ${hmUtc(pr.until)} UTC: with more spots a minute it stays on">TEST</span> ${fmt(pr.spots)} sp.`
         : ''}</td></tr>`;
@@ -647,6 +652,55 @@ function renderDecTile(d) {
   el.innerHTML = '<div class="k">CW + RTTY decoders <small>active now</small></div><div class="parts">' +
     part('CW', 'cw', cw, (b) => b) + part('RTTY', 'rtty', rt, (b) => b.rtty) + '</div>';
 }
+// The heatmap beside the bands: per band, per continent, the calls heard in
+// 30 min — spotted (CW, RTTY: the spots list) or decoded by WSPR (its
+// stations' newest decode on the band); each call once.
+const HEAT_S = 1800;
+const CONT = ['EU', 'AS', 'AF', 'NA', 'SA', 'OC'];
+const CONT_NAME = { EU: 'Europe', AS: 'Asia', AF: 'Africa', NA: 'North America', SA: 'South America', OC: 'Oceania' };
+function heatByBand(bands, per, w) {
+  const now = Date.now() / 1000, out = new Map();
+  const add = (band, call, how) => {
+    const m = out.get(band), c = typeof Cont !== 'undefined' ? Cont.of(call) : '';
+    if (!m || !c) return;
+    const x = m.get(c);
+    x.calls.add(call);
+    x[how].add(call);
+  };
+  for (const b of bands) {
+    out.set(b, new Map(CONT.map((c) => [c, { calls: new Set(), cw: new Set(), rtty: new Set(), wspr: new Set() }])));
+    for (const s of per(b)) add(b, s.call, s.mode === 'RTTY' ? 'rtty' : 'cw');
+  }
+  for (const s of (w && w.stations) || []) {
+    for (const [band, t] of Object.entries(s.seen || {})) if (now - t <= HEAT_S) add(band, s.call, 'wspr');
+  }
+  return out;
+}
+// --hot over --deep at a share f (rgb; color-mix() is too new for some browsers)
+let heatRgb = null;
+function heatShade(f) {
+  if (!heatRgb) {
+    const cs = getComputedStyle(document.documentElement);
+    const rgb = (v) => { const h = cs.getPropertyValue(v).trim().replace('#', ''); return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) || 0); };
+    heatRgb = [rgb('--deep'), rgb('--hot')];
+  }
+  const [a, b] = heatRgb;
+  return `rgb(${a.map((x, i) => Math.round(x + (b[i] - x) * f)).join(',')})`;
+}
+// a band's cells: the count in each, its shade on a log scale of the
+// table's largest (one station shows, EU's hundred does not drown the rest)
+function heatCells(m, max) {
+  return CONT.map((c) => {
+    const x = m && m.get(c), n = x ? x.calls.size : 0;
+    if (!n) return `<td class="hm" title="${CONT_NAME[c]}: none in 30 min"></td>`;
+    const f = Math.log1p(n) / Math.log1p(max), pct = Math.round(15 + 85 * f);
+    const parts = [['CW', x.cw], ['RTTY', x.rtty], ['WSPR', x.wspr]].filter(([, s]) => s.size)
+      .map(([k, s]) => `${k} ${s.size}`).join(', ');
+    const some = [...x.calls].slice(0, 12).join(' ') + (n > 12 ? ' …' : '');
+    return `<td class="hm${pct > 55 ? ' ink' : ''}" style="background:${heatShade(pct / 100)}" ` +
+      `title="${CONT_NAME[c]}: ${n} station${n > 1 ? 's' : ''} in 30 min (${parts}) — ${esc(some)}">${n}</td>`;
+  }).join('');
+}
 // why the skimmer paused a band's mode on its own (status.json "paused")
 function pausedText(why) {
   return why === 'rtty-adaptive' ? 'off: adaptive RTTY found no contest — on again for a test at the next full hour'
@@ -906,11 +960,14 @@ async function renderStatsVisitors(force) {
 // Under the bands' table, the WSPR stations of the last 24 h (/api/wspr):
 // newest first, or by a column clicked; the distance from the station's place
 const wspr = { at: 0, data: null, sort: 'last', down: true, all: false };
+// the stations, at most once a minute (the Status page's heatmap too)
+async function wsprFetch(force) {
+  if (!force && Date.now() - wspr.at < 60000) return;
+  wspr.at = Date.now();
+  try { wspr.data = await getJSON('api/wspr'); } catch (e) { /* the last one stays */ }
+}
 async function renderStatsWspr(force) {
-  if (force || Date.now() - wspr.at >= 60000) {
-    wspr.at = Date.now();
-    try { wspr.data = await getJSON('api/wspr'); } catch (e) { return; }
-  }
+  await wsprFetch(force);
   const d = wspr.data, box = $('#stats-wspr');
   box.hidden = !d || !!d.off;
   if (box.hidden) return;

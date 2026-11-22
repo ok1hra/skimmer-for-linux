@@ -7,6 +7,7 @@
     <file>app.js</file>
     <file>charts.js</file>
     <file>map.js</file>
+    <file>cont.js</file>
     <file>dxc.js</file>
     <file>waterfall.js</file>
     <file>rtty-palette.js</file>

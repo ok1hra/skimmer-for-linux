@@ -269,7 +269,8 @@ static void whole(const char *dir) {
   g_print("  stations: %s\n", js);
   check("stations of 24 h: OK1HRA JO70, 20m, once",
         g_str_has_prefix(js, "{\"hours\":24,\"spots\":1,\"stations\":[{\"call\":\"OK1HRA\",\"grid\":\"JO70\","
-                             "\"bands\":\"20m\",\"band\":\"20m\",\"dbm\":37,\"n\":1,"));
+                             "\"bands\":\"20m\",\"band\":\"20m\",\"dbm\":37,\"n\":1,") &&
+        strstr(js, "\"seen\":{\"20m\":") != NULL);
   g_free(js);
   js = skim_hd_wspr_stations_json(w, 24, cycle + 25 * 3600);
   check("… and 25 h later none", strstr(js, "\"spots\":0,\"stations\":[]") != NULL);
