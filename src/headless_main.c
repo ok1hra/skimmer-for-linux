@@ -2421,6 +2421,7 @@ int main(int argc, char **argv) {
       .upload = c->wspr_upload,
       .upload_url = c->wspr_upload_url,
       .dir = wdir,
+      .flags = (c->wspr_deep ? SKIM_WSPR_DEEP : 0) | (c->wspr_subtract ? 0 : SKIM_WSPR_NO_SUBTRACT),
     };
     h->wspr = skim_hd_wspr_new(&wc, h->nb, names, centres, c->rate);
     g_free(wdir);

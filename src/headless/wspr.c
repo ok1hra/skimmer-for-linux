@@ -311,12 +311,22 @@ static void lower_priority(gpointer unused) {
 }
 
 gboolean skim_wspr_decode_file(const char *decoder, const char *dir, const char *c2,
-                               gint64 t, const char *band, double dial_hz, GArray *spots,
-                               GCancellable *cancel, GError **error) {
+                               gint64 t, const char *band, double dial_hz, guint flags,
+                               GArray *spots, GCancellable *cancel, GError **error) {
   char mhz[32];
   g_ascii_formatd(mhz, sizeof mhz, "%.6f", dial_hz / 1e6);
   char *prog = g_canonicalize_filename(decoder, NULL);   /* it runs in dir */
-  const char *argv[] = { prog, "-a", dir, "-C", "500", "-w", "-f", mhz, c2, NULL };
+  const char *argv[12];
+  guint n = 0;
+  argv[n++] = prog;
+  argv[n++] = "-a"; argv[n++] = dir;
+  argv[n++] = "-C"; argv[n++] = "500";
+  argv[n++] = "-w";
+  if (flags & SKIM_WSPR_DEEP) { argv[n++] = "-d"; }
+  if (flags & SKIM_WSPR_NO_SUBTRACT) { argv[n++] = "-s"; }
+  argv[n++] = "-f"; argv[n++] = mhz;
+  argv[n++] = c2;
+  argv[n] = NULL;
   GSubprocessLauncher *l = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
                                                      G_SUBPROCESS_FLAGS_STDERR_PIPE);
   g_subprocess_launcher_set_cwd(l, dir);
@@ -358,6 +368,7 @@ typedef struct {
   SkimWsprRx *rx;
   guint       band;                     /* the receiver                          */
   const char *name;                     /* SKIM_WSPR_DIALS' band                 */
+  char        rx_name[16];              /* the receiver's band name (its row)    */
   double      dial_hz;
 } Slot;
 
@@ -375,6 +386,7 @@ static Job STOP;
 
 struct _SkimHdWspr {
   char   *call, *locator, *url, *dir, *work, *tsv, *decoder, *version;
+  guint    flags;                       /* SKIM_WSPR_DEEP | SKIM_WSPR_NO_SUBTRACT */
   gboolean upload;
   Slot    slot[SKIM_WSPR_MAX_SLOTS];
   guint   nslots;
@@ -533,7 +545,7 @@ static void decode_job(SkimHdWspr *w, Job *j) {
   }
   GArray *got = g_array_new(FALSE, TRUE, sizeof(SkimWsprSpot));
   const gboolean ok = skim_wspr_decode_file(w->decoder, w->work, c2, j->start_s, s->name,
-                                            s->dial_hz, got, w->cancel, &e);
+                                            s->dial_hz, w->flags, got, w->cancel, &e);
   g_unlink(c2);
   g_free(c2);
   char *all = g_build_filename(w->work, "ALL_WSPR.TXT", NULL);   /* wsprd's own log grows */
@@ -639,6 +651,7 @@ SkimHdWspr *skim_hd_wspr_new(const SkimHdWsprConfig *cfg, guint nb, const char *
   w->call = g_strdup(cfg->call ? cfg->call : "");
   w->locator = g_strdup(cfg->locator ? cfg->locator : "");
   w->upload = cfg->upload && w->call[0] && w->locator[0];
+  w->flags = cfg->flags;
   w->url = g_strdup(cfg->upload_url && *cfg->upload_url ? cfg->upload_url : SKIM_WSPR_URL);
   w->dir = g_strdup(cfg->dir);
   w->work = g_build_filename(cfg->dir, "wspr", NULL);
@@ -655,7 +668,6 @@ SkimHdWspr *skim_hd_wspr_new(const SkimHdWsprConfig *cfg, guint nb, const char *
   }
   for (guint b = 0; b < nb && b < G_N_ELEMENTS(w->by_band); b++) {
     w->by_band[b] = g_ptr_array_new();
-    (void)names;
     for (const SkimWsprDial *d = SKIM_WSPR_DIALS; d->band; d++) {
       if (!skim_wspr_covers(centres[b], rate, d->dial_hz) || w->nslots >= SKIM_WSPR_MAX_SLOTS) {
         continue;
@@ -667,6 +679,7 @@ SkimHdWspr *skim_hd_wspr_new(const SkimHdWsprConfig *cfg, guint nb, const char *
       s->w = w;
       s->band = b;
       s->name = d->band;
+      g_strlcpy(s->rx_name, names && names[b] ? names[b] : d->band, sizeof s->rx_name);
       s->dial_hz = d->dial_hz;
       s->rx = skim_wspr_rx_new(rate, centres[b], d->dial_hz, cycle_cb, s);
       g_ptr_array_add(w->by_band[b], s);
@@ -739,18 +752,53 @@ char *skim_hd_wspr_status_json(SkimHdWspr *w) {
   jstr(s, sq);
   g_string_append(s, ",\"decoder\":");
   g_string_append(s, w->decoder ? "true" : "false");
+  g_string_append_printf(s, ",\"deep\":%s,\"subtract\":%s",
+                         w->flags & SKIM_WSPR_DEEP ? "true" : "false",
+                         w->flags & SKIM_WSPR_NO_SUBTRACT ? "false" : "true");
   g_string_append(s, ",\"dials\":[");
   for (guint k = 0; k < w->nslots; k++) {
     g_string_append_printf(s, "%s{\"band\":", k ? "," : "");
     jstr(s, w->slot[k].name);
-    g_string_append_printf(s, ",\"dial_hz\":%.0f,\"rx\":%u}", w->slot[k].dial_hz, w->slot[k].band);
+    g_string_append_printf(s, ",\"dial_hz\":%.0f,\"rx\":%u,\"lo_hz\":%.0f,\"hi_hz\":%.0f}",
+                           w->slot[k].dial_hz, w->slot[k].band,
+                           w->slot[k].dial_hz + SKIM_WSPR_BFO - SKIM_WSPR_HALF_SPAN,
+                           w->slot[k].dial_hz + SKIM_WSPR_BFO + SKIM_WSPR_HALF_SPAN);
   }
   g_mutex_lock(&w->lock);
-  g_string_append_printf(s, "],\"cycles\":%" G_GUINT64_FORMAT ",\"decodes\":%" G_GUINT64_FORMAT
+  /* per receiver (a row of the page's band table): the stations heard on its
+   * dials in the last 30 min, and the newest one */
+  g_string_append(s, "],\"rx\":[");
+  const gint64 since = g_get_real_time() / G_USEC_PER_SEC - SKIM_WSPR_RECENT_S;
+  guint nrx = 0;
+  for (guint k = 0; k < w->nslots; k++) {
+    gboolean first = TRUE;                            /* the receiver's first dial */
+    for (guint j = 0; j < k; j++) { first &= w->slot[j].band != w->slot[k].band; }
+    if (!first) { continue; }
+    GHashTable *calls = g_hash_table_new(g_str_hash, g_str_equal);
+    const char *last = "";
+    for (guint i = 0; i < w->spots->len; i++) {
+      const SkimWsprSpot *p = &g_array_index(w->spots, SkimWsprSpot, i);
+      if (p->t < since) { continue; }
+      gboolean mine = FALSE;
+      for (guint j = 0; j < w->nslots; j++) {
+        mine |= w->slot[j].band == w->slot[k].band && w->slot[j].dial_hz == p->dial_hz;
+      }
+      if (!mine) { continue; }
+      g_hash_table_add(calls, (gpointer)p->call);
+      last = p->call;                                 /* oldest first: the last wins */
+    }
+    g_string_append_printf(s, "%s{\"band\":", nrx++ ? "," : "");
+    jstr(s, w->slot[k].rx_name);
+    g_string_append_printf(s, ",\"stations\":%u,\"last\":", g_hash_table_size(calls));
+    jstr(s, last);
+    g_string_append_c(s, '}');
+    g_hash_table_unref(calls);
+  }
+  g_string_append_printf(s, "],\"recent_s\":%d,\"cycles\":%" G_GUINT64_FORMAT ",\"decodes\":%" G_GUINT64_FORMAT
                          ",\"last_cycle\":%" G_GINT64_FORMAT ",\"last_decodes\":%u,\"spots_24h\":%u"
                          ",\"uploaded\":%" G_GUINT64_FORMAT ",\"upload_failed\":%" G_GUINT64_FORMAT
                          ",\"queued\":%u,\"error\":",
-                         w->cycles, w->decodes, w->last_cycle, w->last_decodes, w->spots->len,
+                         SKIM_WSPR_RECENT_S, w->cycles, w->decodes, w->last_cycle, w->last_decodes, w->spots->len,
                          w->uploaded, w->upload_failed, w->queue->len);
   if (w->error) {
     jstr(s, w->error);

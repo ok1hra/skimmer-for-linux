@@ -144,7 +144,7 @@ static void end_to_end(double rate, const char *dir) {
           g_stat(c2, &st) == 0 && st.st_size == 14 + 4 + 8 + 45000 * 8;
         }));
   GArray *spots = g_array_new(FALSE, TRUE, sizeof(SkimWsprSpot));
-  const gboolean ok = c2 && skim_wspr_decode_file(decoder, dir, c2, g.start, "20m", DIAL, spots,
+  const gboolean ok = c2 && skim_wspr_decode_file(decoder, dir, c2, g.start, "20m", DIAL, 0, spots,
                                                   NULL, &e);
   if (e) {
     g_print("  decoder: %s\n", e->message);
@@ -166,6 +166,16 @@ static void end_to_end(double rate, const char *dir) {
   check(what, b && strcmp(b->grid, "FN42") == 0 && b->dbm == 30 && fabs(b->freq_hz - (DIAL + 1440)) <= 2);
   g_free(what);
   check("nothing else decoded", spots->len == 2);
+  g_array_unref(spots);
+  /* the options: a deeper search in one pass (-d -s) still decodes both */
+  spots = g_array_new(FALSE, TRUE, sizeof(SkimWsprSpot));
+  const gboolean ok2 = c2 && skim_wspr_decode_file(decoder, dir, c2, g.start, "20m", DIAL,
+                                                   SKIM_WSPR_DEEP | SKIM_WSPR_NO_SUBTRACT, spots,
+                                                   NULL, &e);
+  g_clear_error(&e);
+  what = g_strdup_printf("%.0f kHz: -d -s (deeper search, no subtraction) decodes both too", rate / 1e3);
+  check(what, ok2 && find(spots, "OK1HRA") && find(spots, "K1ABC"));
+  g_free(what);
   g_array_unref(spots);
   if (c2) { g_unlink(c2); }
   g_free(c2);
@@ -244,6 +254,9 @@ static void whole(const char *dir) {
   check("status: one cycle, one decode, uploaded, none queued",
         strstr(st, "\"cycles\":1,") && strstr(st, "\"decodes\":1,") &&
         strstr(st, "\"uploaded\":1,") && strstr(st, "\"queued\":0,") && strstr(st, "\"error\":null"));
+  check("status: the stations of 30 min per receiver (its own band name), the newest",
+        strstr(st, "\"rx\":[{\"band\":\"20m-ish\",\"stations\":1,\"last\":\"OK1HRA\"},"
+                   "{\"band\":\"40m\",\"stations\":0,\"last\":\"\"}],\"recent_s\":1800,") != NULL);
   g_free(st);
   const char *body = f.bodies->len ? f.bodies->pdata[0] : "";
   g_print("  posted: %s\n", body);

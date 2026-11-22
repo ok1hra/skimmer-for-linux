@@ -96,6 +96,50 @@ const Wf = (() => {
     save();
   }
 
+  // ---- WSPR --------------------------------------------------------------------------
+  // While the skimmer decodes WSPR ([wspr], status.json "wspr"), each WSPR
+  // frequency of the band shown is marked: the passband wsprd decodes
+  // (dial + 1500 ± 150 Hz) dark red over the waterfall and the spectrum, and
+  // "WSPR RX" where the calls stand (WSPR spots are not in the feed).
+  function wsprHere() {
+    const b = bandInfo(), w = typeof status !== 'undefined' && status && status.wspr;
+    if (!b || !w || !w.on || !w.decoder || !w.dials) return [];
+    return w.dials.filter((d) => d.band === b.name && d.lo_hz && d.hi_hz);
+  }
+  function placeWspr() {
+    const box = $('#wf-wspr');
+    if (!box) return;
+    const list = view.hi ? wsprHere() : [], w = cv.clientWidth, span = view.hi - view.lo;
+    while (box.children.length > list.length) box.lastChild.remove();
+    while (box.children.length < list.length) box.appendChild(document.createElement('div'));
+    list.forEach((d, i) => {
+      const el = box.children[i];
+      const x0 = ((d.lo_hz - view.lo) / span) * w, x1 = ((d.hi_hz - view.lo) / span) * w;
+      el.hidden = x1 < 0 || x0 > w;
+      el.style.left = `${x0}px`; el.style.width = `${Math.max(2, x1 - x0)}px`;
+    });
+  }
+  // over the strip: the passband and its label, upright like a call
+  function drawWspr(w, h) {
+    const list = wsprHere();
+    if (!list.length) return;
+    const span = view.hi - view.lo;
+    spg.font = '700 10px RC, sans-serif'; spg.textAlign = 'right'; spg.textBaseline = 'middle';
+    for (const d of list) {
+      const x0 = ((d.lo_hz - view.lo) / span) * w, x1 = ((d.hi_hz - view.lo) / span) * w;
+      if (x1 < 0 || x0 > w) continue;
+      spg.fillStyle = 'rgba(120,10,10,.45)';
+      spg.fillRect(x0, 0, Math.max(2, x1 - x0), h);
+      spg.fillStyle = '#e05a5a';
+      spg.save();
+      spg.translate(Math.round((x0 + x1) / 2) + 0.5, 4);
+      spg.rotate(-Math.PI / 2);
+      spg.fillText('WSPR RX', 0, 0);
+      spg.restore();
+    }
+    spg.textAlign = 'start'; spg.textBaseline = 'alphabetic';
+  }
+
   // ---- the scale and the spectrum --------------------------------------------------
   function drawScale() {
     const dpr = devicePixelRatio || 1, w = sc.clientWidth;
@@ -132,7 +176,13 @@ const Wf = (() => {
         sg.lineWidth = 1;
       }
     }
+    // WSPR's passbands: dark red along the scale's foot
+    for (const d of wsprHere()) {
+      sg.fillStyle = '#8a1414';
+      sg.fillRect((d.lo_hz - view.lo) * px, 19, Math.max(2, (d.hi_hz - d.lo_hz) * px), 3);
+    }
     placePass();
+    placeWspr();
   }
   // the passband over the waterfall too (an overlay, never in the picture)
   function placePass() {
@@ -298,7 +348,9 @@ const Wf = (() => {
       spg.fillStyle = 'rgba(57,217,138,.18)'; spg.fill();
       path(); spg.strokeStyle = '#39d98a'; spg.lineWidth = 1.2; spg.stroke();
     }
+    drawWspr(w, h);
     if (opt.calls) drawCalls(w);
+    placeWspr();
   }
 
   // ---- a row -------------------------------------------------------------------
@@ -440,8 +492,37 @@ const Wf = (() => {
     spg.globalAlpha = 1; spg.textAlign = 'start'; spg.textBaseline = 'alphabetic';
   }
 
+  // The tip at the mouse over the waterfall: the calls spotted near the
+  // cursor's frequency in the last 15 min (the newest first — a trace still
+  // on screen may be older than its last spot), WSPR RX inside a WSPR
+  // passband, and the frequency there, small.
+  function tip(e, f) {
+    const el = $('#wf-tip'), b = bandInfo();
+    if (!el) return;
+    if (!b || !view.hi) { el.hidden = true; return; }
+    const now = Date.now() / 1000 + skew, keep = CALL_KEEP_S;
+    const tol = Math.max(60, ((view.hi - view.lo) / W) * 4), last = new Map();
+    for (const s of spots) {
+      if (s.band !== b.name || now - s.t > keep || Math.abs(s.khz * 1000 - f) >= tol) continue;
+      if (!last.has(s.call) || last.get(s.call).t < s.t) last.set(s.call, s);
+    }
+    const near = [...last.values()].sort((a, c) => c.t - a.t);
+    const wsprIn = wsprHere().some((d) => f >= d.lo_hz && f <= d.hi_hz);
+    el.innerHTML = near.slice(0, 4).map((s) =>
+      `<b class="${s.mode === 'RTTY' ? 'rtty' : ''}">${esc(s.call)}</b>`).join('') +
+      (near.length > 4 ? `<span class="mut">+${near.length - 4}</span>` : '') +
+      (wsprIn ? '<b class="wspr">WSPR RX</b>' : '') +
+      `<span class="f">${fmtKhz(f / 1000, 2)}</span>`;
+    el.hidden = false;
+    const box = $('#wf-box').getBoundingClientRect();
+    let x = e.clientX - box.left + 14, y = e.clientY - box.top + 16;
+    if (x + el.offsetWidth > box.width - 4) x = e.clientX - box.left - el.offsetWidth - 10;
+    if (y + el.offsetHeight > box.height - 4) y = e.clientY - box.top - el.offsetHeight - 10;
+    el.style.left = `${Math.max(0, x)}px`; el.style.top = `${Math.max(0, y)}px`;
+  }
+
   // ---- the socket -----------------------------------------------------------------
-  function status(text, bad) {
+  function netStatus(text, bad) {
     const el = $('#wf-net');
     el.textContent = text;
     el.classList.toggle('bad', !!bad);
@@ -451,7 +532,7 @@ const Wf = (() => {
     const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${location.pathname.replace(/[^/]*$/, '')}ws/waterfall`;
     ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
-    status('connecting…');
+    netStatus('connecting…');
     ws.onmessage = (e) => {
       if (typeof e.data !== 'string') {
         const kind = new DataView(e.data).getUint8(0);
@@ -460,7 +541,7 @@ const Wf = (() => {
       }
       let m = null;
       try { m = JSON.parse(e.data); } catch (err) { return; }
-      if (m.type === 'audio' && m.error) { audioOff(false); status(m.error, true); return; }
+      if (m.type === 'audio' && m.error) { audioOff(false); netStatus(m.error, true); return; }
       if (m.type !== 'hello') return;
       hello = m;
       retry = 0;
@@ -483,8 +564,8 @@ const Wf = (() => {
     };
     ws.onclose = (e) => {
       ws = null;
-      if (!active) { status(''); return; }
-      status(e.reason ? `closed: ${e.reason}` : 'reconnecting…', true);
+      if (!active) { netStatus(''); return; }
+      netStatus(e.reason ? `closed: ${e.reason}` : 'reconnecting…', true);
       retry = Math.min(retry + 1, 6);
       setTimeout(connect, 1000 * retry);
     };
@@ -542,7 +623,7 @@ const Wf = (() => {
     pending = null;
     if (!p || !hello) return;
     const i = hello.bands.findIndex((b) => b.name === p.name);
-    if (i < 0) { status(`${p.name} is not on this waterfall`, true); return; }
+    if (i < 0) { netStatus(`${p.name} is not on this waterfall`, true); return; }
     if (i !== band) { setBand(i, p.hz); send(false); }   // the band first, then the audio in it
     else follow(p.hz);
     audioTune(p.hz);
@@ -570,7 +651,7 @@ const Wf = (() => {
     if (!hello || !hz) { fi.classList.add('bad'); return; }
     const inBand = (b) => Math.abs(hz - b.centre_hz) < hello.rate / 2;
     const i = bandInfo() && inBand(bandInfo()) ? band : hello.bands.findIndex(inBand);
-    if (i < 0) { fi.classList.add('bad'); status(`${fmtKhz(hz / 1000, 2)} kHz is in no band here`, true); return; }
+    if (i < 0) { fi.classList.add('bad'); netStatus(`${fmtKhz(hz / 1000, 2)} kHz is in no band here`, true); return; }
     fi.classList.remove('bad');
     pending = { name: hello.bands[i].name, hz };
     applyPending();
@@ -653,10 +734,8 @@ const Wf = (() => {
       try { cv.setPointerCapture(e.pointerId); } catch (err) { /* not a live pointer */ }
     });
     cv.addEventListener('pointermove', (e) => {
-      const x = xIn(e), f = hzOf(x);
-      const b = bandInfo();
-      const near = b ? spots.filter((s) => s.band === b.name && Math.abs(s.khz * 1000 - f) < Math.max(60, (view.hi - view.lo) / W * 4)) : [];
-      $('#wf-read').innerHTML = `<b>${fmtKhz(f / 1000, 2)}</b> kHz${near.length ? ` · ${esc(near.slice(0, 3).map((s) => s.call).join(', '))}` : ''}`;
+      const x = xIn(e);
+      tip(e, hzOf(x));
       if (!drag) return;
       opt.centre = drag.c - ((x - drag.x) / W) * (view.hi - view.lo);
       reframe(false);
@@ -667,6 +746,7 @@ const Wf = (() => {
       down = null; drag = null;
     });
     cv.addEventListener('pointercancel', () => { down = null; drag = null; });
+    cv.addEventListener('pointerleave', () => { $('#wf-tip').hidden = true; });
     $('#wf-rtty').addEventListener('click', () => {
       if (typeof RttyPal === 'undefined') return;
       // made in the click: a browser lets the audio start only from one
@@ -703,7 +783,7 @@ const Wf = (() => {
     setInterval(() => {                              // kB/s, the spots
       if (!active) return;
       const now = Date.now();
-      if (ws && ws.readyState === 1) status(`${((bytes / 1024) / ((now - bytesAt) / 1000)).toFixed(1)} kB/s`);
+      if (ws && ws.readyState === 1) netStatus(`${((bytes / 1024) / ((now - bytesAt) / 1000)).toFixed(1)} kB/s`);
       bytes = 0; bytesAt = now;
       if (opt.calls) fetchSpots();
     }, 2000);

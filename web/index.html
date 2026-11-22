@@ -63,11 +63,13 @@
     <div id="rollback" class="warnbox" hidden></div>
     <div id="dcw-warn" class="warnbox" hidden></div>
     <div class="st-top">
-      <div class="st-map"><div class="st-split" id="st-split" title="drag: the map wider or narrower"></div><h2>Spots · last 30 min <span class="mut">azimuthal, distance and bearing true from the centre</span></h2>
+      <div class="st-map"><div class="st-split" id="st-split" title="drag: the map wider or narrower"></div><h2>Spots · last <span id="map-age">30 min</span> <span class="mut">azimuthal, distance and bearing true from the centre</span></h2>
         <div id="skmap"></div></div>
       <div class="st-side">
         <h2>Bands <span class="mut">spots in 30 min · active decoders · the last one</span></h2>
         <table id="ladder" class="ladder"></table>
+        <p id="wspr-link" class="mut note wspr-link" hidden>WSPR on a map, live and for any call:
+          <a href="https://wspr.aprsinfo.com" target="_blank" rel="noopener noreferrer">wspr.aprsinfo.com</a></p>
         <div id="readouts" class="readouts"></div>
         <div id="workers-box" hidden>
           <h2 class="sect">Workers <span class="mut">other PCs decoding bands of this radio</span></h2>
@@ -135,17 +137,17 @@
       <p class="sub mut" id="cpu-sub">CPU in % of one core (left), what the CW and RTTY decoders take of it; IQ frames lost on the wire, % in the worst minute of each bucket (right); below, the hottest CPU sensor in the hottest minute of each bucket</p>
       <div id="cpu-load"><div class="legend" id="legend-cpu"></div><div class="chart" id="chart-cpu"></div></div>
       <div class="legend" id="legend-temp"></div><div class="chart" id="chart-temp"></div></div>
-    <details class="more" open>
+    <details class="more keep" id="stats-tbl">
       <summary id="stats-table-h">Table: the bands over the range</summary>
       <div class="wrap"><table id="stats-table" class="grid"></table></div>
       <p class="mut note" id="stats-cols"></p>
     </details>
-    <details class="more" id="stats-wspr" open hidden>
+    <details class="more keep" id="stats-wspr" hidden>
       <summary id="stats-wspr-h">WSPR: the stations heard in the last 24 h</summary>
       <div class="wrap"><table id="stats-wspr-t" class="grid wspr-t"></table></div>
       <p class="mut note" id="stats-wspr-note"></p>
     </details>
-    <details class="more" id="stats-vis" open hidden>
+    <details class="more keep" id="stats-vis" hidden>
       <summary id="stats-vis-h">Visitors from outside</summary>
       <div class="wrap"><table id="stats-vis-t" class="grid"></table></div>
       <p class="mut note">those who signed in with their call from outside the LAN; a visit ends 10 min after its last look</p>
@@ -167,12 +169,11 @@
           aria-label="the frequency heard, kHz" title="the frequency heard (kHz; Enter tunes there, on any band shown here) — or the wheel over the spectrum"><span class="wf-unit">kHz</span>
         <select id="wf-bw" title="the audio's passband"></select></span>
       <button type="button" class="wf-auto wf-rtty" id="wf-rtty" title="the RTTY palette: decodes the frequency heard">RTTY</button>
-      <span class="wf-read" id="wf-read"></span>
       <span class="wf-net mut" id="wf-net"></span>
     </div>
     <canvas id="wf-spec-cv" class="wf-spec" hidden title="wheel: tune (Shift: 10 Hz steps) · a call: listen there (RTTY: the palette decodes it)"></canvas>
     <canvas id="wf-scale" class="wf-scale"></canvas>
-    <div id="wf-box" class="wf-box"><canvas id="wf-cv"></canvas><div id="wf-pass" class="wf-pass" hidden></div></div>
+    <div id="wf-box" class="wf-box"><canvas id="wf-cv"></canvas><div id="wf-wspr" class="wf-wspr"></div><div id="wf-pass" class="wf-pass" hidden></div><div id="wf-tip" class="wf-tip" hidden></div></div>
     <p class="mut note">click: listen there (CW, the passband chosen beside the speaker; RTTY: the palette decodes it) · wheel: zoom around the cursor —
       over the spectrum it tunes (Shift: 10 Hz) · the frequency field: type it, Enter · drag: move · double click: centre · computed by the skimmer
       only while this tab is open, and sent at the speed chosen</p>
@@ -341,6 +342,8 @@
         <fieldset>
           <legend>WSPR</legend>
           <label class="check"><input type="checkbox" name="wspr.enabled"> decode WSPR on every WSPR frequency inside the bands received</label>
+          <label class="check"><input type="checkbox" name="wspr.deep"> Deeper candidate search <small>(wsprd -d: slower, a few more decodes)</small></label>
+          <label class="check"><input type="checkbox" name="wspr.subtract" data-default="true"> Subtract decoded signals <small>(decoded ones are taken out and the rest decoded again — WSJT-X's default; off = one pass, wsprd -s)</small></label>
           <label class="check"><input type="checkbox" name="wspr.upload"> send the spots to WSPRnet (wsprnet.org)</label>
           <label>Call <input name="wspr.call" class="upper" placeholder="as Station and feed" autocapitalize="characters">
             <small>the receiver's call on WSPRnet; empty = Station and feed → Call</small></label>

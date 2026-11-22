@@ -34,6 +34,7 @@ G_BEGIN_DECLS
 #define SKIM_WSPR_HALF_SPAN   150.0     /* Hz each side of it (wsprd -w)         */
 #define SKIM_WSPR_URL         "http://wsprnet.org/post/"
 #define SKIM_WSPR_MAX_SLOTS   16
+#define SKIM_WSPR_RECENT_S    1800      /* status: the stations of the last 30 min */
 
 /* ---- the frequencies ------------------------------------------------------------ */
 
@@ -99,6 +100,9 @@ typedef struct {
   const char *dir;                      /* state: wspr.tsv, wspr/ (the decoder's
                                          * work dir and its hash table)          */
   const char *decoder;                  /* NULL = skim_wspr_find_decoder()      */
+  guint       flags;                    /* SKIM_WSPR_DEEP | SKIM_WSPR_NO_SUBTRACT
+                                         * (0 = wsprd's default: subtraction on,
+                                         * no deeper search)                    */
 } SkimHdWsprConfig;
 
 typedef struct _SkimHdWspr SkimHdWspr;
@@ -130,11 +134,18 @@ char *skim_hd_wspr_stations_json(SkimHdWspr *w, guint hours, gint64 now);
  * (skimmer-wsprd, then WSJT-X's wsprd). NULL = none. */
 char *skim_wspr_find_decoder(void);
 
+/* wsprd's options, as WSJT-X's WSPR menu has them */
+enum {
+  SKIM_WSPR_DEEP        = 1 << 0,       /* "Deeper candidate search" (-d)       */
+  SKIM_WSPR_NO_SUBTRACT = 1 << 1,       /* "Subtract decoded signals" off (-s:
+                                         * one pass, nothing subtracted)        */
+};
+
 /* Run the decoder on a .c2 file (work dir dir) and parse what it prints;
  * spots get t, band and dial_hz from the caller. FALSE + error when it
- * could not run or failed. */
+ * could not run or failed. flags: SKIM_WSPR_DEEP, SKIM_WSPR_NO_SUBTRACT. */
 gboolean skim_wspr_decode_file(const char *decoder, const char *dir, const char *c2,
-                               gint64 t, const char *band, double dial_hz, GArray *spots,
-                               GCancellable *cancel, GError **error);
+                               gint64 t, const char *band, double dial_hz, guint flags,
+                               GArray *spots, GCancellable *cancel, GError **error);
 
 G_END_DECLS

@@ -198,6 +198,9 @@ typedef struct {
   /* [wspr] (wspr.h) */
   gboolean         wspr;              /* decode WSPR beside                   */
   gboolean         wspr_upload;       /* … and post the spots to WSPRnet      */
+  gboolean         wspr_deep;         /* wsprd -d: deeper candidate search    */
+  gboolean         wspr_subtract;     /* wsprd without -s: subtract decoded
+                                       * signals and decode again            */
   char            *wspr_call;         /* NULL = [feed] call                   */
   char             wspr_locator[8];   /* "" = [station] locator               */
   char            *wspr_upload_url;   /* NULL = wsprnet.org (the gate's own)  */

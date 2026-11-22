@@ -171,7 +171,10 @@ here; what was done and why is in git.
   while nobody watches it; a watched band runs FFTs of 8192 (16384 at
   192 kHz), half overlapping, into a 32-frame ring; each viewer asks for
   band/lo/hi/w/rate and gets bytes (0.5 dB from -160 dBFS), acks each row
-  (no ack → fewer rows). Gate `waterfall`: a tone's pixel and level.
+  (no ack → fewer rows). Gate `waterfall`: a tone's pixel and level. While WSPR decodes, each
+  WSPR passband of the band shown is dark red with "WSPR RX" (status.json
+  `wspr.dials[].lo_hz/hi_hz`); the calls near the cursor show in a tip at
+  the mouse.
 - **The RTTY palette** (`web/rtty-palette.js`, `[rtty_palette]`): decodes
   the waterfall's audio (8 kHz µ-law, the tuned frequency at the 600 Hz BFO,
   so mark = +85 Hz) in the browser with WIFILT's RTTY-ICOM modules, copied
@@ -255,7 +258,7 @@ here; what was done and why is in git.
   a 114 s capture from each even UTC minute (the wall clock, the arrival
   smoothed) → a `.c2` file → `skimmer-wsprd` (WSJT-X 3.0.2's wsprd,
   `vendor/wsprd/`, C only: the Fortran OSD is a stub, never called; `-C 500
-  -w`, nice 10) on one thread, band after band. Spots 24 h in memory +
+  -w`, `deep=true` adds -d, `subtract=false` adds -s; nice 10) on one thread, band after band. Spots 24 h in memory +
   `<state>/wspr.tsv`; `/api/wspr` = the stations (Statistics, under the
   bands' table); `upload=true` posts each spot to WSPRnet
   (`function=wspr`, as WSJT-X) under `[wspr] call`/`locator` (empty = the

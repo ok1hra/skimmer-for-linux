@@ -157,6 +157,13 @@ function renderFeedAddress(a) {
   el.innerHTML = `<span class="mut">telnet</span> ${esc(a.replace(/^telnet:\/\//i, ''))}`;
 }
 
+// a band's WSPR in the ladder: its stations of 30 min and a bar, the newest
+// in the title; a band with no WSPR frequency a dash
+function wsprCells(r, max, i) {
+  if (!r) return '<td class="n mut" title="no WSPR frequency inside this band">–</td><td class="bar off"></td>';
+  const t = `${fmt(r.stations)} WSPR station${r.stations === 1 ? '' : 's'} in 30 min${r.last ? ` · the newest ${r.last}` : ''}`;
+  return `<td class="n wspr" title="${esc(t)}">${fmt(r.stations)}</td><td class="bar wspr" title="${esc(t)}">${i(r.stations / max)}</td>`;
+}
 let status = null;
 function renderStatus(d) {
   status = d;
@@ -188,11 +195,16 @@ function renderStatus(d) {
   const maxAct = Math.max(1, ...decoded.map((b) => Math.max(b.cw !== false ? b.active : 0, b.rtty ? b.rtty.active : 0)));
   const per = (band) => window.spots ? window.spots.list.filter((s) => s.band === band) : [];
   const maxSpots = Math.max(1, ...decoded.map((b) => per(b.band).length));
+  // WSPR, while its decoder runs: the stations each receiver heard in 30 min
+  const wsprOn = !!(d.wspr && d.wspr.on && d.wspr.decoder);
+  const wsprRx = new Map(wsprOn ? (d.wspr.rx || []).map((r) => [r.band, r]) : []);
+  const maxWspr = Math.max(1, ...[...wsprRx.values()].map((r) => r.stations));
   // the head says what each number counts (each over its number and bar)
   $('#ladder').innerHTML = '<tr class="head-row"><th title="on the map"></th><th class="l">band</th>' +
     '<th colspan="2" class="l" title="spots the band sent in the last 30 min">spots 30 min</th>' +
     '<th colspan="2" class="l" title="CW channel decoders reading a signal now (of all the band has)">CW active decoders</th>' +
     '<th colspan="2" class="l" title="RTTY channel decoders reading a signal now (of all the band has)">RTTY active decoders</th>' +
+    (wsprOn ? '<th colspan="2" class="l" title="the WSPR stations decoded on the band in the last 30 min">WSPR stations 30 min</th>' : '') +
     '<th class="l" title="the band\'s newest spot">last spot</th><th></th></tr>' + decoded.map((b) => {
     const sp = per(b.band), cwOn = b.cw !== false, rt = b.rtty;
     const col = typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : '';   // the band's own colour
@@ -216,9 +228,11 @@ function renderStatus(d) {
       `<td class="bar spots" title="${fmt(sp.length)} spots in 30 min">${i(sp.length / maxSpots)}</td>` +
       bar(cwOn, b.active, b.decoders, 'cw', cwOn && b.paused) +
       bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty', rt && rt.paused) +
+      (wsprOn ? wsprCells(wsprRx.get(b.band), maxWspr, i) : '') +
       `<td class="last" title="the band's newest spot">${sp.length ? esc(sp[0].call) : ''}</td>` +
       `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : ''}</td></tr>`;
   }).join('');
+  $('#wspr-link').hidden = !wsprOn;
   const sumDec = (f) => decoded.reduce((a, b) => a + (f(b) || 0), 0);
   const ro = (k, v) => `<span>${k} <b>${v}</b></span>`;
   // every number says over what: now, the last half hour, or since the start
@@ -455,7 +469,10 @@ function renderSpots() {
   if (typeof SkMap === 'undefined' || typeof Dxc === 'undefined') return;
   if (!mapMounted) {
     SkMap.mount($('#skmap'));
-    Dxc.mount($('#dxc'), (shown, marked) => { mapShown.list = shown; mapShown.marked = marked; mapDraw(); });
+    Dxc.mount($('#dxc'), (shown, marked) => {
+      mapShown.list = shown; mapShown.marked = marked; mapDraw();
+      $('#map-age').textContent = `${Dxc.age()} min`;     // the UTC column's filter
+    });
     mapMounted = true;
     SkMap.update([], { locator: spots.locator, call: spots.call, visitor: visitor.call });   // the centre before the rows
   }
@@ -1762,6 +1779,20 @@ function renderVisitors(v) {
     (v.failed || []).map((r) => `<tr><td class="l">${t(r.time)}</td><td class="l">${addr(r)}</td><td class="l">${esc(r.typed)}</td><td class="l">${esc(r.why)}</td></tr>`).join('') +
     (!(v.failed || []).length ? '<tr><td colspan="4" class="mut">none</td></tr>' : '');
 }
+
+// The tables at the foot of Statistics start folded; one opened stays open
+// in this browser (localStorage).
+(() => {
+  let open = [];
+  try { open = JSON.parse(localStorage.getItem('skimmer-open') || '[]'); } catch (e) { /* private */ }
+  for (const d of document.querySelectorAll('details.keep')) {
+    if (open.includes(d.id)) d.open = true;
+    d.addEventListener('toggle', () => {
+      open = open.filter((x) => x !== d.id).concat(d.open ? [d.id] : []);
+      try { localStorage.setItem('skimmer-open', JSON.stringify(open)); } catch (e) { /* private */ }
+    });
+  }
+})();
 
 // ---- the loop --------------------------------------------------------------------
 async function poll() {

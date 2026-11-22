@@ -243,5 +243,5 @@ const Dxc = (() => {
     if (!menu) draw(); else onChange(rows.filter(pass), marked);   // keep an open menu's focus
   }
 
-  return { mount, update };
+  return { mount, update, age: () => F.age };
 })();

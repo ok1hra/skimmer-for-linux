@@ -142,7 +142,9 @@ static const char DEFAULT_CONFIG[] =
   "# the stations heard in the last 24 h are on the web page (Statistics).\n"
   "# upload=true posts the spots to WSPRnet (wsprnet.org) under call and\n"
   "# locator (empty = [feed] call, [station] locator)\n"
-  "enabled=false\nupload=false\ncall=\nlocator=\n"
+  "# deep=true: a deeper candidate search (wsprd -d: slower, a few more\n"
+  "# decodes); subtract=false: one pass, decoded signals not subtracted (-s)\n"
+  "enabled=false\nupload=false\ncall=\nlocator=\ndeep=false\nsubtract=true\n"
   "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
   "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
   "bands=\nminutes=10\ndir=/var/tmp/skimmer-iq\nstart_utc=\n";
@@ -737,7 +739,9 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     /* [wspr]: call and locator empty = [feed] call, [station] locator;
      * an upload needs both (WSPRnet files the spots under them) */
     if (!opt_bool(kf, "wspr", "enabled", FALSE, &h->wspr, path, error) ||
-        !opt_bool(kf, "wspr", "upload", FALSE, &h->wspr_upload, path, error)) {
+        !opt_bool(kf, "wspr", "upload", FALSE, &h->wspr_upload, path, error) ||
+        !opt_bool(kf, "wspr", "deep", FALSE, &h->wspr_deep, path, error) ||
+        !opt_bool(kf, "wspr", "subtract", TRUE, &h->wspr_subtract, path, error)) {
       return FALSE;
     }
     char *wc = g_key_file_get_string(kf, "wspr", "call", NULL);
@@ -950,7 +954,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "rtty_palette.open_on_spot", "rtty_palette.bandwidth", "rtty_palette.autotune", "rtty_palette.afc",
   "rtty_palette.afc_max_hz", "rtty_palette.afc_rate", "rtty_palette.reverse", "rtty_palette.usos",
   "rtty_palette.squelch_db", "rtty_palette.second_decoder", "rtty_palette.clean", "rtty_palette.sound",
-  "wspr.enabled", "wspr.upload", "wspr.call", "wspr.locator",
+  "wspr.enabled", "wspr.upload", "wspr.call", "wspr.locator", "wspr.deep", "wspr.subtract",
   NULL,
 };
 

@@ -288,7 +288,10 @@ int main(void) {
           !parse(&c, "[bands]\n20m=14045500\n[thermal]\naverage_min=0\n", NULL));
     check("[wspr] default: off, no upload",
           parse(&c, "[bands]\n20m=14045500\n", NULL) && !c.wspr && !c.wspr_upload &&
-          !c.wspr_call && !c.wspr_locator[0]);
+          !c.wspr_call && !c.wspr_locator[0] && !c.wspr_deep && c.wspr_subtract);
+    check("[wspr] deep=true, subtract=false read",
+          parse(&c, "[bands]\n20m=14045500\n[wspr]\ndeep=true\nsubtract=false\n", NULL) &&
+          c.wspr_deep && !c.wspr_subtract);
     skim_hd_config_clear(&c);
     check("[wspr] on, upload with [feed] call and [station] locator; call/locator in capitals",
           parse(&c, "[bands]\n20m=14045500\n[feed]\ncall=ok1hra\n[station]\nlocator=jo70\n"

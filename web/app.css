@@ -83,10 +83,12 @@ h2.sect { margin: 4px 0 8px; }
 .tile.hero .k { color: var(--hot); }
 .tile.hero .k small { color: var(--mut); margin-left: 4px; letter-spacing: .04em; text-transform: none; }
 .tile.hero .parts { display: flex; gap: 2px 24px; margin-top: 2px; }
-.tile.hero .part { display: flex; flex-direction: column; min-width: 0; }
+.tile.hero .part { display: flex; flex-direction: column; min-width: 0; flex: 1 1 0; }
 .tile.hero .n { font-size: 32px; font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; }
 .tile.hero .cw .n { color: var(--cw); } .tile.hero .rtty .n { color: var(--rtty); }
-.tile.hero .l { font-size: 13px; font-weight: 700; line-height: 1.2; white-space: nowrap; letter-spacing: .08em; }
+/* the label and its detail wrap inside their half (8 bands and a pause made
+   the CW line run over the RTTY one) */
+.tile.hero .l { font-size: 13px; font-weight: 700; line-height: 1.25; letter-spacing: .08em; overflow-wrap: anywhere; }
 .tile.hero .l small { font-weight: 400; font-size: 12px; color: var(--mut); margin-left: 5px; letter-spacing: 0; }
 
 /* CW and RTTY one under the other (statistics tiles and table) */
@@ -202,6 +204,11 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 /* the decoders' bars muted: how busy, not what came out — the spots are */
 .ladder td.bar.cw i, .ladder td.bar.rtty i { opacity: .38; filter: saturate(.5); }
 .ladder td.n.sp { color: var(--fg); }
+/* WSPR's stations (while its decoder runs): dark red, like its passband on the waterfall */
+.ladder td.bar.wspr i { background: #b02a2a !important; }
+.ladder td.n.wspr { color: #e05a5a; }
+.wspr-link { margin: 6px 0 0; font-size: 12px; }
+.wspr-link a { color: #e05a5a; }
 .ladder td.bar.cw, .ladder td.bar.rtty, .ladder td.bar.spots { background: linear-gradient(var(--deep), var(--deep)) center / 100% 7px no-repeat; }
 .ladder td.n { text-align: right; color: var(--mut); font-size: 13px; width: 44px; padding-right: 4px; }
 .ladder td.bar { padding-left: 0; }
@@ -361,8 +368,6 @@ td.bad, .bad { color: var(--bad); } .ok { color: var(--ok); }
 .wf-bar input[type=range]::-moz-range-thumb { width: 10px; height: 10px; border-radius: 50%; background: var(--mut); border: 0; }
 .wf-bar input[type=range]:hover::-moz-range-thumb { background: var(--fg); }
 .wf-bar input[type=range]:hover::-webkit-slider-thumb { background: var(--fg); }
-.wf-bar .wf-read { text-transform: none; letter-spacing: .02em; font-size: 13px; min-width: 14em; font-variant-numeric: tabular-nums; }
-.wf-bar .wf-read b { color: var(--fg); }
 .wf-bar .wf-net { margin-left: auto; text-transform: none; font-variant-numeric: tabular-nums; }
 .wf-spec { display: block; width: 100%; height: 110px; border: 1px solid var(--ln); border-bottom: 0; }
 .wf-scale { display: block; width: 100%; height: 22px; border: 1px solid var(--ln); border-bottom: 0; cursor: ew-resize; }
@@ -467,7 +472,22 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .rp-rx .rtty-diff { background: rgba(240,180,40,.17); border-radius: 2px; }
 .rp-rx .rtty-tok:hover, .rp-rx .rtty-tok.hover { text-decoration: underline; }
 .rp-rx .rtty-rx-char { color: var(--rtty-rx-char-color, inherit); }
-.wf-rtty.on { color: var(--rtty); border-bottom-color: var(--rtty); }
+/* RTTY: a button of its own, in the RTTY colour; open = filled */
+.wf-bar .wf-rtty { font-size: 12px; font-weight: 700; letter-spacing: .1em; color: var(--rtty);
+                   border: 1px solid var(--rtty); border-radius: 2px; padding: 3px 9px; background: rgba(255,184,138,.08); }
+.wf-bar .wf-rtty:hover { color: var(--fg); background: rgba(255,184,138,.2); }
+.wf-bar .wf-rtty.on { color: var(--hot-ink); background: var(--rtty); border-color: var(--rtty); }
+/* WSPR's passbands over the waterfall (waterfall.js placeWspr) */
+.wf-wspr > div { position: absolute; top: 0; bottom: 0; pointer-events: none; background: rgba(120,10,10,.22);
+                 border-left: 1px solid rgba(160,20,20,.7); border-right: 1px solid rgba(160,20,20,.7); }
+/* the tip at the mouse: the calls near the cursor, the frequency there */
+.wf-tip { position: absolute; z-index: 2; pointer-events: none; display: flex; flex-direction: column; gap: 1px;
+          padding: 4px 7px; background: rgba(5,9,14,.88); border: 1px solid var(--ln2); border-radius: 2px;
+          font-size: 13px; line-height: 1.25; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wf-tip b { color: var(--fg); letter-spacing: .02em; }
+.wf-tip b.rtty { color: var(--rtty); }
+.wf-tip b.wspr { color: #e05a5a; }
+.wf-tip .f { color: var(--mut); font-size: 11px; }
 .wf-bar select:disabled { opacity: .6; }
 
 /* the WSPR stations (Statistics): a column head sorts */
