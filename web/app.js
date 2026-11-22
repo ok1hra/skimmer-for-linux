@@ -202,6 +202,7 @@ function renderStatus(d) {
   if (wsprOn) wsprFetch();
   const heat = heatByBand(decoded.map((b) => b.band), per, wsprOn ? wspr.data : null);
   const heatMax = Math.max(1, ...[...heat.values()].flatMap((m) => [...m.values()].map((x) => x.calls.size)));
+  const heatRows = [];
   const maxWspr = Math.max(1, ...[...wsprRx.values()].map((r) => r.stations));
   // the head says what each number counts (each over its number and bar)
   $('#ladder').innerHTML = '<tr class="head-row"><th title="on the map"></th><th class="l">band</th>' +
@@ -236,11 +237,13 @@ function renderStatus(d) {
       bar(cwOn, b.active, b.decoders, 'cw', cwOn && b.paused) +
       bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty', rt && rt.paused) +
       (wsprOn ? wsprCells(wsprRx.get(b.band), maxWspr, i) : '') +
-      heatCells(heat.get(b.band), heatMax) +
+      heatCells(heat.get(b.band), heatMax, heatRows, allOff) +
       `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : pr
         ? `<span class="off-hot" title="paused by the thermal guard, on for a test in place of ${esc(pr.vs)} (the fewest spots) until ${hmUtc(pr.until)} UTC: with more spots a minute it stays on">TEST</span> ${fmt(pr.spots)} sp.`
         : ''}</td></tr>`;
   }).join('');
+  ladderHeat.rows = heatRows;
+  drawLadderHeat();
   $('#wspr-link').hidden = !wsprOn;
   const sumDec = (f) => decoded.reduce((a, b) => a + (f(b) || 0), 0);
   const ro = (k, v) => `<span>${k} <b>${v}</b></span>`;
@@ -656,7 +659,7 @@ function renderDecTile(d) {
 // 30 min — spotted (CW, RTTY: the spots list) or decoded by WSPR (its
 // stations' newest decode on the band); each call once.
 const HEAT_S = 1800;
-const CONT = ['EU', 'AS', 'AF', 'NA', 'SA', 'OC'];
+const CONT = ['EU', 'NA', 'SA', 'AS', 'AF', 'OC'];
 const CONT_NAME = { EU: 'Europe', AS: 'Asia', AF: 'Africa', NA: 'North America', SA: 'South America', OC: 'Oceania' };
 function heatByBand(bands, per, w) {
   const now = Date.now() / 1000, out = new Map();
@@ -676,31 +679,76 @@ function heatByBand(bands, per, w) {
   }
   return out;
 }
-// --hot over --deep at a share f (rgb; color-mix() is too new for some browsers)
-let heatRgb = null;
-function heatShade(f) {
-  if (!heatRgb) {
-    const cs = getComputedStyle(document.documentElement);
-    const rgb = (v) => { const h = cs.getPropertyValue(v).trim().replace('#', ''); return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) || 0); };
-    heatRgb = [rgb('--deep'), rgb('--hot')];
-  }
-  const [a, b] = heatRgb;
-  return `rgb(${a.map((x, i) => Math.round(x + (b[i] - x) * f)).join(',')})`;
-}
-// a band's cells: the count in each, its shade on a log scale of the
-// table's largest (one station shows, EU's hundred does not drown the rest)
-function heatCells(m, max) {
-  return CONT.map((c) => {
+// a band's cells: empty, each with its tip; their shares (log scale of the
+// table's largest: one station shows, Europe's dozens do not drown the
+// rest) go to rows[] for the heat map drawn over them
+function heatCells(m, max, rows, dim) {
+  const t = [];
+  const cells = CONT.map((c) => {
     const x = m && m.get(c), n = x ? x.calls.size : 0;
+    t.push(n ? Math.log1p(n) / Math.log1p(max) : 0);
     if (!n) return `<td class="hm" title="${CONT_NAME[c]}: none in 30 min"></td>`;
-    const f = Math.log1p(n) / Math.log1p(max), pct = Math.round(15 + 85 * f);
     const parts = [['CW', x.cw], ['RTTY', x.rtty], ['WSPR', x.wspr]].filter(([, s]) => s.size)
       .map(([k, s]) => `${k} ${s.size}`).join(', ');
     const some = [...x.calls].slice(0, 12).join(' ') + (n > 12 ? ' …' : '');
-    return `<td class="hm${pct > 55 ? ' ink' : ''}" style="background:${heatShade(pct / 100)}" ` +
-      `title="${CONT_NAME[c]}: ${n} station${n > 1 ? 's' : ''} in 30 min (${parts}) — ${esc(some)}">${n}</td>`;
+    return `<td class="hm" title="${CONT_NAME[c]}: ${n} station${n > 1 ? 's' : ''} in 30 min (${parts}) — ${esc(some)}"></td>`;
   }).join('');
+  rows.push({ t, dim });
+  return cells;
 }
+// The heat map over the continents' cells: a round blob at each cell's
+// centre, the strongest one at a point wins (no sum: neighbours do not
+// brighten each other), so it runs smooth from cell to cell; the map's
+// colours (SkMap.heatColor: blue, green, yellow, red). A band paused: half.
+const ladderHeat = { rows: [], cv: null };
+function drawLadderHeat() {
+  const tab = $('#ladder'), side = tab && tab.parentElement;
+  if (!side) return;
+  let cv = ladderHeat.cv;
+  if (!cv) { cv = ladderHeat.cv = document.createElement('canvas'); cv.className = 'ladder-heat'; side.appendChild(cv); }
+  const cells = [...tab.querySelectorAll('tr:not(.head-row)')].map((tr) => [...tr.querySelectorAll('td.hm')]);
+  const color = typeof SkMap !== 'undefined' && SkMap.heatColor;
+  if (!cells.length || !cells[0].length || !color) { cv.hidden = true; return; }
+  const sr = side.getBoundingClientRect(), a = cells[0][0].getBoundingClientRect();
+  const z = cells[cells.length - 1], b = z[z.length - 1].getBoundingClientRect();
+  const W = Math.round(b.right - a.left), H = Math.round(b.bottom - a.top);
+  if (W <= 0 || H <= 0) { cv.hidden = true; return; }
+  cv.hidden = false;
+  Object.assign(cv.style, { left: `${a.left - sr.left}px`, top: `${a.top - sr.top}px`, width: `${W}px`, height: `${H}px` });
+  // the blobs: each cell's centre and share, in the canvas's px
+  const blobs = [];
+  cells.forEach((row, j) => row.forEach((td, i) => {
+    const r = ladderHeat.rows[j], t = r ? r.t[i] : 0;
+    if (!t) return;
+    const c = td.getBoundingClientRect();
+    blobs.push({ x: (c.left + c.right) / 2 - a.left, y: (c.top + c.bottom) / 2 - a.top, t, dim: r.dim });
+  }));
+  const cw = a.width, ch = cells.length > 1 ? (b.bottom - a.top) / cells.length : a.height;
+  // wide enough that neighbours meet: half a cell each way (an ellipse in a
+  // tall cell)
+  const sx = 0.6 * cw, sy = 0.6 * ch, kx = 1 / (2 * sx * sx), ky = 1 / (2 * sy * sy), rx = 3 * sx, ry = 3 * sy;
+  const step = 2, w = Math.ceil(W / step), h = Math.ceil(H / step);
+  cv.width = w; cv.height = h;
+  const g = cv.getContext('2d'), img = g.createImageData(w, h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const px = (x + 0.5) * step, py = (y + 0.5) * step;
+      let best = 0, dim = false;
+      for (const o of blobs) {
+        const dx = px - o.x, dy = py - o.y;
+        if (dx > rx || dx < -rx || dy > ry || dy < -ry) continue;
+        const v = o.t * Math.exp(-dx * dx * kx - dy * dy * ky);
+        if (v > best) { best = v; dim = o.dim; }
+      }
+      if (best < 0.02) continue;
+      const [r, gg, bb] = color(best);
+      const al = Math.min(0.85, 0.25 + 0.6 * best) * Math.min(1, best / 0.08) * (dim ? 0.5 : 1);
+      img.data.set([r, gg, bb, Math.round(255 * al)], (y * w + x) * 4);
+    }
+  }
+  g.putImageData(img, 0, 0);
+}
+window.addEventListener('resize', () => drawLadderHeat());
 // why the skimmer paused a band's mode on its own (status.json "paused")
 function pausedText(why) {
   return why === 'rtty-adaptive' ? 'off: adaptive RTTY found no contest — on again for a test at the next full hour'

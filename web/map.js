@@ -609,6 +609,6 @@ const SkMap = (() => {
 
   // site: where the station is for a locator and a call, as the map's centre
   // (Statistics shades the night there); subsolar, sunAlt: the sun, for it
-  return { mount, update, redraw: () => draw(), locate, geo, locToLL, llToLoc, bandColor, center: centerLL,
+  return { mount, update, redraw: () => draw(), locate, geo, locToLL, llToLoc, bandColor, heatColor, center: centerLL,
            site: (loc, call) => centerFor(loc, call).ll, subsolar, sunAlt };
 })();
