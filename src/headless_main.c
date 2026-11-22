@@ -112,7 +112,7 @@ static double act_now(const Act *a, gint64 now) {
 
 /* The modes a band decodes, each its own pipeline on the band's IQ; the
  * index is the stats mode (stats.h). */
-enum { M_CW = 0, M_RTTY = 1, M_N = SKIM_STATS_MODES };
+enum { M_CW = 0, M_RTTY = 1, M_N = 2 };     /* the pipelines; FT8 is SKIM_STATS_FT8 */
 static const char *const MODE_KEY[M_N] = { "cw", "rtty" };
 
 typedef struct {
@@ -212,6 +212,7 @@ typedef struct {
   gint64    minute;            /* the unix minute being collected             */
   guint64   min_frames_prev, min_lost_prev;
   guint64   min_cpu_prev, min_mode_prev[M_N];  /* CPU at the last minute's end  */
+  guint64   min_child_prev;                     /* … the helper programs'        */
   gint64    min_cpu_us;                         /* … and when (0 = not yet)      */
   guint     minutes;           /* minutes recorded since start                */
 
@@ -394,7 +395,9 @@ static void pause_apply(Hd *h) {
 
 /* ---- status ---------------------------------------------------------------------- */
 
-static guint64 cpu_ticks(void) {
+/* Clock ticks of this process (utime + stime), or with children = TRUE of
+ * the children it waited for (cutime + cstime: the helper programs). */
+static guint64 cpu_ticks_of(gboolean children) {
   char buf[1024];
   FILE *f = fopen("/proc/self/stat", "r");
   if (!f) { return 0; }
@@ -403,12 +406,14 @@ static guint64 cpu_ticks(void) {
   buf[n] = '\0';
   const char *p = strrchr(buf, ')');           /* comm may contain spaces      */
   unsigned long ut = 0, st = 0;
-  if (!p || sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu",
-                   &ut, &st) != 2) {
+  long cut = 0, cst = 0;
+  if (!p || sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu %ld %ld",
+                   &ut, &st, &cut, &cst) != 4) {
     return 0;
   }
-  return (guint64)ut + st;
+  return children ? (guint64)MAX(cut, 0) + (guint64)MAX(cst, 0) : (guint64)ut + st;
 }
+static guint64 cpu_ticks(void) { return cpu_ticks_of(FALSE); }
 
 /* The CPU's temperature sensors, found once at start: the inputs of a CPU's
  * hwmon chip (coretemp, k10temp, zenpower, cpu_thermal …), else a CPU's
@@ -959,6 +964,18 @@ static void stats_minute(Hd *h) {
        * Statistics; NaN while the guard is off) */
       if (h->guard_s) { v[SKIM_SM_THERMAL] = (float)rb->shed_s / (float)h->guard_s; }
     }
+    /* FT8 + FT4 ([ft8]): the spots, the senders that appeared, as "active"
+     * the senders heard, the median SNR of the decodes; a band the thermal
+     * guard had off at the minute's end decodes none — a gap */
+    SkimHdFt8Minute fm;
+    if (h->ft8 && skim_hd_ft8_minute(h->ft8, i, &fm) && !g_atomic_int_get(&rb->ft8_paused)) {
+      float *v = m.band[i][SKIM_STATS_FT8];
+      v[SKIM_SM_SPOTS] = (float)fm.spots;
+      v[SKIM_SM_STATIONS] = (float)fm.appeared;
+      v[SKIM_SM_ACTIVE] = (float)fm.heard;
+      v[SKIM_SM_SNR] = fm.snr;
+      if (h->guard_s) { v[SKIM_SM_THERMAL] = (float)rb->shed_s / (float)h->guard_s; }
+    }
     rb->shed_s = 0;
   }
   h->guard_s = 0;
@@ -990,6 +1007,14 @@ static void stats_minute(Hd *h) {
           (float)(100.0 * (double)(mode_ns[k] - h->min_mode_prev[k]) / 1e9 / wall);
     }
   }
+  /* the helper programs (skimmer-ft8d, skimmer-wsprd): their CPU is not in
+   * this process's; NaN until one ran */
+  const guint64 child = cpu_ticks_of(TRUE);
+  m.glob[SKIM_SG_CPU_HELPERS] = wall > 0 && h->min_cpu_us && (h->ft8 || h->wspr) && child >= h->min_child_prev
+                                    ? (float)(100.0 * (double)(child - h->min_child_prev) /
+                                              (double)sysconf(_SC_CLK_TCK) / wall)
+                                    : NAN;
+  h->min_child_prev = child;
   h->min_cpu_prev = cpu;
   memcpy(h->min_mode_prev, mode_ns, sizeof(mode_ns));
   h->min_cpu_us = now_us;

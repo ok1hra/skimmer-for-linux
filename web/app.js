@@ -798,7 +798,10 @@ function offClass(why) { return why === 'thermal' ? 'off-hot' : 'mut'; }
 // a band's mode paused right now (status.json), for the Statistics table
 function pausedNow(band, mode) {
   const b = status && (status.bands || []).find((x) => x.band === band);
-  return !b ? null : mode === 'CW' ? (b.cw !== false ? b.paused : null) : (b.rtty ? b.rtty.paused : null);
+  if (!b) return null;
+  // FT8 is off with the band only when the thermal guard has it off
+  if (mode === 'FT8') return [b.paused, b.rtty && b.rtty.paused].find((p) => p === 'thermal') || null;
+  return mode === 'CW' ? (b.cw !== false ? b.paused : null) : (b.rtty ? b.rtty.paused : null);
 }
 // the thermal guard, one line: the mean against the limit, the bands paused
 // (each with the drop its pause brought and the mean it waits for)
@@ -872,24 +875,33 @@ function renderStats() {
     [{ name: 'CW', series, color: modeColor('cw') },
      ...(d.rtty ? [{ name: 'RTTY', series: perHour(d.rtty), color: modeColor('rtty') }] : [])],
     (v) => fmt(v, v < 10 && v % 1 ? 1 : 0), 160, stats.logY, stats.smooth);
+  // FT8 + FT4 ([ft8]): far more spots than CW — a chart of their own below
+  $('#ft8-spots').hidden = !d.ft8;
+  if (d.ft8) {
+    Charts.mirror($('#chart-spots-ft8'), x, [{ name: 'FT8/FT4', series: perHour(d.ft8), color: modeColor('ft8') }],
+      (v) => fmt(v, v < 10 && v % 1 ? 1 : 0), 110, stats.logY, stats.smooth);
+  }
   // a band's block: CW over RTTY (a mode the band does not decode: an empty
   // strip), both in one ramp — the strip's place says the mode, each its own scale
   const decoded = (mm, b) => mm && mm.active[b] && mm.active[b].some((v) => v != null) ? mm.active[b] : null;
   // the thermal guard's pauses: the band's share off per bucket (CW and RTTY
   // go together; an older history has none)
   const offOf = (b) => {
-    const s = [d.cw, d.rtty].map((mm) => (mm && mm.thermal && mm.thermal[b]) || []);
-    const v = Array.from({ length: d.n }, (_, i) => Math.max(s[0][i] || 0, s[1][i] || 0));
+    const s = [d.cw, d.rtty, d.ft8].map((mm) => (mm && mm.thermal && mm.thermal[b]) || []);
+    const v = Array.from({ length: d.n }, (_, i) => Math.max(s[0][i] || 0, s[1][i] || 0, s[2][i] || 0));
     return v.some((f) => f > 0) ? v : null;
   };
   const offs = Object.fromEntries(d.bands.map((b) => [b, offOf(b)]));
   const amax = Charts.heat($('#chart-active'), x, d.bands.map((b) => ({ name: b, off: offs[b], parts: [
     { label: 'CW', values: decoded(d.cw, b), lo: '--seq-lo', hi: '--seq-hi' },
     ...(d.rtty ? [{ label: 'RTTY', values: decoded(d.rtty, b), lo: '--seq-lo', hi: '--seq-hi' }] : []),
-  ] })), (v) => fmt(v, 1), 'active decoders');
+    // FT8: the stations heard sending a minute (it has no channel decoders)
+    ...(d.ft8 ? [{ label: 'FT8', values: decoded(d.ft8, b), lo: '--seq-lo', hi: '--seq-hi' }] : []),
+  ] })), (v) => fmt(v, 1), 'active decoders · FT8: stations heard a minute');
   const span = (l) => (amax[l] ? ` <span class="mut">0–${fmt(amax[l], amax[l] < 10 ? 1 : 0)}</span>` : '');
   $('#legend-active').innerHTML = '<span><i class="ramp" style="background:linear-gradient(90deg,var(--seq-lo),var(--seq-hi))"></i>' +
-    `${d.rtty ? 'upper strip ' : ''}CW${span('CW')}${d.rtty ? ` · lower strip RTTY${span('RTTY')}` : ''}</span>` +
+    `${d.rtty || d.ft8 ? 'first strip ' : ''}CW${span('CW')}${d.rtty ? ` · then RTTY${span('RTTY')}` : ''}` +
+    `${d.ft8 ? ` · last FT8/FT4: the stations heard sending a minute${span('FT8')}` : ''}</span>` +
     (Object.values(offs).some((v) => v) ? '<span><i style="background:var(--bad);opacity:.3"></i>off — paused by the thermal guard</span>' : '');
   // CPU: the CW and RTTY pipelines' threads and the rest of the process, stacked
   // under the total (history before the split has the total line only)
@@ -917,17 +929,22 @@ function renderCpu(d, x, g) {
 function renderLoad(x, g) {
   const cpuCw = g.cpu_cw || g.cpu.map(() => null), cpuRt = g.cpu_rtty || g.cpu.map(() => null);
   const anyRt = cpuRt.some((v) => v != null);
+  // the helper programs (skimmer-ft8d, skimmer-wsprd) run beside the process:
+  // on top of it, and in "all"
+  const help = g.cpu_helpers || g.cpu.map(() => null), anyHelp = help.some((v) => v != null);
   const layers = [
     { name: 'CW decoders', color: modeColor('cw'), values: cpuCw },
     ...(anyRt ? [{ name: 'RTTY decoders', color: modeColor('rtty'), values: cpuRt }] : []),
     { name: 'rest (IQ in, feed, web)', color: getComputedStyle(document.documentElement).getPropertyValue('--axis').trim(),
       values: g.cpu.map((v, i) => v == null || cpuCw[i] == null ? null
         : Math.max(0, v - cpuCw[i] - (anyRt ? cpuRt[i] || 0 : 0))) },
+    ...(anyHelp ? [{ name: 'FT8 and WSPR decoders (helpers)', color: modeColor('ft8'), values: help }] : []),
   ];
+  const all = anyHelp ? g.cpu.map((v, i) => (v == null ? null : v + (help[i] || 0))) : g.cpu;
   const lostColor = Charts.seriesColor(7);
   $('#legend-cpu').innerHTML = layers.map((l) => `<span><i style="background:${l.color}"></i>${esc(l.name)}</span>`).join('') +
     `<span><i class="line"></i>all</span><span><i class="line" style="border-color:${lostColor};opacity:1"></i>IQ lost (right)</span>`;
-  Charts.area($('#chart-cpu'), x, layers, g.cpu, (v) => `${fmt(v)} %`, 'CPU, all, % of a core',
+  Charts.area($('#chart-cpu'), x, layers, all, (v) => `${fmt(v)} %`, 'CPU, all, % of a core',
     { name: 'IQ lost, worst minute', values: g.lost, color: lostColor,
       fmtV: (v) => `${fmt(v, 3)} %`, fmtTick: (v) => `${+v.toPrecision(2)} %` });
 }
@@ -949,8 +966,8 @@ function renderTemp(x, g) {
 }
 function renderStatsTables(d) {
 
-  // CW and RTTY one under the other — in the tiles and in every table cell
-  const modes = [['CW', d.cw], ...(d.rtty ? [['RTTY', d.rtty]] : [])];
+  // CW, RTTY and FT8 one under the other — in the tiles and in every table cell
+  const modes = [['CW', d.cw], ...(d.rtty ? [['RTTY', d.rtty]] : []), ...(d.ft8 ? [['FT8', d.ft8]] : [])];
   const all = (mm, k) => d.bands.reduce((a, b) => a + sum(mm[k][b]), 0);
   const tileM = (k, f, unit = '', title = '') => `<div class="tile"${title ? ` title="${esc(title)}"` : ''}><div class="k">${esc(k)}</div>` +
     modes.map(([l, mm]) => `<div class="v ml ${l.toLowerCase()}">${f(mm)} <small>${l}${unit ? ` · ${esc(unit)}` : ''}</small></div>`).join('') + '</div>';
@@ -963,7 +980,8 @@ function renderStatsTables(d) {
     tileM('spots', (mm) => fmt(all(mm, 'spots')), `in ${stats.hours} h`),
     tileM('calls decoded', (mm) => fmt(all(mm, 'stations')), '',
           'calls that came into a band\'s station list in the range — every call the decoder read and ' +
-          'validated, spotted or not (a call heard again after it dropped out counts again)'),
+          'validated, spotted or not (a call heard again after it dropped out counts again); FT8: the ' +
+          'senders that appeared, none from the band in the 10 min before'),
     `<div class="tile" title="clients on the telnet feed (the skimmer server's port)"><div class="k">telnet clients</div>` +
       `<div class="v">${clNow == null ? '<span class="mut">feed off</span>' : fmt(clNow)} <small>now</small></div>` +
       `<div class="v ml">${cl.length ? fmt(mean(cl), 1) : '–'} <small>mean · busiest ${cl.length ? fmt(Math.max(...cl), 1) : '–'}</small></div></div>`,
@@ -984,7 +1002,7 @@ function renderStatsTables(d) {
     ['spots per hour', `the spots divided by the ${span} of the range`, (b, mm) => sum(mm.spots[b]) / hrs, (v) => fmt(v, 1)],
     [`calls decoded in ${span}`, 'calls that came into the band\'s station list — read and validated, spotted or not',
       (b, mm) => sum(mm.stations[b]), (v) => fmt(v)],
-    [`busy decoders, mean of ${span}`, 'channel decoders reading running text, on average over the range', (b, mm) => mean(mm.active[b]),
+    [`busy decoders, mean of ${span}`, 'channel decoders reading running text, on average over the range (FT8: the stations heard sending a minute)', (b, mm) => mean(mm.active[b]),
       (v) => fmt(v, 1)],
     [`SNR, mean of ${span}`, 'the typical SNR of the spots: the median of each minute\'s spots, averaged',
       (b, mm) => mean(mm.snr[b]), (v) => `${fmt(v)} dB`],

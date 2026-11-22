@@ -6,8 +6,10 @@
  * matched by name when the config re-orders, adds or drops them; a file of
  * another size starts a fresh ring instead of being misread; a version 1
  * file (before the CPU split), a version 3 file (before the CPU
- * temperature) and a version 4 file (before the thermal pauses) are carried
- * over; the temperature keeps each bucket's peak, a pause its share.
+ * temperature), a version 4 file (before the thermal pauses) and a version 5
+ * file (before FT8 and the helpers' CPU: two modes) are carried over; the
+ * temperature keeps each bucket's peak, a pause its share; FT8 is a mode of
+ * its own.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -20,6 +22,7 @@
 #include "headless/stats.h"
 
 enum { SM4 = 6 };                   /* versions 1–4's band metrics */
+enum { OM = 2 };                    /* versions 1–5's modes: CW, RTTY */
 
 static int fails, checks;
 static void check(const char *what, int ok) {
@@ -87,7 +90,7 @@ int main(void) {
     check("levels are averaged (… 11,14)", ac && g_str_has_suffix(ac, ",11,14"));
     char *sn = series_of(j, "snr", "20m");
     check("SNR is averaged too (… 11,14)", sn && g_str_has_suffix(sn, ",11,14"));
-    check("no RTTY recorded: rtty is null", strstr(j, "\"rtty\":null") != NULL);
+    check("no RTTY recorded: rtty is null, nor FT8", strstr(j, "\"rtty\":null") && strstr(j, "\"ft8\":null"));
     check("global series present", strstr(j, "\"global\":{\"cpu\":[") != NULL);
     g_free(sp); g_free(ac); g_free(sn); g_free(j);
     char *auto_j = skim_stats_json(s, now, 168, 0);
@@ -145,7 +148,7 @@ int main(void) {
     } H1;
     typedef struct {
       gint64 minute;
-      float  band[SKIM_STATS_BANDS][SKIM_STATS_MODES][SM4];
+      float  band[SKIM_STATS_BANDS][OM][SM4];
       float  glob[5];
     } S1;
     const gsize len = sizeof(H1) + SKIM_STATS_MINUTES * sizeof(S1);
@@ -155,14 +158,14 @@ int main(void) {
     h->version = 1;
     h->minutes = SKIM_STATS_MINUTES;
     h->bands = SKIM_STATS_BANDS;
-    h->modes = SKIM_STATS_MODES;
+    h->modes = OM;
     h->sm_n = SM4;
     h->sg_n = 5;
     g_strlcpy(h->names[0], "20m", 16);
     S1 *sl = (S1 *)(buf + sizeof(H1));
     for (guint i = 0; i < SKIM_STATS_MINUTES; i++) {
       for (guint b = 0; b < SKIM_STATS_BANDS; b++)
-        for (guint k = 0; k < SKIM_STATS_MODES; k++)
+        for (guint k = 0; k < OM; k++)
           for (guint j = 0; j < SM4; j++) sl[i].band[b][k][j] = NAN;
       for (guint j = 0; j < 5; j++) sl[i].glob[j] = NAN;
     }
@@ -209,10 +212,10 @@ int main(void) {
       char    names[SKIM_STATS_BANDS][16];
       guint32 ntier, tier_res[3], tier_len[3], pad;
     } H3;
-    enum { G3 = 7, N3 = SKIM_STATS_BANDS * SKIM_STATS_MODES * SM4 + G3 };
+    enum { G3 = 7, N3 = SKIM_STATS_BANDS * OM * SM4 + G3 };
     typedef struct {
       gint64 start;
-      float  band[SKIM_STATS_BANDS][SKIM_STATS_MODES][SM4];
+      float  band[SKIM_STATS_BANDS][OM][SM4];
       float  glob[G3];
       guint8 n[N3];
     } S3;
@@ -224,7 +227,7 @@ int main(void) {
     memcpy(h->magic, "SKIMSTAT", 8);
     h->version = 3;
     h->bands = SKIM_STATS_BANDS;
-    h->modes = SKIM_STATS_MODES;
+    h->modes = OM;
     h->sm_n = SM4;
     h->sg_n = G3;
     h->ntier = 3;
@@ -235,7 +238,7 @@ int main(void) {
       S3 *sl = (S3 *)(buf + off);
       for (guint i = 0; i < tl[t]; i++) {
         for (guint b = 0; b < SKIM_STATS_BANDS; b++)
-          for (guint k = 0; k < SKIM_STATS_MODES; k++)
+          for (guint k = 0; k < OM; k++)
             for (guint j = 0; j < SM4; j++) sl[i].band[b][k][j] = NAN;
         for (guint j = 0; j < G3; j++) sl[i].glob[j] = NAN;
       }
@@ -245,9 +248,9 @@ int main(void) {
       one->band[0][0][SKIM_SM_SPOTS] = 9;
       one->n[SKIM_SM_SPOTS] = 1;
       one->glob[SKIM_SG_CPU] = 55;
-      one->n[SKIM_STATS_BANDS * SKIM_STATS_MODES * SM4 + SKIM_SG_CPU] = 1;
+      one->n[SKIM_STATS_BANDS * OM * SM4 + SKIM_SG_CPU] = 1;
       one->glob[SKIM_SG_CPU_RTTY] = 11;
-      one->n[SKIM_STATS_BANDS * SKIM_STATS_MODES * SM4 + SKIM_SG_CPU_RTTY] = 1;
+      one->n[SKIM_STATS_BANDS * OM * SM4 + SKIM_SG_CPU_RTTY] = 1;
       off += tl[t] * sizeof(S3);
     }
     g_file_set_contents(path, buf, (gssize)len, NULL);
@@ -294,10 +297,10 @@ int main(void) {
       char    names[SKIM_STATS_BANDS][16];
       guint32 ntier, tier_res[3], tier_len[3], pad;
     } H3;
-    enum { G3 = 8, N3 = SKIM_STATS_BANDS * SKIM_STATS_MODES * SM4 + G3 };
+    enum { G3 = 8, N3 = SKIM_STATS_BANDS * OM * SM4 + G3 };
     typedef struct {
       gint64 start;
-      float  band[SKIM_STATS_BANDS][SKIM_STATS_MODES][SM4];
+      float  band[SKIM_STATS_BANDS][OM][SM4];
       float  glob[G3];
       guint8 n[N3];
     } S3;
@@ -309,7 +312,7 @@ int main(void) {
     memcpy(h->magic, "SKIMSTAT", 8);
     h->version = 4;
     h->bands = SKIM_STATS_BANDS;
-    h->modes = SKIM_STATS_MODES;
+    h->modes = OM;
     h->sm_n = SM4;
     h->sg_n = G3;
     h->ntier = 3;
@@ -320,7 +323,7 @@ int main(void) {
       S3 *sl = (S3 *)(buf + off);
       for (guint i = 0; i < tl[t]; i++) {
         for (guint b = 0; b < SKIM_STATS_BANDS; b++)
-          for (guint k = 0; k < SKIM_STATS_MODES; k++)
+          for (guint k = 0; k < OM; k++)
             for (guint j = 0; j < SM4; j++) sl[i].band[b][k][j] = NAN;
         for (guint j = 0; j < G3; j++) sl[i].glob[j] = NAN;
       }
@@ -330,9 +333,9 @@ int main(void) {
       one->band[0][0][SKIM_SM_SPOTS] = 9;
       one->n[SKIM_SM_SPOTS] = 1;
       one->glob[SKIM_SG_CPU] = 55;
-      one->n[SKIM_STATS_BANDS * SKIM_STATS_MODES * SM4 + SKIM_SG_CPU] = 1;
+      one->n[SKIM_STATS_BANDS * OM * SM4 + SKIM_SG_CPU] = 1;
       one->glob[SKIM_SG_CPU_RTTY] = 11;
-      one->n[SKIM_STATS_BANDS * SKIM_STATS_MODES * SM4 + SKIM_SG_CPU_RTTY] = 1;
+      one->n[SKIM_STATS_BANDS * OM * SM4 + SKIM_SG_CPU_RTTY] = 1;
       off += tl[t] * sizeof(S3);
     }
     g_file_set_contents(path, buf, (gssize)len, NULL);
@@ -371,6 +374,103 @@ int main(void) {
           g_stat(keep, &kb) == 0 && (gsize)kb.st_size == len);
     g_remove(keep);
     g_free(keep);
+  }
+
+  printf("== a version 5 file (CW and RTTY only, no helpers' CPU)\n");
+  {
+    typedef struct {
+      char    magic[8];
+      guint32 version, minutes, bands, modes, sm_n, sg_n;
+      char    names[SKIM_STATS_BANDS][16];
+      guint32 ntier, tier_res[3], tier_len[3], pad;
+    } H5;
+    enum { G5 = 8, SM5 = 7, N5 = SKIM_STATS_BANDS * OM * SM5 + G5 };
+    typedef struct {
+      gint64 start;
+      float  band[SKIM_STATS_BANDS][OM][SM5];
+      float  glob[G5];
+      guint8 n[N5];
+    } S5;
+    const guint res[3] = { 1, 15, 60 }, tl[3] = { SKIM_STATS_MINUTES, 90 * 24 * 4, 2 * 365 * 24 };
+    gsize len = sizeof(H5);
+    for (int t = 0; t < 3; t++) { len += tl[t] * sizeof(S5); }
+    char *buf = g_malloc0(len);
+    H5 *h = (H5 *)buf;
+    memcpy(h->magic, "SKIMSTAT", 8);
+    h->version = 5;
+    h->bands = SKIM_STATS_BANDS;
+    h->modes = OM;
+    h->sm_n = SM5;
+    h->sg_n = G5;
+    h->ntier = 3;
+    for (int t = 0; t < 3; t++) { h->tier_res[t] = res[t]; h->tier_len[t] = tl[t]; }
+    g_strlcpy(h->names[0], "20m", 16);
+    g_strlcpy(h->names[1], "40m", 16);
+    gsize off = sizeof(H5);
+    for (int t = 0; t < 3; t++) {
+      S5 *sl = (S5 *)(buf + off);
+      for (guint i = 0; i < tl[t]; i++) {
+        for (guint b = 0; b < SKIM_STATS_BANDS; b++)
+          for (guint k = 0; k < OM; k++)
+            for (guint j = 0; j < SM5; j++) sl[i].band[b][k][j] = NAN;
+        for (guint j = 0; j < G5; j++) sl[i].glob[j] = NAN;
+      }
+      S5 *one = &sl[(now / res[t]) % tl[t]];
+      one->start = now - now % res[t];
+      /* 40m RTTY (band 1, mode 1): 4 spots, active 2, paused a quarter */
+      one->band[1][1][SKIM_SM_SPOTS] = 4;
+      one->n[(1 * OM + 1) * SM5 + SKIM_SM_SPOTS] = 1;
+      one->band[1][1][SKIM_SM_ACTIVE] = 2;
+      one->n[(1 * OM + 1) * SM5 + SKIM_SM_ACTIVE] = 1;
+      one->band[1][1][SKIM_SM_THERMAL] = 0.25f;
+      one->n[(1 * OM + 1) * SM5 + SKIM_SM_THERMAL] = 1;
+      one->glob[SKIM_SG_CPU_TEMP] = 66;
+      one->n[SKIM_STATS_BANDS * OM * SM5 + SKIM_SG_CPU_TEMP] = 1;
+      off += tl[t] * sizeof(S5);
+    }
+    g_file_set_contents(path, buf, (gssize)len, NULL);
+    g_free(buf);
+    const char *bands[] = { "20m", "40m" };
+    SkimStats *s = skim_stats_open(path, bands, 2);
+    char *j = skim_stats_json(s, now, 1, 60);
+    char *rs = series_of(strstr(j, "\"rtty\":"), "spots", "40m");
+    char *rt = series_of(strstr(j, "\"rtty\":"), "thermal", "40m");
+    check("40m RTTY's spots and its pause carried over in their own mode (not FT8's)",
+          rs && strcmp(rs, "4") == 0 && rt && strcmp(rt, "0.25") == 0);
+    check("… the CPU temperature too; FT8 and the helpers' CPU empty",
+          strstr(j, "\"cpu_temp\":[66]") && strstr(j, "\"ft8\":null") && strstr(j, "\"cpu_helpers\":[null]"));
+    g_free(rs); g_free(rt); g_free(j);
+    /* FT8 from now on: 40m, two minutes */
+    for (int i = 0; i < 2; i++) {
+      SkimStatsMinute m = minute_of(0, 0, 0, NAN);
+      m.band[1][SKIM_STATS_FT8][SKIM_SM_SPOTS] = 10;
+      m.band[1][SKIM_STATS_FT8][SKIM_SM_STATIONS] = 6;
+      m.band[1][SKIM_STATS_FT8][SKIM_SM_ACTIVE] = i ? 30 : 20;
+      m.band[1][SKIM_STATS_FT8][SKIM_SM_SNR] = -12;
+      m.glob[SKIM_SG_CPU_HELPERS] = 12;
+      skim_stats_put(s, now + 1 + i, &m);
+    }
+    skim_stats_free(s);                          /* written as version 6     */
+    s = skim_stats_open(path, bands, 2);
+    j = skim_stats_json(s, now + 2, 1, 60);
+    const char *f8 = strstr(j, "\"ft8\":{");
+    char *fs = series_of(f8, "spots", "40m"), *fa = series_of(f8, "active", "40m"),
+         *fn = series_of(f8, "snr", "40m"), *f20 = series_of(f8, "spots", "20m");
+    check("saved as version 6 and reopened: FT8's spots summed (20), active averaged (25), SNR -12",
+          fs && strcmp(fs, "20") == 0 && fa && strcmp(fa, "25") == 0 && fn && strcmp(fn, "-12") == 0);
+    check("… 20m had no FT8 (null); the helpers' CPU 12", f20 && strcmp(f20, "null") == 0 &&
+          strstr(j, "\"cpu_helpers\":[12]"));
+    rs = series_of(strstr(j, "\"rtty\":"), "spots", "40m");
+    check("… the old RTTY minute still there", rs && strcmp(rs, "4") == 0);
+    g_free(fs); g_free(fa); g_free(fn); g_free(f20); g_free(rs); g_free(j);
+    skim_stats_free(s);
+    char *keep = g_strconcat(path, ".v5", NULL);
+    GStatBuf kb;
+    check("… the version 5 file kept beside it, as it was (for an older build)",
+          g_stat(keep, &kb) == 0 && (gsize)kb.st_size == len);
+    g_remove(keep);
+    g_free(keep);
+    g_remove(path);
   }
 
   printf("== the 15-minute and hour rings\n");

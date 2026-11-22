@@ -148,10 +148,13 @@ here; what was done and why is in git.
   and WSPR, 30 min; how open, not how busy — two loud stations are an open
   band; `web/cont.js`: a call's continent from the map's DXCC labels); statistics (`stats.c`, three
   rings: 1 min × 7 d, 15 min × 90 d, 1 h × 2 y, saved in place; file
-  version 5 = with the thermal guard's pauses per band (`thermal`, the
-  share of the bucket off — red in "active decoders by band"); a version 3
-  or 4 file is carried over and kept as `stats.bin.v3` / `.v4` for an older
-  build), settings (one parser:
+  version 6 = three modes, CW, RTTY and FT8 (FT8 + FT4: spots, senders
+  that appeared, as "active" the senders heard a minute, SNR), and the
+  helper programs' CPU (`cpu_helpers`: skimmer-ft8d, skimmer-wsprd —
+  outside the process's own); version 5 added the thermal guard's pauses per
+  band (`thermal`, the share of the bucket off — red in "active decoders by
+  band"); a version 3, 4 or 5 file is carried over and kept as
+  `stats.bin.v3` / `.v4` / `.v5` for an older build; ≈ 32 MB), settings (one parser:
   `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
   backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
   Managers only (settings_from, no proxy headers, a Host that is this

@@ -138,6 +138,17 @@ void skim_hd_ft8_push(SkimHdFt8 *f, guint b, const float *iq, guint n);
 /* … the last frame at real time t_end_us (the gate's own clock). */
 void skim_hd_ft8_push_at(SkimHdFt8 *f, guint b, const float *iq, guint n, gint64 t_end_us);
 
+/* What a receiver's FT8/FT4 dials did since the last call (the minute's
+ * history, stats.h): spots sent, senders that appeared (none from that
+ * receiver in the 10 min before), distinct senders heard, the median SNR of
+ * every decode (NaN: none). FALSE (and nothing counted) when the receiver
+ * has no FT8/FT4 dial. Any thread; the counts start again. */
+typedef struct {
+  guint spots, appeared, heard;
+  float snr;
+} SkimHdFt8Minute;
+gboolean skim_hd_ft8_minute(SkimHdFt8 *f, guint b, SkimHdFt8Minute *out);
+
 /* Wait until every cycle handed over so far is decoded (the gate). */
 void skim_hd_ft8_drain(SkimHdFt8 *f);
 

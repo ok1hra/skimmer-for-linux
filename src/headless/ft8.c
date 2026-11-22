@@ -430,6 +430,13 @@ struct _SkimHdFt8 {
   GArray  *decodes;                     /* SkimFt8Decode, the last 15 min, oldest first */
   GHashTable *fed;                      /* "CALL|band|mode" → gint64 *: last spot (ms) */
   gint64   newest_ms;                   /* the newest cycle decoded              */
+  /* the minute's history, per receiver (skim_hd_ft8_minute) */
+  struct {
+    guint spots, appeared;
+    GHashTable *heard;                  /* the minute's senders (owned keys)     */
+    GArray *snr;                        /* float, every decode                   */
+  } min[16];
+  GHashTable *seen;                     /* "CALL|rx" → gint64 *: last decoded (ms) */
   guint64  cycles, ndecodes, skipped, spots;
   gint64   last_cycle;
   guint    last_decodes;
@@ -478,10 +485,12 @@ static void expire(SkimHdFt8 *f) {             /* lock held */
   guint k = 0;
   while (k < f->decodes->len && g_array_index(f->decodes, SkimFt8Decode, k).t_ms < keep) { k++; }
   if (k) { g_array_remove_range(f->decodes, 0, k); }
-  if (g_hash_table_size(f->fed) > 4096) {      /* the fold's old entries */
+  for (int pass = 0; pass < 2; pass++) {       /* the fold's and the appearances' old entries */
+    GHashTable *ht = pass ? f->seen : f->fed;
+    if (g_hash_table_size(ht) <= 4096) { continue; }
     GHashTableIter it;
     gpointer v;
-    g_hash_table_iter_init(&it, f->fed);
+    g_hash_table_iter_init(&it, ht);
     while (g_hash_table_iter_next(&it, NULL, &v)) {
       if (*(gint64 *)v < f->newest_ms - (gint64)SKIM_FT8_FOLD_S * 1000) { g_hash_table_iter_remove(&it); }
     }
@@ -541,6 +550,23 @@ static void decode_job(gpointer data, gpointer user) {
     for (guint i = 0; i < got->len; i++) {
       const SkimFt8Decode *d = &g_array_index(got, SkimFt8Decode, i);
       g_array_append_val(f->decodes, *d);
+      /* the minute's history: every decode's SNR, each sender heard, and
+       * whether it appeared (none from this receiver in 10 min) */
+      const float snr = (float)d->snr;
+      g_array_append_val(f->min[s->band].snr, snr);
+      if (d->call[0]) {
+        g_hash_table_add(f->min[s->band].heard, g_strdup(d->call));
+        char *sk = g_strdup_printf("%s|%u", d->call, s->band);
+        gint64 *at = g_hash_table_lookup(f->seen, sk);
+        if (!at || d->t_ms - *at >= (gint64)SKIM_FT8_FOLD_S * 1000) { f->min[s->band].appeared++; }
+        if (!at) {
+          at = g_new(gint64, 1);
+          g_hash_table_insert(f->seen, sk, at);
+        } else {
+          g_free(sk);
+        }
+        *at = MAX(*at, d->t_ms);
+      }
       /* a spot: a valid sender, no AP decode, once a band and mode in 10 min */
       if (!d->call[0] || d->ap || d->doubt || !f->spot) { continue; }
       char *key = g_strdup_printf("%s|%s|%s", d->call, s->name, skim_ft8_mode_name(s->mode));
@@ -556,6 +582,7 @@ static void decode_job(gpointer data, gpointer user) {
         g_free(key);
       }
       *last = d->t_ms;
+      f->min[s->band].spots++;
       Out o = { .freq_hz = s->dial_hz + d->df, .snr = d->snr, .cq = d->cq };
       g_strlcpy(o.call, d->call, sizeof o.call);
       g_array_append_val(out, o);
@@ -605,6 +632,11 @@ SkimHdFt8 *skim_hd_ft8_new(const SkimHdFt8Config *cfg, guint nb, const char *con
   f->decoder = cfg->decoder ? g_strdup(cfg->decoder) : skim_ft8_find_decoder();
   f->decodes = g_array_new(FALSE, TRUE, sizeof(SkimFt8Decode));
   f->fed = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+  f->seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+  for (guint b = 0; b < G_N_ELEMENTS(f->min); b++) {
+    f->min[b].heard = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    f->min[b].snr = g_array_new(FALSE, FALSE, sizeof(float));
+  }
   f->cancel = g_cancellable_new();
   for (guint b = 0; b < nb && b < G_N_ELEMENTS(f->by_band); b++) {
     f->by_band[b] = g_ptr_array_new();
@@ -647,6 +679,31 @@ SkimHdFt8 *skim_hd_ft8_new(const SkimHdFt8Config *cfg, guint nb, const char *con
   return f;
 }
 
+static int float_cmp(gconstpointer a, gconstpointer b) {
+  const float x = *(const float *)a, y = *(const float *)b;
+  return (x > y) - (x < y);
+}
+
+gboolean skim_hd_ft8_minute(SkimHdFt8 *f, guint b, SkimHdFt8Minute *out) {
+  memset(out, 0, sizeof *out);
+  out->snr = NAN;
+  if (!f || b >= G_N_ELEMENTS(f->by_band) || !f->by_band[b] || !f->by_band[b]->len) { return FALSE; }
+  g_mutex_lock(&f->lock);
+  out->spots = f->min[b].spots;
+  out->appeared = f->min[b].appeared;
+  out->heard = g_hash_table_size(f->min[b].heard);
+  GArray *a = f->min[b].snr;
+  if (a->len) {
+    g_array_sort(a, float_cmp);
+    out->snr = g_array_index(a, float, a->len / 2);
+  }
+  f->min[b].spots = f->min[b].appeared = 0;
+  g_hash_table_remove_all(f->min[b].heard);
+  g_array_set_size(a, 0);
+  g_mutex_unlock(&f->lock);
+  return TRUE;
+}
+
 void skim_hd_ft8_drain(SkimHdFt8 *f) {
   g_mutex_lock(&f->lock);
   while (f->pending) { g_cond_wait(&f->idle, &f->lock); }
@@ -668,6 +725,11 @@ void skim_hd_ft8_free(SkimHdFt8 *f) {
   g_object_unref(f->cancel);
   g_array_unref(f->decodes);
   g_hash_table_unref(f->fed);
+  g_hash_table_unref(f->seen);
+  for (guint b = 0; b < G_N_ELEMENTS(f->min); b++) {
+    g_hash_table_unref(f->min[b].heard);
+    g_array_unref(f->min[b].snr);
+  }
   g_free(f->dir); g_free(f->work); g_free(f->decoder); g_free(f->error);
   g_cond_clear(&f->idle);
   g_mutex_clear(&f->lock);

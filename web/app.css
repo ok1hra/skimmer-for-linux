@@ -95,6 +95,7 @@ h2.sect { margin: 4px 0 8px; }
 .tile .v.ml { font-size: 19px; line-height: 1.2; }
 .tile .v.ml.cw, .grid .ml.cw { color: var(--cw); }
 .tile .v.ml.rtty, .grid .ml.rtty { color: var(--rtty); }
+.tile .v.ml.ft8, .grid .ml.ft8 { color: var(--ft8); }
 .tile .v.ml small { color: inherit; opacity: .75; }
 .grid td .ml { line-height: 1.3; }
 .grid td .ml + .ml { border-top: 1px dotted var(--ln); }
