@@ -316,6 +316,31 @@ int main(void) {
           !parse(&c, "[bands]\n20m=14045500\n[feed]\ncall=OK1HRA\n[wspr]\nenabled=true\nupload=true\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[wspr]\ncall=OK-1\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[wspr]\nlocator=JO7\n", NULL));
+    check("[ft8] default: off; FT8 + FT4, to the feed, depth 2, 200-3500 Hz, 2 threads",
+          parse(&c, "[bands]\n20m=14045500\n", NULL) && !c.ft8 && c.ft8_ft8 && c.ft8_ft4 &&
+          c.ft8_feed && c.ft8_depth == 2 && c.ft8_lo_hz == 200 && c.ft8_hi_hz == 3500 &&
+          c.ft8_threads == 2);
+    check("[ft8] blank values are the defaults (the web form's empty fields)",
+          parse(&c, "[bands]\n20m=14045500\n[ft8]\nenabled=true\ndepth=\nlo_hz=\nhi_hz=\nthreads=\n", NULL) &&
+          c.ft8 && c.ft8_depth == 2 && c.ft8_lo_hz == 200 && c.ft8_hi_hz == 3500 && c.ft8_threads == 2);
+    check("[ft8] read: FT4 off, page only, depth 3, 300-3000 Hz, 4 threads",
+          parse(&c, "[bands]\n20m=14045500\n[ft8]\nenabled=true\nft4=false\nfeed=false\ndepth=3\n"
+                    "lo_hz=300\nhi_hz=3000\nthreads=4\n", NULL) &&
+          c.ft8 && c.ft8_ft8 && !c.ft8_ft4 && !c.ft8_feed && c.ft8_depth == 3 && c.ft8_lo_hz == 300 &&
+          c.ft8_hi_hz == 3000 && c.ft8_threads == 4);
+    check("[ft8] the narrowest window, 1000-2000 Hz, one thread",
+          parse(&c, "[bands]\n20m=14045500\n[ft8]\nlo_hz=1000\nhi_hz=2000\nthreads=1\n", NULL) &&
+          c.ft8_lo_hz == 1000 && c.ft8_hi_hz == 2000 && c.ft8_threads == 1);
+    check("[ft8] refused: depth 4, lo 100 (no room before the dial), lo 1100, hi 1900, hi 5000, "
+          "0 or 9 threads",
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\ndepth=4\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\nlo_hz=100\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\nlo_hz=1100\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\nhi_hz=1900\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\nhi_hz=5000\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\nthreads=0\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\nthreads=9\n", NULL));
+    skim_hd_config_clear(&c);
     check("[rtty_palette] defaults: on a spot, 400 Hz, autotune, AFC 60/60, squelch off, sound",
           parse(&c, "[bands]\n20m=14045500\n[rtty_palette]\nbandwidth=\n", NULL) &&
           c.rtty_palette.open_on_spot && c.rtty_palette.bandwidth == 400 && c.rtty_palette.autotune &&

@@ -66,6 +66,15 @@ gboolean skim_rbn_feed_spot_external(SkimRbnFeed *f, const char *call, const cha
                                      double freq_hz, double snr_db, double speed);
 guint64  skim_rbn_feed_dup_dropped(const SkimRbnFeed *f);
 
+/* An FT8/FT4 spot (src/headless/ft8.h): mode "FT8"/"FT4", WSJT-X's SNR, no
+ * speed — "FT8  -12 dB  CQ" for a CQ caller, "DE" for any other station
+ * sending. Dropped like skim_rbn_feed_spot() when another skimmer sent the
+ * call within 300 Hz / 600 s; the tap sees it (speed 0), the relay never:
+ * the RBN Aggregator's port carries CW and RTTY (the RBN takes FT8 its own
+ * way). Thread-safe. */
+void skim_rbn_feed_spot_digital(SkimRbnFeed *f, const char *call, const char *mode,
+                                double freq_hz, double snr_db, gboolean cq);
+
 /* Logged-in clients right now / spot lines actually written in total /
  * spots waiting out the delay. */
 guint   skim_rbn_feed_clients(const SkimRbnFeed *f);

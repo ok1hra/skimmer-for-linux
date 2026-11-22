@@ -5,7 +5,8 @@
 # that the config is read (band modes, per-band engine), the source streams,
 # both spots reach the telnet feed at the right frequency, /status.json says
 # so (with the built-in gate and the SKIM_* switches), SIGTERM stops it
-# cleanly, and a bad config stops the start with exit 2. 20m asks for
+# cleanly, and a bad config stops the start with exit 2. [ft8] takes both
+# bands' FT8 and FT4 dials and decodes their cycles. 20m asks for
 # DeepCW, which has no model here: it runs v2 and says why; the model
 # fetch (web and --fetch-deepcw-model) refuses a file that is not the
 # pinned one, and installs the real one from a local mirror when this
@@ -43,6 +44,8 @@ settle_nodict_s=0
 [status]
 console_s=0
 http_port=$HTTP
+[ft8]
+enabled=true
 EOF
 
 # the pinned DeepCW model, if this machine has one: the mirror for the
@@ -116,6 +119,18 @@ check "status: the built-in gate in shadow" $?
 check "status: the SKIM_* switches of the start" $?
 [[ $(py 'd["supervisor"]') == None ]]; check "status: no supervisor" $?
 [[ $(py 'sum(b["spots"] for b in d["bands"]) > 0') == True ]]; check "status: spots counted" $?
+# [ft8]: both bands' FT8 and FT4 dials, WSJT-X's decoder found, cycles decoded
+# (the mock sends no FT8: noise, nothing decoded, no error)
+[[ $(py 'd["ft8"]["on"], d["ft8"]["decoder"], ",".join(x["band"] + x["mode"] for x in d["ft8"]["dials"])') == "True True 20mFT8,20mFT4,40mFT8,40mFT4" ]]
+check "status: [ft8] on, the decoder there, 20m and 40m FT8 + FT4" $?
+for _ in $(seq 40); do
+  fj=$(curl -s "http://127.0.0.1:$HTTP/status.json" | python3 -c "import json,sys; f=json.load(sys.stdin)['ft8']; print(f['cycles'] >= 4, f['decodes'], f['error'])" 2>/dev/null)
+  [[ $fj == "True "* ]] && break
+  sleep 0.5
+done
+[[ $fj == "True 0 None" ]]; check "status: [ft8] cycles decoded, nothing in the mock's noise, no error ($fj)" $?
+grep -q "ft8: decoding 20m FT8 14074.0, 20m FT4 14080.0, 40m FT8 7074.0, 40m FT4 7047.5 (depth 2, 2 threads); senders to the feed" "$T/log"
+check "log: the FT8/FT4 dials taken" $?
 page=$(curl -s "http://127.0.0.1:$HTTP/")
 [[ $page == *"<title>Skimmer for Linux</title>"* ]]; check "web: the page" $?
 [[ $(curl -s -o /dev/null -w '%{http_code} %{content_type}' "http://127.0.0.1:$HTTP/app.js") == "200 text/javascript"* ]]

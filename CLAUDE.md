@@ -128,8 +128,9 @@ here; what was done and why is in git.
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 31 gates** (DeepCW skips without the model, golden skips
-  without its inputs in `/var/tmp/skimmer-iq/golden`). `headless-mock` runs
+- **`meson test` = 33 gates** (DeepCW skips without the model, golden skips
+  without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
+  only with gfortran). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).
 - **Hub, workers, peers** (`docs/HUB.md`): the PC with the radio passes the
   IQ of `@name` bands as int24 over TCP :7380 (`src/headless/hub.c`) to
@@ -288,6 +289,27 @@ here; what was done and why is in git.
   for the next cycle. The `.c2` stores Q negated (wsprd's convention) —
   the `wspr` gate decodes two synthetic signals at 48 and 192 kHz, so a
   mirrored spectrum fails it. Needs a live check on air.
+- **FT8/FT4** (`[ft8] enabled`, default off; `src/headless/ft8.c`,
+  2026-11-22 at Dan's request): every FT8/FT4 dial (WSJT-X's list) whose
+  dial + `lo_hz`…`hi_hz` (200–3500) lies inside 45 % of the rate around a
+  received band's centre. `rx_iq_cb` → shift, WDSP to 12 kHz (240 taps),
+  a sharp 12 k → 12 k filter (800 taps: nothing below the dial, or USB's
+  mirror hears it), back up and the real part = USB audio, the dial at 0 Hz;
+  each UTC cycle (15 s / 7.5 s) → a WAV → `skimmer-ft8d` (WSJT-X 3.0.2's
+  classic ft8_decode / ft4_decode in Fortran, `vendor/wsjtx-ft/`, driven as
+  jt9 does from disk; not ft8_lib — half the decodes on a busy band) on a
+  pool of `threads` (2), nice 10; a cycle still waiting when its dial's next
+  one is done is skipped (counted). Every station that sends (CQ caller, the
+  2nd call of a standard message; no hash `<…>`, no AP decode) is a spot
+  once a call+band+mode in 10 min, at dial + its audio frequency, on the
+  telnet feed as `FT8  -12 dB  CQ` / `DE` (`skim_rbn_feed_spot_digital`, the
+  CW line byte-identical) — never on the RBN Aggregator's port (RBN takes
+  FT8 its own way); `feed=false` = the page only. Off on a worker (the hub
+  decodes its IQ), off with the thermal guard's band. Decodes of 15 min for
+  the page (`skim_hd_ft8_decodes_json`); status.json `ft8`. Real air
+  (golden, depth 2): busy 20m ≈ 41 FT8 decodes a cycle, the decoder ≈ 16 %
+  of a core for 20m FT8+FT4, the DSP ≈ 3 % a band. `skimmer-ft8-replay
+  FILE.cf32 [--keep DIR]` is the bench. Needs a live check on air.
 - **Updates** (`[update]`, default `mode=auto`, `hour_utc=3`;
   `src/headless/update.c`, 2026-11-22 at Dan's request): once a day the
   GitHub API's latest release of ok1hra/skimmer-for-linux; a newer one is
@@ -337,7 +359,8 @@ src/headless/ the product layer: config (headless.ini, one parser), source
               feeds), discovery (UDP 8075), record ([record] IQ to disk),
               switches (SKIM_* visibility), stats (7-day history), web
               (libsoup server), logring, scp_update (MASTER.SCP updater),
-              wspr ([wspr]: WSPR beside, WSPRnet), update ([update]: a
+              wspr ([wspr]: WSPR beside, WSPRnet), ft8 ([ft8]: FT8/FT4
+              beside, to the feed), update ([update]: a
               newer release swapped in)
 web/          the web page (HTML, CSS, JS — built in as a GResource)
 src/headless_main.c  skimmer-headless: multi-band, no GUI (HPSDR P1 → N pipelines)
@@ -345,5 +368,6 @@ weights/      learned weights built into skimmer-headless (feed-gate.ini)
 tests/golden/ the golden gate: real-air replay, byte for byte
 vendor/wdsp/  in-tree WDSP copy (FFT + resampler)
 vendor/wsprd/ WSJT-X's wsprd (the WSPR decoder → skimmer-wsprd, a helper)
+vendor/wsjtx-ft/ WSJT-X's FT8/FT4 decoders (Fortran → skimmer-ft8d, a helper)
 vendor/onnxruntime/  ONNX Runtime C API header only (MIT) — dlopen at run time
 ```

@@ -266,10 +266,12 @@ static gboolean recent_seen(SkimRbnFeed *f, const char *call, double freq_hz, gi
 }
 
 /* The line out (after the delay), the relay, the tap. */
+/* digi: NULL = the classic line (speed + WPM/BPS, CQ); "CQ" / "DE" = an
+ * FT8/FT4 line, no speed, never relayed (skim_rbn_feed_spot_digital). */
 static void spot_out(SkimRbnFeed *f, const char *call, const char *mode, double freq_hz,
-                     double snr_db, double speed) {
+                     double snr_db, double speed, const char *digi) {
   if (f->tap) { f->tap(call, mode, freq_hz, snr_db, speed, f->tap_user); }
-  if (f->relay) { skim_rbn_feed_spot(f->relay, call, mode, freq_hz, snr_db, speed); }
+  if (f->relay && !digi) { skim_rbn_feed_spot(f->relay, call, mode, freq_hz, snr_db, speed); }
   if (!f->svc) { return; }                     /* a sink: nobody to write to */
   GDateTime *now = g_date_time_new_now_utc();
   Broadcast *b = g_new0(Broadcast, 1);
@@ -283,11 +285,20 @@ static void spot_out(SkimRbnFeed *f, const char *call, const char *mode, double 
    * separator and are safe). */
   char khz[G_ASCII_DTOSTR_BUF_SIZE];
   g_ascii_formatd(khz, sizeof(khz), "%8.1f", freq_hz / 1000.0);
-  b->line = g_strdup_printf(
-      "DX de %-9s %s  %-12s %-4s %3.0f dB  %2.0f %s  CQ      %02d%02dZ\r\n",
-      f->spotter, khz, call, mode, snr_db, speed,
-      g_strcmp0(mode, "CW") == 0 ? "WPM" : "BPS",
-      g_date_time_get_hour(now), g_date_time_get_minute(now));
+  if (digi) {
+    /* FT8/FT4: WSJT-X's SNR, no speed; CQ or DE where a CW line has CQ, the
+     * time in the same column */
+    b->line = g_strdup_printf(
+        "DX de %-9s %s  %-12s %-4s %3.0f dB  %-16s%02d%02dZ\r\n",
+        f->spotter, khz, call, mode, snr_db, digi,
+        g_date_time_get_hour(now), g_date_time_get_minute(now));
+  } else {
+    b->line = g_strdup_printf(
+        "DX de %-9s %s  %-12s %-4s %3.0f dB  %2.0f %s  CQ      %02d%02dZ\r\n",
+        f->spotter, khz, call, mode, snr_db, speed,
+        g_strcmp0(mode, "CW") == 0 ? "WPM" : "BPS",
+        g_date_time_get_hour(now), g_date_time_get_minute(now));
+  }
   g_date_time_unref(now);
   if (f->delay_s) {
     b->held = TRUE;
@@ -314,7 +325,7 @@ void skim_rbn_feed_spot(SkimRbnFeed *f, const char *call, const char *mode,
     g_atomic_int_inc(&f->dup_dropped);
     return;
   }
-  spot_out(f, call, mode, freq_hz, snr_db, speed);
+  spot_out(f, call, mode, freq_hz, snr_db, speed, NULL);
 }
 
 gboolean skim_rbn_feed_spot_external(SkimRbnFeed *f, const char *call, const char *mode,
@@ -327,8 +338,21 @@ gboolean skim_rbn_feed_spot_external(SkimRbnFeed *f, const char *call, const cha
     g_atomic_int_inc(&f->dup_dropped);
     return FALSE;
   }
-  spot_out(f, call, mode, freq_hz, snr_db, speed);
+  spot_out(f, call, mode, freq_hz, snr_db, speed, NULL);
   return TRUE;
+}
+
+void skim_rbn_feed_spot_digital(SkimRbnFeed *f, const char *call, const char *mode,
+                                double freq_hz, double snr_db, gboolean cq) {
+  g_return_if_fail(f && call && call[0]);
+  g_mutex_lock(&f->recent_lock);
+  const gboolean seen = recent_seen(f, call, freq_hz, g_get_monotonic_time(), FALSE);
+  g_mutex_unlock(&f->recent_lock);
+  if (seen) {
+    g_atomic_int_inc(&f->dup_dropped);
+    return;
+  }
+  spot_out(f, call, mode, freq_hz, snr_db, 0, cq ? "CQ" : "DE");
 }
 
 void skim_rbn_feed_set_tap(SkimRbnFeed *f, SkimRbnFeedTap tap, gpointer user) {

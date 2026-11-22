@@ -660,6 +660,60 @@ int main(void) {
     check("relay: a feed freed with a line still held", TRUE);
   }
 
+  /* -- FT8/FT4 lines: no speed, CQ or DE, the time where a CW line has it; never
+   *    relayed to the RBN's port, the tap sees them ------------------------------- */
+  {
+    GError *err = NULL;
+    SkimRbnFeed *f = skim_rbn_feed_new("OK1BR", 0, &err);
+    SkimRbnFeed *r = skim_rbn_feed_new("OK1BR", 0, &err);
+    skim_rbn_feed_set_relay(f, r);
+    GString *tapped = g_string_new(NULL);
+    skim_rbn_feed_set_tap(f, tap_cb, tapped);
+    Cap *a = cap_new(skim_rbn_feed_port(f)), *b = cap_new(skim_rbn_feed_port(r));
+    cap_wait(a, "Please enter your call:", 3000);
+    cap_wait(b, "Please enter your call:", 3000);
+    cap_send(a, "LOCAL\r\n");
+    cap_send(b, "AGGR\r\n");
+    cap_wait(a, "Hello LOCAL", 3000);
+    cap_wait(b, "Hello AGGR", 3000);
+    skim_rbn_feed_spot(f, "DL1CW", "CW", 14025100.0, 25.0, 22.0);
+    skim_rbn_feed_spot_digital(f, "JA1FT", "FT8", 14075420.0, -12.0, TRUE);
+    skim_rbn_feed_spot_digital(f, "VK2QSO", "FT4", 14081900.0, 3.0, FALSE);
+    check("ft8: the lines arrive", cap_wait(a, "JA1FT", 3000) && cap_wait(a, "VK2QSO", 3000));
+    char *cw = cap_line(a, "DL1CW"), *l8 = cap_line(a, "JA1FT"), *l4 = cap_line(a, "VK2QSO");
+    printf("       %s\n       %s\n       %s\n", cw ? cw : "(none)", l8 ? l8 : "(none)",
+           l4 ? l4 : "(none)");
+    char sp[24] = "", khz[24] = "", call[16] = "", mode[8] = "", type[8] = "", zt[16] = "";
+    double snr = 0;
+    int n = l8 ? sscanf(l8, "DX de %23s %23s %15s %7s %lf dB %7s %15s", sp, khz, call, mode,
+                        &snr, type, zt)
+               : 0;
+    check("ft8: DX de OK1BR-#: 14075.4 JA1FT FT8 -12 dB CQ HHMMZ",
+          n == 7 && strcmp(sp, "OK1BR-#:") == 0 && fabs(g_ascii_strtod(khz, NULL) - 14075.4) < 0.05 &&
+              strcmp(call, "JA1FT") == 0 && strcmp(mode, "FT8") == 0 && fabs(snr + 12) < 0.5 &&
+              strcmp(type, "CQ") == 0 && strlen(zt) == 5 && zt[4] == 'Z');
+    n = l4 ? sscanf(l4, "DX de %23s %23s %15s %7s %lf dB %7s %15s", sp, khz, call, mode, &snr,
+                    type, zt)
+           : 0;
+    check("ft4: a station not calling CQ is DE", n == 7 && strcmp(mode, "FT4") == 0 &&
+                                                     strcmp(type, "DE") == 0 && fabs(snr - 3) < 0.5);
+    check("ft8: the time in the CW line's column, the same length",
+          cw && l8 && strlen(cw) == strlen(l8) && strrchr(cw, 'Z') - cw == strrchr(l8, 'Z') - l8);
+    check("ft8: the tap has them (speed 0)",
+          strstr(tapped->str, "JA1FT FT8 14075420 -12 0;") != NULL &&
+              strstr(tapped->str, "VK2QSO FT4 14081900 3 0;") != NULL);
+    check("ft8: the RBN's port gets the CW line, not the FT8/FT4 ones",
+          cap_wait(b, "DL1CW", 3000) && !cap_wait(b, "JA1FT", 500) && cap_count(b, "VK2QSO") == 0);
+    g_free(cw);
+    g_free(l8);
+    g_free(l4);
+    cap_free(a);
+    cap_free(b);
+    skim_rbn_feed_free(f);
+    skim_rbn_feed_free(r);
+    g_string_free(tapped, TRUE);
+  }
+
   /* -- spots from other skimmers: cross-source dedup; a sink with a tap ------------ */
   {
     GError *err = NULL;

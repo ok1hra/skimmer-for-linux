@@ -365,6 +365,25 @@ test('wspr', skimmer_wspr_test, args : [skimmer_wsprd], timeout : 120)
 # by the decoder's Fortran one), two messages a cycle with their SNR, DT and
 # frequency, two cycles in one run, noise alone, a WAV at the wrong rate.
 if ft8_enabled
+  # The whole [ft8]: the dials, the lines and each message's sender; FT8 and
+  # FT4 in IQ at 48 and 192 kHz through the DSP, the cycles, the WAV and
+  # skimmer-ft8d — decodes, no mirror from below the dial, the spots folded;
+  # a decoder slower than the cycles skips the waiting ones.
+  skimmer_ft8_test = executable('skimmer-ft8-test',
+    ['src/ft8_test.c', 'src/headless/ft8.c'],
+    include_directories : [include_directories('src'), engine_inc],
+    dependencies : engine_deps,
+    link_with : engine_lib,
+  )
+  test('ft8', skimmer_ft8_test,
+       args : [skimmer_ft8d, skimmer_ft8code, skimmer_ft4code], timeout : 240)
+  # The bench on real air: a recorded cf32 through the whole [ft8] (and with
+  # --keep the cycles' WAVs, for WSJT-X's own jt9).
+  executable('skimmer-ft8-replay', ['src/ft8_replay_main.c', 'src/headless/ft8.c'],
+    include_directories : [include_directories('src'), engine_inc],
+    dependencies : engine_deps,
+    link_with : engine_lib,
+  )
   skimmer_ft8d_test = executable('skimmer-ft8d-test', 'src/ft8d_test.c',
     dependencies : [glib_dep, m_dep])
   test('ft8d', skimmer_ft8d_test,
@@ -457,6 +476,7 @@ headless_sources = files(
   'src/headless/waterfall.c',       # the page's waterfall (only while watched)
   'src/headless/web.c',             # the web page (libsoup 3)
   'src/headless/wspr.c',            # [wspr]: WSPR decoded beside, WSPRnet
+  'src/headless/ft8.c',             # [ft8]: FT8/FT4 decoded beside, to the feed
 )
 
 # The web page's static files (web/), built in.

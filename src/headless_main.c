@@ -79,6 +79,7 @@
 #include "headless/switches.h"
 #include "headless/waterfall.h"
 #include "headless/wspr.h"
+#include "headless/ft8.h"
 #include "headless/skimsrv.h"
 #include "headless/visitors.h"
 #include "headless/web.h"
@@ -144,6 +145,7 @@ typedef struct {
   volatile gint remote_spots[M_N]; /* … the spots it sent, CW / RTTY (link thread) */
   gint          remote_prev[M_N];   /* main loop: at the last minute's end    */
   guint         shed_s;        /* main loop: the minute's s the thermal guard had it off */
+  volatile gint ft8_paused;    /* the thermal guard has the band off: no FT8 either */
 } Band;
 
 typedef struct {
@@ -205,6 +207,7 @@ typedef struct {
   SkimHdArchive *archive;      /* [archive]: every spot, a file a day; NULL   */
   SkimHdWaterfall *wf;         /* the page's waterfall (idle while unwatched) */
   SkimHdWspr *wspr;            /* [wspr]: WSPR decoded beside; NULL = off     */
+  SkimHdFt8  *ft8;             /* [ft8]: FT8/FT4 decoded beside; NULL = off   */
   char      *archive_err;      /* the last flush error logged (no repeats)    */
   gint64    minute;            /* the unix minute being collected             */
   guint64   min_frames_prev, min_lost_prev;
@@ -358,6 +361,9 @@ static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double cent
   if (b->rec) { skim_rec_push(b->rec, iq, n, rate, centre); }
   skim_hd_waterfall_push(h->wf, i, iq, n, rate, centre);   /* nothing unless watched */
   skim_hd_wspr_push(h->wspr, i, iq, n);        /* nothing without a WSPR dial */
+  if (h->ft8 && !g_atomic_int_get(&b->ft8_paused)) {   /* … an FT8/FT4 dial; off with the */
+    skim_hd_ft8_push(h->ft8, i, iq, n);                 /* thermal guard's band          */
+  }
   if (b->worker) {                             /* decoded on another PC     */
     if (h->hub) { skim_hd_hub_push(h->hub, i, iq, n, rate, centre); }
     return;
@@ -382,6 +388,7 @@ static void pause_apply(Hd *h) {
     for (guint k = 0; k < M_N; k++) {
       if (h->band[i].dec[k].p) { g_atomic_int_set(&h->band[i].dec[k].paused, paused_why(h, i, k) != NULL); }
     }
+    g_atomic_int_set(&h->band[i].ft8_paused, h->gov && skim_hd_governor_band_shed(h->gov, i));
   }
 }
 
@@ -836,6 +843,14 @@ static void status_build(Hd *h, gboolean print) {
     char *wj = skim_hd_wspr_status_json(h->wspr);
     g_string_append(json, wj);
     g_free(wj);
+  } else {
+    g_string_append(json, "{\"on\":false}");
+  }
+  g_string_append(json, ",\"ft8\":");
+  if (h->ft8) {
+    char *fj = skim_hd_ft8_status_json(h->ft8);
+    g_string_append(json, fj);
+    g_free(fj);
   } else {
     g_string_append(json, "{\"on\":false}");
   }
@@ -1861,6 +1876,21 @@ static char *web_wspr(GHashTable *q, SkimHdWebWho who, guint *st, const char **t
   return skim_hd_wspr_stations_json(h->wspr, 24, g_get_real_time() / G_USEC_PER_SEC);
 }
 
+/* A station FT8/FT4 heard sending (a decoder thread of ft8.c, already folded
+ * there): [filter], then the telnet feed — never the RBN's port — or, with
+ * [ft8] feed=false or no feed, the page alone. */
+static void ft8_spot(const char *call, const char *mode, double freq_hz, int snr_db, gboolean cq,
+                     const char *band, gpointer user) {
+  (void)band;
+  Hd *h = user;
+  if (!skim_hd_config_call_pass(&h->cfg, call)) { return; }   /* [filter] */
+  if (h->cfg.ft8_feed && h->feed) {
+    skim_rbn_feed_spot_digital(h->feed, call, mode, freq_hz, snr_db, cq);   /* tap → the log */
+  } else {
+    spot_log_add(h, call, mode, freq_hz, snr_db, 0);
+  }
+}
+
 /* Every spot the feed sends (the spotting thread): into the log, and a
  * worker's up the link to its hub. */
 static void feed_tap(const char *call, const char *mode, double freq_hz, double snr_db,
@@ -2526,6 +2556,35 @@ int main(int argc, char **argv) {
     g_free(dials);
   }
 
+  if (c->ft8 && c->source == SKIM_HD_SOURCE_HUB) {   /* [ft8]: before the web page reads it */
+    g_message("ft8: off on a worker — its hub decodes FT8/FT4 from the same IQ");
+  } else if (c->ft8) {
+    double centres[SKIM_HD_MAX_BANDS];
+    for (guint i = 0; i < h->nb; i++) { centres[i] = h->band[i].centre_hz; }
+    char *fdir = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", NULL);
+    const SkimHdFt8Config fc = {
+      .ft8 = c->ft8_ft8, .ft4 = c->ft8_ft4, .depth = c->ft8_depth,
+      .lo_hz = c->ft8_lo_hz, .hi_hz = c->ft8_hi_hz, .threads = c->ft8_threads,
+      .dir = fdir, .spot = ft8_spot, .user = h,
+    };
+    h->ft8 = skim_hd_ft8_new(&fc, h->nb, names, centres, c->rate);
+    g_free(fdir);
+    char *dials = skim_hd_ft8_dials_text(h->ft8);
+    char *fj = skim_hd_ft8_status_json(h->ft8);
+    if (!*dials) {
+      g_message("ft8: no FT8/FT4 frequency inside the bands received (dial + %u-%u Hz within "
+                "45 %% of the rate around a centre) — nothing to decode", c->ft8_lo_hz, c->ft8_hi_hz);
+    } else {
+      g_message("ft8: decoding %s (depth %u, %u thread%s)%s", dials, c->ft8_depth, c->ft8_threads,
+                c->ft8_threads == 1 ? "" : "s",
+                !strstr(fj, "\"decoder\":true") ? " — but no decoder (skimmer-ft8d) found"
+                : !c->ft8_feed ? "; the web page only, not the feed"
+                : !h->feed ? "; no telnet feed — the web page only" : "; senders to the feed");
+    }
+    g_free(fj);
+    g_free(dials);
+  }
+
   SkimHdWeb *web = NULL;
   if (h->http_port > 0) {
     double centres[SKIM_HD_MAX_BANDS];
@@ -2626,6 +2685,7 @@ int main(int argc, char **argv) {
   if (h->dcw_thread) { g_thread_join(h->dcw_thread); }
   g_clear_pointer(&h->src, skim_iq_source_free);
   g_clear_pointer(&h->wspr, skim_hd_wspr_free);      /* nothing pushes into it */
+  g_clear_pointer(&h->ft8, skim_hd_ft8_free);        /* … before the feed it spots to */
   g_clear_pointer(&h->wf, skim_hd_waterfall_free);   /* nothing pushes into it */
   g_clear_pointer(&h->vis, skim_hd_visitors_free);   /* the open visits logged */
   g_clear_pointer(&h->hub, skim_hd_hub_free);     /* nothing pushes any more   */

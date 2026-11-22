@@ -148,6 +148,14 @@ static const char DEFAULT_CONFIG[] =
   "# deep=true: a deeper candidate search (wsprd -d: slower, a few more\n"
   "# decodes); subtract=false: one pass, decoded signals not subtracted (-s)\n"
   "enabled=false\nupload=false\ncall=\nlocator=\ndeep=false\nsubtract=true\n"
+  "\n[ft8]\n# FT8 and FT4 decoded beside CW/RTTY: every FT8/FT4 dial frequency inside a\n"
+  "# band received, each cycle (15 s / 7.5 s), by WSJT-X's own decoders (built\n"
+  "# in). Each station that sends (a CQ, a report, an RR73 …) is a spot on the\n"
+  "# telnet feed at its own frequency, once a band and mode in 10 min (feed=false:\n"
+  "# the web page only); hashed calls <...> never. depth 1-3 = WSJT-X's\n"
+  "# Fast/Normal/Deep (3 costs much more CPU); lo_hz/hi_hz = the audio window\n"
+  "# above the dial (lo 200-1000, hi 2000-4000); threads = decoders side by side\n"
+  "enabled=false\nft8=true\nft4=true\nfeed=true\ndepth=2\nlo_hz=200\nhi_hz=3500\nthreads=2\n"
   "\n[update]\n# once a day a look at the releases on GitHub (ok1hra/skimmer-for-linux):\n"
   "# auto = a newer version is downloaded, checked (sha256, a trial run on\n"
   "# this config) and swapped in for the running AppImage at hour_utc, the old\n"
@@ -795,6 +803,26 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   }
 
   {
+    /* [ft8]: the window must leave the sharp filter room before the dial
+     * (lo ≥ 200); lo ≤ 1000 and hi ≥ 2000 keep it 1 kHz wide at least */
+    double dep, lo, hi, thr;
+    if (!opt_bool(kf, "ft8", "enabled", FALSE, &h->ft8, path, error) ||
+        !opt_bool(kf, "ft8", "ft8", TRUE, &h->ft8_ft8, path, error) ||
+        !opt_bool(kf, "ft8", "ft4", TRUE, &h->ft8_ft4, path, error) ||
+        !opt_bool(kf, "ft8", "feed", TRUE, &h->ft8_feed, path, error) ||
+        !opt_num(kf, "ft8", "depth", 2, 1, 3, TRUE, &dep, path, error) ||
+        !opt_num(kf, "ft8", "lo_hz", 200, 200, 1000, TRUE, &lo, path, error) ||
+        !opt_num(kf, "ft8", "hi_hz", 3500, 2000, 4000, TRUE, &hi, path, error) ||
+        !opt_num(kf, "ft8", "threads", 2, 1, 8, TRUE, &thr, path, error)) {
+      return FALSE;
+    }
+    h->ft8_depth = (guint)dep;
+    h->ft8_lo_hz = (guint)lo;
+    h->ft8_hi_hz = (guint)hi;
+    h->ft8_threads = (guint)thr;
+  }
+
+  {
     /* [update]: what the daily look at the releases may do, and when */
     h->update_mode = 2;
     char *m = given(kf, "update", "mode", NULL) ? g_key_file_get_string(kf, "update", "mode", NULL)
@@ -995,6 +1023,8 @@ const char *const SKIM_HD_EDITABLE[] = {
   "rtty_palette.afc_max_hz", "rtty_palette.afc_rate", "rtty_palette.reverse", "rtty_palette.usos",
   "rtty_palette.squelch_db", "rtty_palette.second_decoder", "rtty_palette.clean", "rtty_palette.sound",
   "wspr.enabled", "wspr.upload", "wspr.call", "wspr.locator", "wspr.deep", "wspr.subtract",
+  "ft8.enabled", "ft8.ft8", "ft8.ft4", "ft8.feed", "ft8.depth", "ft8.lo_hz", "ft8.hi_hz",
+  "ft8.threads",
   "update.mode", "update.hour_utc",
   NULL,
 };

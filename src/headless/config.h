@@ -81,6 +81,13 @@
  *            WSPRnet under call (empty = [feed] call) and locator (empty =
  *            [station] locator) — both needed then; upload_url (the gate's
  *            stand-in; not on the page)
+ *   [ft8]    enabled (default false): FT8/FT4 decoded on every FT8 / FT4
+ *            dial inside a band received (ft8.h, WSJT-X's decoders); ft8,
+ *            ft4 (true): which dials; feed (true): each station that sends
+ *            to the telnet feed (false: the web page only); depth (2: 1–3,
+ *            WSJT-X's Fast/Normal/Deep); lo_hz, hi_hz (200, 3500): the audio
+ *            window above the dial (lo 200–1000, hi 2000–4000); threads (2,
+ *            1–8): decoders side by side. Not on a worker: its hub decodes.
  *   [update] mode auto (default) | notify | off: the daily look at the
  *            GitHub releases and what a newer one gets (update.h);
  *            hour_utc (0-23, default 3): when auto swaps it in
@@ -211,6 +218,13 @@ typedef struct {
   char            *wspr_call;         /* NULL = [feed] call                   */
   char             wspr_locator[8];   /* "" = [station] locator               */
   char            *wspr_upload_url;   /* NULL = wsprnet.org (the gate's own)  */
+  /* [ft8] (ft8.h) */
+  gboolean         ft8;               /* decode FT8/FT4 beside                */
+  gboolean         ft8_ft8, ft8_ft4;  /* … on which dials                     */
+  gboolean         ft8_feed;          /* the senders to the telnet feed       */
+  guint            ft8_depth;         /* 1–3                                  */
+  guint            ft8_lo_hz, ft8_hi_hz; /* the audio window above the dial   */
+  guint            ft8_threads;       /* decoder threads                      */
   /* [update] (update.h) */
   guint            update_mode;       /* SkimHdUpdateMode: 0 off, 1 notify, 2 auto */
   guint            update_hour;       /* UTC hour auto installs at            */
