@@ -207,8 +207,19 @@ here; what was done and why is in git.
 - **The learned feed gate** is built in (`weights/feed-gate.ini`, GResource)
   and runs in shadow; `--feed-gate FILE` / `--feed-gate-mode off|shadow|on`
   override it per start.
-- Dan's live instance runs on hra2 from the main clone's `builddir`; work on
-  the product goes in a worktree. Recorded IQ fixtures live in
+- Dan's live instance on hra2 is the systemd **user service**
+  `skimmer-headless` (since 2026-11-22; `--install-service`, linger on, so it
+  starts at boot; a drop-in `skimmer-headless.service.d/limits.conf` sets
+  LimitNOFILE=65536). It runs the released AppImage under a stable name,
+  `~/skimmer-v0.7.0/skimmer-headless-x86_64.AppImage`, with `[update]
+  mode=auto` (03 UTC): a new release swaps itself in, the old file stays as
+  `.prev`. Log: `journalctl --user -u skimmer-headless -f` (tmux main:1 shows
+  it); `systemctl --user restart|stop skimmer-headless` (from a Claude shell
+  export `XDG_RUNTIME_DIR=/run/user/1000` first). A build by hand: stop the
+  service, copy it to the stable name, start it — never a second instance
+  beside it (`start.sh` refuses while the service runs). Dan's how-to:
+  `~/skimmer-for-linux-navod.txt`. Work on the product goes in a worktree,
+  never in the main clone's `builddir`. Recorded IQ fixtures live in
   `/var/tmp/skimmer-iq/` (a fresh one takes minutes:
   `skimmer-tci-probe <host> <port> <rate> <secs> <dump.cf32>`).
 - **Decoder and feed defaults (v0.6.0) come from live air** against CW
