@@ -157,7 +157,8 @@ static const char DEFAULT_CONFIG[] =
   "# above the dial (lo 200-1000, hi 2000-4000); threads = decoders side by side\n"
   "# upload=true sends the stations heard to PSK Reporter (pskreporter.info) under\n"
   "# call and locator (empty = [feed] call, [station] locator), as WSJT-X does\n"
-  "enabled=false\nft8=true\nft4=true\nfeed=true\ndepth=2\nlo_hz=200\nhi_hz=3500\nthreads=2\n"
+  "# bands = the [bands] names whose dials are decoded (empty = every band), e.g. 40m, 20m\n"
+  "enabled=false\nft8=true\nft4=true\nfeed=true\ndepth=2\nlo_hz=200\nhi_hz=3500\nthreads=2\nbands=\n"
   "upload=false\ncall=\nlocator=\n"
   "\n[update]\n# once a day a look at the releases on GitHub (ok1hra/skimmer-for-linux):\n"
   "# auto = a newer version is downloaded, checked (sha256, a trial run on\n"
@@ -201,6 +202,7 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_free(cfg->wspr_call);
   g_free(cfg->wspr_upload_url);
   g_free(cfg->ft8_call);
+  g_strfreev(cfg->ft8_bands);
   g_free(cfg->ft8_pskr_host);
   if (cfg->filter_re) { g_regex_unref(cfg->filter_re); }
   memset(cfg, 0, sizeof(*cfg));
@@ -827,6 +829,19 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->ft8_threads = (guint)thr;
     /* PSK Reporter: call and locator as [wspr]'s (empty = [feed] call,
      * [station] locator); an upload needs both */
+    /* the bands whose dials are decoded (names checked once [bands] is read) */
+    char *fb = g_key_file_get_string(kf, "ft8", "bands", NULL);
+    if (fb && g_strstrip(fb)[0]) {
+      char **v = g_strsplit_set(fb, ", ", -1);
+      GPtrArray *a = g_ptr_array_new();
+      for (char **x = v; *x; x++) {
+        if (**x) { g_ptr_array_add(a, g_strdup(*x)); }
+      }
+      g_ptr_array_add(a, NULL);
+      h->ft8_bands = (char **)g_ptr_array_free(a, FALSE);
+      g_strfreev(v);
+    }
+    g_free(fb);
     if (!opt_bool(kf, "ft8", "upload", FALSE, &h->ft8_upload, path, error)) { return FALSE; }
     char *fc = g_key_file_get_string(kf, "ft8", "call", NULL);
     char *fl = g_key_file_get_string(kf, "ft8", "locator", NULL);
@@ -1011,6 +1026,14 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     ok = bad(error, path, "no [bands] entries");
   }
   if (ok && h->nlisted && h->nb == 0) { ok = bad(error, path, "every band is off"); }
+  /* [ft8] bands: each a band received */
+  for (char **x = h->ft8_bands; ok && x && *x; x++) {
+    gboolean found = FALSE;
+    for (guint i = 0; i < h->nb && !found; i++) { found = strcmp(h->band[i].name, *x) == 0; }
+    if (!found && h->source != SKIM_HD_SOURCE_HUB) {
+      ok = bad(error, path, "[ft8] bands: \"%s\" is no band received ([bands])", *x);
+    }
+  }
   for (guint i = 0; ok && i < h->nb; i++) {
     if (h->band[i].worker[0] && h->source == SKIM_HD_SOURCE_HUB) {
       ok = bad(error, path, "band %s: a worker cannot pass a band on (@%s)", h->band[i].name,
@@ -1071,7 +1094,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "rtty_palette.squelch_db", "rtty_palette.second_decoder", "rtty_palette.clean", "rtty_palette.sound",
   "wspr.enabled", "wspr.upload", "wspr.call", "wspr.locator", "wspr.deep", "wspr.subtract",
   "ft8.enabled", "ft8.ft8", "ft8.ft4", "ft8.feed", "ft8.depth", "ft8.lo_hz", "ft8.hi_hz",
-  "ft8.threads", "ft8.upload", "ft8.call", "ft8.locator",
+  "ft8.threads", "ft8.bands", "ft8.upload", "ft8.call", "ft8.locator",
   "update.mode", "update.hour_utc",
   NULL,
 };

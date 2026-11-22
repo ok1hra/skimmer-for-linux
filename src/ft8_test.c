@@ -362,6 +362,25 @@ int main(int argc, char **argv) {
   }
 
   char *dir = g_dir_make_tmp("skimmer-ft8-XXXXXX", NULL);
+  {
+    /* [ft8] bands: only the receivers named */
+    const char *names[] = { "20m", "40m" };
+    const double centres[] = { 14045500, 7045500 };
+    const char *only40[] = { "40m", NULL };
+    SkimHdFt8Config cfg = { .ft8 = TRUE, .ft4 = TRUE, .depth = 1, .lo_hz = 200, .hi_hz = 3500,
+                            .threads = 1, .dir = dir, .decoder = ft8d };
+    SkimHdFt8 *f = skim_hd_ft8_new(&cfg, 2, names, centres, 96000);
+    char *all = skim_hd_ft8_dials_text(f);
+    skim_hd_ft8_free(f);
+    cfg.bands = only40;
+    f = skim_hd_ft8_new(&cfg, 2, names, centres, 96000);
+    char *one = skim_hd_ft8_dials_text(f);
+    char *w = g_strdup_printf("bands: all = %s; \"40m\" only = %s", all, one);
+    check(w, strcmp(all, "20m FT8 14074.0, 20m FT4 14080.0, 40m FT8 7074.0, 40m FT4 7047.5") == 0 &&
+                 strcmp(one, "40m FT8 7074.0, 40m FT4 7047.5") == 0);
+    g_free(w); g_free(all); g_free(one);
+    skim_hd_ft8_free(f);
+  }
   end_to_end(48000, dir);
   end_to_end(192000, dir);
   slow(dir);

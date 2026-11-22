@@ -1444,7 +1444,11 @@ function wsprShow() {
   el.innerHTML = (got.length
     ? `The bands below take ${got.map(([b, d]) => `<b>${esc(b)}</b> ${fmtKhz(d / 1000)}`).join(', ')}`
     : 'No WSPR frequency inside the bands below at this rate (20 m, 15 m and 10 m need 192 kHz from the band\'s low edge, or a centre of their own)') + run;
-  ft8Show(centres);
+  // the same bands, with their names ([ft8] bands picks among them)
+  const named = readBands().filter((b) => b.on)
+    .map((b) => ({ name: b.name, hz: b.khz ? Math.round(parseKhz(b.khz) * 1000) : b.def }))
+    .filter((b) => Number.isFinite(b.hz) && b.hz > 0);
+  ft8Show(named.map((b) => b.hz), named.map((b) => b.name));
 }
 
 // FT8 / FT4 (Settings → FT8 / FT4): WSJT-X's FT8/FT4 dials that the bands as
@@ -1459,6 +1463,7 @@ const FT8_DIALS = [['160m', 'FT8', 1840000], ['80m', 'FT8', 3573000], ['80m', 'F
 function ft8Dials(centres, rate, lo, hi, modes) {
   const edge = 0.45 * rate, got = [];
   for (const c of centres) {
+    if (c == null) continue;                      // a band [ft8] bands leaves out
     for (const [band, mode, dial] of FT8_DIALS) {
       if (!modes[mode] || dial + lo < c - edge || dial + hi > c + edge || got.some((g) => g[2] === dial)) continue;
       got.push([band, mode, dial]);
@@ -1466,9 +1471,12 @@ function ft8Dials(centres, rate, lo, hi, modes) {
   }
   return got;
 }
-function ft8Show(centres) {
+function ft8Show(centres, names) {
   const el = $('#ft8-note');
   if (!el) return;
+  // [ft8] bands: only the bands named (empty: every band)
+  const only = (($('[name="ft8.bands"]') || {}).value || '').split(/[\s,]+/).filter(Boolean);
+  if (only.length && names) centres = centres.map((c, i) => (only.includes(names[i]) ? c : null));
   const num = (n, d) => { const v = Number(($(`[name="ft8.${n}"]`) || {}).value); return Number.isFinite(v) && v > 0 ? v : d; };
   const chk = (n) => { const c = $(`[name="ft8.${n}"]`); return !c || c.checked; };
   const got = ft8Dials(centres, bandRate(), num('lo_hz', 200), num('hi_hz', 3500), { FT8: chk('ft8'), FT4: chk('ft4') });

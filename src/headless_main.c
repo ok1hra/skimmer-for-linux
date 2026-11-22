@@ -2613,6 +2613,7 @@ int main(int argc, char **argv) {
     const SkimHdFt8Config fc = {
       .ft8 = c->ft8_ft8, .ft4 = c->ft8_ft4, .depth = c->ft8_depth,
       .lo_hz = c->ft8_lo_hz, .hi_hz = c->ft8_hi_hz, .threads = c->ft8_threads,
+      .bands = (const char *const *)c->ft8_bands,
       .dir = fdir, .spot = ft8_spot, .user = h,
     };
     if (c->ft8_upload) {                       /* PSK Reporter: before the spots come */

@@ -346,6 +346,13 @@ int main(void) {
           !parse(&c, "[bands]\n20m=14045500\n[ft8]\nlocator=JO7\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[ft8]\npskreporter=localhost\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[ft8]\npskreporter=localhost:0\n", NULL));
+    check("[ft8] bands: none = all (NULL); \"40m, 20m\" read; a band not received refused",
+          parse(&c, "[bands]\n20m=14045500\n40m=7045500\n", NULL) && !c.ft8_bands &&
+          parse(&c, "[bands]\n20m=14045500\n40m=7045500\n[ft8]\nbands=40m, 20m\n", NULL) &&
+          c.ft8_bands && g_strv_length(c.ft8_bands) == 2 && strcmp(c.ft8_bands[0], "40m") == 0 &&
+          strcmp(c.ft8_bands[1], "20m") == 0 &&
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\nbands=40m\n", NULL));
+    skim_hd_config_clear(&c);
     check("[ft8] the narrowest window, 1000-2000 Hz, one thread",
           parse(&c, "[bands]\n20m=14045500\n[ft8]\nlo_hz=1000\nhi_hz=2000\nthreads=1\n", NULL) &&
           c.ft8_lo_hz == 1000 && c.ft8_hi_hz == 2000 && c.ft8_threads == 1);

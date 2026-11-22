@@ -671,7 +671,11 @@ SkimHdFt8 *skim_hd_ft8_new(const SkimHdFt8Config *cfg, guint nb, const char *con
   f->cancel = g_cancellable_new();
   for (guint b = 0; b < nb && b < G_N_ELEMENTS(f->by_band); b++) {
     f->by_band[b] = g_ptr_array_new();
-    for (const SkimFt8Dial *d = SKIM_FT8_DIALS; d->band; d++) {
+    gboolean want = !cfg->bands;                       /* [ft8] bands: this receiver? */
+    for (const char *const *x = cfg->bands; x && *x && !want; x++) {
+      want = names && names[b] && strcmp(names[b], *x) == 0;
+    }
+    for (const SkimFt8Dial *d = SKIM_FT8_DIALS; want && d->band; d++) {
       if ((d->mode == SKIM_FT8_MODE_FT8 && !f->ft8) || (d->mode == SKIM_FT8_MODE_FT4 && !f->ft4) ||
           !skim_ft8_covers(centres[b], rate, d->dial_hz, f->lo_hz, f->hi_hz) ||
           f->nslots >= SKIM_FT8_MAX_SLOTS) {

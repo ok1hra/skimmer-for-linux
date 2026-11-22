@@ -381,6 +381,8 @@
           <label>Audio from <input name="ft8.lo_hz" inputmode="numeric" placeholder="200" size="6"> to
             <input name="ft8.hi_hz" inputmode="numeric" placeholder="3500" size="6"> Hz above the dial
             <small>from 200–1000, to 2000–4000</small></label>
+          <label>Bands <input name="ft8.bands" placeholder="every band" spellcheck="false">
+            <small>the Bands names whose FT8/FT4 frequencies are decoded, e.g. "40m, 20m"; empty = every band</small></label>
           <label>Decoders <input name="ft8.threads" inputmode="numeric" placeholder="2" size="4">
             <small>side by side (1–8); a cycle they are still behind on when its next is done is skipped</small></label>
           <label class="check"><input type="checkbox" name="ft8.upload"> send the stations heard to PSK Reporter (pskreporter.info)</label>

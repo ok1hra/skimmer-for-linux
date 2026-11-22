@@ -295,7 +295,8 @@ here; what was done and why is in git.
 - **FT8/FT4** (`[ft8] enabled`, default off; `src/headless/ft8.c`,
   2026-11-22 at Dan's request): every FT8/FT4 dial (WSJT-X's list) whose
   dial + `lo_hz`…`hi_hz` (200–3500) lies inside 45 % of the rate around a
-  received band's centre. `rx_iq_cb` → shift, WDSP to 12 kHz (240 taps),
+  received band's centre (`bands=`: only the [bands] names listed —
+  2026-11-22, Dan: one band first, hra2 runs hot). `rx_iq_cb` → shift, WDSP to 12 kHz (240 taps),
   a sharp 12 k → 12 k filter (800 taps: nothing below the dial, or USB's
   mirror hears it), back up and the real part = USB audio, the dial at 0 Hz;
   each UTC cycle (15 s / 7.5 s) → a WAV → `skimmer-ft8d` (WSJT-X 3.0.2's

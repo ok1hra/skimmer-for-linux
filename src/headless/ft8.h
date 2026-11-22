@@ -123,6 +123,7 @@ typedef struct {
   guint       depth;                    /* 1–3 (WSJT-X's Fast / Normal / Deep)   */
   double      lo_hz, hi_hz;             /* the audio window above the dial       */
   guint       threads;                  /* decoder threads (≥ 1)                 */
+  const char *const *bands;             /* the receivers (names) decoded; NULL = all */
   const char *dir;                      /* state: ft8/ (the decoder's work dir)  */
   const char *decoder;                  /* NULL = skim_ft8_find_decoder()        */
   const char *keep_wav;                 /* a dir: every cycle's WAV is left there
