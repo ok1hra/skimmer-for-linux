@@ -186,6 +186,17 @@ streaming from unless told to (`--take-over`).
   under the station's call and locator. At 96 kHz from each band's low edge
   this takes 160/80/40/30/17/12 m; 20, 15 and 10 m need 192 kHz or a centre
   of their own.
+- **FT8 and FT4** beside it (`[ft8] enabled=true`, Settings → FT8 / FT4):
+  every FT8/FT4 dial frequency inside a band received (or only the bands
+  named in `bands=`) is decoded each cycle by WSJT-X's own decoders (built in
+  as `skimmer-ft8d`) from the same IQ. Each station that sends is a spot on
+  the telnet feed once in 10 min a band and mode, at its own frequency
+  (`FT8 -12 dB CQ`, `DE` for one not calling CQ) — never on the RBN
+  Aggregator's port; `upload=true` reports the stations heard to
+  [PSK Reporter](https://pskreporter.info) as WSJT-X does. The waterfall's
+  **FT8 palette** shows every message of a dial as WSJT-X's Band Activity.
+  A busy band (FT8 + FT4, depth 2) costs about a fifth of a core (decoder
+  and DSP), measured on recorded 20 m.
 - **The RBN feed** sends only validated CQ calls that were read twice (or are
   in MASTER.SCP), settled in the station table, and were read lately. A
   **learned feed gate** (a logistic model over what the pipeline knew when it
@@ -255,10 +266,12 @@ program from a build tree only reports a newer release. The state is in
 ## Build
 
 Requirements: GLib/GIO ≥ 2.74, libsoup 3, libwebsockets, libcurl ≥ 7.85,
-FFTW (single and double precision), `meson` and `ninja`. On Debian 12/13:
+FFTW (single and double precision), `meson` and `ninja`; `gfortran` for FT8/FT4
+(WSJT-X's decoders are Fortran — without it the build leaves FT8 out,
+`-Dft8=enabled` makes it required). On Debian 12/13:
 
 ```sh
-sudo apt install meson ninja-build libglib2.0-dev libsoup-3.0-dev libwebsockets-dev \
+sudo apt install meson ninja-build gfortran libglib2.0-dev libsoup-3.0-dev libwebsockets-dev \
                  libfftw3-dev libcurl4-openssl-dev
 git clone https://github.com/ok1hra/skimmer-for-linux.git
 cd skimmer-for-linux
@@ -536,10 +549,11 @@ It needs bash, curl and Python 3, standard library only.
 | `~/.config/skimmer-for-linux/master.scp` | Super Check Partial call list (`.state` records the update rate limits) |
 | `~/.local/share/skimmer-for-linux/headless/` | Decode logs (`[decode] log=true`), decode taps (`learn/`) |
 | `~/.local/share/skimmer-for-linux/models/deepcw/` | DeepCW model (`--fetch-deepcw-model`), its LICENSE and NOTICE |
-| `~/.local/state/skimmer-for-linux/stats.bin` | Seven days of statistics for the web page |
+| `~/.local/state/skimmer-for-linux/stats.bin` | The statistics for the web page (a minute for 7 days, 15 min for 90 days, an hour for 2 years; `.v5` etc.: an older version's file, kept for an older build) |
 | `~/.local/state/skimmer-for-linux/update.state` | [Updates](#updates): the last look at the releases, what is downloaded, kept, skipped |
 | `<the AppImage>.prev` | the version an update replaced (*Back to* puts it back) |
 | `~/.local/state/skimmer-for-linux/wspr.tsv`, `wspr/` | The WSPR spots of the last 24 h; the decoder's work directory (its hash table) |
+| `~/.local/state/skimmer-for-linux/ft8/` | The FT8/FT4 decoder's work directory (a cycle's WAV while it is decoded) |
 
 ## Environment variables
 
@@ -571,7 +585,9 @@ The decoder and the feed have more `SKIM_*` switches for the live-air work;
 - **Pavel Demin** wrote [red-pitaya-notes](https://github.com/pavel-demin/red-pitaya-notes)
   and its `sdr_receiver_hpsdr`, the receiver this fork talks to.
 - **Joe Taylor, K1JT, and Steven Franke, K9AN** wrote wsprd (WSJT-X), the WSPR
-  decoder built in (`vendor/wsprd/`).
+  decoder built in (`vendor/wsprd/`), and with the WSJT-X team the FT8 and FT4
+  decoders built in (`vendor/wsjtx-ft/`).
+- **Philip Gladstone, N1DQ** runs [PSK Reporter](https://pskreporter.info).
 - **VE3NEA** wrote CW Skimmer Server, the reference used for the comparisons.
 - The fork's changes were written by Dan, OK1HRA, with the help of Claude Code.
 
