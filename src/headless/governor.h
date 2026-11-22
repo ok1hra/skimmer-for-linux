@@ -42,6 +42,19 @@
  * 2026-11-22, after a restart: 80 m and 40 m 10+ in it), and the one it
  * would replace — the quietest — spots about 0–1 a minute.
  *
+ * The v4 load guard ([decode] v4_guard, default on; CW v4 only): CW v4
+ * runs its network on a fixed pool of threads, one window a keyed channel
+ * every step; when the pool cannot keep up, a channel's next window comes
+ * while its last one still waits, and that tick is skipped — late. Over
+ * SKIM_GOV_LATE of a minute's ticks late, for 3 of the last 5 minutes:
+ * the band running v4 with the fewest spots a minute (the same count as
+ * the thermal guard's) is paused, 10 min later the next if still late;
+ * one v4 band always stays (Dan, 2026-11-22: "jedno pásmo utáhne vždy").
+ * A paused band comes back last-in first-out after 20 minutes without a
+ * late minute, at most one every 20 minutes. Its pauses are its own — the
+ * thermal guard's pauses and tests go on beside them, and neither picks a
+ * band the other has paused.
+ *
  * The owner pauses a paused mode's pipeline by not pushing it IQ (its
  * engine thread idles, the stations age out); it asks here after each call.
  * Time comes in from outside (unix minutes) — the gate drives it.
@@ -66,6 +79,7 @@ typedef struct {
   double   restore_margin_c;           /* reserve beyond a band's drop, °C     */
   guint    probe_every_min;            /* a paused band tested after (0: never) */
   guint    probe_min;                  /* … for this long (0: never)            */
+  gboolean v4_guard;                   /* the v4 load guard                     */
 } SkimHdGovernorConfig;
 
 /* the guard's clock (s): over the limit OVER_NEED_S of the last OVER_S
@@ -78,6 +92,8 @@ typedef struct {
 #define SKIM_GOV_MIN_DROP_C 5.0
 #define SKIM_GOV_SPOTS_MIN  30          /* the spots that pick a band: minutes  */
 #define SKIM_GOV_MAX_BANDS  16
+/* the v4 load guard: a minute is late over this share of its ticks late */
+#define SKIM_GOV_LATE       0.05
 
 /* now_min: the unix minute of the start (the one running now). */
 SkimHdGovernor *skim_hd_governor_new(const SkimHdGovernorConfig *cfg, gint64 now_min);
@@ -102,14 +118,25 @@ gboolean skim_hd_governor_temp(SkimHdGovernor *g, gint64 now_s, double temp_c);
 /* The thermal guard pauses band i now. */
 gboolean skim_hd_governor_band_shed(const SkimHdGovernor *g, guint i);
 
+/* Which bands decode CW with v4 here (the load guard's candidates). */
+void skim_hd_governor_set_v4(SkimHdGovernor *g, const gboolean *v4);
+
+/* Minute `minute` (unix) just ended: the share of its v4 ticks that came
+ * late (NAN: none due). Call after skim_hd_governor_minute. TRUE when a
+ * band was paused or came back. */
+gboolean skim_hd_governor_load(SkimHdGovernor *g, gint64 minute, double late_share);
+
+/* The v4 load guard pauses band i now. */
+gboolean skim_hd_governor_band_load_shed(const SkimHdGovernor *g, guint i);
+
 /* The mean the guard judges by (NAN: not yet, or the guard off). */
 double skim_hd_governor_mean_c(const SkimHdGovernor *g);
 
 /* The RTTY decoders run now (always TRUE without rtty_adaptive). */
 gboolean skim_hd_governor_rtty_on(const SkimHdGovernor *g);
 
-/* Its state for status.json: ,"rtty_adaptive":{…} and ,"thermal":{…}
- * appended — each only while on. */
+/* Its state for status.json: ,"rtty_adaptive":{…}, ,"thermal":{…} and
+ * ,"v4_guard":{…} appended — each only while on. */
 void skim_hd_governor_json(const SkimHdGovernor *g, GString *out);
 
 G_END_DECLS

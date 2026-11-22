@@ -213,9 +213,15 @@
         <fieldset>
           <legend>Decoding</legend>
           <label>CW engine <select name="decode.engine">
-            <option value="v3">v3.1 (classical, weak-signal, precision rules)</option><option value="v2">v2 (classical, v0.7)</option><option value="deepcw">DeepCW (neural) — not tested</option></select>
+            <option value="v3">v3.1 (classical, weak-signal, precision rules)</option><option value="v4">v4.0 DeepCW (neural, on the CPU)</option><option value="v2">v2 (classical, v0.7)</option><option value="deepcw">DeepCW v1 (neural) — not tested</option></select>
             <small>for the bands that do not name one</small>
-            <small class="warn">DeepCW has not been tested with this skimmer — no live or replay verdict; v3 is the tested one</small></label>
+            <small class="warn" id="v4-warn">v4.0 DeepCW reads 3–5 dB deeper than v3 and far better in fading, at about three times its CPU on a busy band — see its compute check below</small>
+            <small class="warn">DeepCW v1 has not been tested with this skimmer — no live or replay verdict</small></label>
+          <label>v4 threads <input name="decode.v4_workers" inputmode="numeric" placeholder="0">
+            <small>CW v4's inference threads; 0 = half the CPUs</small></label>
+          <label class="check"><input type="checkbox" name="decode.v4_guard" data-default="true"> v4 load guard — when v4
+            cannot keep up, the v4 band with the fewest spots is paused (one always stays)</label>
+          <div id="v4" class="dcw"></div>
           <label class="check"><input type="checkbox" name="decode.log"> raw decode logs per band</label>
           <label class="check"><input type="checkbox" name="decode.suppress_cw_on_rtty"> CW off the RTTY stations
             (bands with CW and RTTY)</label>

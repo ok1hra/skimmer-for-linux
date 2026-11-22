@@ -282,7 +282,9 @@ function renderStatus(d) {
     ? `<td class="${b.waiting ? 'bad' : ''}" title="decoded by the worker ${esc(b.worker)}">` +
       `${b.waiting ? 'waiting for' : `${esc(b.engine)} · on`} <b>${esc(b.worker)}</b></td>`
     : b.mode === 'CW' && b.engine_wanted === 'deepcw' && b.engine !== 'deepcw'
-    ? `<td class="bad" title="DeepCW not available: ${esc(dc.fallback || '')}">${esc(b.engine)} · DeepCW not available</td>`
+    ? `<td class="bad" title="DeepCW v1 not available: ${esc(dc.fallback || '')}">${esc(b.engine)} · DeepCW v1 not available</td>`
+    : b.mode === 'CW' && b.engine_wanted === 'v4' && b.engine !== 'cw-v4'
+    ? `<td class="bad" title="CW v4 not available: ${esc((d.v4 && d.v4.error) || '')}">${esc(b.engine)} · v4 not available</td>`
     : b.paused
     ? `<td class="${offClass(b.paused)}" title="${esc(pausedText(b.paused))}">${esc(b.engine || d.engine)} · OFF ${esc(pausedShort(b.paused))}</td>`
     : `<td>${esc(b.engine || d.engine)}</td>`;
@@ -335,12 +337,13 @@ function renderStatus(d) {
   const warn = $('#dcw-warn');
   warn.hidden = !fb.length;
   if (fb.length) {
-    warn.innerHTML = `<b class="bad">DeepCW not available</b> — ${fb.map((b) => esc(b.band)).join(', ')} ` +
+    warn.innerHTML = `<b class="bad">DeepCW v1 not available</b> — ${fb.map((b) => esc(b.band)).join(', ')} ` +
       `${fb.length === 1 ? 'runs' : 'run'} the v2 decoder instead: ${esc(dc.fallback || '')}. ` +
       (dc.model_ok ? 'The model is in place now — a restart puts it to work.'
                    : 'The model can be fetched under Settings → Decoding.');
   }
   renderDcw(dc);
+  renderV4(d.v4);
   renderArchive(d.archive);
   if (tab === 'stats') renderDecTile(d);
 }
@@ -357,6 +360,60 @@ function renderArchive(a) {
       (a.error ? `<div class="bad">${esc(a.error)}</div>` : '');
 }
 
+// CW v4's compute check (Settings → Decoding): what this machine carries
+// (keyed channels in real time from the measured windows/s), what the
+// bands asked of it this week, the verdict, a new measurement.
+const V4_VERDICT = {
+  ok: ['ok', 'enough compute for v4'],
+  tight: ['warn', 'v4 fits, with little room — under load the governor pauses the quietest band'],
+  short: ['bad', 'not enough compute for v4 on all these bands — the governor will pause bands'],
+  unknown: ['mut', 'not measured yet'],
+};
+function v4Short() { return status && status.v4 && status.v4.verdict === 'short'; }
+function v4Chosen() {
+  const f = $('#settings');
+  if (!f || !f.elements['decode.engine']) return false;
+  if (f.elements['decode.engine'].value === 'v4') return true;
+  return readBands().some((b) => b.on && b.cw && b.engine === 'v4');
+}
+function renderV4(v) {
+  const box = $('#v4');
+  if (!box) return;
+  if (!v) { box.innerHTML = ''; box.dataset.html = ''; return; }
+  const may = cfg.data && cfg.data.may_change;
+  const [cls, say] = V4_VERDICT[v.verdict] || V4_VERDICT.unknown;
+  let html = '<div class="k">v4.0 DeepCW · compute check</div>';
+  if (v.error) {
+    html += `<div class="bad">not available: ${esc(v.error)}</div>`;
+  } else {
+    html += `<div><b class="${cls}">${esc(say)}</b></div>`;
+    if (v.bench_wps > 0) {
+      html += `<small>this machine: ${fmt(v.bench_wps)} windows/s on ${fmt(v.bench_threads)} thread${v.bench_threads === 1 ? '' : 's'} ` +
+        `(${esc(v.bench_isa)}) = about <b>${fmt(v.capacity)}</b> keyed channels in real time · ` +
+        `needed: about <b>${fmt(v.need)}</b> (${v.peak_active == null ? 'no history yet: 150 a CW band'
+          : `this week's most CW decoders at once ${fmt(v.peak_active)}, × 1.5`})</small>`;
+    }
+    if (v.running) {
+      const share = v.ticks ? (100 * v.skipped) / v.ticks : 0;
+      html += `<small class="mut">running on ${esc(v.runtime || '')} · ${fmt(v.windows)} windows, ` +
+        `${fmt(share, 1)} % of them late · ${fmt(v.cpu_s)} s CPU since the start</small>`;
+    }
+  }
+  html += `<div><button type="button" class="small" id="v4-bench"${may && v.bench_state !== 'running' ? '' : ' disabled'}>` +
+    `${v.bench_state === 'running' ? 'measuring…' : 'Measure again'}</button></div>`;
+  if (box.dataset.html === html) return;
+  box.dataset.html = html;
+  box.innerHTML = html;
+  const go = $('#v4-bench');
+  if (go) {
+    go.addEventListener('click', async () => {
+      go.disabled = true;
+      go.textContent = 'measuring…';
+      try { await post('api/v4bench', new URLSearchParams()); } catch (err) { go.textContent = err.message; }
+    });
+  }
+}
+
 // The DeepCW model (Settings → Decoding): installed or not, the runtime,
 // a fetch with its progress, and the restart that puts a new model to work.
 function renderDcw(dc) {
@@ -365,7 +422,7 @@ function renderDcw(dc) {
   const may = cfg.data && cfg.data.may_change;
   const f = dc.fetch || {};
   const short = (dc.commit || '').slice(0, 7);
-  let html = '<div class="k">DeepCW model <span class="warn">· not tested with this skimmer</span></div>';
+  let html = '<div class="k">DeepCW v1 model <span class="warn">· not tested with this skimmer</span></div>';
   if (f.state === 'running') {
     const pct = f.total ? Math.floor((100 * f.got) / f.total) : 0;
     html += `<div>fetching… ${pct} % <span class="mut">(${fmt(f.got / 1e6, 1)} of ${fmt(f.total / 1e6, 1)} MB)</span></div>` +
@@ -787,14 +844,16 @@ window.addEventListener('resize', () => drawLadderHeat());
 function pausedText(why) {
   return why === 'rtty-adaptive' ? 'off: adaptive RTTY found no contest — on again for a test at the next full hour'
     : why === 'thermal' ? 'off: the CPU runs hot — the band with the fewest spots is paused until it cools'
+    : why === 'v4-load' ? 'off: CW v4 cannot keep up — the v4 band with the fewest spots is paused until it can'
     : `paused (${why})`;
 }
 // a pause in a few words (the bands table) and its cell's class: the thermal
 // guard's in amber — it is what the operator must see — adaptive RTTY's grey
 function pausedShort(why) {
-  return why === 'thermal' ? '(CPU hot)' : why === 'rtty-adaptive' ? '(no contest)' : `(${why})`;
+  return why === 'thermal' ? '(CPU hot)' : why === 'rtty-adaptive' ? '(no contest)'
+    : why === 'v4-load' ? '(v4 load)' : `(${why})`;
 }
-function offClass(why) { return why === 'thermal' ? 'off-hot' : 'mut'; }
+function offClass(why) { return why === 'thermal' || why === 'v4-load' ? 'off-hot' : 'mut'; }
 // a band's mode paused right now (status.json), for the Statistics table
 function pausedNow(band, mode) {
   const b = status && (status.bands || []).find((x) => x.band === band);
@@ -1401,7 +1460,7 @@ function bandRow(b, may, rx, rate) {
     `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${b.seg ? ` placeholder="${esc(fmtKhz(b.def / 1000, null, ' '))}" title="empty = the segment's centre; a number moves it"` : ''}${dis}></td>` +
     `<td class="mut span">${span}</td>` +
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
-    `<td><select data-k="engine"${dis}><option value="v3">v3.1</option><option value="v2">v2</option><option value="deepcw" title="not tested with this skimmer">DeepCW (not tested)</option></select></td>` +
+    `<td><select data-k="engine"${dis}><option value="v3">v3.1</option><option value="v4">v4.0 DeepCW</option><option value="v2">v2</option><option value="deepcw" title="not tested with this skimmer">DeepCW v1 (not tested)</option></select></td>` +
     `<td><input type="checkbox" data-k="rtty"${b.rtty ? ' checked' : ''}${dis}></td>` +
     `<td><input data-k="worker" value="${esc(b.worker || '')}" list="worker-names" size="8" placeholder="this PC"${dis}></td>` +
     `<td>${b.seg ? '' : `<button type="button" data-a="del" title="remove this band of your own"${may ? '' : ' disabled'}>✕</button>`}</td>`;
@@ -1731,7 +1790,7 @@ function fillSettings(d) {
   $('#set-msg').textContent = '';
   filterCheck();
   mycallShow();
-  if (status) renderDcw(status.deepcw);
+  if (status) { renderDcw(status.deepcw); renderV4(status.v4); }
 }
 
 function formBody() {
@@ -1897,6 +1956,9 @@ on('#settings', 'submit', async (e) => {
     const inp = f.elements[k];
     if (inp && !inp.value.trim() && inp.placeholder) inp.value = inp.placeholder;
   }
+  if (v4Chosen() && v4Short() &&
+      !confirm('The compute check says this machine is short of compute for v4.0 DeepCW on these bands. ' +
+               'Under load the governor will pause the quietest bands. Save with v4 anyway?')) return;
   const body = formBody();
   $('#set-msg').textContent = 'checking…';
   try {

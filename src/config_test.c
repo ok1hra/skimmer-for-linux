@@ -78,6 +78,29 @@ int main(void) {
     g_free(dir);
   }
 
+  printf("== CW v4\n");
+  {
+    SkimHdConfig c;
+    GError *err = NULL;
+    gboolean ok = parse(&c, "[decode]\nengine=v4\nv4_workers=3\n"
+                            "[bands]\n40m=7045500\n20m=14045500 cw:v3\n", &err);
+    check("engine=v4, v4_workers=3 parse", ok);
+    check("a band with no modes runs v4, cw:v3 stays v3",
+          ok && c.band[0].cw_engine == SKIM_CW_ENGINE_V4 && c.band[1].cw_engine == SKIM_CW_ENGINE_V3);
+    check("v4_workers 3, v4_guard on by default", ok && c.v4_workers == 3 && c.v4_guard);
+    char *m = ok ? skim_hd_band_modes(&c.band[1], SKIM_CW_ENGINE_V3) : NULL;
+    char *m4 = ok ? skim_hd_band_modes(&c.band[0], SKIM_CW_ENGINE_V3) : NULL;
+    check("written back: cw:v4 against a v3 default", m4 && strcmp(m4, "cw:v4") == 0 && m && strcmp(m, "cw") == 0);
+    g_free(m); g_free(m4);
+    g_clear_error(&err);
+    ok = parse(&c, "[decode]\nv4_guard=false\n[bands]\n40m=7045500 cw:v4\n", NULL);
+    check("v4_guard=false, cw:v4 per band", ok && !c.v4_guard && c.band[0].cw_engine == SKIM_CW_ENGINE_V4);
+    check("v4_workers 65 is refused", !parse(&c, "[decode]\nv4_workers=65\n[bands]\n40m=7045500\n", NULL));
+    check("engine=v5 is refused, the message names v4",
+          !parse(&c, "[decode]\nengine=v5\n[bands]\n40m=7045500\n", &err) && err && strstr(err->message, "v4"));
+    g_clear_error(&err);
+  }
+
   printf("== bands and modes\n");
   {
     SkimHdConfig c;

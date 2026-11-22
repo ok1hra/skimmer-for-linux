@@ -47,8 +47,13 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   { "SKIM_DEEPCW_DEVICE", S }, { "SKIM_DEEPCW_MODEL", S }, { "SKIM_DEEPCW_THREADS", S },
   { "SKIM_DEEPCW_WORKERS", S }, { "SKIM_ORT_LIB", S },
   { "SKIM_DEEPCW_DEBUG", D }, { "SKIM_DEEPCW_TAILDUMP", D },
-  /* CW v4's network (dcw4_kernel.c): the encoder's instruction set */
-  { "SKIM_DCW4_ISA", S },
+  /* CW v4 (decode_cw_v4.c, dcw4_kernel.c) */
+  { "SKIM_DCW4_GATE_DB", B }, { "SKIM_DCW4_STEP", B }, { "SKIM_DCW4_LEFT", B },
+  { "SKIM_DCW4_GUARD", B }, { "SKIM_DCW4_SYNC", B }, { "SKIM_DCW4_DRAFT", B },
+  { "SKIM_DCW4_CALLREAD", B }, { "SKIM_DCW4_CALL_SEP", B }, { "SKIM_DCW4_DROP_P", B },
+  { "SKIM_DCW4_BREAK", B },
+  { "SKIM_DCW4_ISA", S }, { "SKIM_DCW4_WORKERS", S },
+  { "SKIM_DCW4_DEBUG", D },
   /* RTTY, channels, the tone splitter */
   { "SKIM_TONE_FOCUS", B }, { "SKIM_TONE_SPLIT", B }, { "SKIM_TS_RATIO", B },
   { "SKIM_TS_DEBUG", D }, { "SKIM_RTTY_DEBUG", D }, { "SKIM_FLOCK_DEBUG", D },

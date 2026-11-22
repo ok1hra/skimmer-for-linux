@@ -87,4 +87,11 @@ gboolean skim_stats_save(SkimStats *s, GError **error);
  * that covers them, as a JSON body (see stats.c). */
 char *skim_stats_json(SkimStats *s, gint64 now_minute, guint hours, guint step);
 
+/* The largest sum over the bands of one metric of one mode, minute by
+ * minute, over the `minutes` (≤ 7 days) ending at now_minute; NaN when no
+ * minute holds it. CW v4's compute check: the most CW decoders that were
+ * ever active at once this week. */
+float skim_stats_peak_sum(const SkimStats *s, gint64 now_minute, guint minutes, guint mode,
+                          SkimStatsBandMetric metric);
+
 G_END_DECLS

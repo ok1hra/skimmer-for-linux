@@ -48,6 +48,17 @@ struct _SkimHdGovernor {
   guint     probe_band, probe_vs, probe_spots;
   gint64    probe_from, probe_end;     /* unix minutes: the first, the one after */
   double    vs_rate;                   /* probe_vs's spots a minute before it  */
+  /* the v4 load guard */
+  gboolean  v4[SKIM_GOV_MAX_BANDS];
+  gboolean  load_on[SKIM_GOV_MAX_BANDS];
+  guint     load_order[SKIM_GOV_MAX_BANDS];    /* paused, oldest first          */
+  gint64    load_at[SKIM_GOV_MAX_BANDS];       /* … unix minute of each pause   */
+  guint     nload;
+  guint8    late[5];                   /* a ring: the last 5 minutes late       */
+  guint     lpos;
+  double    late_share;                /* the last minute's (NAN: none due)     */
+  gint64    last_late, load_change;    /* unix minutes, 0 = never               */
+  gboolean  told_load;
 };
 
 static gint64 next_hour(gint64 minute) { return (minute + 59) / 60 * 60; }
@@ -116,7 +127,7 @@ gboolean skim_hd_governor_minute(SkimHdGovernor *g, gint64 minute, guint rtty_sp
   g->spos = (g->spos + 1) % SKIM_GOV_SPOTS_MIN;               /* the 30-min ring */
   for (guint i = 0; i < g->nb; i++) {
     g->spots[i][g->spos] = band_spots ? band_spots[i] : 0;
-    g->live[i][g->spos] = !(g->cfg.thermal && g->shed_on[i]);
+    g->live[i][g->spos] = !(g->cfg.thermal && g->shed_on[i]) && !g->load_on[i];
   }
   const gboolean rot = rotate(g, minute, band_spots);
   if (!g->cfg.rtty_adaptive) { return rot; }
@@ -176,7 +187,7 @@ static int weakest(const SkimHdGovernor *g, guint keep) {
   guint live = 0;
   double low = INFINITY;
   for (guint i = 0; i < g->nb; i++) {
-    if (!g->can[i] || g->shed_on[i]) { continue; }
+    if (!g->can[i] || g->shed_on[i] || g->load_on[i]) { continue; }
     live++;
     const double r = rate(g, i);
     if (r <= low) { low = r; best = (int)i; }
@@ -335,6 +346,81 @@ gboolean skim_hd_governor_band_shed(const SkimHdGovernor *g, guint i) {
   return g->cfg.thermal && i < g->nb && g->shed_on[i];
 }
 
+/* ---- the v4 load guard ------------------------------------------------------------ */
+
+void skim_hd_governor_set_v4(SkimHdGovernor *g, const gboolean *v4) {
+  guint n = 0;
+  for (guint i = 0; i < g->nb; i++) {
+    g->v4[i] = v4 && v4[i] && g->can[i];
+    n += g->v4[i];
+  }
+  g->late_share = NAN;
+  if (g->cfg.v4_guard && n) {
+    g_message("v4: load guard on — over %.0f %% of a minute's windows late for 3 of the last "
+              "5 min pauses the v4 band with the fewest spots a minute, %u of %u may be paused "
+              "(one always stays)", 100 * SKIM_GOV_LATE, n - 1, n);
+  }
+}
+
+/* the v4 band to pause: the fewest spots a minute among those decoding now;
+ * -1 when only one is left */
+static int weakest_v4(const SkimHdGovernor *g) {
+  int best = -1;
+  guint live = 0;
+  double low = INFINITY;
+  for (guint i = 0; i < g->nb; i++) {
+    if (!g->v4[i] || g->load_on[i] || (g->cfg.thermal && g->shed_on[i])) { continue; }
+    live++;
+    const double r = rate(g, i);
+    if (r <= low) { low = r; best = (int)i; }
+  }
+  return live > 1 ? best : -1;
+}
+
+gboolean skim_hd_governor_load(SkimHdGovernor *g, gint64 minute, double late_share) {
+  if (!g->cfg.v4_guard) { return FALSE; }
+  g->late_share = late_share;
+  const gboolean late = !isnan(late_share) && late_share > SKIM_GOV_LATE;
+  g->late[g->lpos] = (guint8)late;
+  g->lpos = (g->lpos + 1) % G_N_ELEMENTS(g->late);
+  guint n = 0;
+  for (guint k = 0; k < G_N_ELEMENTS(g->late); k++) { n += g->late[k]; }
+  if (late) { g->last_late = minute; }
+  if (n >= 3 && (!g->load_change || minute - g->load_change >= SKIM_GOV_NEXT_S / 60)) {
+    const int b = weakest_v4(g);
+    if (b >= 0) {
+      g->load_on[b] = TRUE;
+      g->load_order[g->nload] = (guint)b;
+      g->load_at[g->nload++] = minute;
+      g->load_change = minute;
+      g_message("v4: %.0f %% of the windows late, %u of the last 5 min — %s paused (%.1f "
+                "spots/min in the last %d min, the fewest)", 100 * late_share, n, g->names[b],
+                rate(g, (guint)b), SKIM_GOV_SPOTS_MIN);
+      return TRUE;
+    }
+    if (!g->told_load) {
+      g->told_load = TRUE;
+      g_warning("v4: %.0f %% of the windows late, and only one v4 band is left — it stays on",
+                100 * late_share);
+    }
+    return FALSE;
+  }
+  if (!n) { g->told_load = FALSE; }
+  const gint64 calm = SKIM_GOV_RESTORE_S / 60;
+  if (g->nload && minute - g->last_late >= calm && minute - g->load_change >= calm) {
+    const guint b = g->load_order[--g->nload];
+    g->load_on[b] = FALSE;
+    g->load_change = minute;
+    g_message("v4: no window late for %" G_GINT64_FORMAT " min — %s back on", calm, g->names[b]);
+    return TRUE;
+  }
+  return FALSE;
+}
+
+gboolean skim_hd_governor_band_load_shed(const SkimHdGovernor *g, guint i) {
+  return g->cfg.v4_guard && i < g->nb && g->load_on[i];
+}
+
 double skim_hd_governor_mean_c(const SkimHdGovernor *g) { return g->cfg.thermal ? g->mean : NAN; }
 
 /* ---- status.json --------------------------------------------------------------- */
@@ -363,6 +449,24 @@ void skim_hd_governor_json(const SkimHdGovernor *g, GString *out) {
     /* unix s: the test's end while testing, else the next test */
     const gint64 t = g->rt == RT_TEST ? g->test_from + g->cfg.rtty_minutes : g->next_test;
     g_string_append_printf(out, ",\"until\":%" G_GINT64_FORMAT "}", t * 60);
+  }
+  guint nv4 = 0;
+  for (guint i = 0; i < g->nb; i++) { nv4 += g->v4[i]; }
+  if (g->cfg.v4_guard && nv4) {
+    /* state: late (the last minute over the bar), paused (bands paused, not
+     * late now), ok */
+    const gboolean late = !isnan(g->late_share) && g->late_share > SKIM_GOV_LATE;
+    guint n = 0;
+    for (guint k = 0; k < G_N_ELEMENTS(g->late); k++) { n += g->late[k]; }
+    g_string_append_printf(out, ",\"v4_guard\":{\"state\":\"%s\",\"late_min\":%u,\"late_pct\":",
+                           late ? "late" : g->nload ? "paused" : "ok", n);
+    num_or_null(out, "%.1f", 100 * g->late_share);
+    g_string_append(out, ",\"shed\":[");
+    for (guint k = 0; k < g->nload; k++) {
+      g_string_append_printf(out, "%s{\"band\":\"%s\",\"at\":%" G_GINT64_FORMAT "}", k ? "," : "",
+                             g->names[g->load_order[k]], g->load_at[k] * 60);
+    }
+    g_string_append(out, "]}");
   }
   if (g->cfg.thermal) {
     /* state: hot (over the limit now), cooling (under it with bands paused,

@@ -334,8 +334,68 @@ check "first start: default ini (radio noted, host=auto), the busy radio found �
 kill $FAKE 2>/dev/null; wait $FAKE 2>/dev/null
 unset SKIM_HPSDR_DISCOVER
 
+# ---- CW v4 on the mock: both bands, the network built in, the compute check -------
+F4=$((20000 + RANDOM % 5000)) H4=$((25000 + RANDOM % 5000))
+cat > "$T/v4.ini" <<EOF
+[radio]
+type=mock
+rate=96000
+[bands]
+20m=14045500 cw:v4
+40m=7045500 cw:v4
+[decode]
+v4_workers=2
+[feed]
+call=TEST
+port=$F4
+settle_nodict_s=0
+[status]
+console_s=0
+http_port=$H4
+EOF
+XDG_STATE_HOME=$T/state4 "$HL" --config "$T/v4.ini" > "$T/v4.log" 2>&1 &
+P4=$!
+g4=
+for _ in $(seq 50); do
+  if { exec 4<>/dev/tcp/127.0.0.1/$F4; } 2>/dev/null; then break; fi
+  sleep 0.2
+done
+if { true >&4; } 2>/dev/null; then
+  printf 'TEST\r\n' >&4
+  end=$((SECONDS + 120))
+  while ((SECONDS < end)) && [[ -z $g4 ]]; do
+    if IFS= read -r -t 5 line <&4; then [[ $line == *OK1MCK* ]] && g4=$line; fi
+  done
+  exec 4>&-
+fi
+echo "  v4 feed: ${g4:-nothing}"
+[[ $g4 == "DX de TEST-#:"*OK1MCK*CW*CQ* ]]; check "v4: the mock's CQ is spotted on the feed by CW v4" $?
+d4=$(curl -s "http://127.0.0.1:$H4/status.json")
+py4() { python3 -c "import json,sys; d=json.loads(sys.argv[1]); print($1)" "$d4" 2>&1; }
+[[ $(py4 '",".join(b["band"] + ":" + b["engine"] + ":" + b["engine_wanted"] for b in d["bands"])') == "20m:cw-v4:v4,40m:cw-v4:v4" ]]
+check "v4: status — both bands run cw-v4" $?
+[[ $(py4 'd["v4"]["running"], d["v4"]["workers"], d["v4"]["windows"] > 0, d["v4"]["error"], d["v4_guard"]["state"] in ("ok", "late", "paused")') == "True 2 True None True" ]]
+check "v4: status — running on 2 workers, windows read, the load guard on" $?
+for _ in $(seq 30); do
+  d4=$(curl -s "http://127.0.0.1:$H4/status.json")
+  [[ $(py4 'd["v4"]["bench_state"]') == done ]] && break
+  sleep 0.5
+done
+[[ $(py4 'd["v4"]["bench_state"], d["v4"]["bench_wps"] > 0, d["v4"]["capacity"] > 0, d["v4"]["need"] == 300, d["v4"]["verdict"] in ("ok", "tight", "short")') == "done True True True True" ]]
+check "v4: the compute check measured, a capacity, need 2 × 150 (no history), a verdict" $?
+[[ -f $T/state4/skimmer-for-linux/v4-bench.ini ]]; check "v4: the measurement cached in the state dir" $?
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Origin: http://evil.example" -X POST "http://127.0.0.1:$H4/api/v4bench")
+[[ $code == 403 ]]; check "v4: /api/v4bench refused from another origin" $?
+[[ $(curl -s -X POST "http://127.0.0.1:$H4/api/v4bench") == '{"ok":true,"state":"running","started":'* ]]
+check "v4: /api/v4bench measures again for a manager" $?
+grep -q "decode: CW v4 (DeepCW v2 narrow) on " "$T/v4.log"; check "v4: the log names what runs" $?
+kill $P4 2>/dev/null; wait $P4 2>/dev/null
+out=$("$HL" --config "$T/v4.ini" --check-config 2>&1)
+[[ $out == *"v4 DeepCW v2 narrow, built in, on "*"2 workers"* ]]; check "v4: --check-config names the network" $?
+
 if ((fails)); then
   echo "--- log"; cat "$T/log"
+  [[ -f $T/v4.log ]] && { echo "--- v4 log"; cat "$T/v4.log"; }
   echo "FAIL ($fails)"; exit 1
 fi
 echo "PASS"

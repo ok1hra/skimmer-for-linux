@@ -116,6 +116,19 @@ here; what was done and why is in git.
   status says why. The model (AGPL) is never shipped: `--fetch-deepcw-model`
   / the web page fetch e04/deepcw-engine at a pinned commit, sha256-checked
   (`src/headless/deepcw_model.c` — a new model = a new pin there).
+- **CW v4 ("v4.0 DeepCW", `[decode] engine=v4` / `cw:v4`, 2026-11-22 at
+  Dan's request; default stays v3.1)**: e04's DeepCW v2 narrow network
+  (MIT) as a C forward pass on the CPU — a bit-exact port of SDRIAK's
+  fused kernel, AVX2/SSE2/generic picked at run time, the weights built in
+  (`weights/deepcw-v4-narrow.bin`, `dcw4_kernel.c`); e04's posterior
+  stitcher at L1/G2/S3 (`dcw4_stitch.c`); words go out whole with a CTC
+  call reader against MASTER.SCP as FIX tokens (`dcw4_callread.c`), the
+  over break, frequency and SNR per keyed window (`decode_cw_v4.c`). A
+  compute check (Settings, `/api/v4bench`, cached in the state dir) warns,
+  `[decode] v4_guard` pauses the quietest v4 band when the worker pool
+  (`v4_workers`, 0 = half the CPUs) falls behind. The old DeepCW backend is
+  shown as "DeepCW v1" (key `deepcw`). `docs/DEEPCW-V4.md`; needs a live
+  check on air.
 - **IQ sources: TCI, or HPSDR Protocol 1 direct** (Red Pitaya
   `sdr_receiver_hpsdr`, 48/96/192 kHz, clock ppm correction; the wire is
   RF-inverted and ingest conjugates — `docs/HPSDR-P1.md`). `skimmer-headless`
@@ -128,7 +141,7 @@ here; what was done and why is in git.
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 33 gates** (DeepCW skips without the model, golden skips
+- **`meson test` = 36 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
   only with gfortran). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).

@@ -30,16 +30,21 @@ static const char DEFAULT_CONFIG[] =
   "\n[bands]\n"
   "# name=centre Hz [modes], in receiver order (RX1 first). At 96 kHz a band\n"
   "# spans its centre +-48 kHz. modes: cw, rtty (cw:v2 = the v0.7 decoder,\n"
-  "# cw:deepcw = the neural CW decoder); off keeps the band here without\n"
-  "# receiving it. At most 8 on — the Red Pitaya has 8 receivers: to have\n"
+  "# cw:v4 = DeepCW v2 narrow, cw:deepcw = DeepCW v1); off keeps the band\n"
+  "# here without receiving it. At most 8 on — the Red Pitaya has 8 receivers: to have\n"
   "# 12 m, take off from it and put it on another band.\n"
   "160m=1845500 cw,rtty\n80m=3545500 cw,rtty\n40m=7045500 cw,rtty\n"
   "30m=10125000 cw,rtty\n20m=14045500 cw,rtty\n17m=18113500 cw,rtty\n"
   "15m=21045500 cw,rtty\n10m=28045500 cw,rtty\n12m=24915500 cw,rtty,off\n"
-  "\n[decode]\n# v3 (classical, weak-signal front end), v2 (classical, as in v0.7) or\n"
-  "# deepcw (needs ONNX Runtime + the model: skimmer-headless --fetch-deepcw-model);\n"
-  "# without them a band runs v3\n"
-  "engine=v3\n# per-band raw decode logs in ~/.local/share/skimmer-for-linux/headless\n"
+  "\n[decode]\n# v3 (classical, weak-signal front end), v4 (DeepCW v2 narrow, neural, on\n"
+  "# the CPU: 3-5 dB more sensitive, far more under fading, ~3x v3's CPU on a\n"
+  "# keyed channel), v2 (classical, as in v0.7) or deepcw (DeepCW v1: needs\n"
+  "# ONNX Runtime + the model: skimmer-headless --fetch-deepcw-model; without\n"
+  "# them a band runs v3)\n"
+  "engine=v3\n"
+  "# v4's inference threads (0 = half the CPUs); v4_guard: when they cannot keep\n"
+  "# up, the v4 band with the fewest spots is paused (one always stays)\n"
+  "#v4_workers=0\n#v4_guard=true\n# per-band raw decode logs in ~/.local/share/skimmer-for-linux/headless\n"
   "log=false\n"
   "# on a band that decodes RTTY too, keep its CW decoders off the RTTY stations\n"
   "# it copies (an FSK tone reads as junk CW); off until measured live\n"
@@ -327,12 +332,13 @@ static gboolean engine_of(const char *s, SkimCwEngine *out) {
   if (g_strcmp0(s, "v2") == 0) { *out = SKIM_CW_ENGINE_V2; return TRUE; }
   if (g_strcmp0(s, "deepcw") == 0) { *out = SKIM_CW_ENGINE_DEEPCW; return TRUE; }
   if (g_strcmp0(s, "v1") == 0) { *out = SKIM_CW_ENGINE_V1; return TRUE; }
+  if (g_strcmp0(s, "v4") == 0) { *out = SKIM_CW_ENGINE_V4; return TRUE; }
   return FALSE;
 }
 
 static const char *engine_name(SkimCwEngine e) {
   return e == SKIM_CW_ENGINE_DEEPCW ? "deepcw" : e == SKIM_CW_ENGINE_V1 ? "v1"
-         : e == SKIM_CW_ENGINE_V3 ? "v3" : "v2";
+         : e == SKIM_CW_ENGINE_V3 ? "v3" : e == SKIM_CW_ENGINE_V4 ? "v4" : "v2";
 }
 
 char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt) {
@@ -390,7 +396,7 @@ static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
       } else if (g_strcmp0(t, "off") == 0) {
         b->off = TRUE;
       } else {
-        ok = bad(error, path, "band %s: mode \"%s\" (cw, cw:v3, cw:v2, cw:deepcw, rtty, off, "
+        ok = bad(error, path, "band %s: mode \"%s\" (cw, cw:v3, cw:v4, cw:v2, cw:deepcw, rtty, off, "
                  "@worker)", name, t);
       }
     }
@@ -486,7 +492,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   if (eng) { g_strstrip(eng); }
   h->engine = SKIM_CW_ENGINE_V3;
   if (eng && eng[0] && !engine_of(eng, &h->engine)) {
-    bad(error, path, "[decode] engine \"%s\" (v3, v2 or deepcw)", eng);
+    bad(error, path, "[decode] engine \"%s\" (v3, v4, v2 or deepcw)", eng);
     g_free(eng);
     return FALSE;
   }
@@ -506,6 +512,14 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     }
     h->rtty_adaptive_spots = (guint)sp;
     h->rtty_adaptive_minutes = (guint)mi;
+  }
+  {
+    double w;
+    if (!opt_num(kf, "decode", "v4_workers", 0, 0, 64, TRUE, &w, path, error) ||
+        !opt_bool(kf, "decode", "v4_guard", TRUE, &h->v4_guard, path, error)) {
+      return FALSE;
+    }
+    h->v4_workers = (guint)w;
   }
 
   h->feed_call = g_key_file_get_string(kf, "feed", "call", NULL);
@@ -1080,7 +1094,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "radio.type", "radio.host", "radio.rate", "radio.clock_ppm",
   "bands",
   "decode.engine", "decode.log", "decode.suppress_cw_on_rtty", "decode.rtty_adaptive",
-  "decode.rtty_adaptive_spots", "decode.rtty_adaptive_minutes",
+  "decode.rtty_adaptive_spots", "decode.rtty_adaptive_minutes", "decode.v4_workers", "decode.v4_guard",
   "feed.call", "feed.port", "feed.rtty", "feed.address",
   "rbn.enabled", "rbn.port", "rbn.delay_s",
   "peers.hosts", "hub.name", "hub.port", "station.locator",

@@ -430,6 +430,25 @@ void skim_stats_put(SkimStats *s, gint64 unix_minute, const SkimStatsMinute *m) 
   for (guint t = 0; t < NTIER; t++) { merge(s, t, unix_minute, m); }
 }
 
+float skim_stats_peak_sum(const SkimStats *s, gint64 now_minute, guint minutes, guint mode,
+                          SkimStatsBandMetric metric) {
+  float peak = NAN;
+  minutes = MIN(minutes, (guint)SKIM_STATS_MINUTES);
+  for (guint k = 0; k < minutes; k++) {
+    const gint64 minute = now_minute - k;
+    const Slot *sl = &s->ring[0][(guint)(minute % SKIM_STATS_MINUTES)];
+    if (sl->start != minute) { continue; }
+    float sum = 0;
+    gboolean any = FALSE;
+    for (guint b = 0; b < SKIM_STATS_BANDS; b++) {
+      const float v = sl->m.band[b][mode][metric];
+      if (!isnan(v)) { sum += v; any = TRUE; }
+    }
+    if (any && (isnan(peak) || sum > peak)) { peak = sum; }
+  }
+  return peak;
+}
+
 static void clean(SkimStats *s) {
   for (guint t = 0; t < NTIER; t++) { memset(s->dirty_slot[t], 0, TIER[t].len / 8 + 1); }
   s->dirty = FALSE;

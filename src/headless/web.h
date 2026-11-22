@@ -20,6 +20,7 @@
  *   POST /api/restart           restart with the config on disk (settings_from)
  *   POST /api/rollback          the previous config back, restart (settings_from)
  *   POST /api/deepcw            fetch the DeepCW model (settings_from)
+ *   POST /api/v4bench           CW v4's compute check, measured again (settings_from)
  *   POST /api/update            action=check | install | rollback (settings_from; update.h)
  *   GET  /api/visitor           {"login","need","call","free"}: must this client sign in
  *   POST /api/visitor           call=… signs in (a cookie), logout=1 signs out — open
@@ -71,7 +72,7 @@ typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
 typedef struct {
   SkimHdWebGet  status, stats, log, config, skimmers, spots, skimsrv, wspr, ft8, update;
-  SkimHdWebPost config_post, config_import, restart, rollback, deepcw, update_post;
+  SkimHdWebPost config_post, config_import, restart, rollback, deepcw, update_post, v4bench;
   /* a WebSocket viewer of the waterfall (peer: its address, for the log;
    * visitor: its sign-in token, NULL for a free client); the hook takes its
    * own reference */

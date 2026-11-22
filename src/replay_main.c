@@ -479,6 +479,7 @@ int main(int argc, char **argv) {
    * replay runs DeepCW inference INLINE (deterministic, stream order) —
    * the app uses the async workers. */
   g_setenv("SKIM_DEEPCW_SYNC", "1", FALSE);
+  g_setenv("SKIM_DCW4_SYNC", "1", FALSE);    /* CW v4 the same way */
   SkimPipeline *rp = NULL;                 /* SKIM_REPLAY_RTTY_PAIRS: RTTY beside */
   const char *penv = g_getenv("SKIM_REPLAY_RTTY_PAIRS");
   if (!rtty && penv && penv[0] && strcmp(penv, "0") != 0) {

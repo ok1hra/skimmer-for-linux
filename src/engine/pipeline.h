@@ -40,12 +40,17 @@ typedef enum {
  * v3 (decode_cw_v3.c, 2026-11) is v2's lattice behind a carrier-matched
  * front end, calibrated LLRs and an audio-confirmed callsign reader — the
  * default on the v3 branch (docs/CW-V3.md). V2 stays 0: a zeroed config
- * still means v2, which keeps the v0.7 golden reference reachable. */
+ * still means v2, which keeps the v0.7 golden reference reachable.
+ * v4 ("v4.0 DeepCW", decode_cw_v4.c) is e04's DeepCW v2 narrow network on
+ * the CPU with its weights built in — nothing to fetch or load, so it
+ * falls back to v3 only when the network cannot load (docs/DEEPCW-V4.md).
+ * The DEEPCW engine is shown as "DeepCW v1". */
 typedef enum {
   SKIM_CW_ENGINE_V2 = 0,
   SKIM_CW_ENGINE_V1,
   SKIM_CW_ENGINE_DEEPCW,
   SKIM_CW_ENGINE_V3,
+  SKIM_CW_ENGINE_V4,
 } SkimCwEngine;
 
 /* Where the IQ comes from. TCI: a radio's TCI server (it owns the tuning;

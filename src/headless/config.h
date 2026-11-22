@@ -13,10 +13,12 @@
  *            rate    48000 / 96000 / 192000 — one rate for all receivers
  *            clock_ppm  for the radios without @ppm
  *   [bands]  <name>=<centre Hz> [modes], in receiver order (RX1 first);
- *            modes a comma list of cw, cw:v3, cw:v2, cw:deepcw, rtty — none = cw
+ *            modes a comma list of cw, cw:v3, cw:v4, cw:v2, cw:deepcw, rtty — none = cw
  *            with [decode] engine; off = the band is kept, not received;
  *            @name = received here, decoded by the worker "name" (hub.h)
- *   [decode] engine=v3|v2|deepcw (the bands that name none), log=true|false,
+ *   [decode] engine=v3|v4|v2|deepcw (the bands that name none), log=true|false,
+ *            v4_workers (0 = half the CPUs): CW v4's inference threads,
+ *            v4_guard (default true): the governor's v4 load guard,
  *            suppress_cw_on_rtty (default false: rtty_pairs.h),
  *            rtty_adaptive (default false), rtty_adaptive_spots (100),
  *            rtty_adaptive_minutes (2): the RTTY decoders on at each full
@@ -153,6 +155,8 @@ typedef struct {
   gboolean         rtty_adaptive;     /* RTTY only while a contest runs      */
   guint            rtty_adaptive_spots;   /* … more spots than this …        */
   guint            rtty_adaptive_minutes; /* … in this many minutes an hour  */
+  guint            v4_workers;        /* CW v4's inference threads (0 auto)  */
+  gboolean         v4_guard;          /* pause v4 bands when it is late      */
   /* [feed] — 0 = the pipeline's default, < 0 = off, as SkimPipelineConfig */
   char            *feed_call;
   int              feed_port;

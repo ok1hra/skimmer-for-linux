@@ -17,7 +17,9 @@ grown far from it:*
   path (carrier detector, matched filter, calibrated likelihoods) and a
   call reader that confirms MASTER.SCP calls in the audio, with precision
   rules against busts; tuned on live air against CW Skimmer Server. No
-  neural network, low hardware needs (DeepCW is an option).
+  neural network, low hardware needs. **v4.0 DeepCW** is the neural option
+  for a machine with compute to spare: e04's DeepCW v2 narrow network on
+  the CPU, built in — 3–5 dB deeper than v3, far better in fading.
 - **Red Pitaya direct** (HPSDR Protocol 1, Pavel Demin's
   `sdr_receiver_hpsdr`): up to 8 receivers, 48/96/192 kHz, automatic
   discovery, clock correction — no other program in between.
@@ -93,8 +95,11 @@ grown far from it:*
 - **Modes: CW and RTTY** (45.45 Bd, 170 Hz) only — no PSK and no other RTTY
   speeds.
 - **CPU:** six 96 kHz CW bands used 70–85 % of one core on an i5-10210U.
-  RTTY adds about 7.5 % of a core per band. The optional DeepCW decoder needs
-  far more (about 3 % of a core per decoding channel).
+  RTTY adds about 7.5 % of a core per band. CW v4 costs about 0.6 ms of CPU
+  per keyed channel and second of audio on AVX2 (about three times v3 on a
+  busy band); Settings → Decoding measures what this machine carries. The
+  older DeepCW v1 decoder needs far more (about 3 % of a core per decoding
+  channel).
 
 ----
 
@@ -165,8 +170,12 @@ streaming from unless told to (`--take-over`).
   filter on the carrier and a call reader that confirms MASTER.SCP calls in
   the audio, with the precision rules that keep its corrections from busting
   calls — [`docs/CW-V3.md`](docs/CW-V3.md)), by v2 itself (`cw:v2`,
-  `[decode] engine=v2`), or by the neural **DeepCW** model when an ONNX
-  Runtime and the model are installed.
+  `[decode] engine=v2`), by the neural **v4.0 DeepCW** (`cw:v4`,
+  `[decode] engine=v4`: e04's DeepCW v2 narrow network as a C forward pass
+  on the CPU, its weights built in, with a call reader that confirms
+  MASTER.SCP calls on the network's posteriors —
+  [`docs/DEEPCW-V4.md`](docs/DEEPCW-V4.md)), or by **DeepCW v1** when an
+  ONNX Runtime and its model are installed.
   The decoder and the RBN feed are tuned on live air against CW Skimmer
   Server (v0.6.0): IQ recorded beside live decoding was replayed and scored on
   the same antenna, and the winners became the defaults. Method, numbers and

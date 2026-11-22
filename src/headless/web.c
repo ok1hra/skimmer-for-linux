@@ -434,6 +434,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                        : strcmp(path, "/api/restart") == 0  ? k->restart
                        : strcmp(path, "/api/rollback") == 0 ? k->rollback
                        : strcmp(path, "/api/deepcw") == 0   ? k->deepcw
+                       : strcmp(path, "/api/v4bench") == 0  ? k->v4bench
                        : strcmp(path, "/api/update") == 0   ? k->update_post
                                                             : NULL;
     if (!hook) {

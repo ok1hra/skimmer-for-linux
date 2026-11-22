@@ -86,6 +86,8 @@
 #include "headless/web.h"
 #include "engine/callsign.h"
 #include "engine/decode_deepcw.h"
+#include "engine/decode_cw_v4.h"
+#include "engine/dcw4_kernel.h"
 #include "engine/pipeline.h"
 #include "engine/rbn_feed.h"
 
@@ -224,6 +226,19 @@ typedef struct {
   /* DeepCW: the model on disk, why a band that asks for it runs v2, and a
    * fetch the web page started (on its own thread, under dcw_lock) */
   gboolean      dcw_wanted;    /* a band names deepcw                         */
+  gboolean      v4_wanted;     /* a band decodes with CW v4                   */
+  /* CW v4's compute check (v4_bench_*): the measurement, cached per CPU,
+   * encoder, threads and version in <state>/v4-bench.ini */
+  GMutex        v4b_lock;
+  const char   *v4b_state;     /* "none", "running", "done", "failed"         */
+  double        v4b_wps;       /* windows a second on v4b_threads             */
+  guint         v4b_threads;
+  char          v4b_isa[16];
+  gint64        v4b_at;        /* unix s                                      */
+  GThread      *v4b_thread;
+  float         v4_peak;       /* the week's most CW decoders active at once  */
+  guint64       v4_ticks_prev, v4_skipped_prev;   /* the minute's late share    */
+  gint64        v4_peak_minute;
   char         *dcw_model;     /* where the engine looks for it               */
   char         *dcw_base_url;  /* $SKIM_DEEPCW_URL, NULL = upstream           */
   char         *dcw_ca;        /* TLS trust store (AppImage)                  */
@@ -381,6 +396,7 @@ static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double cent
 /* Why the governor pauses mode k of band i now (NULL: it runs). */
 static const char *paused_why(const Hd *h, guint i, guint k) {
   if (h->gov && skim_hd_governor_band_shed(h->gov, i)) { return "thermal"; }
+  if (k == M_CW && h->gov && skim_hd_governor_band_load_shed(h->gov, i)) { return "v4-load"; }
   if (k == M_RTTY && h->gov && !skim_hd_governor_rtty_on(h->gov)) { return "rtty-adaptive"; }
   return NULL;
 }
@@ -617,7 +633,7 @@ static void dec_json(GString *json, Dec *d, const char *paused, gint64 now) {
 
 static const char *engine_key(SkimCwEngine e) {
   return e == SKIM_CW_ENGINE_DEEPCW ? "deepcw" : e == SKIM_CW_ENGINE_V1 ? "v1"
-         : e == SKIM_CW_ENGINE_V3 ? "v3" : "v2";
+         : e == SKIM_CW_ENGINE_V3 ? "v3" : e == SKIM_CW_ENGINE_V4 ? "v4" : "v2";
 }
 
 static void json_opt_str(GString *o, const char *v) {
@@ -649,6 +665,177 @@ static void dcw_json(Hd *h, GString *o) {
   json_opt_str(o, h->dcw_err);
   g_string_append(o, "}}");
   g_mutex_unlock(&h->dcw_lock);
+}
+
+/* ---- CW v4's compute check --------------------------------------------------- */
+
+static char *v4_bench_path(void) {
+  return g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", "v4-bench.ini", NULL);
+}
+
+/* what a measurement holds for: this CPU, encoder, thread count, build */
+static char *v4_bench_key(guint threads) {
+  char *cpu = NULL, *model = g_strdup("?");
+  if (g_file_get_contents("/proc/cpuinfo", &cpu, NULL, NULL)) {
+    char *m = strstr(cpu, "model name");
+    char *colon = m ? strchr(m, ':') : NULL;
+    char *e = colon ? strchr(colon, '\n') : NULL;
+    if (colon && e) {
+      g_free(model);
+      model = g_strstrip(g_strndup(colon + 1, (gsize)(e - colon - 1)));
+    }
+    g_free(cpu);
+  }
+  const SkimDcw4Net *net = skim_dcw4_net_shared(NULL);
+  char *key = g_strdup_printf("%s|%s|%u|%s%s", model,
+                              net ? skim_dcw4_isa_name(skim_dcw4_net_isa(net)) : "none", threads,
+                              SKIMMER_VERSION, SKIMMER_BUILD);
+  g_free(model);
+  return key;
+}
+
+/* the cached measurement, if it is this machine's; TRUE when it was */
+static gboolean v4_bench_load(Hd *h) {
+  char *path = v4_bench_path();
+  GKeyFile *kf = g_key_file_new();
+  gboolean ok = g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, NULL);
+  const guint threads = skim_decode_cw_v4_workers();
+  char *key = v4_bench_key(threads);
+  char *have = ok ? g_key_file_get_string(kf, "bench", "key", NULL) : NULL;
+  ok = ok && g_strcmp0(have, key) == 0;
+  if (ok) {
+    g_mutex_lock(&h->v4b_lock);
+    h->v4b_wps = g_key_file_get_double(kf, "bench", "windows_per_s", NULL);
+    h->v4b_threads = threads;
+    char *isa = g_key_file_get_string(kf, "bench", "isa", NULL);
+    g_strlcpy(h->v4b_isa, isa ? isa : "", sizeof h->v4b_isa);
+    g_free(isa);
+    h->v4b_at = g_key_file_get_int64(kf, "bench", "at", NULL);
+    h->v4b_state = h->v4b_wps > 0 ? "done" : "none";
+    ok = h->v4b_wps > 0;
+    g_mutex_unlock(&h->v4b_lock);
+  }
+  g_free(have);
+  g_free(key);
+  g_key_file_free(kf);
+  g_free(path);
+  return ok;
+}
+
+static gpointer v4_bench_thread(gpointer user) {
+  Hd *h = user;
+  const guint threads = skim_decode_cw_v4_workers();
+  const double wps = skim_decode_cw_v4_bench(threads, 2.0);
+  const SkimDcw4Net *net = skim_dcw4_net_shared(NULL);
+  const char *isa = net ? skim_dcw4_isa_name(skim_dcw4_net_isa(net)) : "none";
+  const gint64 at = g_get_real_time() / G_USEC_PER_SEC;
+  g_mutex_lock(&h->v4b_lock);
+  h->v4b_wps = wps;
+  h->v4b_threads = threads;
+  g_strlcpy(h->v4b_isa, isa, sizeof h->v4b_isa);
+  h->v4b_at = at;
+  h->v4b_state = wps > 0 ? "done" : "failed";
+  g_mutex_unlock(&h->v4b_lock);
+  if (wps > 0) {
+    GKeyFile *kf = g_key_file_new();
+    char *key = v4_bench_key(threads);
+    g_key_file_set_string(kf, "bench", "key", key);
+    g_key_file_set_double(kf, "bench", "windows_per_s", wps);
+    g_key_file_set_string(kf, "bench", "isa", isa);
+    g_key_file_set_int64(kf, "bench", "at", at);
+    char *path = v4_bench_path();
+    char *dir = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    GError *err = NULL;
+    if (!g_key_file_save_to_file(kf, path, &err)) {
+      g_warning("cw-v4: the compute check not saved: %s", err->message);
+      g_clear_error(&err);
+    }
+    g_free(dir);
+    g_free(path);
+    g_free(key);
+    g_key_file_free(kf);
+  }
+  g_message("cw-v4: compute check — %.0f windows/s on %u thread%s (%s): %.0f keyed channels "
+            "in real time", wps, threads, threads == 1 ? "" : "s", isa,
+            wps * skim_decode_cw_v4_step_s());
+  return NULL;
+}
+
+/* a measurement now, unless one runs; FALSE when one already did */
+static gboolean v4_bench_start(Hd *h) {
+  g_mutex_lock(&h->v4b_lock);
+  const gboolean go = g_strcmp0(h->v4b_state, "running") != 0;
+  if (go) { h->v4b_state = "running"; }
+  g_mutex_unlock(&h->v4b_lock);
+  if (!go) { return FALSE; }
+  if (h->v4b_thread) { g_thread_join(h->v4b_thread); }
+  h->v4b_thread = g_thread_new("cw-v4-check", v4_bench_thread, h);
+  return TRUE;
+}
+
+/* "v4": CW v4's network, its load and the compute check, flat (the public
+ * filter drops the object whole): what runs, the windows, the ticks a
+ * channel skipped because its last window was still waiting (the load
+ * signal), the workers' CPU; the measurement, the capacity it gives (keyed
+ * channels in real time), the need (the week's most CW decoders active at
+ * once × 1.5 — the gate opens on lines that never make text, too; with no
+ * history 150 a CW band) and the verdict: ok under half the capacity,
+ * tight up to it, short over it. */
+static void v4_json(Hd *h, GString *o) {
+  gboolean any = FALSE;
+  guint cw_bands = 0;
+  for (guint i = 0; i < h->nb; i++) {
+    const Band *b = &h->band[i];
+    any |= b->dec[M_CW].p && strcmp(skim_pipeline_cw_engine_name(b->dec[M_CW].p), "cw-v4") == 0;
+    cw_bands += b->dec[M_CW].p != NULL;
+  }
+  GError *e = NULL;
+  const gboolean ok = skim_decode_cw_v4_available(&e);
+  char *rt = ok ? skim_decode_cw_v4_runtime_info() : NULL;
+  SkimCwV4Stats s;
+  skim_decode_cw_v4_stats(&s, FALSE);
+  if (h->stats && h->v4_peak_minute != h->minute) {
+    h->v4_peak = skim_stats_peak_sum(h->stats, h->minute, SKIM_STATS_MINUTES, 0, SKIM_SM_ACTIVE);
+    h->v4_peak_minute = h->minute;
+  }
+  g_mutex_lock(&h->v4b_lock);
+  const double cap = h->v4b_wps * skim_decode_cw_v4_step_s();
+  const double need = isnan(h->v4_peak) ? 150.0 * cw_bands : ceil(h->v4_peak * 1.5);
+  const char *verdict = !ok || h->v4b_wps <= 0 ? "unknown"
+                        : need <= 0.5 * cap   ? "ok"
+                        : need <= cap         ? "tight"
+                                              : "short";
+  g_string_append_printf(o, "{\"running\":%s,\"runtime\":", any ? "true" : "false");
+  json_opt_str(o, rt);
+  g_string_append(o, ",\"error\":");
+  json_opt_str(o, ok ? NULL : e->message);
+  g_string_append_printf(o, ",\"workers\":%u,\"windows\":%" G_GUINT64_FORMAT ",\"ticks\":%"
+                         G_GUINT64_FORMAT ",\"skipped\":%" G_GUINT64_FORMAT ",\"queued\":%u,"
+                         "\"cpu_s\":%.1f,\"bench_state\":\"%s\",\"bench_wps\":%.0f,"
+                         "\"bench_threads\":%u,\"bench_isa\":\"%s\",\"bench_at\":%" G_GINT64_FORMAT
+                         ",\"capacity\":%.0f,\"need\":%.0f,\"peak_active\":",
+                         s.workers, s.windows, s.ticks, s.skipped, s.queued, s.cpu_ns / 1e9,
+                         h->v4b_state, h->v4b_wps, h->v4b_threads, h->v4b_isa, h->v4b_at, cap,
+                         need);
+  if (isnan(h->v4_peak)) {
+    g_string_append(o, "null");
+  } else {
+    g_string_append_printf(o, "%.0f", h->v4_peak);
+  }
+  g_string_append_printf(o, ",\"verdict\":\"%s\"}", verdict);
+  g_mutex_unlock(&h->v4b_lock);
+  g_clear_error(&e);
+  g_free(rt);
+}
+
+static char *web_v4bench(GHashTable *form, guint *st, gpointer user) {
+  (void)form; (void)st;
+  Hd *h = user;
+  const gboolean started = v4_bench_start(h);
+  if (started) { g_message("cw-v4: compute check asked for on the web page"); }
+  return g_strdup_printf("{\"ok\":true,\"state\":\"running\",\"started\":%s}",
+                         started ? "true" : "false");
 }
 
 /* Who restarts this process: "systemd" (the user unit), "supervisor"
@@ -891,6 +1078,8 @@ static void status_build(Hd *h, gboolean print) {
   }
   g_string_append(json, ",\"deepcw\":");
   dcw_json(h, json);
+  g_string_append(json, ",\"v4\":");
+  v4_json(h, json);
   g_string_append_c(json, '}');
   g_free(clock);
 
@@ -990,6 +1179,16 @@ static void stats_minute(Hd *h) {
   }
   h->guard_s = 0;
   if (h->gov && skim_hd_governor_minute(h->gov, h->minute, rtty_spots, band_spots)) { pause_apply(h); }
+  {                                            /* CW v4: the minute's late share */
+    SkimCwV4Stats vs;
+    skim_decode_cw_v4_stats(&vs, TRUE);
+    const guint64 dt = vs.ticks - h->v4_ticks_prev, ds = vs.skipped - h->v4_skipped_prev;
+    h->v4_ticks_prev = vs.ticks;
+    h->v4_skipped_prev = vs.skipped;
+    if (h->gov && skim_hd_governor_load(h->gov, h->minute, dt ? (double)ds / dt : NAN)) {
+      pause_apply(h);
+    }
+  }
   const SkimIqSourceStatus *src = &h->src_st;
   const guint64 frames = h->nb ? h->band[0].frames : 0;
   const guint64 df = frames - h->min_frames_prev, dl = src->lost_frames - h->min_lost_prev;
@@ -1151,6 +1350,8 @@ static char *status_public(const char *full, gboolean outside) {
      * 2026-11-21 — the visitors see why bands go OFF */
     { "\"(cpu_pct|cpu_cw_pct|cpu_rtty_pct|lost_pct|packets_per_s)\":-?[0-9.eE+-]+",
       "\"\\1\":null" },
+    /* CW v4's load and the compute check: machine readings too */
+    { "\"v4\":\\{[^{}]*\\}", "\"v4\":null" },
     { "\"(host|addr|model|dir)\":\"(?:[^\"\\\\]|\\\\.)*\"", "\"\\1\":\"\"" },
     { "\"switches\":\\{[^{}]*\\}", "\"switches\":{}" },
     /* the locator as its square only: six characters are nearly an address */
@@ -1159,7 +1360,7 @@ static char *status_public(const char *full, gboolean outside) {
     { "(?<![\\w.])/(?:home|root|var|tmp|etc|usr|srv|mnt|opt|run|media)/[^\"\\s,;)]*", "(path)" },
   };
   char *out = g_strdup(full);
-  for (guint i = outside ? 0 : 1; i < G_N_ELEMENTS(RULES); i++) {
+  for (guint i = outside ? 0 : 2; i < G_N_ELEMENTS(RULES); i++) {
     GRegex *re = g_regex_new(RULES[i].re, G_REGEX_OPTIMIZE, 0, NULL);
     char *next = re ? g_regex_replace(re, out, -1, 0, RULES[i].to, 0, NULL) : NULL;
     if (re) { g_regex_unref(re); }
@@ -2229,9 +2430,21 @@ int main(int argc, char **argv) {
       printf("  filter not %s nor calls within %u characters of it\n", c->feed_call,
              c->filter_mycall_diff);
     }
-    gboolean dcw = FALSE;
+    gboolean dcw = FALSE, v4 = FALSE;
     for (guint i = 0; i < c->nb; i++) {
       dcw |= c->band[i].cw && c->band[i].cw_engine == SKIM_CW_ENGINE_DEEPCW;
+      v4 |= c->band[i].cw && !c->band[i].off && c->band[i].cw_engine == SKIM_CW_ENGINE_V4;
+    }
+    if (v4) {
+      skim_decode_cw_v4_set_workers(c->v4_workers);
+      if (!skim_decode_cw_v4_available(&err)) {
+        printf("  v4 NOT AVAILABLE, those bands run v3: %s\n", err->message);
+        g_clear_error(&err);
+      } else {
+        char *rt = skim_decode_cw_v4_runtime_info();
+        printf("  v4 DeepCW v2 narrow, built in, on %s\n", rt);
+        g_free(rt);
+      }
     }
     if (dcw) {
       /* the bands asking for DeepCW start anyway — on v2 when it is not here */
@@ -2272,6 +2485,9 @@ int main(int argc, char **argv) {
   }
   g_mutex_init(&h->snap_lock);
   g_mutex_init(&h->dcw_lock);
+  g_mutex_init(&h->v4b_lock);
+  h->v4b_state = "none";
+  h->v4_peak = NAN;
   h->dcw_state = "idle";
   h->dcw_model = skim_decode_deepcw_model_path();
   h->dcw_base_url = skim_deepcw_env_base_url();
@@ -2417,6 +2633,7 @@ int main(int argc, char **argv) {
   g_date_time_unref(utc);
   if (c->feed_learn) { g_mkdir_with_parents(learndir, 0755); }
   h->nb = c->nb;
+  skim_decode_cw_v4_set_workers(c->v4_workers);   /* before the first v4 channel */
   for (guint i = 0; i < h->nb; i++) {
     Band *b = &h->band[i];
     const SkimHdBand *cb = &c->band[i];
@@ -2497,6 +2714,24 @@ int main(int argc, char **argv) {
       g_message("decode: %s CW stays off the RTTY stations RTTY copies", b->name);
     }
   }
+  /* CW v4: what runs, once, and a band that asked for it and runs v3 */
+  for (guint i = 0; i < h->nb; i++) {
+    const Band *b = &h->band[i];
+    if (!b->dec[M_CW].p || c->band[i].cw_engine != SKIM_CW_ENGINE_V4) { continue; }
+    if (!h->v4_wanted) {
+      char *rt = skim_decode_cw_v4_runtime_info();
+      g_message("decode: CW v4 (DeepCW v2 narrow) on %s", rt);
+      g_free(rt);
+    }
+    h->v4_wanted = TRUE;
+    if (strcmp(skim_pipeline_cw_engine_name(b->dec[M_CW].p), "cw-v4") != 0) {
+      g_warning("decode: %s asks for CW v4, runs %s", b->name,
+                skim_pipeline_cw_engine_name(b->dec[M_CW].p));
+    }
+  }
+  /* the compute check for the Settings page: cached per CPU, encoder,
+   * threads and build — measured (2 s) only when that changed */
+  if (!v4_bench_load(h)) { v4_bench_start(h); }
   /* A band that asks for DeepCW and runs v2: why, for the log and the page
    * (the pipeline has tried and cached the answer). */
   for (guint i = 0; i < h->nb; i++) {
@@ -2566,6 +2801,7 @@ int main(int argc, char **argv) {
       .restore_margin_c = c->thermal_margin_c,
       .probe_every_min = c->thermal_probe_every_min,
       .probe_min = c->thermal_probe_min,
+      .v4_guard = c->v4_guard,
     };
     h->gov = skim_hd_governor_new(&gc, g_get_real_time() / (60 * G_USEC_PER_SEC));
     gboolean can[SKIM_HD_MAX_BANDS];
@@ -2573,6 +2809,12 @@ int main(int argc, char **argv) {
       can[i] = !h->band[i].worker && (h->band[i].dec[M_CW].p || h->band[i].dec[M_RTTY].p);
     }
     skim_hd_governor_set_bands(h->gov, h->nb, names, can);
+    gboolean v4[SKIM_HD_MAX_BANDS];
+    for (guint i = 0; i < h->nb; i++) {
+      v4[i] = h->band[i].dec[M_CW].p &&
+              strcmp(skim_pipeline_cw_engine_name(h->band[i].dec[M_CW].p), "cw-v4") == 0;
+    }
+    skim_hd_governor_set_v4(h->gov, v4);
     pause_apply(h);
   }
 
@@ -2662,6 +2904,7 @@ int main(int argc, char **argv) {
       .config_post = web_config_post, .config_import = web_config_import,
       .restart = web_restart, .rollback = web_rollback,
       .deepcw = web_deepcw,
+      .v4bench = web_v4bench,
       .update = web_update, .update_post = web_update_post,
       .waterfall = web_waterfall,
       .user = h,
@@ -2749,6 +2992,7 @@ int main(int argc, char **argv) {
   g_clear_pointer(&h->disco, skim_hd_discovery_free);
   g_cancellable_cancel(h->dcw_cancel);         /* a fetch in flight stops      */
   if (h->dcw_thread) { g_thread_join(h->dcw_thread); }
+  if (h->v4b_thread) { g_thread_join(h->v4b_thread); }
   g_clear_pointer(&h->src, skim_iq_source_free);
   g_clear_pointer(&h->wspr, skim_hd_wspr_free);      /* nothing pushes into it */
   g_clear_pointer(&h->ft8, skim_hd_ft8_free);        /* … before the feed it spots to */

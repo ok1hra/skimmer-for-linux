@@ -27,6 +27,7 @@
 #include "channelizer.h"
 #include "decode_cw.h"
 #include "decode_deepcw.h"
+#include "decode_cw_v4.h"
 #include "decode_rtty.h"
 #include "feed_fold.h"
 #include "oracle.h"
@@ -330,7 +331,8 @@ static SkimCwEngine cw_engine_pick(const SkimPipelineConfig *cfg) {
       e = SKIM_CW_ENGINE_V3;
     }
     else if (g_ascii_strcasecmp(env, "deepcw") == 0) { e = SKIM_CW_ENGINE_DEEPCW; }
-    else { g_warning("SKIM_CW_ENGINE=%s: unknown (v1|v2|v3|deepcw) — ignored", env); }
+    else if (g_ascii_strcasecmp(env, "v4") == 0)     { e = SKIM_CW_ENGINE_V4; }
+    else { g_warning("SKIM_CW_ENGINE=%s: unknown (v1|v2|v3|v4|deepcw) — ignored", env); }
   } else if (g_getenv("SKIM_CW_V1")) {
     e = SKIM_CW_ENGINE_V1;
   }
@@ -343,6 +345,15 @@ static SkimCwEngine cw_engine_pick(const SkimPipelineConfig *cfg) {
       e = SKIM_CW_ENGINE_V3;
     }
   }
+  if (e == SKIM_CW_ENGINE_V4) {
+    GError *err = NULL;
+    if (!skim_decode_cw_v4_available(&err)) {
+      g_warning("CW v4 not available (%s) — falling back to the classical v3 decoder",
+                err ? err->message : "?");
+      g_clear_error(&err);
+      e = SKIM_CW_ENGINE_V3;
+    }
+  }
   return e;
 }
 
@@ -351,6 +362,7 @@ static const SkimDecodeBackend *cw_backend(const SkimPipeline *p) {
     case SKIM_CW_ENGINE_V1:     return skim_decode_cw();
     case SKIM_CW_ENGINE_DEEPCW: return skim_decode_deepcw();
     case SKIM_CW_ENGINE_V3:     return skim_decode_cw_v3();
+    case SKIM_CW_ENGINE_V4:     return skim_decode_cw_v4();
     default:                    return skim_decode_cw_v2();
   }
 }
@@ -368,6 +380,7 @@ const char *skim_pipeline_cw_engine_name(const SkimPipeline *p) {
     case SKIM_CW_ENGINE_V1:     return "cw-v1";
     case SKIM_CW_ENGINE_DEEPCW: return "deepcw";
     case SKIM_CW_ENGINE_V3:     return "cw-v3.1";   /* v3 + the precision rules */
+    case SKIM_CW_ENGINE_V4:     return "cw-v4";
     default:                    return "cw-v2";
   }
 }

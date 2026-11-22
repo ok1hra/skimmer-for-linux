@@ -7,6 +7,8 @@
  * off; without rtty_adaptive it is always on and says nothing.
  * The thermal guard: pauses, returns, and the rotation (a paused band
  * tested in place of the weakest, the two swapped when it spots more).
+ * The v4 load guard: late minutes pause the quietest v4 band, one stays,
+ * calm minutes bring them back last-in first-out, v3 bands never go.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -308,11 +310,76 @@ static void rotation(void) {
   skim_hd_governor_free(g);
 }
 
+/* the v4 load guard: 4 bands, 0–2 run v4, 3 runs v3; spots a minute
+ * 20m 9, 40m 1, 80m 4, 30m (v3) 0 */
+static void load_guard(void) {
+  printf("v4 load guard\n");
+  SkimHdGovernorConfig c = { .v4_guard = TRUE };
+  gint64 m = AT(10, 0);
+  SkimHdGovernor *g = skim_hd_governor_new(&c, m);
+  const char *names[] = { "20m", "40m", "80m", "30m" };
+  skim_hd_governor_set_bands(g, 4, names, NULL);
+  const gboolean v4[] = { TRUE, TRUE, TRUE, FALSE };
+  skim_hd_governor_set_v4(g, v4);
+  const guint spots[] = { 9, 1, 4, 0 };
+  gboolean changed = FALSE;
+  for (int k = 0; k < 10; k++) {                  /* 10 calm minutes */
+    skim_hd_governor_minute(g, m, 0, spots);
+    changed |= skim_hd_governor_load(g, m, 0.0);
+    m++;
+  }
+  check("on time: nothing paused", !changed && !skim_hd_governor_band_load_shed(g, 1));
+  int paused_at = -1;
+  for (int k = 0; k < 3; k++) {                   /* 3 late minutes in a row */
+    skim_hd_governor_minute(g, m, 0, spots);
+    if (skim_hd_governor_load(g, m, 0.20) && paused_at < 0) { paused_at = k; }
+    m++;
+  }
+  check("the third late minute pauses a band", paused_at == 2);
+  check("… the v4 band with the fewest spots (40m), not the v3 one (30m)",
+        skim_hd_governor_band_load_shed(g, 1) && !skim_hd_governor_band_load_shed(g, 3));
+  check("… not a thermal pause", !skim_hd_governor_band_shed(g, 1));
+  GString *j = g_string_new(NULL);
+  skim_hd_governor_json(g, j);
+  check("status: v4_guard late, 40m in its list", strstr(j->str, "\"v4_guard\":{\"state\":\"late\"") &&
+        strstr(j->str, "\"band\":\"40m\""));
+  g_string_free(j, TRUE);
+  int next = -1;
+  for (int k = 0; k < 30; k++) {                  /* still late */
+    skim_hd_governor_minute(g, m, 0, spots);
+    if (skim_hd_governor_load(g, m, 0.20) && next < 0) { next = k; }
+    m++;
+  }
+  check("still late: the next (80m) 10 min later", next == 9 && skim_hd_governor_band_load_shed(g, 2));
+  check("… and 20m always stays", !skim_hd_governor_band_load_shed(g, 0));
+  int back = -1;
+  for (int k = 0; k < 60; k++) {                  /* calm again */
+    skim_hd_governor_minute(g, m, 0, spots);
+    if (skim_hd_governor_load(g, m, 0.0) && back < 0) { back = k; }
+    m++;
+  }
+  check("calm 20 min: the last paused (80m) back first", back >= 18 && back <= 20 &&
+        !skim_hd_governor_band_load_shed(g, 2));
+  check("… then 40m, 20 min after it", !skim_hd_governor_band_load_shed(g, 1));
+  check("a minute with no v4 ticks (NaN) is not late",
+        !skim_hd_governor_load(g, m, NAN) && !skim_hd_governor_band_load_shed(g, 1));
+  skim_hd_governor_free(g);
+
+  SkimHdGovernorConfig off = { .v4_guard = FALSE };
+  g = skim_hd_governor_new(&off, m);
+  skim_hd_governor_set_bands(g, 4, names, NULL);
+  skim_hd_governor_set_v4(g, v4);
+  for (int k = 0; k < 10; k++) { skim_hd_governor_minute(g, m, 0, spots); skim_hd_governor_load(g, m, 0.5); m++; }
+  check("v4_guard=false: never pauses", !skim_hd_governor_band_load_shed(g, 1));
+  skim_hd_governor_free(g);
+}
+
 int main(void) {
   g_log_set_default_handler(quiet, NULL);
   rtty();
   thermal();
   rotation();
+  load_guard();
   printf("%d/%d checks passed\n", checks - fails, checks);
   return fails ? 1 : 0;
 }

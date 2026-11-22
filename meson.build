@@ -61,7 +61,10 @@ engine_sources = [
   'src/engine/decode_rtty.c',  # M7: RTTY backend (Baudot FSK)
   'src/engine/rtty_pairs.c',   # RTTY pairs held → the band's CW stays off them
   'src/engine/ort_shim.c',     # ONNX Runtime C API behind dlopen (optional)
-  'src/engine/decode_deepcw.c',# DeepCW neural CW backend (Conformer + CTC)
+  'src/engine/decode_deepcw.c',# DeepCW v1 neural CW backend (Conformer + CTC)
+  'src/engine/decode_cw_v4.c', # CW v4: DeepCW v2 narrow on the CPU (dcw4_*)
+  'src/engine/dcw4_stitch.c',  # CW v4: e04's posterior stitcher
+  'src/engine/dcw4_callread.c',# CW v4: CTC call reader against MASTER.SCP
   'src/engine/cw_reader.c',    # neural over re-reader (TCN+CTC, pane-only)
   'src/engine/tone_split.c',   # per-channel carrier splitter (multi-signal)
   'src/engine/snr_meter.c',    # shadow SNR against the band floor
@@ -245,6 +248,17 @@ skimmer_dcw4_kernel_test = executable('skimmer-dcw4-kernel-test',
   link_with : engine_lib,
 )
 test('dcw4-kernel', skimmer_dcw4_kernel_test, timeout : 120)
+
+# CW v4 from the network's output on: the normalisation, the posterior
+# stitcher on synthetic CTC streams, the CTC call reader against a test
+# MASTER.SCP, the backend on synthetic keyed IQ (inference inline).
+skimmer_dcw4_stream_test = executable('skimmer-dcw4-stream-test',
+  ['src/dcw4_stream_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('dcw4-stream', skimmer_dcw4_stream_test, timeout : 120)
 
 # What CW v4's network costs here: windows/s per encoder on 1 and N threads,
 # keyed channels carried, CPU per channel-second.
