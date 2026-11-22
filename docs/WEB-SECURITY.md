@@ -79,8 +79,8 @@ watched); not signed in, 401.
 |---|---|---|
 | Status (map, DX cluster, bands), Statistics, Waterfall with audio | yes | yes |
 | Settings and Log — in the menu and in the page's HTML | no (cut out on the server) | yes |
-| `GET /api/config`, `/api/log`, `/api/skimmers`, `/api/skimsrv` (CW Skimmer's band keys from its SkimSrv.ini on this PC — never its [User]) | 403 | yes |
-| every `POST` (config, import, restart, rollback, DeepCW fetch) | 403 | yes |
+| `GET /api/config`, `/api/log`, `/api/skimmers`, `/api/skimsrv` (CW Skimmer's band keys from its SkimSrv.ini on this PC — never its [User]), `/api/update` (the running AppImage's path, the update state) | 403 | yes |
+| every `POST` (config, import, restart, rollback, DeepCW fetch, `/api/update`: check, install, back to the kept version) | 403 | yes |
 | `POST /api/visitor` (sign in with a call, sign out) | yes (same origin) | yes |
 | `/api/visitors` (the visitors' log) | from outside: the last 24 h's calls, start and length only (signed in); from the LAN (free_from): whole | yes |
 | `status.json` | without addresses, file paths and the `SKIM_*` values; from outside also without the CPU load and lost | whole |

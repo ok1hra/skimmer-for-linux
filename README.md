@@ -227,6 +227,29 @@ Then [First start](#first-start): your call, the clock correction. Without
 FUSE (no `/dev/fuse` or `fusermount`), set `APPIMAGE_EXTRACT_AND_RUN=1`. Run
 `--install-service` again after moving the file.
 
+Name the file without its version, e.g. `skimmer-headless-x86_64.AppImage`:
+it [updates itself](#updates) in place and keeps its name.
+
+### Updates
+
+Once a day the skimmer looks at its latest release on GitHub
+(`[update]`, Settings → Updates). With `mode=auto` (the default) a newer
+version is downloaded beside the running AppImage, checked against the
+sha256 GitHub publishes for it, and run once on this config (`--version`,
+`--check-config`) — a release without the digest, a wrong file or a new
+version that refuses the config is not installed. At `hour_utc` (default
+03 UTC) the new file is renamed over the running one and the skimmer
+restarts into it; the old file stays as `<file>.prev` (Settings → Updates →
+*Back to*). A version that crashes three times right after an update goes
+back to the one before it by itself — where something starts it again
+after a crash: the service, or a supervisor. `mode=notify` only shows a
+newer release (and *Install now*); `mode=off` never asks.
+
+Only a release AppImage in a directory it may write updates itself. A
+development build (an AppImage built from a commit without its tag) or a
+program from a build tree only reports a newer release. The state is in
+`~/.local/state/skimmer-for-linux/update.state`.
+
 ## Build
 
 Requirements: GLib/GIO ≥ 2.74, libsoup 3, libwebsockets, libcurl ≥ 7.85,
@@ -260,6 +283,10 @@ that are not in git; without them it reports SKIP
    `git push origin main vX.Y.Z`.
 4. `gh release create vX.Y.Z --verify-tag --title "Skimmer for Linux X.Y.Z"
    --notes-file NOTES.md dist/skimmer-headless-X.Y.Z-x86_64.AppImage`.
+   The running skimmers update to it ([Updates](#updates)) only from this
+   asset, named exactly `skimmer-headless-X.Y.Z-x86_64.AppImage`, of a
+   release that is not a draft or a prerelease — a prerelease is for
+   testing by hand.
    CI (`.github/workflows/build.yml`) builds and smoke-tests the AppImage on
    the tag as well and attaches its own build to the release.
 
@@ -477,6 +504,8 @@ It needs bash, curl and Python 3, standard library only.
 | `~/.local/share/skimmer-for-linux/headless/` | Decode logs (`[decode] log=true`), decode taps (`learn/`) |
 | `~/.local/share/skimmer-for-linux/models/deepcw/` | DeepCW model (`--fetch-deepcw-model`), its LICENSE and NOTICE |
 | `~/.local/state/skimmer-for-linux/stats.bin` | Seven days of statistics for the web page |
+| `~/.local/state/skimmer-for-linux/update.state` | [Updates](#updates): the last look at the releases, what is downloaded, kept, skipped |
+| `<the AppImage>.prev` | the version an update replaced (*Back to* puts it back) |
 | `~/.local/state/skimmer-for-linux/wspr.tsv`, `wspr/` | The WSPR spots of the last 24 h; the decoder's work directory (its hash table) |
 
 ## Environment variables
@@ -495,6 +524,7 @@ name the engine does not read is warned about.
 | `SKIM_DEEPCW_DEVICE=cuda` | Run DeepCW on the GPU, when that library has CUDA |
 | `SKIM_DEEPCW_MODEL=<path>` | Take the DeepCW model from somewhere else |
 | `SKIM_SCP_URL=<url>` | Take the call list from somewhere else |
+| `SKIM_UPDATE_URL=<url>` | Look for releases at a mirror of the GitHub API instead (a `file://` one for the gate) |
 
 The decoder and the feed have more `SKIM_*` switches for the live-air work;
 [`docs/LIVE-AIR.md`](docs/LIVE-AIR.md) describes them.

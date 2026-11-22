@@ -128,7 +128,7 @@ here; what was done and why is in git.
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 26 gates** (DeepCW skips without the model, golden skips
+- **`meson test` = 31 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).
 - **Hub, workers, peers** (`docs/HUB.md`): the PC with the radio passes the
@@ -266,13 +266,27 @@ here; what was done and why is in git.
   for the next cycle. The `.c2` stores Q negated (wsprd's convention) —
   the `wspr` gate decodes two synthetic signals at 48 and 192 kHz, so a
   mirrored spectrum fails it. Needs a live check on air.
+- **Updates** (`[update]`, default `mode=auto`, `hour_utc=3`;
+  `src/headless/update.c`, 2026-11-22 at Dan's request): once a day the
+  GitHub API's latest release of ok1hra/skimmer-for-linux; a newer one is
+  downloaded beside `$APPIMAGE`, checked against the asset's `digest`
+  (none = refused) and run once (`--version`, `--check-config`), then at
+  the hour renamed over the running file (old one `.prev`) and exec'd
+  (`skim_hd_update_exec`: every fd close-on-exec, so the old FUSE mount
+  goes). Three crashes before 15 min of running roll back and skip that
+  version. Only a release AppImage updates — `-Dbuild_suffix` (build.sh
+  sets `-g<commit>`) marks a dev build, which only reports. Managers only:
+  GET/POST `/api/update`. Gate `update` (file:// mirror, fake AppImage).
 - Opt-in and without a live verdict: the tone splitter (`SKIM_TONE_SPLIT=1`)
   and the narrow focus slot (`SKIM_TONE_FOCUS=1`, implies the splitter).
 
 ## Releasing
 
 One artifact: the AppImage (`packaging/appimage/`; deb, rpm and the AUR
-package went with the GUI, 2026-10-22). Tag first; `gh release create
+package went with the GUI, 2026-10-22). Running skimmers update themselves
+from it (`[update]`): the asset must be named exactly
+`skimmer-headless-X.Y.Z-x86_64.AppImage` and the release must be neither
+a draft nor a prerelease (a prerelease = testing by hand). Tag first; `gh release create
 --verify-tag --notes-file` right after the tag push, so CI (build.yml) builds
 the AppImage in debian:12, smoke-tests it in a clean debian:12 and attaches
 it to the curated release instead of an empty one. Release titles carry no
@@ -301,7 +315,8 @@ src/headless/ the product layer: config (headless.ini, one parser), source
               feeds), discovery (UDP 8075), record ([record] IQ to disk),
               switches (SKIM_* visibility), stats (7-day history), web
               (libsoup server), logring, scp_update (MASTER.SCP updater),
-              wspr ([wspr]: WSPR beside, WSPRnet)
+              wspr ([wspr]: WSPR beside, WSPRnet), update ([update]: a
+              newer release swapped in)
 web/          the web page (HTML, CSS, JS — built in as a GResource)
 src/headless_main.c  skimmer-headless: multi-band, no GUI (HPSDR P1 → N pipelines)
 weights/      learned weights built into skimmer-headless (feed-gate.ini)

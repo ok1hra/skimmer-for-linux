@@ -116,7 +116,7 @@ typedef enum {
 
 typedef struct {
   SkimHdUpdateResult result;
-  char   detail[256];         /* one line for the log and the page            */
+  char   detail[512];         /* one line for the log and the page            */
   char   version[32];         /* NEWER / READY: the release                   */
   gint64 wait_s;              /* until the limits allow the next check        */
 } SkimHdUpdateOutcome;
