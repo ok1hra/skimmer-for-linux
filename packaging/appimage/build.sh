@@ -57,5 +57,9 @@ fi
 vols=(-v "$SRC:/in:ro" -v "$CACHE:/dl:ro" -v "$OUT:/out" -v "$HERE:/pkg:ro")
 [[ -f $GOLDEN/scp/master.scp ]] && vols+=(-v "$GOLDEN:/var/tmp/skimmer-iq/golden:ro")
 echo "appimage: skimmer-headless $VERSION in $IMAGE"
-"$CT" run --rm "${vols[@]}" -e VERSION="$VERSION" "$IMAGE" bash /pkg/inside.sh
+# the build's suffix goes into the program too: a development build
+# ("-g<commit>") never replaces itself with a release ([update])
+BASE_VERSION=$(sed -n "s/^  version : '\(.*\)',$/\1/p" "$ROOT/meson.build")
+"$CT" run --rm "${vols[@]}" -e VERSION="$VERSION" -e BUILD_SUFFIX="${VERSION#"$BASE_VERSION"}" \
+  "$IMAGE" bash /pkg/inside.sh
 echo "appimage: $OUT/skimmer-headless-$VERSION-x86_64.AppImage"

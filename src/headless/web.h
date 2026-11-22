@@ -12,11 +12,13 @@
  *   GET  /api/spots             the spots the feed sent (?minutes=N, default 30, ≤ 120)
  *   GET  /api/wspr              the WSPR stations heard in the last 24 h (wspr.h)
  *   GET  /api/skimmers          the skimmer instances on the LAN (a 0.8 s search)
+ *   GET  /api/update            the updates: running, latest, staged, kept (settings_from)
  *   POST /api/config            a new config (settings_from only)
  *   POST /api/config/import    an exported ini (ini=…) as the config (settings_from)
  *   POST /api/restart           restart with the config on disk (settings_from)
  *   POST /api/rollback          the previous config back, restart (settings_from)
  *   POST /api/deepcw            fetch the DeepCW model (settings_from)
+ *   POST /api/update            action=check | install | rollback (settings_from; update.h)
  *   GET  /api/visitor           {"login","need","call","free"}: must this client sign in
  *   POST /api/visitor           call=… signs in (a cookie), logout=1 signs out — open
  *                               to all, same origin only (visitors.h)
@@ -66,8 +68,8 @@ typedef char *(*SkimHdWebGet)(GHashTable *query, SkimHdWebWho who, guint *status
 typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
 typedef struct {
-  SkimHdWebGet  status, stats, log, config, skimmers, spots, skimsrv, wspr;
-  SkimHdWebPost config_post, config_import, restart, rollback, deepcw;
+  SkimHdWebGet  status, stats, log, config, skimmers, spots, skimsrv, wspr, update;
+  SkimHdWebPost config_post, config_import, restart, rollback, deepcw, update_post;
   /* a WebSocket viewer of the waterfall (peer: its address, for the log;
    * visitor: its sign-in token, NULL for a free client); the hook takes its
    * own reference */

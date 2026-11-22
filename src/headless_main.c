@@ -71,6 +71,7 @@
 #include "headless/peers.h"
 #include "headless/record.h"
 #include "headless/scp_update.h"
+#include "headless/update.h"
 #include "headless/service.h"
 #include "headless/source.h"
 #include "engine/hpsdr_p1.h"
@@ -180,6 +181,11 @@ typedef struct {
   SkimHdSpotLog  *spot_log;    /* the spots the feed sent (the page's map, DXC) */
   char           *spot_path;   /* … kept there across a restart               */
   SkimScpUpdater *scp;
+  SkimHdUpdater  *upd;         /* [update]: newer releases (update.h)         */
+  SkimHdUpdateEnv upd_env;     /* … this process, as the updater sees it      */
+  char           *upd_state;   /* … its state file                            */
+  char           *exec_path;   /* a restart execs this (the updated AppImage)
+                                * instead of /proc/self/exe                   */
   GMainLoop      *loop;
   gint64          t_start;
   guint64         cpu_prev;    /* clock ticks, utime + stime                  */
@@ -1199,12 +1205,41 @@ static void restart_soon(Hd *h, const char *why) {
   g_timeout_add(400, quit_soon, h);
 }
 
+/* The updater swapped the AppImage's file: the restart runs the file, not
+ * this process's image (which stays the old one inside its mount). */
+static void upd_restart(const char *why, gpointer user) {
+  Hd *h = user;
+  g_free(h->exec_path);
+  h->exec_path = g_strdup(h->upd_env.appimage);
+  restart_soon(h, why);
+}
+
 static char *json_error(guint *st, guint code, const char *msg) {
   *st = code;
   char *e = skim_json_str(msg);
   char *body = g_strdup_printf("{\"error\":\"%s\"}", e);
   g_free(e);
   return body;
+}
+
+static char *web_update(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
+                        gpointer user) {
+  (void)q;
+  (void)who;
+  (void)st;
+  (void)type;
+  return skim_hd_updater_json(((Hd *)user)->upd);
+}
+
+static char *web_update_post(GHashTable *form, guint *st, gpointer user) {
+  Hd *h = user;
+  char *why = skim_hd_updater_action(h->upd, g_hash_table_lookup(form, "action"));
+  if (why) {
+    char *body = json_error(st, SOUP_STATUS_CONFLICT, why);
+    g_free(why);
+    return body;
+  }
+  return g_strdup("{\"ok\":true}");
 }
 
 static void json_kv(GString *o, const char *k, const char *v, gboolean comma) {
@@ -1946,7 +1981,7 @@ int main(int argc, char **argv) {
   char *cfg = NULL;
   gboolean list_switches = FALSE, check_config = FALSE, fetch_model = FALSE;
   gboolean install_service = FALSE, uninstall_service = FALSE, find_radios = FALSE;
-  gboolean find_skimmers = FALSE;
+  gboolean find_skimmers = FALSE, version = FALSE;
   GOptionEntry opts[] = {
     { "config", 'c', 0, G_OPTION_ARG_FILENAME, &cfg,
       "Config file (default ~/.config/skimmer-for-linux/headless.ini)", "FILE" },
@@ -1983,6 +2018,9 @@ int main(int argc, char **argv) {
       "Stop and remove that service and exit (the config stays)", NULL },
     { "list-switches", 0, 0, G_OPTION_ARG_NONE, &list_switches,
       "Print the SKIM_* environment switches the engine reads, and exit", NULL },
+    { "version", 'V', 0, G_OPTION_ARG_NONE, &version,
+      "Print \"skimmer-headless <version>\" (a development build: with its commit) and exit",
+      NULL },
     { NULL, 0, 0, 0, NULL, NULL, NULL },
   };
   /* for a restart without a supervisor: the command line as given, less
@@ -2001,6 +2039,10 @@ int main(int argc, char **argv) {
     return EXIT_CONFIG;
   }
   g_option_context_free(oc);
+  if (version) {
+    printf("skimmer-headless %s%s\n", SKIMMER_VERSION, SKIMMER_BUILD);
+    return 0;
+  }
   if (list_switches) {
     skim_switches_print_known();
     return 0;
@@ -2128,6 +2170,28 @@ int main(int argc, char **argv) {
     }
     return 0;
   }
+  /* [update]: a version installed a moment ago that keeps crashing goes
+   * back to the one before it — before the radio is touched */
+  {
+    const char *ai = g_getenv("APPIMAGE");
+    h->upd_state = skim_hd_update_state_path();
+    h->upd_env = (SkimHdUpdateEnv){
+      .appimage = ai && g_path_is_absolute(ai) && g_file_test(ai, G_FILE_TEST_IS_REGULAR)
+                      ? g_strdup(ai) : NULL,
+      .version = SKIMMER_VERSION,
+      .build = SKIMMER_BUILD,
+      .config_path = g_canonicalize_filename(h->cfg_path, NULL),
+      .state_path = h->upd_state,
+      .base_url = skim_hd_update_env_base_url(),
+      .ca_path = skim_scp_env_ca_path(),
+    };
+    if (skim_hd_update_boot(&h->upd_env)) {
+      g_warning("update: starting the earlier version again");
+      skim_hd_update_exec(h->upd_env.appimage, h->argv);
+      g_warning("update: exec %s failed: %s — this version goes on", h->upd_env.appimage,
+                g_strerror(errno));
+    }
+  }
   g_mutex_init(&h->snap_lock);
   g_mutex_init(&h->dcw_lock);
   h->dcw_state = "idle";
@@ -2167,6 +2231,26 @@ int main(int argc, char **argv) {
   h->scp = skim_scp_updater_new(scp, on_scp, h);
   skim_scp_updater_start(h->scp, 15);
   g_free(scp);
+
+  /* [update]: the releases looked at once a day, the first time 10 min in */
+  h->upd = skim_hd_updater_new(&h->upd_env, (SkimHdUpdateMode)c->update_mode, c->update_hour,
+                               upd_restart, h);
+  skim_hd_updater_start(h->upd, 600);
+  {
+    char *why = skim_hd_update_why_not(&h->upd_env);
+    if (c->update_mode == SKIM_HD_UPDATE_OFF) {
+      g_message("update: off — the releases are not looked at");
+    } else if (why) {
+      g_message("update: %s, a newer release only reported — %s",
+                skim_hd_update_mode_name((SkimHdUpdateMode)c->update_mode), why);
+    } else if (c->update_mode == SKIM_HD_UPDATE_AUTO) {
+      g_message("update: auto — a newer release goes in at %02u UTC, into %s", c->update_hour,
+                h->upd_env.appimage);
+    } else {
+      g_message("update: notify — a newer release is shown on the web page");
+    }
+    g_free(why);
+  }
 
   /* [archive] first: the feed's tap writes into it from the first spot */
   if (c->archive_dir) {
@@ -2271,6 +2355,7 @@ int main(int argc, char **argv) {
       if (!dec_start(h, b, k, cb, logdir, day, c->feed_learn ? learndir : NULL, start,
                      &err)) {
         g_printerr("pipeline %s %s: %s\n", b->name, MODE_KEY[k], err->message);
+        skim_hd_update_stopped(&h->upd_env);
         return 1;
       }
     }
@@ -2450,6 +2535,7 @@ int main(int argc, char **argv) {
       .config_post = web_config_post, .config_import = web_config_import,
       .restart = web_restart, .rollback = web_rollback,
       .deepcw = web_deepcw,
+      .update = web_update, .update_post = web_update_post,
       .waterfall = web_waterfall,
       .user = h,
     };
@@ -2558,9 +2644,13 @@ int main(int argc, char **argv) {
   g_clear_pointer(&h->spot_log, skim_hd_spotlog_free);
   g_clear_pointer(&h->spot_path, g_free);
   g_clear_pointer(&h->scp, skim_scp_updater_free);
+  g_clear_pointer(&h->upd, skim_hd_updater_free);
+  skim_hd_update_stopped(&h->upd_env);         /* an orderly end, whatever code */
   if (h->exit_code == EXIT_RESTART && g_strcmp0(g_getenv("SKIM_SUPERVISED"), "1") != 0) {
-    g_message("restart: starting again");
+    g_message("restart: starting again%s%s", h->exec_path ? " from " : "",
+              h->exec_path ? h->exec_path : "");
     fflush(stdout);
+    if (h->exec_path) { skim_hd_update_exec(h->exec_path, h->argv); }
     execv("/proc/self/exe", h->argv);
     g_printerr("restart: exec failed: %s — exiting %d\n", g_strerror(errno), EXIT_RESTART);
   }

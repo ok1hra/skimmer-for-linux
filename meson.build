@@ -15,6 +15,7 @@ add_project_arguments('-DGLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_74',
                       '-DGLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_74',
                       '-Werror=deprecated-declarations', language : 'c')
 add_project_arguments('-DSKIMMER_VERSION="@0@"'.format(meson.project_version()),
+                      '-DSKIMMER_BUILD="@0@"'.format(get_option('build_suffix')),
                       language : 'c')
 
 # --- Dependencies -----------------------------------------------------------
@@ -403,6 +404,18 @@ skimmer_scp_test = executable('skimmer-scp-test',
 )
 test('scp-update', skimmer_scp_test, timeout : 180)
 
+# [update]: versions, the release JSON (a real API answer), a file:// mirror
+# with a fake AppImage — the swap and .prev, every refusal (digest, none,
+# size, the preflight's version and config), the install hour, a crash loop
+# rolled back, the rollback asked for.
+skimmer_update_test = executable('skimmer-update-test',
+  ['src/update_test.c', 'src/headless/update.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : [glib_dep, gio_dep, curl_dep],
+)
+test('update', skimmer_update_test,
+  args : [meson.current_source_dir() / 'tests' / 'update'], timeout : 120)
+
 # Multi-band skimmer without a GUI: one HPSDR P1 receiver (Red Pitaya) with
 # up to 8 RX, one pipeline per band, one telnet feed, console + web status.
 # The product layer (src/headless/): config, IQ sources, recording, switches.
@@ -425,6 +438,7 @@ headless_sources = files(
   'src/headless/source_hub.c',      # … a worker: the bands its hub passes on
   'src/headless/source_mock.c',     # … synthetic CW (the headless gate)
   'src/headless/stats.c',           # the 7-day per-minute history
+  'src/headless/update.c',          # [update]: a newer release swapped in
   'src/headless/switches.c',        # the SKIM_* switches a start runs with
   'src/headless/visitors.c',        # the page's visitors: sign-in, their log
   'src/headless/waterfall.c',       # the page's waterfall (only while watched)

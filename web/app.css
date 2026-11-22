@@ -494,3 +494,12 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .grid th.sort { cursor: pointer; user-select: none; }
 .grid th.sort.on { color: var(--fg); }
 .wspr-t td { white-space: nowrap; }
+
+/* Settings → Updates, and the header's note of a newer release (managers) */
+.upd { margin-top: 6px; display: grid; gap: 4px; }
+.upd .k { font-size: 12px; color: var(--mut); margin-right: 4px; }
+.upd small { overflow-wrap: anywhere; }
+.upd-btns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.hdr-update { margin-left: 10px; font-size: 12px; color: var(--hot); text-decoration: none;
+  border: 1px solid currentColor; border-radius: 3px; padding: 0 6px; white-space: nowrap; }
+.hdr-update:hover { text-decoration: underline; }

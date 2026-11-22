@@ -16,7 +16,8 @@ apt-get install -y -qq --no-install-recommends \
 useradd -m builder
 mkdir -p /build/src && tar -xzf /in/src.tar.gz -C /build/src && chown -R builder /build
 cd /build
-runuser -u builder -- meson setup b src --buildtype=debugoptimized >/dev/null
+runuser -u builder -- meson setup b src --buildtype=debugoptimized \
+  -Dbuild_suffix="${BUILD_SUFFIX:-}" >/dev/null
 runuser -u builder -- meson compile -C b
 runuser -u builder -- meson test -C b --print-errorlogs
 

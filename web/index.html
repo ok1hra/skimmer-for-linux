@@ -29,6 +29,7 @@
   <div class="strip">
     <span id="radio" class="radio"><span class="dot"></span><span id="radio-text">…</span></span>
     <span id="hdr-stats"></span>
+    <!--admin--><a id="hdr-update" class="hdr-update" href="#" hidden title="Settings → Updates"></a><!--/admin-->
   </div>
   <nav>
     <button data-tab="status" class="on">Status</button>
@@ -354,6 +355,23 @@
             WSJT-X's own decoder (wsprd) one band after the other — the radio's IQ, no extra receiver. A frequency counts when
             its 300 Hz lie inside 45 % of the rate around a band's centre (Bands below). The stations heard in the last 24 h:
             Statistics, under the bands' table.</small>
+        </fieldset>
+        <fieldset>
+          <legend>Updates</legend>
+          <label>Mode <select name="update.mode" data-default="auto">
+            <option value="auto">automatic — install a newer release by itself</option>
+            <option value="notify">notify — only show that one is out</option>
+            <option value="off">off — never look</option></select>
+            <small>once a day the skimmer looks at its releases on GitHub (ok1hra/skimmer-for-linux)</small></label>
+          <label>Install at UTC hour <input name="update.hour_utc" inputmode="numeric" placeholder="3" data-max="23">
+            <small>0–23: a newer release is downloaded and checked at once, swapped in and restarted into at this hour — a few seconds without spots</small></label>
+          <div id="upd" class="upd"></div>
+          <small class="note-s">A new version is checked against the sha256 GitHub publishes for it and run once on this
+            config before it replaces the running AppImage; the old file stays beside it as <code>….AppImage.prev</code>
+            (<i>Back to</i> puts it back). A version that crashes three times right after the update goes back by
+            itself (under the systemd service). Only a release AppImage replaces itself — a development build, or a
+            program from a build tree, only reports. Name the file without a version
+            (<code>skimmer-headless-x86_64.AppImage</code>): it keeps its name across updates.</small>
         </fieldset>
       </div>
       <fieldset>

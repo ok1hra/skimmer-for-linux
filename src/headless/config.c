@@ -145,6 +145,12 @@ static const char DEFAULT_CONFIG[] =
   "# deep=true: a deeper candidate search (wsprd -d: slower, a few more\n"
   "# decodes); subtract=false: one pass, decoded signals not subtracted (-s)\n"
   "enabled=false\nupload=false\ncall=\nlocator=\ndeep=false\nsubtract=true\n"
+  "\n[update]\n# once a day a look at the releases on GitHub (ok1hra/skimmer-for-linux):\n"
+  "# auto = a newer version is downloaded, checked (sha256, a trial run on\n"
+  "# this config) and swapped in for the running AppImage at hour_utc, the old\n"
+  "# one kept as <file>.prev; notify = only shown on the web page; off = never\n"
+  "# asked. Only a release AppImage updates itself; a development build reports.\n"
+  "mode=auto\nhour_utc=3\n"
   "\n[record]\n# raw IQ of these bands (cf32 + .meta for skimmer-replay) while\n"
   "# decoding; ~0.8 MB/s per band at 96 kHz; start_utc=HH:MM or empty = at once\n"
   "bands=\nminutes=10\ndir=/var/tmp/skimmer-iq\nstart_utc=\n";
@@ -776,6 +782,27 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     }
   }
 
+  {
+    /* [update]: what the daily look at the releases may do, and when */
+    h->update_mode = 2;
+    char *m = given(kf, "update", "mode", NULL) ? g_key_file_get_string(kf, "update", "mode", NULL)
+                                                : NULL;
+    if (m) {
+      g_strstrip(m);
+      h->update_mode = strcmp(m, "off") == 0 ? 0 : strcmp(m, "notify") == 0 ? 1
+                       : strcmp(m, "auto") == 0 ? 2 : 99;
+    }
+    if (h->update_mode == 99) {
+      bad(error, path, "[update] mode \"%s\": auto, notify or off", m);
+      g_free(m);
+      return FALSE;
+    }
+    g_free(m);
+    double hr;
+    if (!opt_num(kf, "update", "hour_utc", 3, 0, 23, TRUE, &hr, path, error)) { return FALSE; }
+    h->update_hour = (guint)hr;
+  }
+
   h->console_s = given(kf, "status", "console_s", NULL)
                      ? g_key_file_get_integer(kf, "status", "console_s", NULL) : -1;
   h->http_port = given(kf, "status", "http_port", NULL)
@@ -955,6 +982,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "rtty_palette.afc_max_hz", "rtty_palette.afc_rate", "rtty_palette.reverse", "rtty_palette.usos",
   "rtty_palette.squelch_db", "rtty_palette.second_decoder", "rtty_palette.clean", "rtty_palette.sound",
   "wspr.enabled", "wspr.upload", "wspr.call", "wspr.locator", "wspr.deep", "wspr.subtract",
+  "update.mode", "update.hour_utc",
   NULL,
 };
 

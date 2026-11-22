@@ -375,6 +375,93 @@ function renderDcw(dc) {
   if (rs) rs.addEventListener('click', () => $('#set-restart').click());
 }
 
+// Updates (Settings → Updates): what runs, the latest release, a version
+// downloaded and checked, the file kept from before — and the header's note.
+let upd = null, updPoll = 0;
+const utcMin = (t) => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+
+function updBadge(u) {
+  const a = $('#hdr-update');
+  if (!a) return;
+  const text = u && u.ready ? `update ${u.ready} ready` : u && u.newer && u.latest && u.latest !== u.skip ? `${u.latest} is out` : '';
+  a.hidden = !text;
+  a.textContent = text;
+}
+
+function renderUpd(u) {
+  upd = u;
+  updBadge(u);
+  const box = $('#upd');
+  if (!box || !u) return;
+  const may = cfg.data && cfg.data.may_change;
+  const rows = [];
+  rows.push(`<div><span class="k">running</span> <b>${esc(u.version)}${esc(u.build || '')}</b>` +
+    (u.appimage ? ` <small class="mut">${esc(u.appimage)}</small>` : '') + '</div>');
+  if (u.latest) {
+    const page = u.latest_url ? `<a href="${esc(u.latest_url)}" target="_blank" rel="noopener">${esc(u.latest)} ↗</a>` : esc(u.latest);
+    rows.push(`<div><span class="k">latest release</span> ${page}` +
+      (u.latest_published ? ` <small class="mut">${esc(u.latest_published.slice(0, 10))}</small>` : '') +
+      ` ${u.newer ? '<span class="warn">newer</span>' : '<span class="ok">up to date</span>'}</div>`);
+  }
+  if (u.ready) {
+    rows.push(`<div class="ok">${esc(u.ready)} is downloaded and checked — ` +
+      (u.mode === 'auto' && !u.why_not ? `goes in at ${String(u.hour_utc).padStart(2, '0')}:00 UTC, or now:` : 'Install now puts it in:') + '</div>');
+  }
+  if (u.skip && u.skip === u.latest) rows.push(`<div class="warn">${esc(u.skip)} went back here once — not tried again; the next release is</div>`);
+  if (u.pending) rows.push(`<div class="mut">updated from ${esc(u.pending)} ${u.installed_at ? utcMin(u.installed_at) : ''} — kept once it has run 15 min</div>`);
+  if (u.why_not) rows.push(`<div class="warn">${esc(u.why_not)}</div>`);
+  if (u.busy) rows.push('<div>checking…</div>');
+  else if (u.result) rows.push(`<div><small class="mut">${u.result_at ? esc(utcMin(u.result_at)) + ': ' : ''}</small>${esc(u.result)}</div>`);
+  if (!u.busy && u.mode !== 'off' && u.next_check) rows.push(`<small class="mut">next look ${esc(utcMin(u.next_check))}</small>`);
+  if (u.mode === 'off') rows.push('<small class="mut">off: the releases are not looked at (Check now still does)</small>');
+  const canInstall = !u.why_not && (u.ready || (u.newer && u.latest !== u.skip));
+  rows.push('<div class="upd-btns">' +
+    `<button type="button" class="small" id="upd-check"${may && !u.busy ? '' : ' disabled'}>Check now</button>` +
+    `<button type="button" class="small primary" id="upd-install"${may && !u.busy && canInstall ? '' : ' disabled'}>Install now</button>` +
+    (u.prev ? `<button type="button" class="small" id="upd-back"${may && !u.busy ? '' : ' disabled'}>Back to ${esc(u.prev)}</button>` : '') +
+    ' <span id="upd-msg" class="mut"></span></div>');
+  const html = rows.join('');
+  if (box.dataset.html === html) return;
+  box.dataset.html = html;
+  box.innerHTML = html;
+  on('#upd-check', 'click', () => updAction('check'));
+  on('#upd-install', 'click', () => {
+    if (cfg.dirty && !confirm('Install and restart without the unsaved changes in the form? They are lost.')) return;
+    updAction('install');
+  });
+  on('#upd-back', 'click', () => {
+    if (!confirm(`Put ${u.prev} back in place of ${u.version} and restart? ${u.version} is then not installed again — the next release is.`)) return;
+    updAction('rollback');
+  });
+}
+
+async function loadUpd() {
+  if (!$('#hdr-update')) return;                 // not a manager: no such page
+  try { renderUpd(await getJSON('api/update')); } catch (e) { /* the next look */ }
+  clearTimeout(updPoll);
+  if (upd && upd.busy) updPoll = setTimeout(loadUpd, 2000);
+}
+
+async function updAction(action) {
+  const before = upd ? upd.installed_at : 0;
+  try { await post('api/update', new URLSearchParams({ action })); }
+  catch (err) { const m = $('#upd-msg'); if (m) m.textContent = err.message; return; }
+  if (action === 'rollback') { setDirty(false); await waitRestart('Back to the earlier version'); return; }
+  if (action === 'check') { setTimeout(loadUpd, 300); return; }
+  // install: at once when staged, else after the download and its checks
+  for (let i = 0; i < 600; i++) {
+    let u;
+    try { u = await getJSON('api/update'); } catch (e) { setDirty(false); await waitRestart('Update'); return; }
+    if (u.installed_at !== before) { setDirty(false); await waitRestart('Update'); return; }
+    renderUpd(u);
+    if (!u.busy) return;                         // landed without an install: the result says why
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+on('#hdr-update', 'click', (e) => { e.preventDefault(); show('settings'); setTimeout(() => $('#upd') && $('#upd').scrollIntoView({ block: 'center' }), 200); });
+loadUpd();
+setInterval(loadUpd, 10 * 60 * 1000);
+
 // The map (and the DX cluster): the spots the feed sent in the last half hour,
 // fetched every 10 s while the status page is open. Their age runs on between
 // fetches (on the skimmer's clock), and a spot older than 30 min leaves the
@@ -1705,6 +1792,7 @@ tabs.settings = {
     if (!force) return;                        // never overwrite the user's edits
     $('#set-error').hidden = true;
     fillSettings(await getJSON('api/config'));
+    loadUpd();
   },
 };
 

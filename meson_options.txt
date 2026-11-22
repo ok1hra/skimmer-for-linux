@@ -1,0 +1,6 @@
+# What a build is beyond its version: '' = a release (built from its tag),
+# '-g<commit>[-dirty]' = a development build (packaging/appimage/build.sh
+# sets it). Only a release AppImage replaces itself with a newer release
+# (src/headless/update.h); a development build reports one.
+option('build_suffix', type : 'string', value : '',
+       description : 'build suffix after the version, empty for a release')

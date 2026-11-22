@@ -79,6 +79,9 @@
  *            WSPRnet under call (empty = [feed] call) and locator (empty =
  *            [station] locator) — both needed then; upload_url (the gate's
  *            stand-in; not on the page)
+ *   [update] mode auto (default) | notify | off: the daily look at the
+ *            GitHub releases and what a newer one gets (update.h);
+ *            hour_utc (0-23, default 3): when auto swaps it in
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -204,6 +207,9 @@ typedef struct {
   char            *wspr_call;         /* NULL = [feed] call                   */
   char             wspr_locator[8];   /* "" = [station] locator               */
   char            *wspr_upload_url;   /* NULL = wsprnet.org (the gate's own)  */
+  /* [update] (update.h) */
+  guint            update_mode;       /* SkimHdUpdateMode: 0 off, 1 notify, 2 auto */
+  guint            update_hour;       /* UTC hour auto installs at            */
 } SkimHdConfig;
 
 /* Write the commented default ini to path (its directory is created).

@@ -65,7 +65,7 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   { "SKIM_REPLAY_FROM", D },
   /* MASTER.SCP; the supervisor */
   { "SKIM_SCP_URL", S }, { "SKIM_DEEPCW_URL", S }, { "SKIM_HPSDR_DISCOVER", S },
-  { "SKIM_DISCOVERY_PORT", S }, { "SKIM_SUPERVISED", S },
+  { "SKIM_DISCOVERY_PORT", S }, { "SKIM_SUPERVISED", S }, { "SKIM_UPDATE_URL", S },
 };
 
 #undef B

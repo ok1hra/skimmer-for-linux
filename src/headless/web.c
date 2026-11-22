@@ -364,7 +364,8 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
     /* the config, the log and the LAN search (0.8 s on the main loop) are
      * for those who may manage the skimmer only */
     if (!admin && (strcmp(path, "/api/config") == 0 || strcmp(path, "/api/log") == 0 ||
-                   strcmp(path, "/api/skimmers") == 0 || strcmp(path, "/api/skimsrv") == 0)) {
+                   strcmp(path, "/api/skimmers") == 0 || strcmp(path, "/api/skimsrv") == 0 ||
+                   strcmp(path, "/api/update") == 0)) {
       reply_error(msg, SOUP_STATUS_FORBIDDEN, "only from an address that may change the settings");
       return;
     }
@@ -401,6 +402,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                       : strcmp(path, "/api/skimmers") == 0 ? k->skimmers
                       : strcmp(path, "/api/spots") == 0    ? k->spots
                       : strcmp(path, "/api/skimsrv") == 0  ? k->skimsrv
+                      : strcmp(path, "/api/update") == 0   ? k->update
                       : strcmp(path, "/api/wspr") == 0     ? k->wspr
                                                           : NULL;
     if (hook) {
@@ -430,6 +432,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                        : strcmp(path, "/api/restart") == 0  ? k->restart
                        : strcmp(path, "/api/rollback") == 0 ? k->rollback
                        : strcmp(path, "/api/deepcw") == 0   ? k->deepcw
+                       : strcmp(path, "/api/update") == 0   ? k->update_post
                                                             : NULL;
     if (!hook) {
       reply_error(msg, SOUP_STATUS_NOT_FOUND, "not found");

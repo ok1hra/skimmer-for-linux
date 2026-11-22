@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "callsign.h"
+#include "json.h"
 
 #define SCP_SITE       "https://www.supercheckpartial.com"
 #define SCP_API_PATH   "/api/v1/files"
@@ -248,79 +249,8 @@ char *skim_scp_env_base_url(void) {
   return env && env[0] ? g_strdup(env) : NULL;
 }
 
-/* --- the API answer: a flat JSON array, read without a JSON library ------------
- * Tolerant of order, whitespace and unknown keys; anything it cannot follow
- * (an error page, a truncated body, nesting past the limit) is "no entry",
- * never a crash: every read is bounded by `end`. */
-
-typedef struct { const char *p, *end; } Json;
-
-static void j_ws(Json *j) {
-  while (j->p < j->end && (*j->p == ' ' || *j->p == '\t' || *j->p == '\n' ||
-                           *j->p == '\r')) {
-    j->p++;
-  }
-}
-
-/* A string value → out (truncated to fit; escapes flattened — nothing we
- * compare holds one). */
-static gboolean j_string(Json *j, char *out, gsize outsz) {
-  if (j->p >= j->end || *j->p != '"') { return FALSE; }
-  j->p++;
-  gsize n = 0;
-  while (j->p < j->end && *j->p != '"') {
-    char c = *j->p++;
-    if (c == '\\') {
-      if (j->p >= j->end) { return FALSE; }
-      char e = *j->p++;
-      if (e == 'u') {
-        if (j->end - j->p < 4) { return FALSE; }
-        j->p += 4;
-        c = '?';
-      } else {
-        c = (e == 'n' || e == 'r' || e == 't' || e == 'b' || e == 'f') ? ' ' : e;
-      }
-    }
-    if (out && n + 1 < outsz) { out[n++] = c; }
-  }
-  if (j->p >= j->end) { return FALSE; }        /* no closing quote           */
-  j->p++;
-  if (out && outsz) { out[n] = '\0'; }
-  return TRUE;
-}
-
-static gboolean j_skip(Json *j, int depth) {
-  j_ws(j);
-  if (j->p >= j->end || depth > 16) { return FALSE; }
-  char c = *j->p;
-  if (c == '"') { return j_string(j, NULL, 0); }
-  if (c == '{' || c == '[') {
-    char close = c == '{' ? '}' : ']';
-    j->p++;
-    j_ws(j);
-    if (j->p < j->end && *j->p == close) { j->p++; return TRUE; }
-    for (;;) {
-      if (c == '{') {
-        j_ws(j);
-        if (!j_string(j, NULL, 0)) { return FALSE; }
-        j_ws(j);
-        if (j->p >= j->end || *j->p++ != ':') { return FALSE; }
-      }
-      if (!j_skip(j, depth + 1)) { return FALSE; }
-      j_ws(j);
-      if (j->p >= j->end) { return FALSE; }
-      if (*j->p == ',') { j->p++; continue; }
-      if (*j->p == close) { j->p++; return TRUE; }
-      return FALSE;
-    }
-  }
-  const char *start = j->p;                    /* number, true, false, null  */
-  while (j->p < j->end && (g_ascii_isalnum(*j->p) || *j->p == '-' ||
-                           *j->p == '+' || *j->p == '.')) {
-    j->p++;
-  }
-  return j->p > start;
-}
+/* --- the API answer: a flat JSON array (json.h's reader) ---------------------------
+ * Anything the reader cannot follow is "no entry", never a crash. */
 
 typedef struct {
   char   name[64];
@@ -331,30 +261,30 @@ typedef struct {
 /* Find the entry whose name is `want` (ASCII case-insensitive). */
 static gboolean api_find(const guint8 *body, gsize len, const char *want,
                          ApiEntry *out) {
-  Json j = { (const char *)body, (const char *)body + len };
-  j_ws(&j);
+  SkimJsonR j = { (const char *)body, (const char *)body + len };
+  skim_json_ws(&j);
   if (j.p >= j.end || *j.p++ != '[') { return FALSE; }
   for (;;) {
-    j_ws(&j);
+    skim_json_ws(&j);
     if (j.p >= j.end || *j.p == ']') { return FALSE; }
     if (*j.p++ != '{') { return FALSE; }
     ApiEntry e = { .size = -1 };
-    j_ws(&j);
+    skim_json_ws(&j);
     if (j.p < j.end && *j.p == '}') {
       j.p++;
     } else {
       for (;;) {
         char key[32];
-        j_ws(&j);
-        if (!j_string(&j, key, sizeof(key))) { return FALSE; }
-        j_ws(&j);
+        skim_json_ws(&j);
+        if (!skim_json_string(&j, key, sizeof(key))) { return FALSE; }
+        skim_json_ws(&j);
         if (j.p >= j.end || *j.p++ != ':') { return FALSE; }
-        j_ws(&j);
+        skim_json_ws(&j);
         gboolean is_str = j.p < j.end && *j.p == '"';
         if (is_str && strcmp(key, "name") == 0) {
-          if (!j_string(&j, e.name, sizeof(e.name))) { return FALSE; }
+          if (!skim_json_string(&j, e.name, sizeof(e.name))) { return FALSE; }
         } else if (is_str && strcmp(key, "etag") == 0) {
-          if (!j_string(&j, e.etag, sizeof(e.etag))) { return FALSE; }
+          if (!skim_json_string(&j, e.etag, sizeof(e.etag))) { return FALSE; }
         } else if (!is_str && strcmp(key, "size") == 0) {
           char num[24];
           gsize k = 0;
@@ -366,12 +296,12 @@ static gboolean api_find(const guint8 *body, gsize len, const char *want,
           e.size = g_ascii_strtoll(num, NULL, 10);
           if (j.p < j.end && (g_ascii_isalnum(*j.p) || *j.p == '.')) {
             e.size = -1;                       /* 1e6, 12.5 — not a size     */
-            if (!j_skip(&j, 1)) { return FALSE; }
+            if (!skim_json_skip(&j, 1)) { return FALSE; }
           }
-        } else if (!j_skip(&j, 1)) {
+        } else if (!skim_json_skip(&j, 1)) {
           return FALSE;
         }
-        j_ws(&j);
+        skim_json_ws(&j);
         if (j.p >= j.end) { return FALSE; }
         if (*j.p == ',') { j.p++; continue; }
         if (*j.p == '}') { j.p++; break; }
@@ -382,7 +312,7 @@ static gboolean api_find(const guint8 *body, gsize len, const char *want,
       *out = e;
       return TRUE;
     }
-    j_ws(&j);
+    skim_json_ws(&j);
     if (j.p < j.end && *j.p == ',') { j.p++; }
   }
 }
