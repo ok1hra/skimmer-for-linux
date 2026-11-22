@@ -315,6 +315,15 @@ skimmer_hub_test = executable('skimmer-hub-test',
 )
 test('hub', skimmer_hub_test, timeout : 60)
 
+# PSK Reporter: the datagram byte for byte against pskreporter.info/pskdev.html,
+# split under the limit; the uploader against a local UDP listener.
+skimmer_pskreporter_test = executable('skimmer-pskreporter-test',
+  ['src/pskreporter_test.c', 'src/headless/pskreporter.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+)
+test('pskreporter', skimmer_pskreporter_test, timeout : 60)
+
 # The 7-day history: buckets, reopen with re-ordered bands, a foreign file.
 skimmer_stats_test = executable('skimmer-stats-test',
   ['src/stats_test.c', 'src/headless/stats.c'],
@@ -477,6 +486,7 @@ headless_sources = files(
   'src/headless/web.c',             # the web page (libsoup 3)
   'src/headless/wspr.c',            # [wspr]: WSPR decoded beside, WSPRnet
   'src/headless/ft8.c',             # [ft8]: FT8/FT4 decoded beside, to the feed
+  'src/headless/pskreporter.c',     # [ft8] upload: to PSK Reporter (IPFIX/UDP)
 )
 
 # The web page's static files (web/), built in.

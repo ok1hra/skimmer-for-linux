@@ -26,11 +26,11 @@ static guint nspots;
 static GMutex lock;
 
 static void spot_cb(const char *call, const char *mode, double freq_hz, int snr, gboolean cq,
-                    const char *band, gpointer user) {
-  (void)user;
+                    const char *band, const char *grid, gint64 t, gpointer user) {
+  (void)user; (void)t;
   g_mutex_lock(&lock);
-  printf("SPOT %-12s %s %9.1f kHz %4d dB %s %s\n", call, mode, freq_hz / 1e3, snr, cq ? "CQ" : "DE",
-         band);
+  printf("SPOT %-12s %s %9.1f kHz %4d dB %s %s %s\n", call, mode, freq_hz / 1e3, snr, cq ? "CQ" : "DE",
+         band, grid && *grid ? grid : "-");
   nspots++;
   g_mutex_unlock(&lock);
 }

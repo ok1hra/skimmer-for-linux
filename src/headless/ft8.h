@@ -90,6 +90,7 @@ typedef struct {
   gboolean doubt;                       /* … that WSJT-X marks '?'               */
   char   msg[40];                       /* the message, as WSJT-X prints it      */
   char   call[16];                      /* its sender; "" = none to spot         */
+  char   grid[8];                       /* … its locator when the message has it */
   gboolean cq;                          /* … calling CQ / QRZ                    */
 } SkimFt8Decode;
 
@@ -105,11 +106,17 @@ gboolean skim_ft8_parse_line(const char *line, SkimFt8Decode *out);
  * "<…>" (even a resolved one). *cq = a CQ/QRZ call. */
 gboolean skim_ft8_sender(const char *msg, char *call, gsize call_size, gboolean *cq);
 
+/* The sender's 4-character locator when msg carries one: "CQ … CALL GRID",
+ * "CALL1 CALL2 GRID" (never RR73); "" otherwise. grid: 8 bytes. */
+void skim_ft8_sender_grid(const char *msg, char grid[8]);
+
 /* ---- the whole: every receiver's dials, the decoders, the spots ------------------ */
 
-/* A station to spot (a decoder thread): mode "FT8"/"FT4", its RF. */
+/* A station to spot (a decoder thread): mode "FT8"/"FT4", its RF, its
+ * locator ("" unknown), the cycle's start (unix s). */
 typedef void (*SkimHdFt8SpotCb)(const char *call, const char *mode, double freq_hz, int snr_db,
-                                gboolean cq, const char *band, gpointer user);
+                                gboolean cq, const char *band, const char *grid, gint64 t,
+                                gpointer user);
 
 typedef struct {
   gboolean    ft8, ft4;                 /* which dials                           */

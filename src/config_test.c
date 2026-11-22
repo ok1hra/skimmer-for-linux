@@ -328,6 +328,24 @@ int main(void) {
                     "lo_hz=300\nhi_hz=3000\nthreads=4\n", NULL) &&
           c.ft8 && c.ft8_ft8 && !c.ft8_ft4 && !c.ft8_feed && c.ft8_depth == 3 && c.ft8_lo_hz == 300 &&
           c.ft8_hi_hz == 3000 && c.ft8_threads == 4);
+    check("[ft8] PSK Reporter: off by default; on with [feed] call and [station] locator; "
+          "call/locator in capitals; the gate's host:port",
+          parse(&c, "[bands]\n20m=14045500\n", NULL) && !c.ft8_upload && !c.ft8_call &&
+          !c.ft8_locator[0] && !c.ft8_pskr_host &&
+          parse(&c, "[bands]\n20m=14045500\n[feed]\ncall=ok1hra\n[station]\nlocator=jo70\n"
+                    "[ft8]\nenabled=true\nupload=true\n", NULL) && c.ft8_upload &&
+          parse(&c, "[bands]\n20m=14045500\n[ft8]\nenabled=true\nupload=true\ncall=ok1hra/p\n"
+                    "locator=jo70ab\npskreporter=127.0.0.1:14739\n", NULL) &&
+          g_strcmp0(c.ft8_call, "OK1HRA/P") == 0 && strcmp(c.ft8_locator, "JO70AB") == 0 &&
+          g_strcmp0(c.ft8_pskr_host, "127.0.0.1") == 0 && c.ft8_pskr_port == 14739);
+    skim_hd_config_clear(&c);
+    check("[ft8] refused: an upload without a call or a locator, a bad call, locator, host:port",
+          !parse(&c, "[bands]\n20m=14045500\n[station]\nlocator=JO70\n[ft8]\nenabled=true\nupload=true\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[feed]\ncall=OK1HRA\n[ft8]\nenabled=true\nupload=true\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\ncall=OK-1\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\nlocator=JO7\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\npskreporter=localhost\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[ft8]\npskreporter=localhost:0\n", NULL));
     check("[ft8] the narrowest window, 1000-2000 Hz, one thread",
           parse(&c, "[bands]\n20m=14045500\n[ft8]\nlo_hz=1000\nhi_hz=2000\nthreads=1\n", NULL) &&
           c.ft8_lo_hz == 1000 && c.ft8_hi_hz == 2000 && c.ft8_threads == 1);

@@ -1482,6 +1482,13 @@ function ft8Show(centres) {
       (last ? `, the last cycle at ${last}` : '') +
       (f.skipped ? ` · <span class="warn">${fmt(f.skipped)} cycles skipped (the decoders were behind)</span>` : '') +
       (f.error ? ` · <span class="bad">${esc(f.error)}</span>` : '');
+    const p = status.pskreporter;
+    if (p && p.on) {
+      const at = p.last ? new Date(p.last * 1000).toISOString().slice(11, 16) + ' UTC' : '';
+      run += ` · PSK Reporter as ${esc(p.call)} ${esc(p.locator)}: ${fmt(p.sent)} sent in ${fmt(p.datagrams)} datagrams` +
+        `${at ? `, the last at ${at}` : ''}${p.queued ? `, ${fmt(p.queued)} waiting` : ''}` +
+        (p.error ? ` · <span class="bad">${esc(p.error)}</span>` : '');
+    }
   }
   el.innerHTML = (got.length
     ? `The bands below take ${got.map(([b, m, d]) => `<b>${esc(b)} ${m}</b> ${fmtKhz(d / 1000)}`).join(', ')}`

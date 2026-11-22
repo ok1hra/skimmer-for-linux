@@ -155,7 +155,10 @@ static const char DEFAULT_CONFIG[] =
   "# the web page only); hashed calls <...> never. depth 1-3 = WSJT-X's\n"
   "# Fast/Normal/Deep (3 costs much more CPU); lo_hz/hi_hz = the audio window\n"
   "# above the dial (lo 200-1000, hi 2000-4000); threads = decoders side by side\n"
+  "# upload=true sends the stations heard to PSK Reporter (pskreporter.info) under\n"
+  "# call and locator (empty = [feed] call, [station] locator), as WSJT-X does\n"
   "enabled=false\nft8=true\nft4=true\nfeed=true\ndepth=2\nlo_hz=200\nhi_hz=3500\nthreads=2\n"
+  "upload=false\ncall=\nlocator=\n"
   "\n[update]\n# once a day a look at the releases on GitHub (ok1hra/skimmer-for-linux):\n"
   "# auto = a newer version is downloaded, checked (sha256, a trial run on\n"
   "# this config) and swapped in for the running AppImage at hour_utc, the old\n"
@@ -197,6 +200,8 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_free(cfg->filter_up);
   g_free(cfg->wspr_call);
   g_free(cfg->wspr_upload_url);
+  g_free(cfg->ft8_call);
+  g_free(cfg->ft8_pskr_host);
   if (cfg->filter_re) { g_regex_unref(cfg->filter_re); }
   memset(cfg, 0, sizeof(*cfg));
 }
@@ -820,6 +825,48 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->ft8_lo_hz = (guint)lo;
     h->ft8_hi_hz = (guint)hi;
     h->ft8_threads = (guint)thr;
+    /* PSK Reporter: call and locator as [wspr]'s (empty = [feed] call,
+     * [station] locator); an upload needs both */
+    if (!opt_bool(kf, "ft8", "upload", FALSE, &h->ft8_upload, path, error)) { return FALSE; }
+    char *fc = g_key_file_get_string(kf, "ft8", "call", NULL);
+    char *fl = g_key_file_get_string(kf, "ft8", "locator", NULL);
+    char *fh = g_key_file_get_string(kf, "ft8", "pskreporter", NULL);
+    if (fc) { g_strstrip(fc); for (char *x = fc; *x; x++) { *x = g_ascii_toupper(*x); } }
+    if (fl) { g_strstrip(fl); for (char *x = fl; *x; x++) { *x = g_ascii_toupper(*x); } }
+    if (fh) { g_strstrip(fh); }
+    gboolean ok_call = !fc || !*fc || (strlen(fc) >= 3 && strlen(fc) <= 15);
+    for (const char *x = fc; ok_call && x && *x; x++) { ok_call = g_ascii_isalnum(*x) || *x == '/'; }
+    const gsize nl = fl ? strlen(fl) : 0;
+    const gboolean ok_loc = nl == 0 ||
+        ((nl == 4 || nl == 6) && fl[0] >= 'A' && fl[0] <= 'R' && fl[1] >= 'A' && fl[1] <= 'R' &&
+         g_ascii_isdigit(fl[2]) && g_ascii_isdigit(fl[3]) &&
+         (nl == 4 || (fl[4] >= 'A' && fl[4] <= 'X' && fl[5] >= 'A' && fl[5] <= 'X')));
+    /* the gate's stand-in: host:port */
+    guint64 port = 0;
+    char *colon = fh && *fh ? strrchr(fh, ':') : NULL;
+    const gboolean ok_host = !fh || !*fh ||
+        (colon && colon != fh && g_ascii_string_to_unsigned(colon + 1, 10, 1, 65535, &port, NULL));
+    if (!ok_call || !ok_loc || !ok_host) {
+      bad(error, path, !ok_call ? "[ft8] call \"%s\" (3-15 of A-Z, 0-9, /)"
+                     : !ok_loc ? "[ft8] locator \"%s\" (a Maidenhead locator: JN18 or JN18EU)"
+                               : "[ft8] pskreporter \"%s\" (host:port)",
+          !ok_call ? fc : !ok_loc ? fl : fh);
+      g_free(fc); g_free(fl); g_free(fh);
+      return FALSE;
+    }
+    h->ft8_call = fc && *fc ? g_strdup(fc) : NULL;
+    g_strlcpy(h->ft8_locator, fl ? fl : "", sizeof h->ft8_locator);
+    if (colon) {
+      h->ft8_pskr_host = g_strndup(fh, (gsize)(colon - fh));
+      h->ft8_pskr_port = (guint)port;
+    }
+    g_free(fc); g_free(fl); g_free(fh);
+    const char *rc = h->ft8_call ? h->ft8_call : h->feed_call;
+    const char *rl = h->ft8_locator[0] ? h->ft8_locator : h->locator;
+    if (h->ft8 && h->ft8_upload && (!rc || !*rc || !rl[0])) {
+      return bad(error, path, "[ft8] upload: PSK Reporter needs the receiver's call and locator — "
+                              "[ft8] call (or [feed] call) and [ft8] locator (or [station] locator)");
+    }
   }
 
   {
@@ -1024,7 +1071,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "rtty_palette.squelch_db", "rtty_palette.second_decoder", "rtty_palette.clean", "rtty_palette.sound",
   "wspr.enabled", "wspr.upload", "wspr.call", "wspr.locator", "wspr.deep", "wspr.subtract",
   "ft8.enabled", "ft8.ft8", "ft8.ft4", "ft8.feed", "ft8.depth", "ft8.lo_hz", "ft8.hi_hz",
-  "ft8.threads",
+  "ft8.threads", "ft8.upload", "ft8.call", "ft8.locator",
   "update.mode", "update.hour_utc",
   NULL,
 };
@@ -1095,7 +1142,8 @@ char *skim_hd_config_apply_form(const char *text, gsize len, GHashTable *form,
       char *group = g_strndup(key, (gsize)(strchr(key, '.') - key));
       /* a call and a locator go into the file in capitals */
       char *v = strcmp(key, "feed.call") == 0 || strcmp(key, "station.locator") == 0 ||
-                        strcmp(key, "wspr.call") == 0 || strcmp(key, "wspr.locator") == 0
+                        strcmp(key, "wspr.call") == 0 || strcmp(key, "wspr.locator") == 0 ||
+                        strcmp(key, "ft8.call") == 0 || strcmp(key, "ft8.locator") == 0
                     ? g_ascii_strup(val, -1) : g_strdup(val);
       g_key_file_set_value(kf, group, strchr(key, '.') + 1, v);
       g_free(v);

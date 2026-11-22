@@ -80,6 +80,7 @@
 #include "headless/waterfall.h"
 #include "headless/wspr.h"
 #include "headless/ft8.h"
+#include "headless/pskreporter.h"
 #include "headless/skimsrv.h"
 #include "headless/visitors.h"
 #include "headless/web.h"
@@ -208,6 +209,7 @@ typedef struct {
   SkimHdWaterfall *wf;         /* the page's waterfall (idle while unwatched) */
   SkimHdWspr *wspr;            /* [wspr]: WSPR decoded beside; NULL = off     */
   SkimHdFt8  *ft8;             /* [ft8]: FT8/FT4 decoded beside; NULL = off   */
+  SkimPskr   *pskr;            /* [ft8] upload: to PSK Reporter; NULL = off   */
   char      *archive_err;      /* the last flush error logged (no repeats)    */
   gint64    minute;            /* the unix minute being collected             */
   guint64   min_frames_prev, min_lost_prev;
@@ -856,6 +858,14 @@ static void status_build(Hd *h, gboolean print) {
     char *fj = skim_hd_ft8_status_json(h->ft8);
     g_string_append(json, fj);
     g_free(fj);
+  } else {
+    g_string_append(json, "{\"on\":false}");
+  }
+  g_string_append(json, ",\"pskreporter\":");
+  if (h->pskr) {
+    char *pj = skim_pskr_status_json(h->pskr);
+    g_string_append(json, pj);
+    g_free(pj);
   } else {
     g_string_append(json, "{\"on\":false}");
   }
@@ -1914,13 +1924,14 @@ static char *web_ft8(GHashTable *q, SkimHdWebWho who, guint *st, const char **ty
 }
 
 /* A station FT8/FT4 heard sending (a decoder thread of ft8.c, already folded
- * there): [filter], then the telnet feed — never the RBN's port — or, with
+ * there): [filter], then PSK Reporter ([ft8] upload: once an hour a band and
+ * mode, pskreporter.h) and the telnet feed — never the RBN's port — or, with
  * [ft8] feed=false or no feed, the page alone. */
 static void ft8_spot(const char *call, const char *mode, double freq_hz, int snr_db, gboolean cq,
-                     const char *band, gpointer user) {
-  (void)band;
+                     const char *band, const char *grid, gint64 t, gpointer user) {
   Hd *h = user;
   if (!skim_hd_config_call_pass(&h->cfg, call)) { return; }   /* [filter] */
+  if (h->pskr) { skim_pskr_add(h->pskr, call, grid, freq_hz, snr_db, mode, band, t); }
   if (h->cfg.ft8_feed && h->feed) {
     skim_rbn_feed_spot_digital(h->feed, call, mode, freq_hz, snr_db, cq);   /* tap → the log */
   } else {
@@ -2604,6 +2615,22 @@ int main(int argc, char **argv) {
       .lo_hz = c->ft8_lo_hz, .hi_hz = c->ft8_hi_hz, .threads = c->ft8_threads,
       .dir = fdir, .spot = ft8_spot, .user = h,
     };
+    if (c->ft8_upload) {                       /* PSK Reporter: before the spots come */
+      char *sw = g_strdup_printf("skimmer-for-linux %s%s (WSJT-X 3.0.2 FT8/FT4 decoder)",
+                                 SKIMMER_VERSION, SKIMMER_BUILD);
+      const SkimPskrConfig pc = {
+        .call = c->ft8_call ? c->ft8_call : c->feed_call,
+        .locator = c->ft8_locator[0] ? c->ft8_locator : c->locator,
+        .software = sw, .host = c->ft8_pskr_host, .port = (guint16)c->ft8_pskr_port,
+        .interval_s = c->ft8_pskr_host ? 1 : 0,  /* the gate's stand-in: at once */
+      };
+      h->pskr = skim_pskr_new(&pc);
+      g_message("ft8: the stations heard to PSK Reporter (%s:%u) as %s %s, a datagram every %s",
+                c->ft8_pskr_host ? c->ft8_pskr_host : SKIM_PSKR_HOST,
+                c->ft8_pskr_port ? c->ft8_pskr_port : SKIM_PSKR_PORT, pc.call, pc.locator,
+                c->ft8_pskr_host ? "1 s (a stand-in)" : "5 min");
+      g_free(sw);
+    }
     h->ft8 = skim_hd_ft8_new(&fc, h->nb, names, centres, c->rate);
     g_free(fdir);
     char *dials = skim_hd_ft8_dials_text(h->ft8);
@@ -2724,6 +2751,7 @@ int main(int argc, char **argv) {
   g_clear_pointer(&h->src, skim_iq_source_free);
   g_clear_pointer(&h->wspr, skim_hd_wspr_free);      /* nothing pushes into it */
   g_clear_pointer(&h->ft8, skim_hd_ft8_free);        /* … before the feed it spots to */
+  g_clear_pointer(&h->pskr, skim_pskr_free);         /* … and what waits, sent once */
   g_clear_pointer(&h->wf, skim_hd_waterfall_free);   /* nothing pushes into it */
   g_clear_pointer(&h->vis, skim_hd_visitors_free);   /* the open visits logged */
   g_clear_pointer(&h->hub, skim_hd_hub_free);     /* nothing pushes any more   */

@@ -320,7 +320,16 @@ here; what was done and why is in git.
   the bar, a click on an FT8/FT4 spot) is WSJT-X's Band Activity from
   `/api/ft8?dial=&since=` — it narrows the waterfall to the dial's window,
   draws each cycle's start and stamps each sender upright on its trace into
-  the picture, and gives the view back on close. Needs a live check on air.
+  the picture, and gives the view back on close. `upload=true`
+  (`src/headless/pskreporter.c`) reports the stations heard to PSK Reporter
+  as WSJT-X does: IPFIX over UDP to report.pskreporter.info:4739 (the page's
+  templates: receiver R1, sender with sNR/iMD/locator), one source port, a
+  datagram every 5 min (not on the clock's minute) or when full (1400 B),
+  the templates in the first three and hourly, each call once an hour a
+  band and mode, its locator from any message it sent; under `[ft8]
+  call`/`locator` (empty = [feed] call, [station] locator — needed then);
+  `pskreporter=host:port` is the gates' stand-in (a datagram a second).
+  Needs a live check on air.
 - **Updates** (`[update]`, default `mode=auto`, `hour_utc=3`;
   `src/headless/update.c`, 2026-11-22 at Dan's request): once a day the
   GitHub API's latest release of ok1hra/skimmer-for-linux; a newer one is

@@ -89,8 +89,8 @@ watched); not signed in, 401.
 
 The station's locator goes to a viewer as its square only — the first
 four characters (JN18), in `status.json` and `/api/spots` (and
-`status.json`'s `wspr` block, for a manager too: the Settings form has the
-whole one): a six-character locator is a few kilometres, nearly an address. A manager
+`status.json`'s `wspr` and `pskreporter` blocks, for a manager too: the
+Settings form has the whole one): a six-character locator is a few kilometres, nearly an address. A manager
 gets it whole there too, so the map sits on the station itself.
 
 Each answer carries a Content-Security-Policy (the page's own scripts,

@@ -276,6 +276,26 @@ gboolean skim_ft8_sender(const char *msg, char *call, gsize call_size, gboolean 
   return ok;
 }
 
+static gboolean grid4(const char *g) {
+  return strlen(g) == 4 && g[0] >= 'A' && g[0] <= 'R' && g[1] >= 'A' && g[1] <= 'R' &&
+         g_ascii_isdigit(g[2]) && g_ascii_isdigit(g[3]) && strcmp(g, "RR73") != 0;
+}
+
+void skim_ft8_sender_grid(const char *msg, char grid[8]) {
+  grid[0] = '\0';
+  char call[16];
+  gboolean cq = FALSE;
+  if (!skim_ft8_sender(msg, call, sizeof call, &cq)) { return; }
+  char **tok = g_strsplit(msg, " ", -1);
+  for (guint i = 0; tok[i]; i++) {               /* the word right after the sender */
+    if (strcmp(tok[i], call) == 0 && tok[i + 1] && grid4(tok[i + 1])) {
+      g_strlcpy(grid, tok[i + 1], 8);
+      break;
+    }
+  }
+  g_strfreev(tok);
+}
+
 gboolean skim_ft8_parse_line(const char *line, SkimFt8Decode *out) {
   char hhmmss[8], m = 0;
   int snr, freq, used = 0;
@@ -312,6 +332,7 @@ gboolean skim_ft8_parse_line(const char *line, SkimFt8Decode *out) {
   out->doubt = doubt;
   g_strlcpy(out->msg, msg, sizeof out->msg);
   skim_ft8_sender(out->msg, out->call, sizeof out->call, &out->cq);
+  skim_ft8_sender_grid(out->msg, out->grid);
   return TRUE;
 }
 
@@ -437,6 +458,7 @@ struct _SkimHdFt8 {
     GArray *snr;                        /* float, every decode                   */
   } min[16];
   GHashTable *seen;                     /* "CALL|rx" → gint64 *: last decoded (ms) */
+  GHashTable *grids;                    /* call → its locator, from any decode   */
   guint64  cycles, ndecodes, skipped, spots;
   gint64   last_cycle;
   guint    last_decodes;
@@ -498,10 +520,11 @@ static void expire(SkimHdFt8 *f) {             /* lock held */
 }
 
 typedef struct {
-  char   call[16];
+  char   call[16], grid[8];
   double freq_hz;
   int    snr;
   gboolean cq;
+  gint64 t;
 } Out;
 
 static void decode_job(gpointer data, gpointer user) {
@@ -554,6 +577,10 @@ static void decode_job(gpointer data, gpointer user) {
        * whether it appeared (none from this receiver in 10 min) */
       const float snr = (float)d->snr;
       g_array_append_val(f->min[s->band].snr, snr);
+      if (d->call[0] && d->grid[0]) {           /* its locator, for its later spots */
+        if (g_hash_table_size(f->grids) > 50000) { g_hash_table_remove_all(f->grids); }
+        g_hash_table_replace(f->grids, g_strdup(d->call), g_strdup(d->grid));
+      }
       if (d->call[0]) {
         g_hash_table_add(f->min[s->band].heard, g_strdup(d->call));
         char *sk = g_strdup_printf("%s|%u", d->call, s->band);
@@ -583,8 +610,10 @@ static void decode_job(gpointer data, gpointer user) {
       }
       *last = d->t_ms;
       f->min[s->band].spots++;
-      Out o = { .freq_hz = s->dial_hz + d->df, .snr = d->snr, .cq = d->cq };
+      Out o = { .freq_hz = s->dial_hz + d->df, .snr = d->snr, .cq = d->cq, .t = d->t_ms / 1000 };
       g_strlcpy(o.call, d->call, sizeof o.call);
+      const char *g = d->grid[0] ? d->grid : g_hash_table_lookup(f->grids, d->call);
+      g_strlcpy(o.grid, g ? g : "", sizeof o.grid);
       g_array_append_val(out, o);
     }
     expire(f);
@@ -602,7 +631,8 @@ static void decode_job(gpointer data, gpointer user) {
   g_mutex_unlock(&f->lock);
   for (guint i = 0; i < out->len; i++) {        /* outside the lock: the feed's own */
     const Out *o = &g_array_index(out, Out, i);
-    f->spot(o->call, skim_ft8_mode_name(s->mode), o->freq_hz, o->snr, o->cq, s->name, f->user);
+    f->spot(o->call, skim_ft8_mode_name(s->mode), o->freq_hz, o->snr, o->cq, s->name, o->grid, o->t,
+            f->user);
   }
   g_array_unref(out);
   g_array_unref(got);
@@ -633,6 +663,7 @@ SkimHdFt8 *skim_hd_ft8_new(const SkimHdFt8Config *cfg, guint nb, const char *con
   f->decodes = g_array_new(FALSE, TRUE, sizeof(SkimFt8Decode));
   f->fed = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
   f->seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+  f->grids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
   for (guint b = 0; b < G_N_ELEMENTS(f->min); b++) {
     f->min[b].heard = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     f->min[b].snr = g_array_new(FALSE, FALSE, sizeof(float));
@@ -726,6 +757,7 @@ void skim_hd_ft8_free(SkimHdFt8 *f) {
   g_array_unref(f->decodes);
   g_hash_table_unref(f->fed);
   g_hash_table_unref(f->seen);
+  g_hash_table_unref(f->grids);
   for (guint b = 0; b < G_N_ELEMENTS(f->min); b++) {
     g_hash_table_unref(f->min[b].heard);
     g_array_unref(f->min[b].snr);

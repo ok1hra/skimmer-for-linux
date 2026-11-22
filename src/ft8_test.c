@@ -122,11 +122,11 @@ static GMutex spot_lock;
 static GString *spots;
 
 static void spot_cb(const char *call, const char *mode, double freq_hz, int snr, gboolean cq,
-                    const char *band, gpointer user) {
-  (void)user;
+                    const char *band, const char *grid, gint64 t, gpointer user) {
+  (void)user; (void)t;
   g_mutex_lock(&spot_lock);
-  g_string_append_printf(spots, "%s %s %.0f %d %s %s;", call, mode, freq_hz, snr,
-                         cq ? "CQ" : "DE", band);
+  g_string_append_printf(spots, "%s %s %.0f %d %s %s %s;", call, mode, freq_hz, snr,
+                         cq ? "CQ" : "DE", band, grid && *grid ? grid : "-");
   g_mutex_unlock(&spot_lock);
 }
 
@@ -234,6 +234,13 @@ static void end_to_end(double rate, const char *dir) {
   check(what, spot_of("DL1ABC", "FT8", &fr, &snr, kind) && fabs(fr - 14076200) <= 3 &&
                   strcmp(kind, "DE") == 0);
   g_free(what);
+  g_mutex_lock(&spot_lock);
+  const gboolean grids = strstr(spots->str, " CQ 20m JO70;") && strstr(spots->str, "DL1ABC FT8") &&
+                         strstr(spots->str, " DE 20m -;") && strstr(spots->str, " CQ 20m FN42;");
+  g_mutex_unlock(&spot_lock);
+  what = g_strdup_printf("%s: each spot with its sender's locator when sent (OK1HRA JO70, K1ABC FN42, DL1ABC none)", tag);
+  check(what, grids);
+  g_free(what);
   what = g_strdup_printf("%s: K1ABC FT4 CQ at 14081200", tag);
   check(what, spot_of("K1ABC", "FT4", &fr, &snr, kind) && fabs(fr - 14081200) <= 3 &&
                   strcmp(kind, "CQ") == 0);
@@ -337,6 +344,20 @@ int main(int argc, char **argv) {
     char *w = g_strdup_printf("sender of \"%s\": %s%s", S[i].msg, S[i].call ? S[i].call : "none",
                               S[i].cq ? " (CQ)" : "");
     check(w, S[i].call ? ok && strcmp(call, S[i].call) == 0 && cq == S[i].cq : !ok && !call[0]);
+    g_free(w);
+  }
+
+  /* the sender's locator */
+  struct { const char *msg, *grid; } G[] = {
+    { "CQ OK1HRA JO70", "JO70" }, { "CQ DX VK2XYZ QF56", "QF56" }, { "OK1HRA DL1ABC JN58", "JN58" },
+    { "OK1HRA DL1ABC RR73", "" }, { "OK1HRA DL1ABC -12", "" }, { "CQ OK1HRA", "" },
+    { "OK1HRA JO70 DL1ABC", "" },
+  };
+  for (guint i = 0; i < G_N_ELEMENTS(G); i++) {
+    char g[8];
+    skim_ft8_sender_grid(G[i].msg, g);
+    char *w = g_strdup_printf("the sender's locator of \"%s\": \"%s\"", G[i].msg, G[i].grid);
+    check(w, strcmp(g, G[i].grid) == 0);
     g_free(w);
   }
 

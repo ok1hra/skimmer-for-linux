@@ -383,11 +383,17 @@
             <small>from 200–1000, to 2000–4000</small></label>
           <label>Decoders <input name="ft8.threads" inputmode="numeric" placeholder="2" size="4">
             <small>side by side (1–8); a cycle they are still behind on when its next is done is skipped</small></label>
+          <label class="check"><input type="checkbox" name="ft8.upload"> send the stations heard to PSK Reporter (pskreporter.info)</label>
+          <label>Call <input name="ft8.call" class="upper" placeholder="as Station and feed" autocapitalize="characters">
+            <small>the receiver's call on PSK Reporter; empty = Station and feed → Call</small></label>
+          <label>Locator <input name="ft8.locator" class="upper" placeholder="as Station and feed" maxlength="6" autocapitalize="characters">
+            <small>the receiver's locator there, public as written (6 characters: a few km); empty = Station and feed → Locator</small></label>
           <small class="note-s" id="ft8-note"></small>
           <small class="note-s">WSJT-X's own FT8 and FT4 decoders (built in) on its dial frequencies, every cycle — the radio's IQ,
             no extra receiver. Each station that sends (a CQ, a report, an RR73…) is a spot once a band and mode in 10 min at its
             own frequency, "FT8 -12 dB CQ" (DE for one not calling CQ) — never on the RBN Aggregator's port; hashed calls
-            &lt;…&gt; and a-priori decodes never. FT8 in the waterfall's bar (or a
+            &lt;…&gt; and a-priori decodes never. PSK Reporter gets each station once an hour a band and mode, with its
+            locator when it sent one, in a datagram every 5 minutes — as WSJT-X reports. FT8 in the waterfall's bar (or a
             click on an FT8 spot) opens the FT8 palette: every message of the last 15 min, as WSJT-X's Band Activity.
             Not on a worker (its hub decodes FT8); a band the thermal guard has off decodes no FT8 either.</small>
         </fieldset>
