@@ -10,7 +10,9 @@
 // every row is acknowledged, so a slow link gets fewer rows, not a queue. The
 // socket is open only while this tab is shown in a visible window.
 // Per-viewer settings are kept in localStorage. The RTTY palette
-// (rtty-palette.js) decodes the audio heard; RTTY in the bar opens it.
+// (rtty-palette.js) decodes the audio heard; RTTY in the bar opens it. The
+// FT8 palette (ft8-palette.js) shows what the skimmer decodes on an FT8/FT4
+// dial; FT8 in the bar opens it, and the view narrows to the dial's window.
 'use strict';
 
 const Wf = (() => {
@@ -26,6 +28,7 @@ const Wf = (() => {
   // the RTTY palette (rtty-palette.js): while it is open the audio has its
   // passband, it gets every packet, and the markers stand on the scale
   const pal = () => typeof RttyPal !== 'undefined' && RttyPal.isOpen();
+  const ft8 = () => typeof Ft8Pal !== 'undefined' && Ft8Pal.isOpen();
   const abw = () => (pal() ? RttyPal.bandwidth() : opt.abw);
 
   let ws = null, active = false, retry = 0, hello = null, band = -1, shownBand = '', leaveT = 0;
@@ -80,6 +83,7 @@ const Wf = (() => {
     if (clear || !view.hi) {
       g.fillStyle = '#00000c'; g.fillRect(0, 0, W, H);
       rowTimes = []; envelope = null;
+      if (typeof Ft8Pal !== 'undefined') Ft8Pal.restamp();
     } else if (v.lo !== view.lo || v.hi !== view.hi) {
       const tmp = document.createElement('canvas'); tmp.width = W; tmp.height = H;
       tmp.getContext('2d').drawImage(cv, 0, 0);
@@ -106,35 +110,49 @@ const Wf = (() => {
     if (!b || !w || !w.on || !w.decoder || !w.dials) return [];
     return w.dials.filter((d) => d.band === b.name && d.lo_hz && d.hi_hz);
   }
+  // [ft8] the same way, violet: each FT8/FT4 dial's window on the receiver
+  // shown (status.json "ft8": dial + lo … hi Hz), "FT8 RX" / "FT4 RX"
+  function ft8Here() {
+    const f = typeof status !== 'undefined' && status && status.ft8;
+    if (band < 0 || !f || !f.on || !f.decoder || !f.dials) return [];
+    return f.dials.filter((d) => d.rx === band && d.lo_hz && d.hi_hz);
+  }
+  const PASS = { wspr: { fill: 'rgba(120,10,10,.45)', text: '#e05a5a', foot: '#8a1414' },
+                 ft8: { fill: 'rgba(90,40,150,.26)', text: '#c59bff', foot: '#6b3fb0' } };
+  function passes() {
+    return [...wsprHere().map((d) => ({ ...d, kind: 'wspr', label: 'WSPR RX' })),
+            ...ft8Here().map((d) => ({ ...d, kind: 'ft8', label: `${d.mode} RX` }))];
+  }
   function placeWspr() {
     const box = $('#wf-wspr');
     if (!box) return;
-    const list = view.hi ? wsprHere() : [], w = cv.clientWidth, span = view.hi - view.lo;
+    const list = view.hi ? passes() : [], w = cv.clientWidth, span = view.hi - view.lo;
     while (box.children.length > list.length) box.lastChild.remove();
     while (box.children.length < list.length) box.appendChild(document.createElement('div'));
     list.forEach((d, i) => {
       const el = box.children[i];
       const x0 = ((d.lo_hz - view.lo) / span) * w, x1 = ((d.hi_hz - view.lo) / span) * w;
       el.hidden = x1 < 0 || x0 > w;
+      el.className = d.kind;
       el.style.left = `${x0}px`; el.style.width = `${Math.max(2, x1 - x0)}px`;
     });
   }
   // over the strip: the passband and its label, upright like a call
   function drawWspr(w, h) {
-    const list = wsprHere();
+    const list = passes();
     if (!list.length) return;
     const span = view.hi - view.lo;
     spg.font = '700 10px RC, sans-serif'; spg.textAlign = 'right'; spg.textBaseline = 'middle';
     for (const d of list) {
       const x0 = ((d.lo_hz - view.lo) / span) * w, x1 = ((d.hi_hz - view.lo) / span) * w;
       if (x1 < 0 || x0 > w) continue;
-      spg.fillStyle = 'rgba(120,10,10,.45)';
+      spg.fillStyle = PASS[d.kind].fill;
       spg.fillRect(x0, 0, Math.max(2, x1 - x0), h);
-      spg.fillStyle = '#e05a5a';
+      spg.fillStyle = PASS[d.kind].text;
       spg.save();
       spg.translate(Math.round((x0 + x1) / 2) + 0.5, 4);
       spg.rotate(-Math.PI / 2);
-      spg.fillText('WSPR RX', 0, 0);
+      spg.fillText(d.label, 0, 0);
       spg.restore();
     }
     spg.textAlign = 'start'; spg.textBaseline = 'alphabetic';
@@ -176,9 +194,9 @@ const Wf = (() => {
         sg.lineWidth = 1;
       }
     }
-    // WSPR's passbands: dark red along the scale's foot
-    for (const d of wsprHere()) {
-      sg.fillStyle = '#8a1414';
+    // WSPR's passbands dark red along the scale's foot, FT8/FT4's violet
+    for (const d of passes()) {
+      sg.fillStyle = PASS[d.kind].foot;
       sg.fillRect((d.lo_hz - view.lo) * px, 19, Math.max(2, (d.hi_hz - d.lo_hz) * px), 3);
     }
     placePass();
@@ -272,6 +290,55 @@ const Wf = (() => {
     rttyUi();
     audioUi();
   }
+  // ---- the FT8 palette's view -----------------------------------------------------
+  // Opened: the view as it was is kept; a dial shown narrows it to the
+  // dial's window on its receiver; closed: the view comes back.
+  let ft8Prev = null;
+  function ft8Opened() {
+    ft8Prev = { band: opt.band, span: opt.span, centre: opt.centre };
+  }
+  function ft8Focus(d) {
+    if (!hello || !hello.bands[d.rx]) return;
+    const span = Math.round((d.hi_hz - d.lo_hz) * 1.08), centre = (d.lo_hz + d.hi_hz) / 2;
+    if (d.rx !== band) {
+      audioOff(true);
+      band = d.rx;
+      opt.band = hello.bands[band].name;
+      shownBand = opt.band;
+      $('#wf-band').value = String(band);
+      opt.span = span; opt.centre = centre;
+      bar();
+      reframe(true);
+    } else {
+      opt.span = span; opt.centre = centre;
+      bar();
+      reframe(false);
+    }
+  }
+  function ft8Closed() {
+    const p = ft8Prev;
+    ft8Prev = null;
+    if (!p || !hello) return;
+    const i = hello.bands.findIndex((b) => b.name === p.band);
+    opt.span = p.span; opt.centre = p.centre;
+    if (i >= 0 && i !== band) {
+      band = i; opt.band = p.band; shownBand = p.band;
+      $('#wf-band').value = String(band);
+      bar();
+      reframe(true);
+    } else {
+      bar();
+      reframe(false);
+    }
+  }
+  // the button: there only while the skimmer decodes FT8/FT4; on while open
+  function ft8Ui() {
+    const b = $('#wf-ft8');
+    if (!b) return;
+    b.hidden = typeof Ft8Pal === 'undefined' || !Ft8Pal.available();
+    b.classList.toggle('on', ft8());
+  }
+  function ft8Stamp() { if (ft8() && g) Ft8Pal.stamp(g, rowTimes, xOf, W); }
   function rttyUi() {
     const b = $('#wf-rtty'), bw = $('#wf-bw');
     if (!b) return;
@@ -390,6 +457,7 @@ const Wf = (() => {
     putRow(w, lo, hi, 0);
     rowTimes.unshift(t);
     if (rowTimes.length > H) rowTimes.length = H;
+    if (ft8()) Ft8Pal.row(g, W, t, rowTimes[1]);       // a cycle's start: a faint line
     // the envelope: its window's rows smoothed; a new window starts it anew
     if (opt.spec) {
       if (!envelope || envelope.lo !== lo || envelope.hi !== hi || envelope.v.length !== w) {
@@ -426,6 +494,7 @@ const Wf = (() => {
       g.imageSmoothingEnabled = false;
       g.drawImage(rows[k].cv, 0, 0, w, 1, xOf(lo), y, xOf(hi) - xOf(lo), 1);
     }
+    if (ft8()) { Ft8Pal.restamp(); Ft8Pal.stamp(g, rowTimes, xOf, W); }   // the labels anew
     bytes += buf.byteLength;
   }
   function cloneRow(w) {
@@ -481,7 +550,7 @@ const Wf = (() => {
       prev = x;
       callHits.push({ x, s: c.s });
       spg.globalAlpha = 1 - 0.6 * Math.min(1, (now - c.s.t) / keep);
-      spg.fillStyle = c.s.mode === 'RTTY' ? '#ffb88a' : '#e8eef6';
+      spg.fillStyle = c.s.mode === 'RTTY' ? '#ffb88a' : c.s.mode === 'FT8' || c.s.mode === 'FT4' ? '#c59bff' : '#e8eef6';
       spg.fillRect(Math.round(c.x), 0, 1, 3);           // its frequency
       spg.save();
       spg.translate(Math.round(x) + 0.5, 4);
@@ -508,10 +577,12 @@ const Wf = (() => {
     }
     const near = [...last.values()].sort((a, c) => c.t - a.t);
     const wsprIn = wsprHere().some((d) => f >= d.lo_hz && f <= d.hi_hz);
+    const ft8In = ft8Here().filter((d) => f >= d.lo_hz && f <= d.hi_hz).map((d) => `${d.mode} RX`);
     el.innerHTML = near.slice(0, 4).map((s) =>
-      `<b class="${s.mode === 'RTTY' ? 'rtty' : ''}">${esc(s.call)}</b>`).join('') +
+      `<b class="${s.mode === 'RTTY' ? 'rtty' : s.mode === 'FT8' || s.mode === 'FT4' ? 'ft8' : ''}">${esc(s.call)}</b>`).join('') +
       (near.length > 4 ? `<span class="mut">+${near.length - 4}</span>` : '') +
       (wsprIn ? '<b class="wspr">WSPR RX</b>' : '') +
+      ft8In.map((l) => `<b class="ft8">${l}</b>`).join('') +
       `<span class="f">${fmtKhz(f / 1000, 2)}</span>`;
     el.hidden = false;
     const box = $('#wf-box').getBoundingClientRect();
@@ -624,6 +695,8 @@ const Wf = (() => {
     if (!p || !hello) return;
     const i = hello.bands.findIndex((b) => b.name === p.name);
     if (i < 0) { netStatus(`${p.name} is not on this waterfall`, true); return; }
+    // an FT8/FT4 spot: the FT8 palette on its dial (no audio: WSJT-X's tones)
+    if ((p.mode === 'FT8' || p.mode === 'FT4') && typeof Ft8Pal !== 'undefined' && Ft8Pal.openAt(p.hz, p.mode)) return;
     if (i !== band) { setBand(i, p.hz); send(false); }   // the band first, then the audio in it
     else follow(p.hz);
     audioTune(p.hz);
@@ -757,6 +830,8 @@ const Wf = (() => {
       RttyPal.toggle();
     });
     rttyUi();
+    $('#wf-ft8').addEventListener('click', () => { if (typeof Ft8Pal !== 'undefined') Ft8Pal.toggleOn(band); });
+    ft8Ui();
     // a click on a call over the waterfall: listen there (RTTY: the palette too)
     sp.addEventListener('click', (e) => {
       const x = e.clientX - sp.getBoundingClientRect().left;
@@ -786,6 +861,7 @@ const Wf = (() => {
       if (ws && ws.readyState === 1) netStatus(`${((bytes / 1024) / ((now - bytesAt) / 1000)).toFixed(1)} kB/s`);
       bytes = 0; bytesAt = now;
       if (opt.calls) fetchSpots();
+      ft8Ui();                                       // [ft8] on or off: the status says
     }, 2000);
   }
 
@@ -810,5 +886,5 @@ const Wf = (() => {
     clearTimeout(leaveT);
     leaveT = setTimeout(close, 30000);
   }
-  return { enter, leave, listen, retune, state, paletteChanged };
+  return { enter, leave, listen, retune, state, paletteChanged, ft8Opened, ft8Focus, ft8Closed, ft8Ui, ft8Stamp };
 })();

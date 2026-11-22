@@ -18,11 +18,18 @@ const Dxc = (() => {
     ['speed', 'WPM'], ['mode', 'Mode'], ['band', 'Band'], ['country', 'Country'], ['src', 'From'],
   ];
   const DEF = { bands: {}, call: '', regex: false, kmMin: 0, kmMax: 20000, azMin: 0, azMax: 360,
-                dbMin: -10, dbMax: 60, spMin: 0, spMax: 99, modes: { CW: true, RTTY: true }, country: '',
+                dbMin: -30, dbMax: 60, spMin: 0, spMax: 99, modes: { CW: true, RTTY: true, FT8: true, FT4: true }, country: '',
                 src: { here: true, worker: true, peer: true }, age: 30, hidden: { src: true } };
   const load = () => { try { return JSON.parse(localStorage.getItem('skdxc') || '{}'); } catch (e) { return {}; } };
   const F = { ...JSON.parse(JSON.stringify(DEF)), ...load() };
   if (!(F.age > 0 && F.age <= 30)) F.age = 30;            // the status page keeps half an hour
+  // v2: FT8/FT4 (WSJT-X's SNR goes down to −24 dB) — the old floor of −10 dB
+  // was the default, not a choice: it moves down with it
+  if (F.v !== 2) {
+    if (F.dbMin === -10) F.dbMin = -30;
+    F.modes = { ...DEF.modes, ...(F.modes || {}) };
+    F.v = 2;
+  }
   const save = () => { try { localStorage.setItem('skdxc', JSON.stringify(F)); } catch (e) { /* private window */ } };
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   let el = null, rows = [], bandsKnown = [], workers = new Set(), onChange = () => {}, marked = '', menu = null;
@@ -59,7 +66,7 @@ const Dxc = (() => {
     khz: () => Object.values(F.bands).some((v) => v === false),
     call: () => !!F.call, km: () => F.kmMin > 0 || F.kmMax < 20000, az: () => F.azMin > 0 || F.azMax < 360,
     db: () => F.dbMin > DEF.dbMin || F.dbMax < DEF.dbMax, speed: () => F.spMin > 0 || F.spMax < 99,
-    mode: () => !F.modes.CW || !F.modes.RTTY, country: () => !!F.country, src: () => Object.values(F.src).some((v) => !v),
+    mode: () => Object.values(F.modes).some((v) => v === false), country: () => !!F.country, src: () => Object.values(F.src).some((v) => !v),
     band: () => Object.values(F.bands).some((v) => v === false), time: () => F.age !== 30,
   };
 
@@ -84,9 +91,9 @@ const Dxc = (() => {
       }
       case 'km': return `<div class="fm-t">Distance</div>${range('kmMin', 'kmMax', 0, 20000, 100, 'km')}`;
       case 'az': return `<div class="fm-t">Bearing (a sector; 300 to 60 crosses north)</div>${range('azMin', 'azMax', 0, 360, 5, '°')}`;
-      case 'db': return `<div class="fm-t">Signal</div>${range('dbMin', 'dbMax', -10, 60, 1, 'dB')}`;
+      case 'db': return `<div class="fm-t">Signal (FT8/FT4: WSJT-X's SNR)</div>${range('dbMin', 'dbMax', -30, 60, 1, 'dB')}`;
       case 'speed': return `<div class="fm-t">Speed (WPM; RTTY: baud)</div>${range('spMin', 'spMax', 0, 99, 1, '')}`;
-      case 'mode': return `<div class="fm-t">Mode</div>${checks('modes', ['CW', 'RTTY'])}`;
+      case 'mode': return `<div class="fm-t">Mode</div>${checks('modes', ['CW', 'RTTY', 'FT8', 'FT4'])}`;
       case 'country': return `<div class="fm-t">Country contains</div><input data-f="country" value="${esc(F.country)}" placeholder="Japan, Russia…">`;
       case 'src': return `<div class="fm-t">Made by</div>${checks('src', ['here', 'worker', 'peer'], (k) => ({ here: 'this skimmer', worker: 'a worker', peer: 'a peer' }[k]))}`;
       case 'time': return `<div class="fm-t">Age</div><div class="fm-act">${[5, 10, 15, 30].map((a) => `<button type="button" data-age="${a}" class="${F.age === a ? 'on' : ''}">${a} min</button>`).join('')}</div>`;
@@ -149,7 +156,7 @@ const Dxc = (() => {
       case 'time': return `<td class="c-time">${utc(s.t)}</td>`;
       case 'khz': return `<td class="c-khz">${fmtKhz(s.khz)}</td>`;
       case 'play': return `<td class="c-play">${s.band && srcKind(s) !== 'peer'
-        ? `<button type="button" class="dxc-play" data-band="${esc(s.band)}" data-khz="${s.khz}" data-mode="${esc(s.mode)}" title="listen on the waterfall: ${fmtKhz(s.khz)} kHz${s.mode === 'RTTY' ? ' — the RTTY palette decodes it' : ''}" aria-label="listen">${SPK}</button>` : ''}</td>`;
+        ? `<button type="button" class="dxc-play" data-band="${esc(s.band)}" data-khz="${s.khz}" data-mode="${esc(s.mode)}" title="${s.mode === 'FT8' || s.mode === 'FT4' ? `the FT8 palette: ${esc(s.mode)} at ${fmtKhz(s.khz)} kHz, its dial on the waterfall` : `listen on the waterfall: ${fmtKhz(s.khz)} kHz${s.mode === 'RTTY' ? ' — the RTTY palette decodes it' : ''}`}" aria-label="listen">${SPK}</button>` : ''}</td>`;
       case 'call': return `<td class="c-call">${esc(s.call)}</td>`;
       case 'km': return `<td class="c-km">${s.km != null ? Math.round(s.km).toLocaleString('en-US') : ''}</td>`;
       case 'az': return `<td class="c-az" title="${s.az != null ? `${Math.round(s.az)}°` : ''}">${s.az != null ? `${ARR[Math.round(s.az / 45) % 8]} ${Math.round(s.az)}` : ''}</td>`;

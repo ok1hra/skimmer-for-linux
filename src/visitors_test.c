@@ -233,8 +233,11 @@ static gpointer client(gpointer data) {
   check("no cookie: /status.json 401 login",
         http("GET", "/status.json", NULL, NULL, &body, NULL) == 401 && strstr(body, "login"));
   g_free(body);
-  check("… /stats.json and /api/spots too", http("GET", "/stats.json", NULL, NULL, NULL, NULL) == 401 &&
-        http("GET", "/api/spots", NULL, NULL, NULL, NULL) == 401);
+  check("… /stats.json, /api/spots, /api/wspr and /api/ft8 too",
+        http("GET", "/stats.json", NULL, NULL, NULL, NULL) == 401 &&
+        http("GET", "/api/spots", NULL, NULL, NULL, NULL) == 401 &&
+        http("GET", "/api/wspr", NULL, NULL, NULL, NULL) == 401 &&
+        http("GET", "/api/ft8", NULL, NULL, NULL, NULL) == 401);
   check("… the page itself is served", http("GET", "/", NULL, NULL, NULL, NULL) != 401);
   http("GET", "/api/visitor", NULL, NULL, &body, NULL);
   check("/api/visitor: need, no call", strstr(body, "\"need\":true") && strstr(body, "\"call\":null"));

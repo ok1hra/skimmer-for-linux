@@ -11,6 +11,7 @@
     <file>dxc.js</file>
     <file>waterfall.js</file>
     <file>rtty-palette.js</file>
+    <file>ft8-palette.js</file>
     <file>rtty/rtty-codec.js</file>
     <file>rtty/rtty-afc.js</file>
     <file>rtty/spectrum.js</file>

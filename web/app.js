@@ -164,6 +164,12 @@ function wsprCells(r, max, i) {
   const t = `${fmt(r.stations)} WSPR station${r.stations === 1 ? '' : 's'} in 30 min${r.last ? ` · the newest ${r.last}` : ''}`;
   return `<td class="n wspr" title="${esc(t)}">${fmt(r.stations)}</td><td class="bar wspr" title="${esc(t)}">${i(r.stations / max)}</td>`;
 }
+// … and its FT8/FT4 senders of 30 min ([ft8]); a band with no FT8/FT4 dial a dash
+function ft8Cells(r, max, i) {
+  if (!r) return '<td class="n mut" title="no FT8/FT4 frequency inside this band">–</td><td class="bar off"></td>';
+  const t = `${fmt(r.stations)} FT8/FT4 station${r.stations === 1 ? '' : 's'} sending in 30 min${r.last ? ` · the newest ${r.last}` : ''}`;
+  return `<td class="n ft8" title="${esc(t)}">${fmt(r.stations)}</td><td class="bar ft8" title="${esc(t)}">${i(r.stations / max)}</td>`;
+}
 let status = null;
 function renderStatus(d) {
   status = d;
@@ -203,13 +209,18 @@ function renderStatus(d) {
   const heat = heatByBand(decoded.map((b) => b.band), per, wsprOn ? wspr.data : null);
   const heatRows = [];
   const maxWspr = Math.max(1, ...[...wsprRx.values()].map((r) => r.stations));
+  // FT8/FT4, while its decoder runs: the senders each receiver decoded in 30 min
+  const ft8On = !!(d.ft8 && d.ft8.on && d.ft8.decoder && (d.ft8.dials || []).length);
+  const ft8Rx = new Map(ft8On ? (d.ft8.rx || []).map((r) => [r.band, r]) : []);
+  const maxFt8 = Math.max(1, ...[...ft8Rx.values()].map((r) => r.stations));
   // the head says what each number counts (each over its number and bar)
   $('#ladder').innerHTML = '<tr class="head-row"><th title="on the map"></th><th class="l">band</th>' +
     '<th colspan="2" class="l" title="spots the band sent in the last 30 min">spots 30 min</th>' +
     '<th colspan="2" class="l" title="CW channel decoders reading a signal now (of all the band has)">CW active decoders</th>' +
     '<th colspan="2" class="l" title="RTTY channel decoders reading a signal now (of all the band has)">RTTY active decoders</th>' +
     (wsprOn ? '<th colspan="2" class="l" title="the WSPR stations decoded on the band in the last 30 min">WSPR stations 30 min</th>' : '') +
-    CONT.map((c) => `<th class="hm" title="${CONT_NAME[c]}: the stations heard on the band in the last 30 min — CW, RTTY and WSPR, each call once">${c}</th>`).join('') +
+    (ft8On ? '<th colspan="2" class="l" title="the FT8/FT4 stations heard sending on the band in the last 30 min">FT8 stations 30 min</th>' : '') +
+    CONT.map((c) => `<th class="hm" title="${CONT_NAME[c]}: the stations heard on the band in the last 30 min — CW, RTTY, FT8/FT4 and WSPR, each call once">${c}</th>`).join('') +
     '<th></th></tr>' + ladderOrder(decoded).map((b) => {
     // the thermal guard testing this paused band in place of the quietest one
     const pr = d.thermal && d.thermal.probe && d.thermal.probe.band === b.band ? d.thermal.probe : null;
@@ -236,6 +247,7 @@ function renderStatus(d) {
       bar(cwOn, b.active, b.decoders, 'cw', cwOn && b.paused) +
       bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty', rt && rt.paused) +
       (wsprOn ? wsprCells(wsprRx.get(b.band), maxWspr, i) : '') +
+      (ft8On ? ft8Cells(ft8Rx.get(b.band), maxFt8, i) : '') +
       heatCells(heat.get(b.band), heatRows, allOff) +
       `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : pr
         ? `<span class="off-hot" title="paused by the thermal guard, on for a test in place of ${esc(pr.vs)} (the fewest spots) until ${hmUtc(pr.until)} UTC: with more spots a minute it stays on">TEST</span> ${fmt(pr.spots)} sp.`
@@ -681,8 +693,12 @@ function heatByBand(bands, per, w) {
   };
   const wt = (db) => 0.5 + Math.max(0, Math.min(40, Number(db) || 0)) / 40;
   for (const b of bands) {
-    out.set(b, new Map(CONT.map((c) => [c, { calls: new Set(), cw: new Set(), rtty: new Set(), wspr: new Set(), w: new Map(), top: null }])));
-    for (const s of per(b)) add(b, s.call, s.mode === 'RTTY' ? 'rtty' : 'cw', wt(s.snr), s.snr);
+    out.set(b, new Map(CONT.map((c) => [c, { calls: new Set(), cw: new Set(), rtty: new Set(), ft8: new Set(), wspr: new Set(), w: new Map(), top: null }])));
+    for (const s of per(b)) {
+      // FT8/FT4's SNR is WSJT-X's (in 2500 Hz, down to −24 dB): weighed as WSPR's
+      const digi = s.mode === 'FT8' || s.mode === 'FT4';
+      add(b, s.call, s.mode === 'RTTY' ? 'rtty' : digi ? 'ft8' : 'cw', digi ? wt(Number(s.snr) + 30) : wt(s.snr), s.snr);
+    }
   }
   for (const s of (w && w.stations) || []) {
     for (const [band, t] of Object.entries(s.seen || {})) {
@@ -705,10 +721,10 @@ function heatCells(m, rows, dim) {
     const sw = x ? [...x.w.values()].reduce((a, v) => a + v, 0) : 0;
     t.push(n ? 1 - Math.exp(-sw / 1.5) : 0);
     if (!n) return `<td class="hm" title="${CONT_NAME[c]}: none in 30 min"></td>`;
-    const parts = [['CW', x.cw], ['RTTY', x.rtty], ['WSPR', x.wspr]].filter(([, s]) => s.size)
+    const parts = [['CW', x.cw], ['RTTY', x.rtty], ['FT8/FT4', x.ft8], ['WSPR', x.wspr]].filter(([, s]) => s.size)
       .map(([k, s]) => `${k} ${s.size}`).join(', ');
     const some = [...x.calls].slice(0, 12).join(' ') + (n > 12 ? ' …' : '');
-    const top = x.top ? ` · loudest ${esc(x.top.call)} ${x.top.db} dB${x.top.how === 'wspr' ? ' (WSPR)' : ''}` : '';
+    const top = x.top ? ` · loudest ${esc(x.top.call)} ${x.top.db} dB${x.top.how === 'wspr' ? ' (WSPR)' : x.top.how === 'ft8' ? ' (FT8/FT4)' : ''}` : '';
     return `<td class="hm" title="${CONT_NAME[c]}: ${n} station${n > 1 ? 's' : ''} in 30 min (${parts})${top} — ${esc(some)}"></td>`;
   }).join('');
   rows.push({ t, dim });
@@ -1410,7 +1426,53 @@ function wsprShow() {
   el.innerHTML = (got.length
     ? `The bands below take ${got.map(([b, d]) => `<b>${esc(b)}</b> ${fmtKhz(d / 1000)}`).join(', ')}`
     : 'No WSPR frequency inside the bands below at this rate (20 m, 15 m and 10 m need 192 kHz from the band\'s low edge, or a centre of their own)') + run;
+  ft8Show(centres);
 }
+
+// FT8 / FT4 (Settings → FT8 / FT4): WSJT-X's FT8/FT4 dials that the bands as
+// edited take — dial + lo … hi Hz inside 45 % of the rate around a centre,
+// the first receiver once (ft8.c's rule) — and, from status, how it runs
+const FT8_DIALS = [['160m', 'FT8', 1840000], ['80m', 'FT8', 3573000], ['80m', 'FT4', 3575000],
+  ['60m', 'FT8', 5357000], ['40m', 'FT8', 7074000], ['40m', 'FT4', 7047500], ['30m', 'FT8', 10136000],
+  ['30m', 'FT4', 10140000], ['20m', 'FT8', 14074000], ['20m', 'FT4', 14080000], ['17m', 'FT8', 18100000],
+  ['17m', 'FT4', 18104000], ['15m', 'FT8', 21074000], ['15m', 'FT4', 21140000], ['12m', 'FT8', 24915000],
+  ['12m', 'FT4', 24919000], ['10m', 'FT8', 28074000], ['10m', 'FT4', 28180000], ['6m', 'FT8', 50313000],
+  ['6m', 'FT4', 50318000]];
+function ft8Dials(centres, rate, lo, hi, modes) {
+  const edge = 0.45 * rate, got = [];
+  for (const c of centres) {
+    for (const [band, mode, dial] of FT8_DIALS) {
+      if (!modes[mode] || dial + lo < c - edge || dial + hi > c + edge || got.some((g) => g[2] === dial)) continue;
+      got.push([band, mode, dial]);
+    }
+  }
+  return got;
+}
+function ft8Show(centres) {
+  const el = $('#ft8-note');
+  if (!el) return;
+  const num = (n, d) => { const v = Number(($(`[name="ft8.${n}"]`) || {}).value); return Number.isFinite(v) && v > 0 ? v : d; };
+  const chk = (n) => { const c = $(`[name="ft8.${n}"]`); return !c || c.checked; };
+  const got = ft8Dials(centres, bandRate(), num('lo_hz', 200), num('hi_hz', 3500), { FT8: chk('ft8'), FT4: chk('ft4') });
+  const f = status && status.ft8;
+  let run = '';
+  if (f && f.on) {
+    const last = f.last_cycle ? new Date(f.last_cycle).toISOString().slice(11, 19) + ' UTC' : '';
+    run = ` · running: ${f.dials.length ? f.dials.map((d) => `${esc(d.band)} ${esc(d.mode)}`).join(', ') : 'no frequency'}` +
+      (f.decoder ? '' : ' — <b class="bad">no decoder (skimmer-ft8d) found</b>') +
+      ` · ${fmt(f.cycles)} cycles decoded, ${fmt(f.decodes)} decodes, ${fmt(f.spots)} spots` +
+      (last ? `, the last cycle at ${last}` : '') +
+      (f.skipped ? ` · <span class="warn">${fmt(f.skipped)} cycles skipped (the decoders were behind)</span>` : '') +
+      (f.error ? ` · <span class="bad">${esc(f.error)}</span>` : '');
+  }
+  el.innerHTML = (got.length
+    ? `The bands below take ${got.map(([b, m, d]) => `<b>${esc(b)} ${m}</b> ${fmtKhz(d / 1000)}`).join(', ')}`
+    : 'No FT8/FT4 frequency inside the bands below at this rate') + run;
+}
+
+// the FT8 tile's own fields change which dials count
+on('#settings', 'input', (e) => { if (e.target.name && e.target.name.startsWith('ft8.')) wsprShow(); });
+on('#settings', 'change', (e) => { if (e.target.name && e.target.name.startsWith('ft8.')) wsprShow(); });
 
 const rowName = (tr) => tr.dataset.seg || tr.querySelector('[data-k=name]').value.trim();
 function readBands() {

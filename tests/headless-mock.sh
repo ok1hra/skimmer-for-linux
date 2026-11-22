@@ -131,6 +131,10 @@ done
 [[ $fj == "True 0 None" ]]; check "status: [ft8] cycles decoded, nothing in the mock's noise, no error ($fj)" $?
 grep -q "ft8: decoding 20m FT8 14074.0, 20m FT4 14080.0, 40m FT8 7074.0, 40m FT4 7047.5 (depth 2, 2 threads); senders to the feed" "$T/log"
 check "log: the FT8/FT4 dials taken" $?
+fj=$(curl -s "http://127.0.0.1:$HTTP/api/ft8?dial=14074000")
+[[ $fj == '{"now":'*',"decodes":[]}' ]]; check "web: /api/ft8 — the decodes of a dial (none in the mock's noise)" $?
+[[ $(curl -s "http://127.0.0.1:$HTTP/" ) == *ft8-palette.js* && $(curl -s "http://127.0.0.1:$HTTP/ft8-palette.js") == *"const Ft8Pal"* ]]
+check "web: the FT8 palette is on the page" $?
 page=$(curl -s "http://127.0.0.1:$HTTP/")
 [[ $page == *"<title>Skimmer for Linux</title>"* ]]; check "web: the page" $?
 [[ $(curl -s -o /dev/null -w '%{http_code} %{content_type}' "http://127.0.0.1:$HTTP/app.js") == "200 text/javascript"* ]]

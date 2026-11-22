@@ -309,7 +309,15 @@ here; what was done and why is in git.
   the page (`skim_hd_ft8_decodes_json`); status.json `ft8`. Real air
   (golden, depth 2): busy 20m ≈ 41 FT8 decodes a cycle, the decoder ≈ 16 %
   of a core for 20m FT8+FT4, the DSP ≈ 3 % a band. `skimmer-ft8-replay
-  FILE.cf32 [--keep DIR]` is the bench. Needs a live check on air.
+  FILE.cf32 [--keep DIR]` is the bench. The page: Settings → FT8 / FT4
+  (the dials the bands take, live), an "FT8 stations 30 min" column in the
+  bands' ladder, FT8/FT4 in the heat map (weighed as WSPR) and the DX
+  cluster's mode filter (its dB floor −30 since FT8), the windows violet on
+  the waterfall ("FT8 RX"); the FT8 palette (`web/ft8-palette.js`; FT8 in
+  the bar, a click on an FT8/FT4 spot) is WSJT-X's Band Activity from
+  `/api/ft8?dial=&since=` — it narrows the waterfall to the dial's window,
+  draws each cycle's start and stamps each sender upright on its trace into
+  the picture, and gives the view back on close. Needs a live check on air.
 - **Updates** (`[update]`, default `mode=auto`, `hour_utc=3`;
   `src/headless/update.c`, 2026-11-22 at Dan's request): once a day the
   GitHub API's latest release of ok1hra/skimmer-for-linux; a newer one is

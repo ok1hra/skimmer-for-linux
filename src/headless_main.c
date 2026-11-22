@@ -1876,6 +1876,18 @@ static char *web_wspr(GHashTable *q, SkimHdWebWho who, guint *st, const char **t
   return skim_hd_wspr_stations_json(h->wspr, 24, g_get_real_time() / G_USEC_PER_SEC);
 }
 
+/* GET /api/ft8: the FT8/FT4 decodes of the last 15 min (ft8.h) — ?dial=Hz one
+ * dial, &since=<unix ms> the newer ones only (the palette polls). */
+static char *web_ft8(GHashTable *q, SkimHdWebWho who, guint *st, const char **type, gpointer user) {
+  (void)who; (void)st; (void)type;
+  Hd *h = user;
+  if (!h->ft8) { return g_strdup("{\"off\":true}"); }
+  const char *d = q ? g_hash_table_lookup(q, "dial") : NULL, *s = q ? g_hash_table_lookup(q, "since") : NULL;
+  const double dial = d ? g_ascii_strtod(d, NULL) : 0;
+  const gint64 since = s ? g_ascii_strtoll(s, NULL, 10) : 0;
+  return skim_hd_ft8_decodes_json(h->ft8, dial > 0 ? dial : 0, since > 0 ? since : 0);
+}
+
 /* A station FT8/FT4 heard sending (a decoder thread of ft8.c, already folded
  * there): [filter], then the telnet feed — never the RBN's port — or, with
  * [ft8] feed=false or no feed, the page alone. */
@@ -2593,6 +2605,7 @@ int main(int argc, char **argv) {
     const SkimHdWebHooks hooks = {
       .status = web_status, .stats = web_stats, .log = web_log, .config = web_config,
       .skimmers = web_skimmers, .spots = web_spots, .skimsrv = web_skimsrv, .wspr = web_wspr,
+      .ft8 = web_ft8,
       .config_post = web_config_post, .config_import = web_config_import,
       .restart = web_restart, .rollback = web_rollback,
       .deepcw = web_deepcw,

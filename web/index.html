@@ -18,6 +18,7 @@
 <script src="rtty/rtty-scope.js" defer></script>
 <script src="rtty/rtty-rxlog.js" defer></script>
 <script src="rtty-palette.js" defer></script>
+<script src="ft8-palette.js" defer></script>
 <script src="waterfall.js" defer></script>
 </head>
 <body>
@@ -171,6 +172,7 @@
           aria-label="the frequency heard, kHz" title="the frequency heard (kHz; Enter tunes there, on any band shown here) — or the wheel over the spectrum"><span class="wf-unit">kHz</span>
         <select id="wf-bw" title="the audio's passband"></select></span>
       <button type="button" class="wf-auto wf-rtty" id="wf-rtty" title="the RTTY palette: decodes the frequency heard">RTTY</button>
+      <button type="button" class="wf-auto wf-ft8" id="wf-ft8" hidden title="the FT8 palette: what the skimmer decodes on this band's FT8/FT4 dial (the view narrows to it)">FT8</button>
       <span class="wf-net mut" id="wf-net"></span>
     </div>
     <canvas id="wf-spec-cv" class="wf-spec" hidden title="wheel: tune (Shift: 10 Hz steps) · a call: listen there (RTTY: the palette decodes it)"></canvas>
@@ -360,6 +362,30 @@
             WSJT-X's own decoder (wsprd) one band after the other — the radio's IQ, no extra receiver. A frequency counts when
             its 300 Hz lie inside 45 % of the rate around a band's centre (Bands below). The stations heard in the last 24 h:
             Statistics, under the bands' table.</small>
+        </fieldset>
+        <fieldset>
+          <legend>FT8 / FT4</legend>
+          <label class="check"><input type="checkbox" name="ft8.enabled"> decode FT8 and FT4 on every FT8/FT4 frequency inside the bands received</label>
+          <label class="check"><input type="checkbox" name="ft8.ft8" data-default="true"> FT8 <small>(15 s cycles)</small></label>
+          <label class="check"><input type="checkbox" name="ft8.ft4" data-default="true"> FT4 <small>(7.5 s cycles)</small></label>
+          <label class="check"><input type="checkbox" name="ft8.feed" data-default="true"> spots to the telnet feed <small>(off: the web page only)</small></label>
+          <label>Depth <select name="ft8.depth" data-default="2">
+            <option value="1">1 — Fast: one pass</option>
+            <option value="2">2 — Normal: subtraction, three passes</option>
+            <option value="3">3 — Deep: a few more decodes, much more CPU</option></select>
+            <small>WSJT-X's Decode menu</small></label>
+          <label>Audio from <input name="ft8.lo_hz" inputmode="numeric" placeholder="200" size="6"> to
+            <input name="ft8.hi_hz" inputmode="numeric" placeholder="3500" size="6"> Hz above the dial
+            <small>from 200–1000, to 2000–4000</small></label>
+          <label>Decoders <input name="ft8.threads" inputmode="numeric" placeholder="2" size="4">
+            <small>side by side (1–8); a cycle they are still behind on when its next is done is skipped</small></label>
+          <small class="note-s" id="ft8-note"></small>
+          <small class="note-s">WSJT-X's own FT8 and FT4 decoders (built in) on its dial frequencies, every cycle — the radio's IQ,
+            no extra receiver. Each station that sends (a CQ, a report, an RR73…) is a spot once a band and mode in 10 min at its
+            own frequency, "FT8 -12 dB CQ" (DE for one not calling CQ) — never on the RBN Aggregator's port; hashed calls
+            &lt;…&gt; and a-priori decodes never. FT8 in the waterfall's bar (or a
+            click on an FT8 spot) opens the FT8 palette: every message of the last 15 min, as WSJT-X's Band Activity.
+            Not on a worker (its hub decodes FT8); a band the thermal guard has off decodes no FT8 either.</small>
         </fieldset>
         <fieldset>
           <legend>Updates</legend>
