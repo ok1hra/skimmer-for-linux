@@ -245,18 +245,20 @@ function renderStatus(d) {
   const heatRows = [];
   // the stacked bar and its number (the modes counted); its tip, mode by mode
   const stack = (v, k, max, what, pausedOf) => {
-    let counted = 0;
+    let counted = 0, all = 0;
     const tip = [], segs = [];
     for (const [m, cls] of present) {
       const x = v[m];
       if (!x) continue;
       const on = modeOn(m), val = x[k], why = pausedOf(m);
       if (on) counted += val;
+      all += val;
       tip.push(`${m} ${why ? `OFF ${pausedShort(why)}` : fmt(val)}${on ? '' : ' (left out)'}`);
       if (val) segs.push(`<i class="m-${cls}${on ? '' : ' x'}" style="width:${(100 * val / max).toFixed(1)}%"></i>`);
     }
     const t = esc(`${what}: ${tip.join(' · ') || 'none'}`);
-    return `<td class="n${k ? '' : ' sp'}" title="${t}">${fmt(counted)}</td><td class="bar stack" title="${t}"><span>${segs.join('')}</span></td>`;
+    const of = all !== counted ? `<span class="all">(${fmt(all)})</span>` : '';
+    return `<td class="n${k ? '' : ' sp'}" title="${t}">${fmt(counted)}${of}</td><td class="bar stack" title="${t}"><span>${segs.join('')}</span></td>`;
   };
   // the head: the columns, and over them the legend — each mode in its
   // colour, in the bars' order, its eye counting it in or out
@@ -266,13 +268,13 @@ function renderStatus(d) {
       ? 'counted — click: leave it out of the bands, the heat map, the map and the DX cluster'
       : 'left out — click: count it again'}">${on ? EYE_ON : EYE_OFF}<i class="m-${cls}"></i>${m}</button>`;
   }).join('');
-  const nCols = 2 + 4 + CONT.length + 1;
+  const nCols = 2 + 4 + CONT.length + 2 + 1;
   $('#ladder').innerHTML =
     `<tr class="head-row legend-row"><th colspan="2"></th><th colspan="${nCols - 2}" class="l">${legend}</th></tr>` +
     '<tr class="head-row"><th title="on the map"></th><th class="l">band</th>' +
     `<th colspan="2" class="l" title="the spots of the last ${ageMin} min, mode by mode (WSPR: its stations decoded) — the age is the map's">spots ${ageMin} min</th>` +
     '<th colspan="2" class="l" title="now: CW and RTTY channel decoders reading a signal, FT8/FT4 the senders of the last minute, WSPR the stations of its newest cycle">active decoders</th>' +
-    CONT.map((c) => `<th class="hm" title="${CONT_NAME[c]}: the stations heard on the band in the last ${ageMin} min — the modes counted, each call once">${c}</th>`).join('') +
+    '<th class="hm-pad"></th>' + CONT.map((c) => `<th class="hm" title="${CONT_NAME[c]}: the stations heard on the band in the last ${ageMin} min — the modes counted, each call once">${c}</th>`).join('') + '<th class="hm-pad"></th>' +
     '<th class="l" title="what the band does besides decoding: a worker decodes it, the thermal guard tests it, a mode is paused">status</th></tr>' +
     ladderOrder(rows.map((r) => r.b)).map((b) => {
     const { v } = rows.find((r) => r.b === b);
@@ -306,7 +308,7 @@ function renderStatus(d) {
       `<td class="b" style="color:${col}">${esc(b.band)}</td>` +
       stack(v, 0, maxSpots, `spots in ${ageMin} min`, () => null) +
       stack(v, 1, maxAct, 'active now', pausedOf) +
-      heatCells(heat.get(b.band), heatRows, allOff, ageMin) +
+      '<td class="hm-pad"></td>' + heatCells(heat.get(b.band), heatRows, allOff, ageMin) + '<td class="hm-pad"></td>' +
       `<td class="w mut">${st.join(' · ')}</td></tr>`;
   }).join('');
   ladderHeat.rows = heatRows;
@@ -872,17 +874,21 @@ function drawLadderHeat() {
   if (!cells.length || !cells[0].length || !color) { cv.hidden = true; return; }
   const sr = side.getBoundingClientRect(), a = cells[0][0].getBoundingClientRect();
   const z = cells[cells.length - 1], b = z[z.length - 1].getBoundingClientRect();
-  const W = Math.round(b.right - a.left), H = Math.round(b.bottom - a.top);
-  if (W <= 0 || H <= 0) { cv.hidden = true; return; }
+  // the canvas reaches past the cells — into the pad columns either side
+  // and a little over the head and under the last row — and fades out there
+  const pad = tab.querySelector('td.hm-pad'), px0 = pad ? pad.getBoundingClientRect().width : 0, py0 = 10;
+  const iw = b.right - a.left, ih = b.bottom - a.top;
+  const W = Math.round(iw + 2 * px0), H = Math.round(ih + 2 * py0);
+  if (iw <= 0 || ih <= 0) { cv.hidden = true; return; }
   cv.hidden = false;
-  Object.assign(cv.style, { left: `${a.left - sr.left}px`, top: `${a.top - sr.top}px`, width: `${W}px`, height: `${H}px` });
+  Object.assign(cv.style, { left: `${a.left - px0 - sr.left}px`, top: `${a.top - py0 - sr.top}px`, width: `${W}px`, height: `${H}px` });
   // the blobs: each cell's centre and share, in the canvas's px
   const blobs = [];
   cells.forEach((row, j) => row.forEach((td, i) => {
     const r = ladderHeat.rows[j], t = r ? r.t[i] : 0;
     if (!t) return;
     const c = td.getBoundingClientRect();
-    blobs.push({ x: (c.left + c.right) / 2 - a.left, y: (c.top + c.bottom) / 2 - a.top, t, dim: r.dim });
+    blobs.push({ x: (c.left + c.right) / 2 - a.left + px0, y: (c.top + c.bottom) / 2 - a.top + py0, t, dim: r.dim });
   }));
   const cw = a.width, ch = cells.length > 1 ? (b.bottom - a.top) / cells.length : a.height;
   // wide enough that neighbours meet halfway, narrow enough that a strong
@@ -891,9 +897,17 @@ function drawLadderHeat() {
   const step = 2, w = Math.ceil(W / step), h = Math.ceil(H / step);
   cv.width = w; cv.height = h;
   const g = cv.getContext('2d'), img = g.createImageData(w, h);
+  // 1 over the cells, down to 0 at the canvas's edge (smoothstep)
+  const edge = (p, lo, hi, m) => {
+    const d = p < lo ? (lo - p) / m : p > hi ? (p - hi) / m : 0;
+    const u = Math.max(0, 1 - d);
+    return u * u * (3 - 2 * u);
+  };
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const px = (x + 0.5) * step, py = (y + 0.5) * step;
+      const fade = (px0 ? edge(px, px0, px0 + iw, px0) : 1) * edge(py, py0, py0 + ih, py0);
+      if (!fade) continue;
       let best = 0, dim = false;
       for (const o of blobs) {
         const dx = px - o.x, dy = py - o.y;
@@ -903,7 +917,7 @@ function drawLadderHeat() {
       }
       if (best < 0.02) continue;
       const [r, gg, bb] = color(best);
-      const al = Math.min(0.85, 0.25 + 0.6 * best) * Math.min(1, best / 0.08) * (dim ? 0.5 : 1);
+      const al = Math.min(0.85, 0.25 + 0.6 * best) * Math.min(1, best / 0.08) * (dim ? 0.5 : 1) * fade;
       img.data.set([r, gg, bb, Math.round(255 * al)], (y * w + x) * 4);
     }
   }

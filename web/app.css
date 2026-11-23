@@ -18,6 +18,10 @@
      RTTY a pastel peach — apart at a glance; the active-decoders heatmap
      has one calm ramp for both (the strip's place in a band says the mode) */
   --cw: #8fb9ff; --rtty: #ffb88a; --ft8: #c59bff; --ft4: #ff8fd0; --wspr: #e05a5a;
+  /* the bands table's stacked bars: five modes side by side in one bar, so
+     five hues far apart at one weight — not the pastels above, whose blue,
+     violet and pink run together when they touch */
+  --m-cw: #4f9dff; --m-rtty: #ff9838; --m-ft8: #a46bff; --m-ft4: #2fcf9f; --m-wspr: #f0485e;
   --seq-lo: #121b28; --seq-hi: #9fb4d2;
   --grid: #1a283a; --axis: #2f4560; --tick: #6a7d96;
 }
@@ -227,18 +231,22 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .ladder tr.paused td.bar i { background: var(--faint) !important; opacity: 1; }
 /* the stacked bars: each mode its part, in the legend's order and colour;
  * a mode left out (its eye shut) stays, grey */
-.ladder td.bar.stack span { display: flex; height: 7px; background: var(--deep); overflow: hidden; }
-.ladder td.bar.stack i { display: block; flex: none; height: 7px; min-width: 1px; opacity: 1; filter: none; }
-.m-cw { background: var(--cw) !important; } .m-rtty { background: var(--rtty) !important; }
-.m-ft8 { background: var(--ft8) !important; } .m-ft4 { background: var(--ft4) !important; }
-.m-wspr { background: var(--wspr) !important; }
+.ladder td.bar.stack span { display: flex; height: 8px; background: var(--deep); overflow: hidden; }
+.ladder td.bar.stack i { display: block; flex: none; height: 8px; min-width: 1px; opacity: 1; filter: none; }
+/* a cut of the page's ground between two parts, inside the second one's width */
+.ladder td.bar.stack i + i { box-shadow: inset 2px 0 0 var(--bg); min-width: 3px; }
+.m-cw { background: var(--m-cw) !important; } .m-rtty { background: var(--m-rtty) !important; }
+.m-ft8 { background: var(--m-ft8) !important; } .m-ft4 { background: var(--m-ft4) !important; }
+.m-wspr { background: var(--m-wspr) !important; }
+/* a mode left out: the number counted, then all of them in dark grey */
+.ladder td.n .all { color: var(--faint); margin-left: 3px; }
 .ladder td.bar.stack i.x { background: var(--faint) !important; opacity: .55; }
 .ladder tr.paused td.bar.stack i { background: var(--faint) !important; }
 /* the legend over the bars: a mode, its colour and its eye */
 .ladder tr.legend-row th { border-bottom: 0; padding-bottom: 0; cursor: default; }
 .ladder .lg { display: inline-flex; align-items: center; gap: 4px; margin: 0 10px 2px 0; padding: 1px 2px;
   border: 0; background: transparent; color: var(--fg); font: inherit; font-size: 11px; letter-spacing: .1em; cursor: pointer; }
-.ladder .lg i { display: inline-block; width: 14px; height: 7px; }
+.ladder .lg i { display: inline-block; width: 14px; height: 8px; }
 .ladder .lg svg { color: var(--mut); }
 .ladder .lg:hover svg { color: var(--fg); }
 .ladder .lg.x { color: var(--faint); }
@@ -256,6 +264,9 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .st-side { position: relative; }
 .ladder th.hm { width: 26px; padding: 2px 0 4px; text-align: center; letter-spacing: 0; }
 .ladder td.hm { width: 26px; padding: 0; }
+/* room either side of the continents, so the heat map's edge blobs fade
+ * out into the ground instead of being cut at the first and last column */
+.ladder .hm-pad { width: 14px; padding: 0; }
 .ladder-heat { position: absolute; pointer-events: none; }
 .ladder tr.head-row th { padding: 2px 6px 4px; border-bottom: 1px solid var(--ln); color: var(--mut); font-weight: 400;
   font-size: 11px; letter-spacing: .1em; text-transform: uppercase; text-align: left; vertical-align: bottom; cursor: help; }
