@@ -165,7 +165,7 @@ char *skim_hd_ft8_dials_text(SkimHdFt8 *f);
 
 /* {"on":true,"decoder":…,"ft8":…,"ft4":…,"depth":…,"lo_hz":…,"hi_hz":…,
  *  "dials":[{"band","mode","dial_hz","rx","lo_hz","hi_hz"}…],
- *  "rx":[{"band","stations","last"}…],"cycles":…,"decodes":…,"last_cycle":…,
+ *  "rx":[{"band","stations","active_ft8","active_ft4","last"}…],"cycles":…,"decodes":…,"last_cycle":…,
  *  "last_decodes":…,"skipped":…,"spots":…,"error":…} — any thread. */
 char *skim_hd_ft8_status_json(SkimHdFt8 *f);
 

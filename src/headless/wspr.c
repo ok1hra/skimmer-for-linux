@@ -756,6 +756,10 @@ char *skim_hd_wspr_status_json(SkimHdWspr *w) {
     for (guint j = 0; j < k; j++) { first &= w->slot[j].band != w->slot[k].band; }
     if (!first) { continue; }
     GHashTable *calls = g_hash_table_new(g_str_hash, g_str_equal);
+    /* … and as "active" the stations of its newest cycle, while that one is
+     * the last two minutes' (decoded after it ends: 2–4 min old) */
+    GHashTable *newest = g_hash_table_new(g_str_hash, g_str_equal);
+    gint64 newest_t = 0;
     const char *last = "";
     for (guint i = 0; i < w->spots->len; i++) {
       const SkimWsprSpot *p = &g_array_index(w->spots, SkimWsprSpot, i);
@@ -766,11 +770,18 @@ char *skim_hd_wspr_status_json(SkimHdWspr *w) {
       }
       if (!mine) { continue; }
       g_hash_table_add(calls, (gpointer)p->call);
+      if (p->t > newest_t) {
+        newest_t = p->t;
+        g_hash_table_remove_all(newest);
+      }
+      if (p->t == newest_t) { g_hash_table_add(newest, (gpointer)p->call); }
       last = p->call;                                 /* oldest first: the last wins */
     }
+    const guint active = newest_t >= g_get_real_time() / G_USEC_PER_SEC - 300 ? g_hash_table_size(newest) : 0;
+    g_hash_table_unref(newest);
     g_string_append_printf(s, "%s{\"band\":", nrx++ ? "," : "");
     jstr(s, w->slot[k].rx_name);
-    g_string_append_printf(s, ",\"stations\":%u,\"last\":", g_hash_table_size(calls));
+    g_string_append_printf(s, ",\"stations\":%u,\"active\":%u,\"last\":", g_hash_table_size(calls), active);
     jstr(s, last);
     g_string_append_c(s, '}');
     g_hash_table_unref(calls);

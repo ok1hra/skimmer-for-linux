@@ -157,19 +157,13 @@ function renderFeedAddress(a) {
   el.innerHTML = `<span class="mut">telnet</span> ${esc(a.replace(/^telnet:\/\//i, ''))}`;
 }
 
-// a band's WSPR in the ladder: its stations of 30 min and a bar, the newest
-// in the title; a band with no WSPR frequency a dash
-function wsprCells(r, max, i) {
-  if (!r) return '<td class="n mut" title="no WSPR frequency inside this band">–</td><td class="bar off"></td>';
-  const t = `${fmt(r.stations)} WSPR station${r.stations === 1 ? '' : 's'} in 30 min${r.last ? ` · the newest ${r.last}` : ''}`;
-  return `<td class="n wspr" title="${esc(t)}">${fmt(r.stations)}</td><td class="bar wspr" title="${esc(t)}">${i(r.stations / max)}</td>`;
-}
-// … and its FT8/FT4 senders of 30 min ([ft8]); a band with no FT8/FT4 dial a dash
-function ft8Cells(r, max, i) {
-  if (!r) return '<td class="n mut" title="no FT8/FT4 frequency inside this band">–</td><td class="bar off"></td>';
-  const t = `${fmt(r.stations)} FT8/FT4 station${r.stations === 1 ? '' : 's'} sending in 30 min${r.last ? ` · the newest ${r.last}` : ''}`;
-  return `<td class="n ft8" title="${esc(t)}">${fmt(r.stations)}</td><td class="bar ft8" title="${esc(t)}">${i(r.stations / max)}</td>`;
-}
+// The modes of the band ladder, in its bars' order, each with its colour
+// class (m-cw …); whether one is counted is the page's one mode filter,
+// kept by dxc.js with the DX cluster's Mode column.
+const LADDER_MODES = [['CW', 'cw'], ['RTTY', 'rtty'], ['FT8', 'ft8'], ['FT4', 'ft4'], ['WSPR', 'wspr']];
+const modeOn = (m) => typeof Dxc === 'undefined' || Dxc.modeOn(m);
+// the age the map, the ladder and the heat map show (5, 10, 15 or 30 min)
+const ladderAgeS = () => (typeof Dxc === 'undefined' ? 30 : Dxc.age()) * 60;
 let status = null;
 
 // the header's CW engine: the default, and any other one with its bands
@@ -206,64 +200,114 @@ function renderStatus(d) {
   ]);
   const spots = modes.reduce((a, b) => a + b.spots, 0);
   const workers = (d.hub && d.hub.workers) || [];
-  // beside the map: the bands as a ladder — the spots of the last half hour
-  // first (what the skimmer gives), then CW and RTTY activity in muted bars
-  // (how busy the decoders are) and where the band goes: a heatmap of the
-  // continents heard — then one line of readouts
+  // beside the map: the bands as a ladder — two stacked bars a band, each
+  // mode its part in its colour (the legend in the head, in the bars'
+  // order): the spots of the age the map shows (CW, RTTY, FT8, FT4 from the
+  // spots list; WSPR its stations decoded), and how busy the decoders are
+  // now (CW and RTTY channel decoders reading a signal; FT8/FT4 the senders
+  // of the last minute; WSPR the stations of its newest cycle) — then where
+  // the band goes: a heatmap of the continents heard. A mode whose eye is
+  // shut stays in the bar, grey, and leaves the numbers, the heat map, the
+  // map and the DX cluster (one filter: dxc.js keeps it).
   const decoded = bandsDecoded(d);
-  const maxAct = Math.max(1, ...decoded.map((b) => Math.max(b.cw !== false ? b.active : 0, b.rtty ? b.rtty.active : 0)));
-  const per = (band) => window.spots ? window.spots.list.filter((s) => s.band === band) : [];
-  const maxSpots = Math.max(1, ...decoded.map((b) => per(b.band).length));
-  // WSPR, while its decoder runs: the stations each receiver heard in 30 min
+  const ageS = ladderAgeS(), ageMin = ageS / 60;
+  const now = Date.now() / 1000;
+  const per = (band) => window.spots ? window.spots.list.filter((s) => s.band === band && s.age <= ageS) : [];
+  // WSPR, while its decoder runs; FT8/FT4 while theirs does, each mode with a dial
   const wsprOn = !!(d.wspr && d.wspr.on && d.wspr.decoder);
   const wsprRx = new Map(wsprOn ? (d.wspr.rx || []).map((r) => [r.band, r]) : []);
   if (wsprOn) wsprFetch();
-  const heat = heatByBand(decoded.map((b) => b.band), per, wsprOn ? wspr.data : null);
-  const heatRows = [];
-  const maxWspr = Math.max(1, ...[...wsprRx.values()].map((r) => r.stations));
-  // FT8/FT4, while its decoder runs: the senders each receiver decoded in 30 min
   const ft8On = !!(d.ft8 && d.ft8.on && d.ft8.decoder && (d.ft8.dials || []).length);
   const ft8Rx = new Map(ft8On ? (d.ft8.rx || []).map((r) => [r.band, r]) : []);
-  const maxFt8 = Math.max(1, ...[...ft8Rx.values()].map((r) => r.stations));
-  // the head says what each number counts (each over its number and bar)
-  $('#ladder').innerHTML = '<tr class="head-row"><th title="on the map"></th><th class="l">band</th>' +
-    '<th colspan="2" class="l" title="spots the band sent in the last 30 min">spots 30 min</th>' +
-    '<th colspan="2" class="l" title="CW channel decoders reading a signal now (of all the band has)">CW active decoders</th>' +
-    '<th colspan="2" class="l" title="RTTY channel decoders reading a signal now (of all the band has)">RTTY active decoders</th>' +
-    (wsprOn ? '<th colspan="2" class="l" title="the WSPR stations decoded on the band in the last 30 min">WSPR stations 30 min</th>' : '') +
-    (ft8On ? '<th colspan="2" class="l" title="the FT8/FT4 stations heard sending on the band in the last 30 min">FT8 stations 30 min</th>' : '') +
-    CONT.map((c) => `<th class="hm" title="${CONT_NAME[c]}: the stations heard on the band in the last 30 min — CW, RTTY, FT8/FT4 and WSPR, each call once">${c}</th>`).join('') +
-    '<th></th></tr>' + ladderOrder(decoded).map((b) => {
+  const dialModes = new Set(ft8On ? d.ft8.dials.map((x) => x.mode) : []);
+  const present = LADDER_MODES.filter(([m]) => (m === 'CW' ? decoded.some((b) => b.cw !== false)
+    : m === 'RTTY' ? decoded.some((b) => b.rtty) : m === 'WSPR' ? wsprOn : dialModes.has(m)));
+  const wsprSeen = (band) => (wsprOn && wspr.data && wspr.data.stations
+    ? wspr.data.stations.filter((x) => x.seen && now - x.seen[band] <= ageS).length : 0);
+  // per band, per mode: [spots, active]; null = the mode does not run there
+  const rows = decoded.map((b) => {
+    const sp = per(b.band), rt = b.rtty, fr = ft8Rx.get(b.band), wr = wsprRx.get(b.band);
+    const n = (m) => sp.filter((x) => x.mode === m).length;
+    const v = {
+      CW: b.cw !== false ? [n('CW'), b.paused ? 0 : b.active] : null,
+      RTTY: rt ? [n('RTTY'), rt.paused ? 0 : rt.active] : null,
+      FT8: fr || n('FT8') ? [n('FT8'), fr ? fr.active_ft8 || 0 : 0] : null,
+      FT4: fr || n('FT4') ? [n('FT4'), fr ? fr.active_ft4 || 0 : 0] : null,
+      WSPR: wr ? [wsprSeen(b.band), wr.active || 0] : null,
+    };
+    return { b, v };
+  });
+  const total = (v, k) => present.reduce((a, [m]) => a + (v[m] ? v[m][k] : 0), 0);
+  const maxSpots = Math.max(1, ...rows.map((r) => total(r.v, 0)));
+  const maxAct = Math.max(1, ...rows.map((r) => total(r.v, 1)));
+  const heat = heatByBand(decoded.map((b) => b.band), (band) => per(band).filter((x) => modeOn(x.mode)),
+                          wsprOn && modeOn('WSPR') ? wspr.data : null, ageS);
+  const heatRows = [];
+  // the stacked bar and its number (the modes counted); its tip, mode by mode
+  const stack = (v, k, max, what, pausedOf) => {
+    let counted = 0;
+    const tip = [], segs = [];
+    for (const [m, cls] of present) {
+      const x = v[m];
+      if (!x) continue;
+      const on = modeOn(m), val = x[k], why = pausedOf(m);
+      if (on) counted += val;
+      tip.push(`${m} ${why ? `OFF ${pausedShort(why)}` : fmt(val)}${on ? '' : ' (left out)'}`);
+      if (val) segs.push(`<i class="m-${cls}${on ? '' : ' x'}" style="width:${(100 * val / max).toFixed(1)}%"></i>`);
+    }
+    const t = esc(`${what}: ${tip.join(' · ') || 'none'}`);
+    return `<td class="n${k ? '' : ' sp'}" title="${t}">${fmt(counted)}</td><td class="bar stack" title="${t}"><span>${segs.join('')}</span></td>`;
+  };
+  // the head: the columns, and over them the legend — each mode in its
+  // colour, in the bars' order, its eye counting it in or out
+  const legend = present.map(([m, cls]) => {
+    const on = modeOn(m);
+    return `<button type="button" class="lg${on ? '' : ' x'}" data-mode="${m}" aria-pressed="${on}" title="${m} ${on
+      ? 'counted — click: leave it out of the bands, the heat map, the map and the DX cluster'
+      : 'left out — click: count it again'}">${on ? EYE_ON : EYE_OFF}<i class="m-${cls}"></i>${m}</button>`;
+  }).join('');
+  const nCols = 2 + 4 + CONT.length + 1;
+  $('#ladder').innerHTML =
+    `<tr class="head-row legend-row"><th colspan="2"></th><th colspan="${nCols - 2}" class="l">${legend}</th></tr>` +
+    '<tr class="head-row"><th title="on the map"></th><th class="l">band</th>' +
+    `<th colspan="2" class="l" title="the spots of the last ${ageMin} min, mode by mode (WSPR: its stations decoded) — the age is the map's">spots ${ageMin} min</th>` +
+    '<th colspan="2" class="l" title="now: CW and RTTY channel decoders reading a signal, FT8/FT4 the senders of the last minute, WSPR the stations of its newest cycle">active decoders</th>' +
+    CONT.map((c) => `<th class="hm" title="${CONT_NAME[c]}: the stations heard on the band in the last ${ageMin} min — the modes counted, each call once">${c}</th>`).join('') +
+    '<th class="l" title="what the band does besides decoding: a worker decodes it, the thermal guard tests it, a mode is paused">status</th></tr>' +
+    ladderOrder(rows.map((r) => r.b)).map((b) => {
+    const { v } = rows.find((r) => r.b === b);
     // the thermal guard testing this paused band in place of the quietest one
     const pr = d.thermal && d.thermal.probe && d.thermal.probe.band === b.band ? d.thermal.probe : null;
-    const sp = per(b.band), cwOn = b.cw !== false, rt = b.rtty;
+    const cwOn = b.cw !== false, rt = b.rtty;
     const col = typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : '';   // the band's own colour
-    const i = (frac) => `<i style="width:${(100 * frac).toFixed(0)}%;${col ? `background:${col}` : ''}"></i>`;
-    // each number left of its bar — the bars start there
-    // a paused mode is grey OFF (why: its title); a band with every mode
-    // paused is grey all along its row — its spots are from before the pause
-    const bar = (on, act, dec, cls, paused) => paused
-      ? `<td class="n mut" title="${esc(pausedText(paused))}">OFF</td><td class="bar off" title="${esc(pausedText(paused))}"></td>`
-      : on
-      ? `<td class="n" title="${fmt(act)} of ${fmt(dec)} decoders active">${fmt(act)}</td><td class="bar ${cls}" title="${fmt(act)} of ${fmt(dec)} decoders active">${i(act / maxAct)}</td>`
-      : '<td class="n mut">–</td><td class="bar off"></td>';
+    const pausedOf = (m) => (m === 'CW' ? (cwOn && b.paused) || null : m === 'RTTY' ? (rt && rt.paused) || null : null);
     const off = mapHidden.has(b.band);
+    // a band with every mode paused is grey all along its row — its spots are from before the pause
     const allOff = (cwOn || !!rt) && (!cwOn || !!b.paused) && (!rt || !!rt.paused);
     const trCls = [off ? 'off-map' : '', allOff ? 'paused' : ''].filter(Boolean).join(' ');
+    // the status: a worker, the thermal guard's test, a mode paused by the
+    // guards (adaptive RTTY's pause is every band's: the readouts say it)
+    const st = [];
+    if (b.worker) st.push(`${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}`);
+    if (pr) {
+      st.push(`<span class="off-hot" title="paused by the thermal guard; on for ${d.thermal.probe_min} min in place of ` +
+        `${esc(pr.vs)} (the band with the fewest spots${pr.vs_rate != null ? `, ${fmt(pr.vs_rate, 1)} a minute` : ''}) until ` +
+        `${hmUtc(pr.until)} UTC — with at least 2 spots and more a minute than ${esc(pr.vs)} it stays on, else it is paused again">` +
+        `thermal test till ${hmUtc(pr.until)} · ${fmt(pr.spots)} spot${pr.spots === 1 ? '' : 's'}</span>`);
+    }
+    for (const [m, why] of [['CW', pausedOf('CW')], ['RTTY', pausedOf('RTTY')]]) {
+      if (why && why !== 'rtty-adaptive' && !pr) {
+        st.push(`<span class="${offClass(why)}" title="${esc(pausedText(why))}">${m} off ${esc(pausedShort(why))}</span>`);
+      }
+    }
     return `<tr${trCls ? ` class="${trCls}"` : ''}><td class="eye"><button type="button" data-band="${esc(b.band)}" ` +
       `title="${off ? 'not on the map — click: show' : 'on the map — click: hide'} ${esc(b.band)}" ` +
       `aria-pressed="${off ? 'false' : 'true'}">${off ? EYE_OFF : EYE_ON}</button></td>` +
       `<td class="b" style="color:${col}">${esc(b.band)}</td>` +
-      `<td class="n sp" title="${fmt(sp.length)} spots in 30 min">${fmt(sp.length)}</td>` +
-      `<td class="bar spots" title="${fmt(sp.length)} spots in 30 min">${i(sp.length / maxSpots)}</td>` +
-      bar(cwOn, b.active, b.decoders, 'cw', cwOn && b.paused) +
-      bar(!!rt, rt ? rt.active : 0, rt ? rt.decoders : 0, 'rtty', rt && rt.paused) +
-      (wsprOn ? wsprCells(wsprRx.get(b.band), maxWspr, i) : '') +
-      (ft8On ? ft8Cells(ft8Rx.get(b.band), maxFt8, i) : '') +
-      heatCells(heat.get(b.band), heatRows, allOff) +
-      `<td class="w mut">${b.worker ? `${b.waiting ? 'waiting for ' : 'on '}${esc(b.worker)}` : pr
-        ? `<span class="off-hot" title="paused by the thermal guard, on for a test in place of ${esc(pr.vs)} (the fewest spots) until ${hmUtc(pr.until)} UTC: with more spots a minute it stays on">TEST</span> ${fmt(pr.spots)} sp.`
-        : ''}</td></tr>`;
+      stack(v, 0, maxSpots, `spots in ${ageMin} min`, () => null) +
+      stack(v, 1, maxAct, 'active now', pausedOf) +
+      heatCells(heat.get(b.band), heatRows, allOff, ageMin) +
+      `<td class="w mut">${st.join(' · ')}</td></tr>`;
   }).join('');
   ladderHeat.rows = heatRows;
   drawLadderHeat();
@@ -272,11 +316,11 @@ function renderStatus(d) {
   const ro = (k, v) => `<span>${k} <b>${v}</b></span>`;
   // every number says over what: now, the last half hour, or since the start
   const anyRtty = decoded.some((b) => b.rtty);
-  const in30 = window.spots ? window.spots.list.length : 0;
+  const inAge = rows.reduce((a, r) => a + present.reduce((x, [m]) => x + (m !== 'WSPR' && modeOn(m) && r.v[m] ? r.v[m][0] : 0), 0), 0);
   $('#readouts').innerHTML = [
     ro('decoders now', `${fmt(sumDec((b) => (b.cw !== false ? b.decoders : 0)))} CW` +
        `${anyRtty ? ` · ${fmt(sumDec((b) => (b.rtty ? b.rtty.decoders : 0)))} RTTY` : ''}`),
-    ro('spots in 30 min', fmt(in30)),
+    ro(`spots in ${ageMin} min`, fmt(inAge)),
     ro(`since the start ${uptime(d.uptime_s)} ago`, `${fmt(spots)} spots` +
        `${d.feed_port ? ` · ${fmt(d.feed_lines)} telnet lines out` : ''}`),
     ...(d.feed_port ? [ro('telnet now', `${fmt(d.feed_clients)} client${d.feed_clients === 1 ? '' : 's'} on :${d.feed_port}`)] : []),
@@ -638,6 +682,8 @@ function mapDraw() {
                { locator: spots.locator, call: spots.call, visitor: visitor.call });
 }
 on('#ladder', 'click', (e) => {
+  const lg = e.target.closest('button[data-mode]');
+  if (lg && typeof Dxc !== 'undefined') { Dxc.setMode(lg.dataset.mode, !Dxc.modeOn(lg.dataset.mode)); return; }
   const b = e.target.closest('button[data-band]');
   if (!b) return;
   const band = b.dataset.band;
@@ -646,13 +692,26 @@ on('#ladder', 'click', (e) => {
   if (status) renderStatus(status);
   mapDraw();
 });
+// the age the map shows: its buttons, the DX cluster's UTC filter — one setting
+function renderAge() {
+  const a = typeof Dxc === 'undefined' ? 30 : Dxc.age();
+  for (const btn of document.querySelectorAll('#map-age button')) btn.classList.toggle('on', Number(btn.dataset.age) === a);
+  const h = $('#ladder-sub');
+  if (h) h.textContent = `spots in ${a} min · active decoders · where from`;
+}
+on('#map-age', 'click', (e) => {
+  const btn = e.target.closest('button[data-age]');
+  if (btn && typeof Dxc !== 'undefined') Dxc.setAge(Number(btn.dataset.age));
+});
+// a filter changed (the legend, the age buttons, the DX cluster's menus)
+window.addEventListener('sk-filter', () => { renderAge(); if (status) renderStatus(status); });
 function renderSpots() {
   if (typeof SkMap === 'undefined' || typeof Dxc === 'undefined') return;
   if (!mapMounted) {
     SkMap.mount($('#skmap'));
     Dxc.mount($('#dxc'), (shown, marked) => {
       mapShown.list = shown; mapShown.marked = marked; mapDraw();
-      $('#map-age').textContent = `${Dxc.age()} min`;     // the UTC column's filter
+      renderAge();
     });
     mapMounted = true;
     SkMap.update([], { locator: spots.locator, call: spots.call, visitor: visitor.call });   // the centre before the rows
@@ -746,10 +805,9 @@ function ladderOrder(bands) {
 // stations' newest decode on the band); each call once, at its strongest.
 // A call's weight is how loud it came in (as the map's heat: 0.5 at 0 dB,
 // 1.5 at 40 dB and more; WSPR's dB in 2500 Hz from −30 to +10).
-const HEAT_S = 1800;
 const CONT = ['EU', 'NA', 'SA', 'AS', 'AF', 'OC'];
 const CONT_NAME = { EU: 'Europe', AS: 'Asia', AF: 'Africa', NA: 'North America', SA: 'South America', OC: 'Oceania' };
-function heatByBand(bands, per, w) {
+function heatByBand(bands, per, w, ageS) {
   const now = Date.now() / 1000, out = new Map();
   const add = (band, call, how, w, db) => {
     const m = out.get(band), c = typeof Cont !== 'undefined' ? Cont.of(call) : '';
@@ -771,7 +829,7 @@ function heatByBand(bands, per, w) {
   }
   for (const s of (w && w.stations) || []) {
     for (const [band, t] of Object.entries(s.seen || {})) {
-      if (now - t > HEAT_S) continue;
+      if (now - t > ageS) continue;
       const db = s.band === band ? s.snr : s.best;          // its newest there, else its best
       add(band, s.call, 'wspr', wt(Number(db) + 30), db);
     }
@@ -783,18 +841,18 @@ function heatByBand(bands, per, w) {
 // busy: two loud stations through say the band is open (there is just no
 // one else on), so it saturates fast and does not scale to the busiest
 // cell — 1 − e^(−Σweight/1.5): one weak station ~0.3, two loud ~0.85.
-function heatCells(m, rows, dim) {
+function heatCells(m, rows, dim, ageMin) {
   const t = [];
   const cells = CONT.map((c) => {
     const x = m && m.get(c), n = x ? x.calls.size : 0;
     const sw = x ? [...x.w.values()].reduce((a, v) => a + v, 0) : 0;
     t.push(n ? 1 - Math.exp(-sw / 1.5) : 0);
-    if (!n) return `<td class="hm" title="${CONT_NAME[c]}: none in 30 min"></td>`;
+    if (!n) return `<td class="hm" title="${CONT_NAME[c]}: none in ${ageMin} min"></td>`;
     const parts = [['CW', x.cw], ['RTTY', x.rtty], ['FT8/FT4', x.ft8], ['WSPR', x.wspr]].filter(([, s]) => s.size)
       .map(([k, s]) => `${k} ${s.size}`).join(', ');
     const some = [...x.calls].slice(0, 12).join(' ') + (n > 12 ? ' …' : '');
     const top = x.top ? ` · loudest ${esc(x.top.call)} ${x.top.db} dB${x.top.how === 'wspr' ? ' (WSPR)' : x.top.how === 'ft8' ? ' (FT8/FT4)' : ''}` : '';
-    return `<td class="hm" title="${CONT_NAME[c]}: ${n} station${n > 1 ? 's' : ''} in 30 min (${parts})${top} — ${esc(some)}"></td>`;
+    return `<td class="hm" title="${CONT_NAME[c]}: ${n} station${n > 1 ? 's' : ''} in ${ageMin} min (${parts})${top} — ${esc(some)}"></td>`;
   }).join('');
   rows.push({ t, dim });
   return cells;

@@ -159,10 +159,19 @@ here; what was done and why is in git.
   offline; the look of IP-rotator/wifilt, Roboto Condensed built in):
   status = an azimuthal map of the last 30 min of spots (`web/map.js`, data
   `web/map/` from IP-rotator) + the DX cluster with column filters
-  (`web/dxc.js`), both from `/api/spots`, + the bands table (10 m on top)
-  with a heat map of the continents each band is open to (CW/RTTY spots
-  and WSPR, 30 min; how open, not how busy — two loud stations are an open
-  band; `web/cont.js`: a call's continent from the map's DXCC labels); statistics (`stats.c`, three
+  (`web/dxc.js`), both from `/api/spots`, + the bands table (10 m on top:
+  two stacked bars a band, spots of the map's age and active decoders, each
+  mode — CW, RTTY, FT8, FT4, WSPR — its part in its colour; FT8/FT4 active =
+  the senders of the last minute, WSPR = its newest cycle's stations) with
+  a heat map of the continents each band is open to (the modes counted,
+  the map's age; how open, not how busy — two loud stations are an open
+  band; `web/cont.js`: a call's continent from the map's DXCC labels). One
+  mode filter and one age (5/10/15/30 min) for the page: the legend's eyes
+  and the age buttons over the map set the DX cluster's Mode and UTC
+  filters (`Dxc.setMode`/`setAge`, kept in `skdxc`); a mode left out stays
+  grey in the bars and leaves the numbers, the heat map, the map and the
+  cluster; the table's status column says what a worker or a guard does
+  with the band; statistics (`stats.c`, three
   rings: 1 min × 7 d, 15 min × 90 d, 1 h × 2 y, saved in place; file
   version 6 = three modes, CW, RTTY and FT8 (FT8 + FT4: spots, senders
   that appeared, as "active" the senders heard a minute, SNR), and the
@@ -330,7 +339,7 @@ here; what was done and why is in git.
   (golden, depth 2): busy 20m ≈ 41 FT8 decodes a cycle, the decoder ≈ 16 %
   of a core for 20m FT8+FT4, the DSP ≈ 3 % a band. `skimmer-ft8-replay
   FILE.cf32 [--keep DIR]` is the bench. The page: Settings → FT8 / FT4
-  (the dials the bands take, live), an "FT8 stations 30 min" column in the
+  (the dials the bands take, live), FT8 and FT4 parts in the
   bands' ladder, FT8/FT4 in the heat map (weighed as WSPR) and the DX
   cluster's mode filter (its dB floor −30 since FT8), the windows violet on
   the waterfall ("FT8 RX"); the FT8 palette (`web/ft8-palette.js`; FT8 in

@@ -795,25 +795,38 @@ char *skim_hd_ft8_status_json(SkimHdFt8 *f) {
    * its dials in the last 30 min, and the newest one */
   g_string_append(s, "],\"rx\":[");
   const gint64 since = g_get_real_time() / 1000 - (gint64)SKIM_FT8_RECENT_S * 1000;
+  /* a cycle's decodes come after it ends: the last minute of cycles is the
+   * four (FT8) before the newest decoded one, give or take one */
+  const gint64 active_since = g_get_real_time() / 1000 - 75 * 1000;
   guint nrx = 0;
   for (guint k = 0; k < f->nslots; k++) {
     gboolean first = TRUE;                            /* the receiver's first dial */
     for (guint j = 0; j < k; j++) { first &= f->slot[j].band != f->slot[k].band; }
     if (!first) { continue; }
     GHashTable *calls = g_hash_table_new(g_str_hash, g_str_equal);
+    /* … and as "active" the senders of the last minute, FT8 and FT4 apart
+     * (the Statistics' measure) */
+    GHashTable *now_ft8 = g_hash_table_new(g_str_hash, g_str_equal);
+    GHashTable *now_ft4 = g_hash_table_new(g_str_hash, g_str_equal);
     const char *last = "";
     for (guint i = 0; i < f->decodes->len; i++) {
       const SkimFt8Decode *d = &g_array_index(f->decodes, SkimFt8Decode, i);
       if (d->t_ms < since || !d->call[0] || f->slot[d->slot].band != f->slot[k].band) { continue; }
       g_hash_table_add(calls, (gpointer)d->call);
+      if (d->t_ms >= active_since) {
+        g_hash_table_add(f->slot[d->slot].mode == SKIM_FT8_MODE_FT4 ? now_ft4 : now_ft8, (gpointer)d->call);
+      }
       last = d->call;
     }
     g_string_append_printf(s, "%s{\"band\":", nrx++ ? "," : "");
     jstr(s, f->slot[k].rx_name);
-    g_string_append_printf(s, ",\"stations\":%u,\"last\":", g_hash_table_size(calls));
+    g_string_append_printf(s, ",\"stations\":%u,\"active_ft8\":%u,\"active_ft4\":%u,\"last\":",
+                           g_hash_table_size(calls), g_hash_table_size(now_ft8), g_hash_table_size(now_ft4));
     jstr(s, last);
     g_string_append_c(s, '}');
     g_hash_table_unref(calls);
+    g_hash_table_unref(now_ft8);
+    g_hash_table_unref(now_ft4);
   }
   g_string_append_printf(s, "],\"recent_s\":%d,\"cycles\":%" G_GUINT64_FORMAT ",\"decodes\":%"
                          G_GUINT64_FORMAT ",\"last_cycle\":%" G_GINT64_FORMAT ",\"last_decodes\":%u"

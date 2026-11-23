@@ -9,7 +9,9 @@
 // The speaker between kHz and DX opens the waterfall there, listening (a
 // peer's spot has none: its band is not received here); an RTTY spot opens
 // the RTTY palette over it too ([rtty_palette] open_on_spot).
-// Filters and columns are kept in the browser.
+// Filters and columns are kept in the browser. The Mode and age filters are
+// the page's own: the band ladder's legend (its eyes) and the map's age
+// buttons set the same ones (modeOn/setMode, setAge; 'sk-filter' on a change).
 'use strict';
 
 const Dxc = (() => {
@@ -18,7 +20,7 @@ const Dxc = (() => {
     ['speed', 'WPM'], ['mode', 'Mode'], ['band', 'Band'], ['country', 'Country'], ['src', 'From'],
   ];
   const DEF = { bands: {}, call: '', regex: false, kmMin: 0, kmMax: 20000, azMin: 0, azMax: 360,
-                dbMin: -30, dbMax: 60, spMin: 0, spMax: 99, modes: { CW: true, RTTY: true, FT8: true, FT4: true }, country: '',
+                dbMin: -30, dbMax: 60, spMin: 0, spMax: 99, modes: { CW: true, RTTY: true, FT8: true, FT4: true, WSPR: true }, country: '',
                 src: { here: true, worker: true, peer: true }, age: 30, hidden: { src: true } };
   const load = () => { try { return JSON.parse(localStorage.getItem('skdxc') || '{}'); } catch (e) { return {}; } };
   const F = { ...JSON.parse(JSON.stringify(DEF)), ...load() };
@@ -30,7 +32,11 @@ const Dxc = (() => {
     F.modes = { ...DEF.modes, ...(F.modes || {}) };
     F.v = 2;
   }
-  const save = () => { try { localStorage.setItem('skdxc', JSON.stringify(F)); } catch (e) { /* private window */ } };
+  // every change is the user's: the ladder and the map's age buttons follow
+  const save = () => {
+    try { localStorage.setItem('skdxc', JSON.stringify(F)); } catch (e) { /* private window */ }
+    window.dispatchEvent(new Event('sk-filter'));
+  };
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   let el = null, rows = [], bandsKnown = [], workers = new Set(), onChange = () => {}, marked = '', menu = null;
 
@@ -93,7 +99,9 @@ const Dxc = (() => {
       case 'az': return `<div class="fm-t">Bearing (a sector; 300 to 60 crosses north)</div>${range('azMin', 'azMax', 0, 360, 5, '°')}`;
       case 'db': return `<div class="fm-t">Signal (FT8/FT4: WSJT-X's SNR)</div>${range('dbMin', 'dbMax', -30, 60, 1, 'dB')}`;
       case 'speed': return `<div class="fm-t">Speed (WPM; RTTY: baud)</div>${range('spMin', 'spMax', 0, 99, 1, '')}`;
-      case 'mode': return `<div class="fm-t">Mode</div>${checks('modes', ['CW', 'RTTY', 'FT8', 'FT4'])}`;
+      case 'mode': return `<div class="fm-t">Mode</div>${checks('modes', ['CW', 'RTTY', 'FT8', 'FT4', 'WSPR'])}` +
+        '<div class="fm-note">The same switches as the eyes in the Bands legend: a mode left out is out of the ' +
+        'bands\' counts, the heat map, the map and this table. WSPR has no rows here.</div>';
       case 'country': return `<div class="fm-t">Country contains</div><input data-f="country" value="${esc(F.country)}" placeholder="Japan, Russia…">`;
       case 'src': return `<div class="fm-t">Made by</div>${checks('src', ['here', 'worker', 'peer'], (k) => ({ here: 'this skimmer', worker: 'a worker', peer: 'a peer' }[k]))}`;
       case 'time': return `<div class="fm-t">Age</div><div class="fm-act">${[5, 10, 15, 30].map((a) => `<button type="button" data-age="${a}" class="${F.age === a ? 'on' : ''}">${a} min</button>`).join('')}</div>`;
@@ -250,5 +258,19 @@ const Dxc = (() => {
     if (!menu) draw(); else onChange(rows.filter(pass), marked);   // keep an open menu's focus
   }
 
-  return { mount, update, age: () => F.age };
+  // the page's other inputs for the same filters
+  function setMode(m, on) {
+    F.modes[m] = !!on;
+    if (menu && menu.dataset.c === 'mode') closeMenu();
+    save();
+    if (el) draw();
+  }
+  function setAge(a) {
+    if (![5, 10, 15, 30].includes(a)) return;
+    F.age = a;
+    if (menu && menu.dataset.c === 'time') closeMenu();
+    save();
+    if (el) draw();
+  }
+  return { mount, update, age: () => F.age, modeOn: (m) => F.modes[m] !== false, setMode, setAge };
 })();

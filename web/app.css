@@ -17,7 +17,7 @@
   /* the two modes, the same everywhere on Statistics: CW a pastel blue,
      RTTY a pastel peach — apart at a glance; the active-decoders heatmap
      has one calm ramp for both (the strip's place in a band says the mode) */
-  --cw: #8fb9ff; --rtty: #ffb88a; --ft8: #c59bff;
+  --cw: #8fb9ff; --rtty: #ffb88a; --ft8: #c59bff; --ft4: #ff8fd0; --wspr: #e05a5a;
   --seq-lo: #121b28; --seq-hi: #9fb4d2;
   --grid: #1a283a; --axis: #2f4560; --tick: #6a7d96;
 }
@@ -225,6 +225,29 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 /* every mode of the band paused (the thermal guard): grey, not its colour */
 .ladder tr.paused td.b { color: var(--mut) !important; }
 .ladder tr.paused td.bar i { background: var(--faint) !important; opacity: 1; }
+/* the stacked bars: each mode its part, in the legend's order and colour;
+ * a mode left out (its eye shut) stays, grey */
+.ladder td.bar.stack span { display: flex; height: 7px; background: var(--deep); overflow: hidden; }
+.ladder td.bar.stack i { display: block; flex: none; height: 7px; min-width: 1px; opacity: 1; filter: none; }
+.m-cw { background: var(--cw) !important; } .m-rtty { background: var(--rtty) !important; }
+.m-ft8 { background: var(--ft8) !important; } .m-ft4 { background: var(--ft4) !important; }
+.m-wspr { background: var(--wspr) !important; }
+.ladder td.bar.stack i.x { background: var(--faint) !important; opacity: .55; }
+.ladder tr.paused td.bar.stack i { background: var(--faint) !important; }
+/* the legend over the bars: a mode, its colour and its eye */
+.ladder tr.legend-row th { border-bottom: 0; padding-bottom: 0; cursor: default; }
+.ladder .lg { display: inline-flex; align-items: center; gap: 4px; margin: 0 10px 2px 0; padding: 1px 2px;
+  border: 0; background: transparent; color: var(--fg); font: inherit; font-size: 11px; letter-spacing: .1em; cursor: pointer; }
+.ladder .lg i { display: inline-block; width: 14px; height: 7px; }
+.ladder .lg svg { color: var(--mut); }
+.ladder .lg:hover svg { color: var(--fg); }
+.ladder .lg.x { color: var(--faint); }
+.ladder .lg.x i { background: var(--faint) !important; opacity: .55; }
+.ladder .lg.x svg { color: var(--faint); }
+/* the map's age: 5, 10, 15 or 30 min, in the heading */
+.age-seg { vertical-align: 2px; gap: 2px; margin: 0 2px; }
+.age-seg button { font-size: 12px; padding: 1px 6px; letter-spacing: .04em; }
+
 /* … and on a dark grey ground, the whole row */
 .ladder tr.paused td { background-color: var(--off-bg) !important; }
 /* where the band goes: a column a continent, the stations heard from it in

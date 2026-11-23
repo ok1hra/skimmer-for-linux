@@ -254,9 +254,12 @@ static void whole(const char *dir) {
   check("status: one cycle, one decode, uploaded, none queued",
         strstr(st, "\"cycles\":1,") && strstr(st, "\"decodes\":1,") &&
         strstr(st, "\"uploaded\":1,") && strstr(st, "\"queued\":0,") && strstr(st, "\"error\":null"));
-  check("status: the stations of 30 min per receiver (its own band name), the newest",
-        strstr(st, "\"rx\":[{\"band\":\"20m-ish\",\"stations\":1,\"last\":\"OK1HRA\"},"
-                   "{\"band\":\"40m\",\"stations\":0,\"last\":\"\"}],\"recent_s\":1800,") != NULL);
+  check("status: the stations of 30 min per receiver (its own band name), its newest cycle's, the newest",
+        /* active: the newest cycle's, while it is of the last 5 min — the
+         * cycle's time here is the fixture's, so either */
+        (strstr(st, "\"rx\":[{\"band\":\"20m-ish\",\"stations\":1,\"active\":1,\"last\":\"OK1HRA\"},") ||
+         strstr(st, "\"rx\":[{\"band\":\"20m-ish\",\"stations\":1,\"active\":0,\"last\":\"OK1HRA\"},")) &&
+        strstr(st, "{\"band\":\"40m\",\"stations\":0,\"active\":0,\"last\":\"\"}],\"recent_s\":1800,") != NULL);
   g_free(st);
   const char *body = f.bodies->len ? f.bodies->pdata[0] : "";
   g_print("  posted: %s\n", body);
