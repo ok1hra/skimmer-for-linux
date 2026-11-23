@@ -3,6 +3,7 @@
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include "wspr.h"
+#include "helper_run.h"
 
 #include <gio/gio.h>
 #include <libsoup/soup.h>
@@ -305,11 +306,6 @@ char *skim_wspr_find_decoder(void) {
   return p ? p : g_find_program_in_path("wsprd");
 }
 
-static void lower_priority(gpointer unused) {
-  (void)unused;
-  if (nice(10) == -1) { /* as it is */ }
-}
-
 gboolean skim_wspr_decode_file(const char *decoder, const char *dir, const char *c2,
                                gint64 t, const char *band, double dial_hz, guint flags,
                                GArray *spots, GCancellable *cancel, GError **error) {
@@ -327,23 +323,10 @@ gboolean skim_wspr_decode_file(const char *decoder, const char *dir, const char 
   argv[n++] = "-f"; argv[n++] = mhz;
   argv[n++] = c2;
   argv[n] = NULL;
-  GSubprocessLauncher *l = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
-                                                     G_SUBPROCESS_FLAGS_STDERR_PIPE);
-  g_subprocess_launcher_set_cwd(l, dir);
-  g_subprocess_launcher_set_child_setup(l, lower_priority, NULL, NULL);
-  GSubprocess *p = g_subprocess_launcher_spawnv(l, argv, error);
-  g_object_unref(l);
+  char *out = NULL;
+  const gboolean ok = skim_hd_helper_run(argv, dir, decoder, cancel, &out, error);
   g_free(prog);
-  if (!p) { return FALSE; }
-  char *out = NULL, *err = NULL;
-  gboolean ok = g_subprocess_communicate_utf8(p, NULL, cancel, &out, &err, error);
-  if (!ok) {
-    g_subprocess_force_exit(p);
-  } else if (!g_subprocess_get_if_exited(p) || g_subprocess_get_exit_status(p) != 0) {
-    g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "%s failed%s%s", decoder,
-                err && *err ? ": " : "", err ? g_strstrip(err) : "");
-    ok = FALSE;
-  } else {
+  if (ok) {
     char **lines = g_strsplit(out ? out : "", "\n", -1);
     for (char **ln = lines; *ln; ln++) {
       SkimWsprSpot s = { 0 };
@@ -356,8 +339,6 @@ gboolean skim_wspr_decode_file(const char *decoder, const char *dir, const char 
     g_strfreev(lines);
   }
   g_free(out);
-  g_free(err);
-  g_object_unref(p);
   return ok;
 }
 
