@@ -171,6 +171,18 @@ function ft8Cells(r, max, i) {
   return `<td class="n ft8" title="${esc(t)}">${fmt(r.stations)}</td><td class="bar ft8" title="${esc(t)}">${i(r.stations / max)}</td>`;
 }
 let status = null;
+
+// the header's CW engine: the default, and any other one with its bands
+// ("cw-v3.1 · cw-v4 40m 20m") — a band's own engine (cw:v4) is not the default
+function engines(d) {
+  const other = new Map();
+  for (const b of d.bands || []) {
+    if (b.cw === false || !b.engine || b.engine === d.engine) continue;
+    if (!other.has(b.engine)) other.set(b.engine, []);
+    other.get(b.engine).push(b.band);
+  }
+  return [esc(d.engine || ''), ...[...other].map(([e, bs]) => `${esc(e)} ${bs.map(esc).join(' ')}`)].filter(Boolean).join(' · ');
+}
 function renderStatus(d) {
   status = d;
   $('#call').textContent = d.call || 'SKIMMER';
@@ -181,7 +193,7 @@ function renderStatus(d) {
   $('#hdr-stats').innerHTML = (d.cpu_pct != null ? `<span>CPU <b>${fmt(d.cpu_pct)}%</b>${tC ? ` ${tC}` : ''}</span> `
     : tC ? `<span>CPU ${tC}</span> ` : '') +
     (d.lost_pct != null ? `<span>lost <b>${fmt(d.lost_pct, 3)}%</b></span> ` : '') +
-    `<span>feed <b>${d.feed_port ? fmt(d.feed_clients) : 'off'}</b></span> <span>${esc(d.engine || '')}</span> <span>v${esc(d.version || '')}</span>`;
+    `<span>feed <b>${d.feed_port ? fmt(d.feed_clients) : 'off'}</b></span> <span>${engines(d)}</span> <span>v${esc(d.version || '')}</span>`;
   document.title = `${d.call ? `${d.call} · ` : ''}Skimmer for Linux`;
   const dot = $('#radio .dot');
   dot.className = `dot ${d.streaming ? 'ok' : 'bad'}`;
