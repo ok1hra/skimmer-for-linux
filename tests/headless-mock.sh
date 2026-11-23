@@ -393,6 +393,69 @@ kill $P4 2>/dev/null; wait $P4 2>/dev/null
 out=$("$HL" --config "$T/v4.ini" --check-config 2>&1)
 [[ $out == *"v4 DeepCW v2 narrow, built in, on "*"2 workers"* ]]; check "v4: --check-config names the network" $?
 
+# ---- our own orphan: a run that died left the radio streaming to its port -------
+# The fake radio streams to a port nothing listens on (the dead run's, noted in
+# <state>/hpsdr-streams) and answers busy until a stop comes FROM that port.
+python3 - "$T/orphan" <<'PY' &
+import socket, sys, time, os
+d = sys.argv[1]; os.makedirs(d, exist_ok=True)
+o = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); o.bind(("127.0.0.1", 0))
+orphan = o.getsockname()[1]; o.close()
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("127.0.0.1", 0))
+s.setblocking(False)
+target = ("127.0.0.1", orphan); seq = 0; log = open(d + "/events", "w", buffering=1)
+open(d + "/ports", "w").write("%d %d" % (s.getsockname()[1], orphan))
+end = time.time() + 40; nxt = time.time()
+while time.time() < end:
+    try:
+        b, a = s.recvfrom(2048)
+        if b[:3] == b"\xef\xfe\x02":
+            s.sendto(b"\xef\xfe" + bytes([3 if target else 2]) + bytes([0, 0x11, 0x22, 0x33, 0x44, 0x55, 30, 6]) + b"R_PITAYA" + bytes([8]) + bytes(40), a)
+        elif b[:4] == b"\xef\xfe\x04\x00":
+            log.write("stop from %d%s\n" % (a[1], " (streaming there)" if target and a[1] == target[1] else ""))
+            if target and a == target: target = None
+        elif b[:4] == b"\xef\xfe\x04\x01":
+            log.write("start from %d\n" % a[1]); target = a
+        continue
+    except BlockingIOError:
+        pass
+    if target and time.time() >= nxt:
+        for _ in range(20):
+            s.sendto(b"\xef\xfe\x01\x06" + seq.to_bytes(4, "big") + bytes(1024), target); seq += 1
+        nxt = time.time() + 0.01
+    else:
+        time.sleep(0.001)
+PY
+FAKE=$!
+for _ in $(seq 50); do [[ -s $T/orphan/ports ]] && break; sleep 0.1; done
+read RPP ORPH < "$T/orphan/ports"
+mkdir -p "$T/state/skimmer-for-linux"
+echo "127.0.0.1 $ORPH" > "$T/state/skimmer-for-linux/hpsdr-streams"
+export SKIM_HPSDR_DISCOVER=127.0.0.1:$RPP
+mkdir -p "$T/orph"
+XDG_CONFIG_HOME=$T/orph timeout -s TERM 12 "$HL" --http-port 0 --status-every 0 > "$T/orph.log" 2>&1 &
+OPID=$!
+for _ in $(seq 100); do grep -q "radio: streaming" "$T/orph.log" && break; sleep 0.1; done
+sleep 1
+NEWP=$(sed -n 's/^start from //p' "$T/orphan/events" | head -1)
+grep -q "orphan stream is stopped" "$T/orph.log" && grep -q "radio: streaming" "$T/orph.log" &&
+  grep -qx "stop from $ORPH (streaming there)" "$T/orphan/events" && [[ -n $NEWP && $NEWP != "$ORPH" ]] &&
+  [[ $(cat "$T/state/skimmer-for-linux/hpsdr-streams") == "127.0.0.1 $NEWP" ]]
+check "our orphan: the stop sent from its port, the radio started anew, the new stream noted" $?
+kill -TERM $OPID 2>/dev/null; wait $OPID 2>/dev/null
+grep -qx "stop from $NEWP (streaming there)" "$T/orphan/events" && [[ ! -e $T/state/skimmer-for-linux/hpsdr-streams ]]
+check "a clean stop: the stop sent, the note gone" $?
+# someone else's stream (it goes to another port, which is free here): never stopped
+python3 -c "import socket,sys; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.bind(('127.0.0.1',0)); s.sendto(bytes([0xEF,0xFE,4,1])+bytes(60),('127.0.0.1',$RPP)); print(s.getsockname()[1])" > "$T/orphan/other"
+OTHER=$(cat "$T/orphan/other")
+echo "127.0.0.1 $(( OTHER == 65535 ? 65534 : OTHER + 1 ))" > "$T/state/skimmer-for-linux/hpsdr-streams"
+rc=0; XDG_CONFIG_HOME=$T/orph timeout 20 "$HL" --http-port 0 --status-every 0 > "$T/orph2.log" 2>&1 || rc=$?
+[[ $rc == 3 ]] && grep -q "busy, not our orphan: no stream" "$T/orph2.log" &&
+  ! grep -q "stop from $OTHER" "$T/orphan/events" && [[ ! -e $T/state/skimmer-for-linux/hpsdr-streams ]]
+check "someone else's stream (a noted port it does not come to): left alone, exit 3, the note gone" $?
+kill $FAKE 2>/dev/null; wait $FAKE 2>/dev/null
+unset SKIM_HPSDR_DISCOVER
+
 if ((fails)); then
   echo "--- log"; cat "$T/log"
   [[ -f $T/v4.log ]] && { echo "--- v4 log"; cat "$T/v4.log"; }

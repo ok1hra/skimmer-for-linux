@@ -417,12 +417,22 @@ skimmer_waterfall_test = executable('skimmer-waterfall-test',
 )
 test('waterfall', skimmer_waterfall_test, timeout : 30)
 
+# The decoder helpers' runner: side by side in four threads with one
+# cancellable (GLib's own cancellable path corrupted the heap there), a failed
+# exit, a cancel that kills.
+skimmer_helper_run_test = executable('skimmer-helper-run-test',
+  ['src/helper_run_test.c', 'src/headless/helper_run.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+)
+test('helper-run', skimmer_helper_run_test, timeout : 60)
+
 # WSPR: the dials, wsprd's lines, the WSPRnet form; two synthetic WSPR
 # signals at 48 and 192 kHz through the shift, the resamplers, the capture,
 # the .c2 file and skimmer-wsprd; the decoder thread, the stations of 24 h,
 # the upload to a local stand-in for WSPRnet.
 skimmer_wspr_test = executable('skimmer-wspr-test',
-  ['src/wspr_test.c', 'src/headless/wspr.c'],
+  ['src/wspr_test.c', 'src/headless/wspr.c', 'src/headless/helper_run.c'],
   include_directories : [include_directories('src'), engine_inc, wsprd_enc_inc],
   dependencies : engine_deps + [soup_dep],
   link_with : wsprd_enc_lib,
@@ -439,7 +449,7 @@ if ft8_enabled
   # skimmer-ft8d — decodes, no mirror from below the dial, the spots folded;
   # a decoder slower than the cycles skips the waiting ones.
   skimmer_ft8_test = executable('skimmer-ft8-test',
-    ['src/ft8_test.c', 'src/headless/ft8.c'],
+    ['src/ft8_test.c', 'src/headless/ft8.c', 'src/headless/helper_run.c'],
     include_directories : [include_directories('src'), engine_inc],
     dependencies : engine_deps,
     link_with : engine_lib,
@@ -448,7 +458,7 @@ if ft8_enabled
        args : [skimmer_ft8d, skimmer_ft8code, skimmer_ft4code], timeout : 240)
   # The bench on real air: a recorded cf32 through the whole [ft8] (and with
   # --keep the cycles' WAVs, for WSJT-X's own jt9).
-  executable('skimmer-ft8-replay', ['src/ft8_replay_main.c', 'src/headless/ft8.c'],
+  executable('skimmer-ft8-replay', ['src/ft8_replay_main.c', 'src/headless/ft8.c', 'src/headless/helper_run.c'],
     include_directories : [include_directories('src'), engine_inc],
     dependencies : engine_deps,
     link_with : engine_lib,
@@ -546,6 +556,7 @@ headless_sources = files(
   'src/headless/web.c',             # the web page (libsoup 3)
   'src/headless/wspr.c',            # [wspr]: WSPR decoded beside, WSPRnet
   'src/headless/ft8.c',             # [ft8]: FT8/FT4 decoded beside, to the feed
+  'src/headless/helper_run.c',      # the decoder helpers run (ft8d, wsprd)
   'src/headless/pskreporter.c',     # [ft8] upload: to PSK Reporter (IPFIX/UDP)
 )
 

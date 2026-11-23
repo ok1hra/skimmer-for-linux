@@ -12,13 +12,27 @@
  * on a busy radio once left the skimmer silent for 15 h unnoticed
  * (2026-10-07: CW Skimmer Server took .21 when its own radio dropped out).
  *
+ * One busy radio is ours to free: our own orphan. The server has no
+ * watchdog, so a skimmer that dies without its stop (a crash) leaves the
+ * radio streaming to a port of this machine that nothing listens on — busy
+ * for good, and every restart gave up (hra2 2026-11-22/23: 11 h, until a
+ * stop was sent by hand). Each stream we run is noted ("host port", a line,
+ * <state>/hpsdr-streams) and its line goes when the client is freed; a busy
+ * radio whose line is still there gets skim_hpsdr_stop_orphan() — the stop
+ * goes out only when that radio's stream really comes to that port and no
+ * socket of this machine holds it. Anyone else's stream goes to their own
+ * address, so it is never touched.
+ *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include "source.h"
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+
+#include <glib/gstdio.h>
 
 #include "engine/hpsdr_p1.h"
 
@@ -61,6 +75,101 @@ static void p1_state(P1 *p, const char *fmt, ...) {
   }
 }
 
+/* The radio port: SKIM_HPSDR_DISCOVER's port when it names one (a gate's
+ * fake radio), else HPSDR's 1024. */
+static guint16 radio_port(void) {
+  const char *env = g_getenv("SKIM_HPSDR_DISCOVER");
+  const char *colon = env ? strrchr(env, ':') : NULL;
+  const guint64 v = colon ? g_ascii_strtoull(colon + 1, NULL, 10) : 0;
+  return v > 0 && v < 65536 ? (guint16)v : SKIM_HPSDR_DEFAULT_PORT;
+}
+
+/* ---- the streams we run (an orphan's trace) ---------------------------------- */
+
+static char *streams_path(void) {
+  return g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", "hpsdr-streams", NULL);
+}
+
+/* host's noted local port, 0 = none. */
+static guint16 streams_get(const char *host) {
+  char *path = streams_path(), *text = NULL;
+  guint16 port = 0;
+  if (g_file_get_contents(path, &text, NULL, NULL)) {
+    char **lines = g_strsplit(text, "\n", -1);
+    for (char **l = lines; *l && !port; l++) {
+      char h[64];
+      unsigned v;
+      if (sscanf(*l, "%63s %u", h, &v) == 2 && strcmp(h, host) == 0 && v > 0 && v < 65536) {
+        port = (guint16)v;
+      }
+    }
+    g_strfreev(lines);
+  }
+  g_free(text);
+  g_free(path);
+  return port;
+}
+
+/* Note host's stream at port (0 = remove its line). */
+static void streams_set(const char *host, guint16 port) {
+  char *path = streams_path(), *text = NULL;
+  GString *out = g_string_new(NULL);
+  if (g_file_get_contents(path, &text, NULL, NULL)) {
+    char **lines = g_strsplit(text, "\n", -1);
+    for (char **l = lines; *l; l++) {
+      char h[64];
+      if (!**l || (sscanf(*l, "%63s", h) == 1 && strcmp(h, host) == 0)) { continue; }
+      g_string_append_printf(out, "%s\n", *l);
+    }
+    g_strfreev(lines);
+  }
+  if (port) { g_string_append_printf(out, "%s %u\n", host, port); }
+  char *dir = g_path_get_dirname(path);
+  g_mkdir_with_parents(dir, 0700);
+  GError *e = NULL;
+  if (out->len ? !g_file_set_contents(path, out->str, (gssize)out->len, &e)
+               : (g_unlink(path) != 0 && errno != ENOENT)) {
+    g_warning("radio: %s: %s", path, e ? e->message : g_strerror(errno));
+  }
+  g_clear_error(&e);
+  g_free(dir);
+  g_free(text);
+  g_free(path);
+  g_string_free(out, TRUE);
+}
+
+/* The client is done with (freed): its line goes. */
+static void free_client(P1 *p) {
+  if (!p->rp) { return; }
+  g_clear_pointer(&p->rp, skim_hpsdr_client_free);
+  streams_set(p->host, 0);
+}
+
+/* host answered busy: TRUE when it was our own orphan, now stopped and
+ * idle again. */
+static gboolean stop_orphan(P1 *p, const char *host) {
+  const guint16 port = streams_get(host);
+  if (!port) { return FALSE; }
+  GError *err = NULL;
+  const gboolean stopped = skim_hpsdr_stop_orphan(host, radio_port(), port, 1500, &err);
+  streams_set(host, 0);                          /* judged: never again       */
+  if (!stopped) {
+    g_message("radio: %s busy, not our orphan: %s", host, err->message);
+    g_clear_error(&err);
+    return FALSE;
+  }
+  g_message("radio: %s still streamed to port %u of this machine, which nothing "
+            "listens on (our last run ended without its stop) — that orphan "
+            "stream is stopped", host, port);
+  for (int i = 0; i < 10; i++) {                 /* the server takes a moment  */
+    g_usleep(200000);
+    SkimHpsdrInfo info;
+    if (skim_hpsdr_discover(host, radio_port(), 500, &info, NULL) && !info.busy) { return TRUE; }
+  }
+  p1_state(p, "%s: still busy after the orphan's stop", host);
+  return FALSE;
+}
+
 static void rx_iq_cb(const float *iq, guint n, double rate, double centre, gpointer user) {
   Rx *rx = user;
   rx->s->iq_cb(rx->band, iq, n, rate, centre, rx->s->iq_user);
@@ -74,7 +183,7 @@ static gboolean start_on(P1 *p, const char *host, double ppm, gboolean took) {
   GError *err = NULL;
   double centres[SKIM_HD_MAX_BANDS];
   p->take_over = FALSE;                         /* one-shot: the first start   */
-  p->rp = skim_hpsdr_client_new(host, SKIM_HPSDR_DEFAULT_PORT);
+  p->rp = skim_hpsdr_client_new(host, radio_port());
   for (guint b = 0; b < c->nb; b++) {
     centres[b] = c->band[b].centre_hz;
     skim_hpsdr_client_set_rx_iq_cb(p->rp, b, rx_iq_cb, &p->rx[b]);
@@ -88,6 +197,7 @@ static gboolean start_on(P1 *p, const char *host, double ppm, gboolean took) {
     return FALSE;
   }
   g_strlcpy(p->host, host, sizeof(p->host));
+  streams_set(host, skim_hpsdr_client_local_port(p->rp));
   p->ppm_now = ppm;
   p->streaming = TRUE;
   p->search_since_us = 0;
@@ -142,6 +252,8 @@ static gboolean try_one(P1 *p, Round *r, const char *host, double ppm, const Ski
   if (!info) {
     g_string_append_printf(r->why, "%s no reply", host);
     r->all_answered = FALSE;
+  } else if (info->busy && stop_orphan(p, host) && start_on(p, host, ppm, FALSE)) {
+    return TRUE;
   } else if (info->busy) {
     g_string_append_printf(r->why, "%s busy", host);
     if (!r->first_busy[0]) {
@@ -186,7 +298,7 @@ static void try_start(P1 *p) {
     }
     SkimHpsdrInfo info;
     GError *err = NULL;
-    const gboolean ans = skim_hpsdr_discover(c->hosts[i], SKIM_HPSDR_DEFAULT_PORT, 1000, &info, &err);
+    const gboolean ans = skim_hpsdr_discover(c->hosts[i], radio_port(), 1000, &info, &err);
     g_clear_error(&err);
     on = try_one(p, &r, c->hosts[i], c->host_ppm[i], ans ? &info : NULL);
   }
@@ -208,7 +320,7 @@ static void try_start(P1 *p) {
 }
 
 static void drop(P1 *p) {
-  g_clear_pointer(&p->rp, skim_hpsdr_client_free);   /* sends no stop: not ours */
+  free_client(p);                                     /* sends no stop: not ours */
   p->streaming = FALSE;
   p1_state(p, "stream lost from %s (another client took the radio, or it left "
               "the network) — searching %s", p->host, p->base.cfg->hosts_text);
@@ -242,7 +354,7 @@ static void p1_status(SkimIqSource *s, SkimIqSourceStatus *o) {
 
 static void p1_free(SkimIqSource *s) {
   P1 *p = (P1 *)s;
-  g_clear_pointer(&p->rp, skim_hpsdr_client_free);   /* stops — if still ours */
+  free_client(p);                                     /* stops — if still ours */
   g_free(p);
 }
 

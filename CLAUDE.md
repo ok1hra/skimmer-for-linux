@@ -40,7 +40,10 @@ and still has its TCI client.
   The HPSDR P1 source (Red Pitaya, `docs/HPSDR-P1.md`) is not the operator's
   radio but the skimmer's own receiver: it sets that receiver's DDC centre,
   rate and RX count, never keys, and never touches a receiver another
-  client is streaming from unless the user presses "Take over".
+  client is streaming from unless the user presses "Take over". The one
+  stream it stops by itself is its own orphan — still coming to the port of
+  a run of ours that died, which nothing on this machine holds any more
+  (`docs/HPSDR-P1.md`).
 - **RBN feed must never emit unvalidated callsigns** — M4 (validation) gates M6
   (RBN).
 - **Every commit and tag is GPG-signed** (`commit.gpgsign=true`, key
@@ -141,7 +144,7 @@ here; what was done and why is in git.
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 36 gates** (DeepCW skips without the model, golden skips
+- **`meson test` = 37 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
   only with gfortran). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).

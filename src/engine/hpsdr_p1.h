@@ -115,6 +115,18 @@ guint       skim_hpsdr_client_nrx(SkimHpsdrClient *c);
 guint64     skim_hpsdr_client_packets(SkimHpsdrClient *c);
 /* Frames zero-filled for sequence gaps (lost UDP packets). */
 guint64     skim_hpsdr_client_lost_frames(SkimHpsdrClient *c);
+/* The UDP port of this machine the stream comes to (0 = not started). */
+guint16     skim_hpsdr_client_local_port(SkimHpsdrClient *c);
+
+/* An orphan stream: a client of THIS machine died without its stop (a
+ * crash), and host:port streams on to its local_port, which nothing here
+ * listens on any more — the radio answers busy for good. This binds
+ * local_port without sharing it (a socket that still holds it — a live
+ * client — makes the bind fail, and nothing is sent), listens up to
+ * listen_ms for host's EP6 and only when that comes sends the stop, from
+ * that very port. TRUE = stopped; FALSE (error says why) = left alone. */
+gboolean    skim_hpsdr_stop_orphan(const char *host, guint16 port, guint16 local_port,
+                                   guint listen_ms, GError **error);
 
 G_END_DECLS
 
