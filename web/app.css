@@ -287,23 +287,26 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
             padding: 8px 12px; display: grid; grid-template-columns: repeat(2, max-content); gap: 3px 16px;
             box-shadow: 0 6px 18px rgba(0,0,0,.5); font-size: 14px; }
 table.dxc { border-collapse: collapse; width: 100%; background: var(--well); font-variant-numeric: tabular-nums; }
-.dxc th { text-align: left; color: var(--mut); background: var(--deep); font-size: 12px; font-weight: 700;
+.dxc th { text-align: left; color: #dcffdf; background: var(--deep); font-size: 12px; font-weight: 700;
           padding: 4px 6px 4px 8px; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap;
-          border-bottom: 1px solid var(--ln2); }
+          border-bottom: 1px solid #285230; }
 .dxc th .fbtn { font: inherit; font-size: 10px; border: 0; background: transparent; color: var(--faint);
                 margin-left: 3px; padding: 0 3px; cursor: pointer; vertical-align: 1px; }
 .dxc th .fbtn:hover { color: var(--fg); }
 .dxc th .fbtn.on { background: var(--warn); color: #1d1300; }
-.dxc td { padding: 3px 8px; color: #b6f5cf; font-size: 16px; border-bottom: 1px solid #0c1a12; white-space: nowrap; }
+/* the cells' colours are wifilt's DX cluster's (ok1hra/wifilt data/dxc.html):
+ * one light green for every cell, the rows striped, distance and dB toned
+ * by dxc.js from dark to bright over the rows shown */
+.dxc td { padding: 3px 8px; color: #b8f7c0; font-size: 16px; border-bottom: 1px solid #0d1d11; white-space: nowrap; }
+.dxc tbody tr:nth-child(2n) td { background: #0a100b; }
 .dxc .c-khz, .dxc .c-km, .dxc .c-db, .dxc .c-speed, .dxc .c-az { text-align: right; }
 .dxc th.c-khz, .dxc th.c-km, .dxc th.c-db, .dxc th.c-speed, .dxc th.c-az { text-align: right; }
-.dxc td.c-call { color: #fff; font-weight: 700; letter-spacing: .03em; }
+.dxc td.c-call { font-weight: 700; letter-spacing: .03em; }
 .dxc td.c-db { font-weight: 700; }
 .dxc td.c-db .m { letter-spacing: -1px; margin-right: 6px; font-weight: 400; opacity: .9; }
-.dxc td.c-time, .dxc td.c-country, .dxc td.c-src, .dxc td.c-mode { color: #8fd4ab; }
 .dxc tr.old td { opacity: .55; }
 .dxc tbody tr { cursor: pointer; }
-.dxc tbody tr:hover td { background: #0f2a1c; }
+.dxc tbody tr:hover td { background: #142619; }
 .dxc tbody tr.hi td { background: #164a30; }
 .fmenu { position: absolute; z-index: 20; background: var(--deep); border: 1px solid var(--ln2); padding: 10px 12px;
          min-width: 220px; box-shadow: 0 8px 22px rgba(0,0,0,.6); display: grid; gap: 7px; font-size: 14px; }

@@ -40,9 +40,16 @@ const Dxc = (() => {
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   let el = null, rows = [], bandsKnown = [], workers = new Set(), onChange = () => {}, marked = '', menu = null;
 
-  // dB: the strength as a green from dark to bright (wifilt's ramp) and a meter
-  const tone = (db) => `hsl(131,70%,${(22 + Math.max(0, Math.min(1, (db + 5) / 40)) * 54).toFixed(0)}%)`;
-  const meter = (db) => '|'.repeat(Math.max(1, Math.min(8, Math.round((db + 5) / 5))));
+  // As wifilt's DX cluster (ok1hra/wifilt data/dxc.html, valueTone and
+  // meterBars): distance and dB as a green from dark to bright, scaled from
+  // the lowest to the highest value among the rows shown (so the farthest
+  // and the loudest on screen are the brightest), and dB's meter of 6 bars
+  // on the same scale; one value, or none apart, keeps the plain colour.
+  const ratio = (v, r) => (r && r.hi > r.lo ? Math.max(0, Math.min(1, (v - r.lo) / (r.hi - r.lo))) : null);
+  const tone = (v, r) => { const x = ratio(v, r); return x == null ? '' : ` style="color:hsl(131,70%,${(22 + x * 54).toFixed(0)}%)"`; };
+  const meter = (v, r) => { const x = ratio(v, r); return '|'.repeat(x == null ? 6 : Math.max(1, Math.round(x * 6))); };
+  const spanOf = (vals) => (vals.length ? { lo: Math.min(...vals), hi: Math.max(...vals) } : null);
+  let kmR = null, dbR = null;                        // the rows shown, set by draw()
   const ARR = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];
   const utc = (t) => { const d = new Date(t * 1000); return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`; };
   const SPK = '<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M3 7.5h3.2L10.5 4v12L6.2 12.5H3z" fill="currentColor"/>' +
@@ -166,12 +173,12 @@ const Dxc = (() => {
       case 'play': return `<td class="c-play">${s.band && srcKind(s) !== 'peer'
         ? `<button type="button" class="dxc-play" data-band="${esc(s.band)}" data-khz="${s.khz}" data-mode="${esc(s.mode)}" title="${s.mode === 'FT8' || s.mode === 'FT4' ? `the FT8 palette: ${esc(s.mode)} at ${fmtKhz(s.khz)} kHz, its dial on the waterfall` : `listen on the waterfall: ${fmtKhz(s.khz)} kHz${s.mode === 'RTTY' ? ' — the RTTY palette decodes it' : ''}`}" aria-label="listen">${SPK}</button>` : ''}</td>`;
       case 'call': return `<td class="c-call">${esc(s.call)}</td>`;
-      case 'km': return `<td class="c-km">${s.km != null ? Math.round(s.km).toLocaleString('en-US') : ''}</td>`;
+      case 'km': return s.km != null ? `<td class="c-km"${tone(s.km, kmR)}>${Math.round(s.km).toLocaleString('en-US')}</td>` : '<td class="c-km"></td>';
       case 'az': return `<td class="c-az" title="${s.az != null ? `${Math.round(s.az)}°` : ''}">${s.az != null ? `${ARR[Math.round(s.az / 45) % 8]} ${Math.round(s.az)}` : ''}</td>`;
-      case 'db': return `<td class="c-db" style="color:${tone(s.snr)}"><span class="m">${meter(s.snr)}</span>${s.snr}</td>`;
+      case 'db': return `<td class="c-db"${tone(s.snr, dbR)}><span class="m">${meter(s.snr, dbR)}</span>${s.snr}</td>`;
       case 'speed': return `<td class="c-speed">${s.speed || ''}</td>`;
       case 'mode': return `<td class="c-mode">${esc(s.mode)}</td>`;
-      case 'band': return `<td class="c-band" style="color:${SkMap.bandColor(s.band)}">${esc(s.band)}</td>`;
+      case 'band': return `<td class="c-band">${esc(s.band)}</td>`;
       case 'country': return `<td class="c-country">${s.where ? esc(s.where.name) : ''}</td>`;
       case 'src': return `<td class="c-src">${s.src ? esc(s.src) : '—'}</td>`;
       default: return '<td></td>';
@@ -181,6 +188,8 @@ const Dxc = (() => {
     if (!el) return;
     const vis = COLS.filter(([c]) => !F.hidden[c]);
     const shown = rows.filter(pass);
+    kmR = spanOf(shown.filter((s) => s.km != null).map((s) => s.km));
+    dbR = spanOf(shown.filter((s) => Number.isFinite(s.snr)).map((s) => s.snr));
     el.querySelector('.dxc-count').textContent = `${shown.length} of ${rows.length}`;
     el.querySelector('.dxc-clear').disabled = !Object.values(active).some((f) => f());
     el.querySelector('thead').innerHTML = `<tr>${vis.map(([c, n]) => c === 'play' ? '<th class="c-play"></th>' :
