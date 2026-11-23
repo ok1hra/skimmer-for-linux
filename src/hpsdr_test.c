@@ -536,6 +536,53 @@ int main(void) {
   CHECK(f_off, "F's own stop still works — radio idle");
   skim_hpsdr_client_free(cy);
 
+  printf("an orphan stream (its client died without the stop):\n");
+  {
+    /* a client socket that starts the stream and then is gone */
+    int o = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in oa = { .sin_family = AF_INET };
+    bind(o, (struct sockaddr *)&oa, sizeof(oa));
+    socklen_t ol = sizeof(oa);
+    getsockname(o, (struct sockaddr *)&oa, &ol);
+    const guint16 oport = ntohs(oa.sin_port);
+    struct sockaddr_in rp = { .sin_family = AF_INET, .sin_port = htons(m_port),
+                              .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    guint8 start[64] = { 0xEF, 0xFE, 0x04, 0x01 };
+    sendto(o, start, sizeof(start), 0, (struct sockaddr *)&rp, sizeof(rp));
+    g_usleep(100000);
+    /* still held by a live socket: never stopped */
+    g_mutex_lock(&m_lock);
+    const guint st0 = m_stops;
+    g_mutex_unlock(&m_lock);
+    ok = skim_hpsdr_stop_orphan("127.0.0.1", m_port, oport, 300, &err);
+    g_mutex_lock(&m_lock);
+    const gboolean held_on = m_active && m_stops == st0;
+    g_mutex_unlock(&m_lock);
+    CHECK(!ok && held_on, "a port a live socket holds: left alone (%s)", err ? err->message : "stopped!");
+    g_clear_error(&err);
+    close(o);                                     /* the client dies          */
+    ok = skim_hpsdr_stop_orphan("127.0.0.1", m_port, (guint16)(oport ^ 1), 300, &err);
+    g_mutex_lock(&m_lock);
+    const gboolean other_on = m_active && m_stops == st0;
+    g_mutex_unlock(&m_lock);
+    CHECK(!ok && other_on, "a port the stream does not come to: left alone (%s)",
+          err ? err->message : "stopped!");
+    g_clear_error(&err);
+    ok = skim_hpsdr_discover("127.0.0.1", m_port, 500, &info, NULL) && info.busy;
+    CHECK(ok, "the radio answers busy");
+    ok = skim_hpsdr_stop_orphan("127.0.0.1", m_port, oport, 1000, &err);
+    g_usleep(100000);
+    g_mutex_lock(&m_lock);
+    const gboolean stopped = !m_active && m_stops > st0 && m_last_stop_port == oport;
+    g_mutex_unlock(&m_lock);
+    CHECK(ok && stopped, "the orphan's port: the stop sent from it, radio idle (%s)",
+          err ? err->message : "ok");
+    g_clear_error(&err);
+    ok = skim_hpsdr_stop_orphan("127.0.0.1", m_port, oport, 300, &err);
+    CHECK(!ok, "nothing streams any more: no stop (%s)", err ? err->message : "stopped!");
+    g_clear_error(&err);
+  }
+
   g_atomic_int_set(&m_run, 0);
   g_thread_join(mt);
   close(m_fd);

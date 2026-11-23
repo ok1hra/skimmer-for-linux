@@ -30,6 +30,17 @@ receivers, see below.
   sender address **and port**. Whoever streamed before simply stops receiving.
   The server has **no watchdog**: a stream to a dead client runs until someone
   sends a stop.
+- **Our own orphan is ours to stop** (2026-11-23, after hra2 sat 11 h on
+  "no free radio" behind the stream of a run that had aborted). Discovery
+  cannot tell whose stream it is, but the stream's packets can: each stream
+  the source runs is noted as `host port` in `<state>/hpsdr-streams`, and the
+  line goes when the client is freed. A radio that answers busy while its
+  line is still there gets `skim_hpsdr_stop_orphan()`: bind that port of
+  this machine **without** SO_REUSEADDR (a live socket that holds it — any
+  client — makes the bind fail, and nothing is sent), wait up to 1.5 s for
+  three EP6 packets from that radio, and only then send the stop from that
+  same port. Someone else's stream goes to their address and port, so it
+  never arrives there and is never stopped; the line is dropped either way.
 - **EP2 control and stop are accepted from ANY address.** A second client that
   keeps refreshing its control frames would retune the owner's receivers, and a
   stop from anyone kills the owner's stream. So after our stream is gone, the

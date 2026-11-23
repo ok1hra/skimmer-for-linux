@@ -724,3 +724,66 @@ guint64 skim_hpsdr_client_lost_frames(SkimHpsdrClient *c) {
   g_mutex_unlock(&c->lock);
   return v;
 }
+
+guint16 skim_hpsdr_client_local_port(SkimHpsdrClient *c) {
+  if (c->fd < 0) { return 0; }
+  struct sockaddr_in a;
+  socklen_t al = sizeof(a);
+  if (getsockname(c->fd, (struct sockaddr *)&a, &al) != 0) { return 0; }
+  return ntohs(a.sin_port);
+}
+
+gboolean skim_hpsdr_stop_orphan(const char *host, guint16 port, guint16 local_port,
+                                guint listen_ms, GError **error) {
+  struct sockaddr_in dst;
+  if (!local_port) {
+    g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED, "no local port");
+    return FALSE;
+  }
+  if (!resolve(host, port ? port : SKIM_HPSDR_DEFAULT_PORT, &dst, error)) { return FALSE; }
+  int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) {
+    g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED, "socket: %s",
+                g_strerror(errno));
+    return FALSE;
+  }
+  /* No SO_REUSEADDR / SO_REUSEPORT: the bind must fail while anything on
+   * this machine still holds the port. */
+  struct sockaddr_in me = { .sin_family = AF_INET, .sin_port = htons(local_port),
+                            .sin_addr.s_addr = htonl(INADDR_ANY) };
+  if (bind(fd, (struct sockaddr *)&me, sizeof(me)) != 0) {
+    const int e = errno;
+    close(fd);
+    g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_BUSY,
+                "port %u of this machine is held by a socket (%s) — a live client",
+                local_port, g_strerror(e));
+    return FALSE;
+  }
+  guint ep6 = 0;
+  const gint64 end = g_get_monotonic_time() + (gint64)listen_ms * 1000;
+  guint8 buf[PKT_BYTES + 16];
+  while (ep6 < 3) {
+    const gint64 left = end - g_get_monotonic_time();
+    if (left <= 0) { break; }
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    if (poll(&pfd, 1, (int)MAX(left / 1000, 1)) <= 0) { continue; }
+    struct sockaddr_in from;
+    socklen_t fl = sizeof(from);
+    const gssize n = recvfrom(fd, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
+    if (n == PKT_BYTES && from.sin_addr.s_addr == dst.sin_addr.s_addr &&
+        from.sin_port == dst.sin_port &&
+        buf[0] == 0xEF && buf[1] == 0xFE && buf[2] == 0x01 && buf[3] == 0x06) {
+      ep6++;
+    }
+  }
+  if (ep6 < 3) {
+    close(fd);
+    g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_NO_IQ,
+                "no stream from %s comes to port %u of this machine", host, local_port);
+    return FALSE;
+  }
+  send_cmd(fd, &dst, 0x04, 0x00);
+  send_cmd(fd, &dst, 0x04, 0x00);                  /* against UDP loss          */
+  close(fd);
+  return TRUE;
+}
