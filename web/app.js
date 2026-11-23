@@ -1493,12 +1493,11 @@ function wireMbps(n, rate) {
 // receivers' order. A segment band the new rate has not (80m-2 at 96 kHz)
 // stays as a band of its own while it is on or set up, else it goes.
 function withSegments(list, rate) {
-  const dflt = $('[name="decode.engine"]').value || 'v3';
   const left = [...list];
   const out = [];
   for (const s of segments(rate)) {
     const i = left.findIndex((b) => b.name === s.name), b = i >= 0 ? left.splice(i, 1)[0] : null;
-    if (!b) { out.push({ seg: true, def: s.hz, name: s.name, khz: '', cw: true, engine: dflt, rtty: false, on: false, worker: '' }); continue; }
+    if (!b) { out.push({ seg: true, def: s.hz, name: s.name, khz: '', cw: true, engine: '', rtty: false, on: false, worker: '' }); continue; }
     const hz = bandHz(b);
     out.push({ ...b, seg: true, def: s.hz, khz: b.khz && hz !== s.hz && !(b.seg && hz === b.def) ? b.khz : '' });
   }
@@ -1510,7 +1509,16 @@ function withSegments(list, rate) {
 }
 // a band off that is still saved: its own, or a segment set up beyond a plain CW one
 function setUp(b) {
-  return !b.seg || !b.cw || b.rtty || !!b.worker || !!b.khz || b.engine !== ($('[name="decode.engine"]').value || 'v3');
+  return !b.seg || !b.cw || b.rtty || !!b.worker || !!b.khz || !!b.engine;
+}
+// A band's CW engine: '' = the default ([decode] engine, "cw" in [bands]),
+// so a new default reaches it; a named one (cw:v4) stays whatever the
+// default becomes. The file cannot tell "cw:v3" under a v3 default from
+// "cw", so a band on the default's engine reads back as the default.
+const ENGINE_SHORT = { v3: 'v3.1', v4: 'v4.0 DeepCW', v2: 'v2', deepcw: 'DeepCW v1' };
+function defaultEngineText() {
+  const e = $('[name="decode.engine"]').value || 'v3';
+  return `default (${ENGINE_SHORT[e] || e})`;
 }
 
 function bandRow(b, may, rx, rate) {
@@ -1530,7 +1538,7 @@ function bandRow(b, may, rx, rate) {
     `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${b.seg ? ` placeholder="${esc(fmtKhz(b.def / 1000, null, ' '))}" title="empty = the segment's centre; a number moves it"` : ''}${dis}></td>` +
     `<td class="mut span">${span}</td>` +
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
-    `<td><select data-k="engine"${dis}><option value="v3">v3.1</option><option value="v4">v4.0 DeepCW</option><option value="v2">v2</option><option value="deepcw" title="not tested with this skimmer">DeepCW v1 (not tested)</option></select></td>` +
+    `<td><select data-k="engine"${dis}><option value="">${esc(defaultEngineText())}</option><option value="v3">v3.1</option><option value="v4">v4.0 DeepCW</option><option value="v2">v2</option><option value="deepcw" title="not tested with this skimmer">DeepCW v1 (not tested)</option></select></td>` +
     `<td><input type="checkbox" data-k="rtty"${b.rtty ? ' checked' : ''}${dis}></td>` +
     `<td><input data-k="worker" value="${esc(b.worker || '')}" list="worker-names" size="8" placeholder="this PC"${dis}></td>` +
     `<td>${b.seg ? '' : `<button type="button" data-a="del" title="remove this band of your own"${may ? '' : ' disabled'}>✕</button>`}</td>`;
@@ -1634,7 +1642,12 @@ function ft8Show(centres, names) {
 
 // the FT8 tile's own fields change which dials count
 on('#settings', 'input', (e) => { if (e.target.name && e.target.name.startsWith('ft8.')) wsprShow(); });
-on('#settings', 'change', (e) => { if (e.target.name && e.target.name.startsWith('ft8.')) wsprShow(); });
+on('#settings', 'change', (e) => {
+  if (e.target.name && e.target.name.startsWith('ft8.')) wsprShow();
+  if (e.target.name === 'decode.engine') {
+    for (const o of document.querySelectorAll('#band-rows select[data-k=engine] option[value=""]')) o.textContent = defaultEngineText();
+  }
+});
 
 const rowName = (tr) => tr.dataset.seg || tr.querySelector('[data-k=name]').value.trim();
 function readBands() {
@@ -1698,7 +1711,7 @@ on('#band-rows', 'click', (e) => {
 on('#band-add', 'click', () => {
   const list = readBands();
   const on = list.filter((b) => b.on).length < MAX_BANDS;   // a ninth line starts off
-  list.push({ seg: false, def: 0, name: '', khz: '', cw: true, engine: $('[name="decode.engine"]').value || 'v3', rtty: false, on });
+  list.push({ seg: false, def: 0, name: '', khz: '', cw: true, engine: '', rtty: false, on });
   drawBands(list);
   setDirty(true);
 });
@@ -1727,7 +1740,6 @@ function skimsrvParse(text) {
   return { rate, on: cen.filter((hz, i) => hz > 0 && sel[i] === '1'), cal: kv.FreqCalibration || '' };
 }
 function skimsrvApply(r, from) {
-  const dflt = $('[name="decode.engine"]').value || 'v3';
   $('[name="radio.rate"]').value = String(r.rate);
   const list = withSegments(readBands(), r.rate);
   const was = new Set(list.filter((b) => b.on).map((b) => b.name));
@@ -1743,7 +1755,7 @@ function skimsrvApply(r, from) {
       const band = [...SEG_BANDS].reverse().find((s) => hz >= s[1] && hz < s[1] + 2e6);
       let name = band ? band[0] : `${Math.round(hz / 1000)}k`, n = 2;
       while (list.some((x) => x.name === name)) name = `${band ? band[0] : Math.round(hz / 1000) + 'k'}-${n++}`;
-      b = { seg: false, def: 0, name, khz: fmtKhz(hz / 1000, null, ' '), cw: true, engine: dflt, rtty, on: false, worker: '' };
+      b = { seg: false, def: 0, name, khz: fmtKhz(hz / 1000, null, ' '), cw: true, engine: '', rtty, on: false, worker: '' };
       list.push(b);
     }
     if (!was.has(b.name)) { b.cw = true; b.rtty = rtty; }
@@ -1834,8 +1846,9 @@ function fillSettings(d) {
   f.classList.toggle('locked', !d.may_change);
   $('#set-export').disabled = false;                 // anyone may read the file
   $('#lan-find').disabled = false;                   // a search changes nothing
+  const fileEngine = d.values['decode.engine'] || 'v3';
   drawBands(withSegments(d.bands.map((b) => ({ name: b.name, khz: fmtKhz(b.centre_hz / 1000, null, ' '), cw: b.cw,
-                                  engine: b.engine, rtty: b.rtty, on: b.on !== false,
+                                  engine: b.engine === fileEngine ? '' : b.engine, rtty: b.rtty, on: b.on !== false,
                                   worker: b.worker || '' })), bandRate()));
   $('#band-from').textContent = '';
   const lock = $('#set-lock');
@@ -1870,14 +1883,13 @@ function formBody() {
     if (!inp) continue;
     p.set(k, inp.type === 'checkbox' ? String(inp.checked) : inp.value.trim());
   }
-  const dflt = f.elements['decode.engine'].value;
   const lines = [];
   for (const b of readBands()) {
     if (!b.name && !b.khz) continue;
     if (!b.on && !setUp(b)) continue;               // a segment off, nothing set: not a line
     const hz = bandHz(b);
     const modes = [];
-    if (b.cw) modes.push(b.engine === dflt ? 'cw' : `cw:${b.engine}`);
+    if (b.cw) modes.push(b.engine ? `cw:${b.engine}` : 'cw');
     if (b.rtty) modes.push('rtty');
     if (!b.on) modes.push('off');
     if (b.worker) modes.push(`@${b.worker}`);
