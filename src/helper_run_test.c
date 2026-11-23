@@ -36,6 +36,11 @@ static gpointer worker(gpointer u) {
   return NULL;
 }
 
+static gboolean quit_later(gpointer loop) {
+  g_main_loop_quit(loop);
+  return G_SOURCE_REMOVE;
+}
+
 static gboolean cancel_later(gpointer c) {
   g_cancellable_cancel(c);
   return G_SOURCE_REMOVE;
@@ -81,7 +86,7 @@ int main(void) {
   GThread *lt = g_thread_new("long", long_run, &l);
   GMainLoop *loop = g_main_loop_new(NULL, FALSE);
   g_timeout_add(300, cancel_later, l.c);
-  g_timeout_add(600, (GSourceFunc)g_main_loop_quit, loop);
+  g_timeout_add(600, quit_later, loop);
   g_main_loop_run(loop);
   g_thread_join(lt);
   CHECK(!l.ok && g_error_matches(l.e, G_IO_ERROR, G_IO_ERROR_CANCELLED) && l.took_us < 3 * G_USEC_PER_SEC,
