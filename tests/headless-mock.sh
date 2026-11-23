@@ -288,9 +288,10 @@ out=$(PATH=$T/bin:$PATH "$HL" --install-service --config "$T/headless.ini"); rc=
   grep -qx "EnvironmentFile=-$T/cfg/skimmer-for-linux/headless.env" "$UNIT" &&
   grep -qx "Restart=on-failure" "$UNIT" && grep -qx "RestartSec=60" "$UNIT" &&
   grep -qx "RestartPreventExitStatus=2" "$UNIT" && grep -qx "RestartForceExitStatus=75" "$UNIT" &&
+  grep -qx "KillMode=process" "$UNIT" &&
   [[ $(cat "$T/calls") == "--user daemon-reload" ]] &&
   [[ $out == *"systemctl --user enable --now skimmer-headless"* ]]
-check "--install-service: the unit (this binary, the config, restart policy), headless.env, daemon-reload, nothing started" $?
+check "--install-service: the unit (this binary, the config, restart policy, KillMode), headless.env, daemon-reload, nothing started" $?
 echo "SKIM_X=1" >> "$T/cfg/skimmer-for-linux/headless.env"
 out=$(PATH=$T/bin:$PATH "$HL" --install-service); rc=$?
 [[ $rc == 0 && $out == *updated* && $out == *"(kept)"* ]] && grep -q SKIM_X "$T/cfg/skimmer-for-linux/headless.env" &&
