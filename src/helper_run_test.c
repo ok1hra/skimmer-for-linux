@@ -3,12 +3,20 @@
  *     (FT8's two decoder threads and WSPR's: GLib's own cancellable path
  *     corrupted the heap there — helper_run.c), every output read;
  *   - a failed exit names the helper and its stderr;
- *   - a cancel kills a running helper at once (G_IO_ERROR_CANCELLED).
+ *   - a cancel kills a running helper at once (G_IO_ERROR_CANCELLED);
+ *   - a helper dies with the process that started it (the service unit
+ *     signals the skimmer alone).
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
+#include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <glib/gstdio.h>
 
 #include "headless/helper_run.h"
 
@@ -64,8 +72,55 @@ static gpointer long_run(gpointer u) {
   return NULL;
 }
 
+/* alive and not a zombie */
+static gboolean running(int pid) {
+  char *path = g_strdup_printf("/proc/%d/stat", pid), *st = NULL;
+  gboolean on = g_file_get_contents(path, &st, NULL, NULL);
+  const char *paren = on ? strrchr(st, ')') : NULL;
+  on = paren && paren[1] == ' ' && paren[2] != 'Z' && paren[2] != 'X';
+  g_free(st);
+  g_free(path);
+  return on;
+}
+
+/* A child process starts a helper and is killed: the helper goes too.
+ * Before any thread of this process starts (the fork). */
+static void dies_with_parent(void) {
+  char *dir = g_dir_make_tmp("helper-run-XXXXXX", NULL);
+  char *pidf = g_build_filename(dir, "pid", NULL);
+  char *cmd = g_strdup_printf("echo $$ > %s.t && mv %s.t %s && exec /bin/sleep 20", pidf, pidf, pidf);
+  const pid_t child = fork();
+  if (child == 0) {
+    const char *argv[] = { "/bin/sh", "-c", cmd, NULL };
+    char *out = NULL;
+    skim_hd_helper_run(argv, "/", "sleep", NULL, &out, NULL);
+    _exit(0);
+  }
+  char *txt = NULL;
+  for (int i = 0; i < 300 && !g_file_get_contents(pidf, &txt, NULL, NULL); i++) { g_usleep(10000); }
+  const int helper = txt ? atoi(txt) : 0;
+  const gboolean was = helper > 0 && running(helper);
+  kill(child, SIGKILL);
+  waitpid(child, NULL, 0);
+  gboolean gone = FALSE;
+  for (int i = 0; i < 200 && !gone; i++) {
+    gone = !running(helper);
+    if (!gone) { g_usleep(10000); }
+  }
+  if (!gone && helper > 0) { kill(helper, SIGKILL); }
+  CHECK(was && gone, "a helper dies with the process that started it (pid %d: %s)", helper,
+        !was ? "never ran" : gone ? "gone" : "still running");
+  g_unlink(pidf);
+  g_rmdir(dir);
+  g_free(txt);
+  g_free(cmd);
+  g_free(pidf);
+  g_free(dir);
+}
+
 int main(void) {
   printf("=== skimmer-helper-run-test ===\n");
+  dies_with_parent();
   shared = g_cancellable_new();
   until = g_get_monotonic_time() + 4 * G_USEC_PER_SEC;
   GThread *t[4];

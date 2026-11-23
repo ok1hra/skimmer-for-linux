@@ -2296,6 +2296,10 @@ int main(int argc, char **argv) {
   if (skim_hd_service_under_systemd()) {
     g_message("service: running under systemd — exit 3 retries after a minute, a "
               "restart re-executes in place%s", h->console_s ? "" : "; console table off");
+    if (skim_hd_service_unit_stale()) {
+      g_warning("service: the unit predates KillMode=process — every stop of the AppImage "
+                "ends in SIGBUS (status=7/BUS); run --install-service again");
+    }
   }
 
   /* Callsign dictionary: loaded once for every pipeline, kept current; the

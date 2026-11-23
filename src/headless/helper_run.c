@@ -9,15 +9,24 @@
  * 30 without. So a cancel force-exits the child instead, and communicate
  * returns as its pipes close.
  *
+ * A helper dies with the process that started it (PR_SET_PDEATHSIG): a
+ * stop under systemd signals the skimmer alone (service.c).
+ *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include "helper_run.h"
 
+#include <signal.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 
-static void lower_priority(gpointer unused) {
+/* nice 10, and the helper dies with the skimmer: the service unit sends
+ * its SIGTERM to the skimmer alone (KillMode=process, service.c), so a
+ * helper running then is not killed by systemd */
+static void child_setup(gpointer unused) {
   (void)unused;
   if (nice(10) == -1) { /* as it is */ }
+  prctl(PR_SET_PDEATHSIG, SIGKILL);
 }
 
 static void kill_helper(GCancellable *c, gpointer p) {
@@ -32,7 +41,7 @@ gboolean skim_hd_helper_run(const char *const *argv, const char *cwd, const char
   GSubprocessLauncher *l = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE |
                                                      G_SUBPROCESS_FLAGS_STDERR_PIPE);
   g_subprocess_launcher_set_cwd(l, cwd);
-  g_subprocess_launcher_set_child_setup(l, lower_priority, NULL, NULL);
+  g_subprocess_launcher_set_child_setup(l, child_setup, NULL, NULL);
   GSubprocess *p = g_subprocess_launcher_spawnv(l, argv, error);
   g_object_unref(l);
   if (!p) { return FALSE; }

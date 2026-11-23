@@ -45,4 +45,9 @@ gboolean skim_hd_service_uninstall(GError **error);
 /* Running as a systemd service (INVOCATION_ID set by systemd). */
 gboolean skim_hd_service_under_systemd(void);
 
+/* The unit --install-service wrote is older than KillMode=process: every
+ * stop of an AppImage ends in SIGBUS (status=7/BUS) until it is written
+ * again. */
+gboolean skim_hd_service_unit_stale(void);
+
 G_END_DECLS

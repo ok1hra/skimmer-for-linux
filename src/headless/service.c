@@ -32,6 +32,16 @@ gboolean skim_hd_service_under_systemd(void) {
   return id && id[0];
 }
 
+gboolean skim_hd_service_unit_stale(void) {
+  char *path = unit_path(), *text = NULL;
+  gboolean stale = g_file_get_contents(path, &text, NULL, NULL) &&
+                   g_str_has_prefix(text, "# Written by `skimmer-headless --install-service`") &&
+                   !strstr(text, "\nKillMode=process\n");
+  g_free(text);
+  g_free(path);
+  return stale;
+}
+
 char *skim_hd_service_exe(void) {
   const char *ai = g_getenv("APPIMAGE");
   if (ai && g_path_is_absolute(ai)) { return g_strdup(ai); }
@@ -92,6 +102,11 @@ char *skim_hd_service_unit(const char *exe, const char *config) {
       "RestartForceExitStatus=75\n"
       "# SIGTERM stops it cleanly and frees the radio\n"
       "TimeoutStopSec=20\n"
+      "# the SIGTERM to the skimmer alone: an AppImage's FUSE server, in the\n"
+      "# same cgroup, unmounts on its own SIGTERM and the skimmer, still\n"
+      "# exiting from that mount, dies of SIGBUS; the server goes by itself\n"
+      "# when the skimmer is gone, the decoder helpers die with it\n"
+      "KillMode=process\n"
       "\n"
       "[Install]\n"
       "WantedBy=default.target\n",
