@@ -31,7 +31,7 @@ const Wf = (() => {
   const ft8 = () => typeof Ft8Pal !== 'undefined' && Ft8Pal.isOpen();
   const abw = () => (pal() ? RttyPal.bandwidth() : opt.abw);
 
-  let ws = null, active = false, retry = 0, hello = null, band = -1, shownBand = '', leaveT = 0;
+  let ws = null, active = false, retry = 0, hello = null, band = -1, shownBand = '', leaveT = 0, away = false;
   let W = 0, H = 0, cv, g, sc, sg, sp, spg, rowCv, rowG;
   let view = { lo: 0, hi: 0 };                        // what the canvas shows now
   let floorB = null, envelope = null, rowTimes = [];
@@ -355,6 +355,7 @@ const Wf = (() => {
     if (au.on) { au.on = false; audioSend(); }
     if (forget) au.f = 0;
     audioUi();
+    if (away) { awayUi(); clearTimeout(leaveT); leaveT = setTimeout(close, 30000); }   // muted away: stop as away does
   }
   function onAudio(buf) {
     if (!au.on) return;
@@ -867,8 +868,27 @@ const Wf = (() => {
 
   // Away (another tab, a hidden window) the stream stops after 30 s — the
   // skimmer then computes nothing for this page; back sooner, nothing stopped.
+  // Not while listening: the station stays on the air until muted (a pill
+  // in the corner says what is heard, mutes it, leads back), then 30 s.
+  function awayUi() {
+    let el = $('#wf-away');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'wf-away';
+      el.innerHTML = '<button type="button" class="wf-away-go" title="back to the waterfall"></button>' +
+        '<button type="button" class="wf-away-mute" title="stop listening">mute</button>';
+      el.querySelector('.wf-away-go').addEventListener('click', () => show('waterfall'));
+      el.querySelector('.wf-away-mute').addEventListener('click', () => audioOff(false));
+      document.body.appendChild(el);
+    }
+    el.hidden = !(away && au.on);
+    const b = bandInfo();
+    el.querySelector('.wf-away-go').textContent = `listening ${b ? `${b.name} · ` : ''}${fmtKhz(au.f / 1000, 2)} kHz`;
+  }
   function enter() {
     mount();
+    away = false;
+    awayUi();
     clearTimeout(leaveT);
     active = true;
     size();
@@ -878,12 +898,15 @@ const Wf = (() => {
     if (ws && ws.readyState === 1) send();
   }
   function close() {
+    away = false;
     active = false;
     audioOff(false);
     if (ws) { const s = ws; ws = null; s.close(1000, 'away'); }
   }
   function leave() {
+    away = true;
     clearTimeout(leaveT);
+    if (au.on) { awayUi(); return; }
     leaveT = setTimeout(close, 30000);
   }
   return { enter, leave, listen, retune, state, paletteChanged, ft8Opened, ft8Focus, ft8Closed, ft8Ui, ft8Stamp };

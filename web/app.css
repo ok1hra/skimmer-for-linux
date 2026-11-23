@@ -519,6 +519,13 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .rp-rx .rtty-tok:hover, .rp-rx .rtty-tok.hover { text-decoration: underline; }
 .rp-rx .rtty-rx-char { color: var(--rtty-rx-char-color, inherit); }
 /* RTTY: a button of its own, in the RTTY colour; open = filled */
+/* listening from another tab: what is heard, mute, back to the waterfall */
+#wf-away { position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; gap: 1px; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+#wf-away[hidden] { display: none; }
+#wf-away button { font: inherit; font-size: 13px; letter-spacing: .04em; padding: 6px 12px; border: 1px solid #ffc440; cursor: pointer; }
+#wf-away .wf-away-go { color: var(--hot-ink); background: #ffc440; border-radius: 2px 0 0 2px; }
+#wf-away .wf-away-mute { color: #ffc440; background: var(--panel); border-radius: 0 2px 2px 0; }
+#wf-away button:hover { filter: brightness(1.15); }
 .wf-bar .wf-rtty { font-size: 12px; font-weight: 700; letter-spacing: .1em; color: var(--rtty);
                    border: 1px solid var(--rtty); border-radius: 2px; padding: 3px 9px; background: rgba(255,184,138,.08); }
 .wf-bar .wf-rtty:hover { color: var(--fg); background: rgba(255,184,138,.2); }
