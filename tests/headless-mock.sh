@@ -74,9 +74,23 @@ unset SKIM_DEEPCW_MODEL SKIM_CW_ENGINE
 "$HL" --config "$T/headless.ini" > "$T/log" 2>&1 &
 PID=$!
 
+# A feed line from fd $1 into $line, 5 s at most. bash's read keeps what it
+# took when its timeout fires mid-line (a line that arrives just then, or a
+# loaded machine that runs the reader late) — dropped, that cut the line's
+# head off ("X de TEST-#: …"). The piece waits here for the rest instead.
+partial=
+feed_line() {
+  local part rc
+  IFS= read -r -t 5 part <&"$1"
+  rc=$?
+  if ((rc == 0)); then line=$partial$part; partial=; return 0; fi
+  ((rc > 128)) && partial+=$part
+  return 1
+}
+
 # the telnet feed: log in, wait for the mock's calls (≤ 90 s: two readings,
 # 8 s settle, one 8 s message per round)
-got= rgot=
+got= rgot= partial=
 for _ in $(seq 50); do
   if { exec 3<>/dev/tcp/127.0.0.1/$FEED; } 2>/dev/null; then break; fi
   sleep 0.2
@@ -85,7 +99,7 @@ if { true >&3; } 2>/dev/null; then
   printf 'TEST\r\n' >&3
   end=$((SECONDS + 90))
   while ((SECONDS < end)) && [[ -z $got || -z $rgot ]]; do
-    if IFS= read -r -t 5 line <&3; then
+    if feed_line 3; then
       [[ $line == *OK1MCK* && -z $got ]] && got=$line
       [[ $line == *OK1RTY* && -z $rgot ]] && rgot=$line
     fi
@@ -356,7 +370,7 @@ http_port=$H4
 EOF
 XDG_STATE_HOME=$T/state4 "$HL" --config "$T/v4.ini" > "$T/v4.log" 2>&1 &
 P4=$!
-g4=
+g4= partial=
 for _ in $(seq 50); do
   if { exec 4<>/dev/tcp/127.0.0.1/$F4; } 2>/dev/null; then break; fi
   sleep 0.2
@@ -365,7 +379,7 @@ if { true >&4; } 2>/dev/null; then
   printf 'TEST\r\n' >&4
   end=$((SECONDS + 120))
   while ((SECONDS < end)) && [[ -z $g4 ]]; do
-    if IFS= read -r -t 5 line <&4; then [[ $line == *OK1MCK* ]] && g4=$line; fi
+    if feed_line 4; then [[ $line == *OK1MCK* ]] && g4=$line; fi
   done
   exec 4>&-
 fi

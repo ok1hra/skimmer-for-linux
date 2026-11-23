@@ -71,15 +71,29 @@ start h; HPID=$!
 sleep 1
 start w; WPID=$!
 
+# A feed line from fd $1 into $line, 5 s at most. bash's read keeps what it
+# took when its timeout fires mid-line (a line that arrives just then, or a
+# loaded machine that runs the reader late) — dropped, that cut the line's
+# head off ("X de TEST-#: …"). The piece waits here for the rest instead.
+partial=
+feed_line() {
+  local part rc
+  IFS= read -r -t 5 part <&"$1"
+  rc=$?
+  if ((rc == 0)); then line=$partial$part; partial=; return 0; fi
+  ((rc > 128)) && partial+=$part
+  return 1
+}
+
 # the hub's feed: log in, wait for both calls (the hub's own 40m, pc2's 20m)
 for _ in $(seq 50); do { exec 3<>/dev/tcp/127.0.0.1/$HFEED; } 2>/dev/null && break; sleep 0.2; done
-got40= got20=
+got40= got20= partial=
 if { true >&3; } 2>/dev/null; then
   IFS= read -r -t 3 -d ':' _ <&3
   printf 'TEST\r\n' >&3
   end=$((SECONDS + 100))
   while (( SECONDS < end )) && [[ -z $got40 || -z $got20 ]]; do
-    IFS= read -r -t 5 line <&3 || continue
+    feed_line 3 || continue
     [[ $line == *"OK1HUB-#:"*" 7046.5 "*"OK1MCK"* ]] && got40=1
     [[ $line == *"OK1HUB-#:"*"14046.5 "*"OK1MCK"* ]] && got20=1
     echo "$line" >> "$T/feed"
