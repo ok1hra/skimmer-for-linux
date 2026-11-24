@@ -147,6 +147,7 @@ struct _SkimWfAudio {
   double  offset, rate;                /* tuned − centre (Hz), the IQ rate      */
   double  nco, bfo;                    /* phases (rad)                          */
   double  agc;                         /* the level followed                    */
+  double  pmax;                        /* the loudest 10 ms since the last take  */
   GByteArray *pcm;                     /* µ-law waiting for the main loop       */
 };
 typedef SkimWfAudio Audio;
@@ -207,8 +208,10 @@ static void audio_feed(Audio *a, const float *iq, guint n) {
     if (m != 80) { continue; }
     xresample(a->nar);
     guint8 u[80];
+    double p = 0;
     for (int k = 0; k < 80; k++) {
       const double I = a->out[2 * k], Q = a->out[2 * k + 1];
+      p += I * I + Q * Q;
       const double y = I * cos(a->bfo) - Q * sin(a->bfo);   /* up to the BFO tone */
       a->bfo = fmod(a->bfo + bstep, 2 * G_PI);
       const double mag = sqrt(I * I + Q * Q);
@@ -217,6 +220,7 @@ static void audio_feed(Audio *a, const float *iq, guint n) {
       a->agc = MAX(a->agc, 1e-7);
       u[k] = ulaw(0.35 * y / a->agc);
     }
+    a->pmax = MAX(a->pmax, p / 80);                 /* the S-meter: before the AGC */
     if (a->pcm->len < SKIM_WF_AUDIO_RATE * 2) { g_byte_array_append(a->pcm, u, 80); }  /* ≤ 2 s */
   }
 }
@@ -226,6 +230,12 @@ SkimWfAudio *skim_wf_audio_new(double rate, double offset, double bw) {
 }
 void skim_wf_audio_free(SkimWfAudio *a) { audio_free(a); }
 void skim_wf_audio_feed(SkimWfAudio *a, const float *iq, guint n) { audio_feed(a, iq, n); }
+static double level_take(Audio *a) {
+  const double db = a->pmax > 1e-20 ? 10 * log10(a->pmax) : -200;
+  a->pmax = 0;
+  return db;
+}
+double skim_wf_audio_level(SkimWfAudio *a) { return level_take(a); }
 GByteArray *skim_wf_audio_take(SkimWfAudio *a) {
   GByteArray *p = a->pcm;
   a->pcm = g_byte_array_new();
@@ -360,10 +370,11 @@ static gboolean audio_tick(gpointer user) {
   g_mutex_lock(&b->lock);
   GByteArray *pcm = v->au->pcm;
   v->au->pcm = g_byte_array_new();
+  const float lv = (float)level_take(v->au);
   g_mutex_unlock(&b->lock);
   if (pcm->len) {
     const guint n = MIN(pcm->len, 65535u);
-    guint8 *msg = g_malloc(8 + n);
+    guint8 *msg = g_malloc(8 + n + 4);
     const guint16 nl = GUINT16_TO_LE((guint16)n);
     const guint32 sq = GUINT32_TO_LE(++v->aseq);
     msg[0] = 2;
@@ -371,7 +382,11 @@ static gboolean audio_tick(gpointer user) {
     memcpy(msg + 2, &nl, 2);
     memcpy(msg + 4, &sq, 4);
     memcpy(msg + 8, pcm->data + pcm->len - n, n);
-    soup_websocket_connection_send_binary(v->c, msg, 8 + n);
+    guint32 lb;
+    memcpy(&lb, &lv, 4);
+    lb = GUINT32_TO_LE(lb);
+    memcpy(msg + 8 + n, &lb, 4);
+    soup_websocket_connection_send_binary(v->c, msg, 8 + n + 4);
     g_free(msg);
   }
   g_byte_array_unref(pcm);

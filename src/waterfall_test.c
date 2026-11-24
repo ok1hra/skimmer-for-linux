@@ -130,6 +130,15 @@ int main(void) {
         off += n;
       }
       GByteArray *pcm = skim_wf_audio_take(au);
+      const double lv = skim_wf_audio_level(au);
+      if (k == 0) {
+        g_snprintf(what, sizeof(what), "the S-meter's level on the -40 dBFS tone: %.1f dBFS", lv);
+        check(what, lv > -41.5 && lv < -38.5);
+      } else {
+        /* the loudest 10 ms of the second: the filters' start is in it */
+        g_snprintf(what, sizeof(what), "… 300 Hz off it, 100 Hz wide, 20 dB under it at least: %.1f dBFS", lv);
+        check(what, lv < -60);
+      }
       double s1 = 0, s2 = 0, e = 0;
       const double cf = 2 * cos(2 * G_PI * SKIM_WF_AUDIO_BFO / SKIM_WF_AUDIO_RATE);
       const guint skip = 2000;                    /* the filters and AGC settle */

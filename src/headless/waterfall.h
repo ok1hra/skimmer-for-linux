@@ -22,8 +22,10 @@
  *   the band shifted, WDSP's resampler to 8 kHz, a second one at 8 kHz as
  *   the narrow filter, a 600 Hz BFO, an AGC — and "audio=0" stops it; the
  *   audio goes out every 100 ms as binary: u8 version (2), u8 band, u16 n,
- *   u32 seq, n bytes of G.711 µ-law at 8 kHz (8 kB/s). It runs only while
- *   on; SKIM_WF_MAX_LISTENERS at once.
+ *   u32 seq, n bytes of G.711 µ-law at 8 kHz (8 kB/s), then f32 the
+ *   passband's level in dBFS (the loudest 10 ms of the packet, before the
+ *   AGC: the page's S-meter). It runs only while on;
+ *   SKIM_WF_MAX_LISTENERS at once.
  * History: the band keeps a full-resolution row every 0.2 s for 4 minutes
  *   while watched; "hist=ROWS" (with a new window) asks for the picture so
  *   far at the new window and width — binary: u8 version (3), u8 band, u16
@@ -105,5 +107,7 @@ SkimWfAudio *skim_wf_audio_new(double rate, double offset, double bw);
 void         skim_wf_audio_free(SkimWfAudio *a);
 void         skim_wf_audio_feed(SkimWfAudio *a, const float *iq, guint n);
 GByteArray  *skim_wf_audio_take(SkimWfAudio *a);         /* the caller unrefs */
+/* the passband's level, dBFS: its loudest 10 ms since the last call */
+double       skim_wf_audio_level(SkimWfAudio *a);
 
 G_END_DECLS
