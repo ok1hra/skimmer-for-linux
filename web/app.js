@@ -100,6 +100,7 @@ function show(name) {
   for (const s of document.querySelectorAll('main > section')) s.hidden = s.id !== `tab-${name}`;
   try { sessionStorage.setItem('skimmer-tab', name); } catch (e) { /* private window */ }
   if (tabs[name] && tabs[name].enter) tabs[name].enter();
+  if (typeof Tour !== 'undefined') Tour.sync();         // the "?" on the pages with a tour
 }
 for (const b of document.querySelectorAll('nav button[data-tab]')) b.addEventListener('click', () => show(b.dataset.tab));
 // About: a palette over whatever tab is open (Esc or a click beside it closes it)

@@ -667,3 +667,28 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .ab-list dd { margin: 0; }
 .ab-dev { border-top: 1px solid var(--ln); padding-top: 10px; }
 @media (max-width: 560px) { .ab-list { grid-template-columns: 1fr; } .ab-list dd { margin-bottom: 4px; } }
+
+/* ---- the guided tour (tour.js): the "?" in the menu, the page dimmed and
+   blurred around one part, a card with what it is ---- */
+nav .tour-q { align-self: center; width: 26px; height: 26px; padding: 0; margin: 0 8px; font-weight: 700;
+              font-size: 15px; letter-spacing: 0; line-height: 1; color: var(--accent);
+              border: 1px solid var(--accent); border-radius: 50%; }
+nav .tour-q:hover { background: var(--accent); color: var(--hot-ink); }
+.tour { position: fixed; inset: 0; z-index: 1000; }
+.tour[hidden] { display: none !important; }
+.tour-shade { position: fixed; background: rgba(4,8,13,.62); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+              transition: all .18s ease; }
+.tour-ring { position: fixed; border: 2px solid var(--accent); border-radius: 4px; box-shadow: 0 0 0 4px rgba(57,217,138,.18);
+             transition: all .18s ease; }
+.tour-card { position: fixed; width: min(400px, calc(100vw - 16px)); padding: 12px 14px 10px; background: var(--deep);
+             border: 1px solid var(--accent); border-radius: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.6); color: var(--fg); }
+.tour-n { font-size: 11px; letter-spacing: .1em; color: var(--mut); }
+.tour-card h3 { margin: 2px 0 6px; font-size: 17px; letter-spacing: .03em; color: var(--accent); }
+.tour-x { margin: 0 0 10px; font-size: 14px; line-height: 1.45; }
+.tour-btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.tour-btns button { font: 13px 'RC', sans-serif; padding: 4px 10px; border-radius: 2px; cursor: pointer;
+                    background: none; color: var(--fg); border: 1px solid var(--ln2); }
+.tour-btns .tour-end { margin-right: auto; color: var(--mut); border-color: transparent; }
+.tour-btns .tour-end:hover { color: var(--bad); }
+.tour-btns .primary { background: var(--accent); color: var(--hot-ink); border-color: var(--accent); font-weight: 700; }
+body.touring { overflow: hidden; }
