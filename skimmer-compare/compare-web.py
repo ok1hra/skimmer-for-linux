@@ -112,7 +112,7 @@ def prop(d):
     return {k: d.get(k) for k in ("k", "n", "p", "lo", "hi")}
 
 
-def view(cfg, S, feeds, engine, T_name, live, scp_n):
+def view(cfg, S, feeds, engine, T_name, live, scp_n, joined=None):
     """What data.json holds of one summarize() result — a whitelist."""
     label, what = cfg.engines.get(engine, (engine, ""))
     rec, bust, lat, T = S["recall"], S["bust"], S["latency"], S["timeline"]
@@ -121,7 +121,9 @@ def view(cfg, S, feeds, engine, T_name, live, scp_n):
     return {
         "state": "ok",
         "session": {"T": T_name, "start": S["range"]["from"], "end": S["range"]["to"],
-                    "live": live, "stopped": bool(feeds.get("stopped"))},
+                    "live": live, "stopped": bool(feeds.get("stopped")),
+                    # [web] since: one decoder joined over these sessions
+                    "joined": joined},
         "feeds": {k: bool((feeds.get(src) or {}).get("up"))
                   for k, src in (("L", "local"), ("W", "remote"), ("RBN", "rbn"))},
         # the recorder's word on the local feed's port: numbers only
@@ -202,17 +204,20 @@ def events_csv(evs):
     return out.getvalue().encode()
 
 
-def spots_tsv(spots, what):
+def spots_tsv(spots, what, ta=None):
     lines = ["# %s — received_utc<TAB>the line as the skimmer sent it\n" % what]
-    lines += ["%s\t%s\n" % (iso(sp.t), sp.line.replace("\t", " ")) for sp in spots]
+    lines += ["%s\t%s\n" % (iso(sp.t), sp.line.replace("\t", " ")) for sp in spots
+              if ta is None or sp.t >= ta]
     return "".join(lines).encode()
 
 
-def rbn_gz(rbn):
+def rbn_gz(rbn, ta=None):
     rows = []
     for band in rbn.t:
         T, F, Cc, Ss, N = rbn.t[band], rbn.f[band], rbn.c[band], rbn.s[band], rbn.snr[band]
         for p in range(len(T)):
+            if ta is not None and T[p] < ta:
+                continue
             rows.append((T[p], band, rbn.spotters[Ss[p]], round(F[p], 1), rbn.calls[Cc[p]], N[p]))
     rows.sort()
     buf = io.StringIO()
@@ -250,8 +255,11 @@ class App:
         return cat
 
     def current(self):
-        """The current session (frozenset of its <T>): the one recording."""
-        return frozenset(s["T"] for s in self.catalog() if s["current"])
+        """The sessions the page covers (frozenset of their <T>): the one
+        recording, and with [web] since every session that wrote since then."""
+        since = self.cfg.web_since
+        return frozenset(s["T"] for s in self.catalog()
+                         if s["current"] or (since is not None and (s["end"] or s["start"]) >= since))
 
     def want(self, sel):
         """True when exactly the sessions sel are loaded; else start (or keep)
@@ -332,18 +340,26 @@ class App:
         with st.lock:
             segs = compared_time(st, P, now, self.cfg.default_engine)[3]
             E = engine_summary(segs)
-            # the decoder of the newest compared time
-            engine = max(E, key=lambda e: E[e]["last"]) if E else self.cfg.default_engine
+            # [web] engine, else the decoder of the newest compared time
+            engine = self.cfg.web_engine or (
+                max(E, key=lambda e: E[e]["last"]) if E else self.cfg.default_engine)
             A = analyze(st, self.cfg.local_windows, self.cfg.remote_windows, self.scp, P,
                         now, engine, self.cfg.default_engine, self.cfg.call_filter)
         live = [s for s in A.sessions if s["live"]] or A.sessions[-1:]
         ta, tb = (live[0]["start"], live[0]["end"]) if live else (now, now)
         T_name = live[0]["T"] if live else ""
+        joined, name = None, T_name
+        since = self.cfg.web_since
+        if since is not None and A.sessions:
+            # one decoder since a time, over every session of that time
+            ta = max(since, min(s["start"] for s in A.sessions))
+            joined = {"since": since, "sessions": [s["T"] for s in A.sessions]}
+            name = "%s-since-%s" % (engine, time.strftime("%Y%m%d-%H%M", time.gmtime(since)))
         S = summarize(A, ta, tb + 1)
         D = view(self.cfg, S, self.feeds(st), engine, T_name, bool(live and live[0]["live"]),
-                 len(self.scp))
-        self.build_downloads(st, A, ta, tb + 1, T_name, now)
-        self.session_name = re.sub(r"[^0-9A-Za-z-]", "", T_name)
+                 len(self.scp), joined)
+        self.build_downloads(st, A, ta, tb + 1, name if joined else "session " + T_name, now)
+        self.session_name = re.sub(r"[^0-9A-Za-z.-]", "", name)
         D["downloads"] = [{"path": p.lstrip("/"), "what": DOWNLOADS[p][0],
                            "bytes": len(self.downloads[p])}
                           for p in DOWNLOADS if p in self.downloads]
@@ -353,11 +369,11 @@ class App:
         d = dict(self.downloads)
         with st.lock:
             d["/download/events.csv"] = events_csv([e for e in A.events if ta <= e["t0"] < tb])
-            d["/download/spots-L.tsv"] = spots_tsv(st.L, "Linux skimmer (L) CW spots, session " + T_name)
-            d["/download/spots-W.tsv"] = spots_tsv(st.R, "Windows skimmer (W) spots, session " + T_name)
+            d["/download/spots-L.tsv"] = spots_tsv(st.L, "Linux skimmer (L) CW spots, " + T_name, ta)
+            d["/download/spots-W.tsv"] = spots_tsv(st.R, "Windows skimmer (W) spots, " + T_name, ta)
             sess, when = self.rbn_built
             if sess != T_name or now - when >= RBN_EVERY_S or "/download/rbn.tsv.gz" not in d:
-                d["/download/rbn.tsv.gz"] = rbn_gz(st.rbn)
+                d["/download/rbn.tsv.gz"] = rbn_gz(st.rbn, ta)
                 self.rbn_built = (T_name, now)
         self.downloads = d
 

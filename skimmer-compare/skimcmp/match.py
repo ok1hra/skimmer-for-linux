@@ -548,4 +548,5 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine, call
                                            "other": n})
     A.silences.sort(key=lambda s: s["t0"])
     A.rbn_n, A.rbn_own = store.rbn.n, store.rbn.own
+    A.rbn_count = store.rbn.count        # (ta, tb) → (n, own): a part of the time
     return A

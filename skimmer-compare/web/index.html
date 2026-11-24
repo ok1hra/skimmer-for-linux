@@ -14,7 +14,7 @@
     <h1>Skimmer compare</h1>
     <p class="sub"><span class="key key-L"></span><b>L</b> Linux skimmer
       <span class="vs">vs</span> <span class="key key-W"></span><b>W</b> Windows skimmer
-      <span class="muted">· two CW skimmers on the same air, live, the current session</span></p>
+      <span class="muted" id="scope">· two CW skimmers on the same air, live, the current session</span></p>
   </div>
   <div class="status" id="status"></div>
 </header>
@@ -133,9 +133,9 @@
   </section>
 
   <section class="card" id="dl-card" hidden>
-    <h2>Data of this session</h2>
+    <h2>Data behind the numbers</h2>
     <p class="explain">The recordings behind the numbers above, for your own analysis. They are
-      rebuilt every minute (the RBN file every 10 minutes) and cover the current session only.</p>
+      rebuilt every minute (the RBN file every 10 minutes) and cover <span id="dl-scope">the current session only</span>.</p>
     <ul id="downloads" class="downloads"></ul>
     <details>
       <summary>File formats</summary>

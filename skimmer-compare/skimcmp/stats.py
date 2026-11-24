@@ -357,6 +357,9 @@ def summarize(A, ta, tb):
         cats[k] = cats.get(k, 0) + 1
     rec = recall_block(evs)
     bust = bust_block(evs)
+    # the RBN reference of [ta, tb) — all of it when the range covers the store
+    count = getattr(A, "rbn_count", None)
+    rbn_n, rbn_own = count(ta, tb) if count else (A.rbn_n, A.rbn_own)
     lat = latency_block(evs)
     verdicts = [("Recall", rec["winner"], rec["verdict"]),
                 ("Precision", bust["winner"], bust["verdict"]),
@@ -374,7 +377,7 @@ def summarize(A, ta, tb):
             "spots_L": sum(ta <= sp.t < tb for _, sp in A.Lin),
             "spots_R": sum(ta <= sp.t < tb for _, sp in A.Rcq),
             "spots_R_all": sum(ta <= sp.t < tb for _, sp in A.Rin),
-            "events": len(evs), "rbn_spots": A.rbn_n, "rbn_own": A.rbn_own,
+            "events": len(evs), "rbn_spots": rbn_n, "rbn_own": rbn_own,
             # CQ spots of the compared time the local callsign filter left out
             **{"filtered_" + k: filtered(A, k, ta, tb) for k in ("L", "R")}},
         "cats": cats,

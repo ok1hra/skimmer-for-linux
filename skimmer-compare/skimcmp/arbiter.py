@@ -26,6 +26,7 @@ class RbnIndex:
         self.by_call = {}                        # (band, cid) → array of positions
         self.n = 0
         self.own = 0                             # dropped: our own spotter
+        self.own_t = array("q")                  # … and when
         self.late = 0                            # dropped: older than last_t
         self.last_t = None
 
@@ -40,6 +41,7 @@ class RbnIndex:
         base = sp.spotter.split("-")[0]
         if base in self.exclude:
             self.own += 1
+            self.own_t.append(sp.t)
             return
         # Sessions are read one after another, and two that overlap (a short
         # run started beside the running recorder) recorded the same RBN
@@ -70,6 +72,11 @@ class RbnIndex:
         a.append(pos)
         self.n += 1
         self.last_t = sp.t
+
+    def count(self, ta, tb):
+        """(RBN spots kept, our own dropped) with ta <= t < tb."""
+        n = sum(bisect_left(T, tb) - bisect_left(T, ta) for T in self.t.values())
+        return n, sum(1 for t in self.own_t if ta <= t < tb)
 
     def spotters_of(self, call, band, ta, tb, f, df):
         """Distinct other spotters of call on band in [ta, tb], |Δf| ≤ df."""

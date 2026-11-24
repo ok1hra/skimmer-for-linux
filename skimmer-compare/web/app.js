@@ -150,7 +150,15 @@ function render() {
   renderBands();
   renderTimeline();
   renderDownloads();
-  $('#updated').textContent = `Current session since ${utc(D.session.start)} UTC · `
+  const J = D.session.joined;
+  $('#scope').textContent = J
+    ? `· two CW skimmers on the same air, live, decoder ${D.names.decoder} since ${utc(J.since)} UTC`
+    : '· two CW skimmers on the same air, live, the current session';
+  $('#dl-scope').textContent = J ? `the time since ${utc(D.session.start)} UTC (L's other decoders' time is in them, not compared)`
+    : 'the current session only';
+  $('#updated').textContent = (J ? `Decoder ${D.names.decoder} since ${utc(D.session.start)} UTC, `
+    + `${J.sessions.length} recording session${J.sessions.length === 1 ? '' : 's'} joined · `
+    : `Current session since ${utc(D.session.start)} UTC · `)
     + `numbers from ${hms(D.generated)} UTC · they reload every ${Math.round((D.every_s || 60))} s`;
 }
 
@@ -174,8 +182,13 @@ function renderFacts() {
   const state = s.live ? 'recording' : s.stopped ? 'stopped' : 'not recording';
   const share = (a, b) => (b ? Math.round(100 * a / b) + ' %' : '—');
   $('#facts').replaceChildren(
-    ...fact('Session', el('b', null, `${utc(s.start)} – ${end} UTC`),
-      el('span', { cls: 'muted' }, ` · ${state} · ${dur(t.span_s)} recorded`)),
+    ...(s.joined
+      ? fact('Data', el('b', null, `${utc(s.start)} – ${end} UTC`),
+        el('span', { cls: 'muted' }, ` · only the time L ran decoder ${D.names.decoder}, `
+          + `${s.joined.sessions.length} recording session${s.joined.sessions.length === 1 ? '' : 's'} joined`
+          + ` · ${state} · ${dur(t.span_s)} recorded`))
+      : fact('Session', el('b', null, `${utc(s.start)} – ${end} UTC`),
+        el('span', { cls: 'muted' }, ` · ${state} · ${dur(t.span_s)} recorded`))),
     ...fact('Compared', t.common_from == null ? 'nothing yet'
       : [el('b', null, `${utc(t.common_from)} – ${utc(t.common_to)} UTC`),
         el('span', { cls: 'muted' }, ` · ${dur(t.common_s)} with both feeds up (${share(t.common_s, t.span_s)} of the session)`)]),

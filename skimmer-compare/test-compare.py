@@ -403,6 +403,50 @@ def web(root, A_T, B_T):
         p.wait(5)
 
 
+def web_joined(root, A_T, B_T):
+    print("=== web joined — [web] engine + since: one decoder over several sessions")
+    ini = os.path.join(root, "compare-joined.ini")
+    with open(os.path.join(root, "compare.ini")) as fh:
+        txt = fh.read()
+    with open(ini, "w") as fh:
+        fh.write(txt.replace("[web]\n", "[web]\nengine = cw-v2\nsince = %s11:00:00\n" % DAY))
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    p = subprocess.Popen([os.path.join(HERE, "compare-web.py"), "-c", ini, "--port", str(port)],
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        base = "http://127.0.0.1:%d" % port
+        D = {}
+        for _ in range(100):
+            try:
+                D = json.load(urllib.request.urlopen(base + "/data.json", timeout=1))
+                if D.get("state") == "ok":
+                    break
+            except OSError:
+                pass
+            time.sleep(0.1)
+        check(D.get("state") == "ok", "data.json ready (%s)" % D.get("state"))
+        J = (D.get("session") or {}).get("joined") or {}
+        check(D["names"]["decoder"] == "decoder v2" and J.get("sessions") == [A_T, B_T]
+              and J.get("since") == epoch("11:00:00"),
+              "the decoder is [web] engine (not the newest, DeepCW), both sessions joined (%s)" % J)
+        check(D["session"]["start"] == epoch("12:00:00") and D["session"]["T"] == B_T,
+              "the range starts at the first session (since is earlier), T stays the current one")
+        check(D["recall"]["n"] > 0 and D["counts"]["spots_W"] < 7 + 6,
+              "v2's stations are compared; the DeepCW session's W spots are not (%d W)"
+              % D["counts"]["spots_W"])
+        r = urllib.request.urlopen(base + "/download/spots-W.tsv", timeout=5)
+        body = r.read().decode()
+        check("ZZ0ZZ" in body and "DL1AAA" in body and "cw-v2-since-20261001-1100"
+              in r.headers.get("Content-Disposition", ""),
+              "spots-W.tsv holds both sessions, named by decoder and since")
+    finally:
+        p.terminate()
+        p.wait(5)
+
+
 def current_session():
     print("=== current session — a short run beside a running recorder")
     root = tempfile.mkdtemp(prefix="compare-cur-")
@@ -942,6 +986,7 @@ if __name__ == "__main__":
     root, logs, A, Bs = build(root)
     core(root, logs, A, Bs)
     web(root, A, Bs)
+    web_joined(root, A, Bs)
     current_session()
     resumed_session()
     feed_port_warning()

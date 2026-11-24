@@ -10,7 +10,7 @@ import re
 import sys
 
 from .callfilter import CallFilter, filter_plan
-from .windows import load_local, remote_plan
+from .windows import load_local, parse_since, remote_plan
 
 # name: (default, min, max, meaning) — the page shows the meaning as help
 PARAMS = {
@@ -128,6 +128,15 @@ class Config:
         self.port = cp.getint("web", "port", fallback=8075)
         # how often the page's numbers (data.json) are recomputed, seconds
         self.every = max(15, cp.getint("web", "every_s", fallback=60))
+        # the page joined over sessions: one decoder (engine) from a UTC time
+        # on (since), every session recorded since then — this one included
+        # and the ones still to come; both empty = the current session, its
+        # newest decoder
+        self.web_engine = cp.get("web", "engine", fallback="").strip()
+        self.web_since = parse_since(cp.get("web", "since", fallback="") or "")
+        if cp.get("web", "since", fallback="").strip() and self.web_since is None:
+            print("compare: [web] since = %r is no UTC time, ignored"
+                  % cp.get("web", "since"), file=sys.stderr)
         base = {k: v[0] for k, v in PARAMS.items()}
         self.params = clamp_params(dict(cp.items("match")) if cp.has_section("match") else {},
                                    base)
