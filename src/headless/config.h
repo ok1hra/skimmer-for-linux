@@ -70,6 +70,12 @@
  *            their places, so a call read backwards differs in all; the
  *            busts the skimmer makes of its own transmissions; a call
  *            MASTER.SCP knows passes all the same (but the own call itself)
+ *            bad — the bad calls, comma-separated, dropped the same way:
+ *            a prefix (UA9, a call that starts with it), a whole call
+ *            (OK1ABC, also with a /part), or a country's name or part of it
+ *            (four letters or more, any case: the DXCC's name as the map
+ *            has it, dxcc.h — Russia drops European and Asiatic Russia,
+ *            Kaliningrad, Franz Josef Land and Belarus as Belorussia)
  *   [rtty_palette] the web page's RTTY palette over the waterfall (browser
  *            only — the engine never reads it): open_on_spot (true: a click
  *            on an RTTY spot opens it), bandwidth (400 Hz, 250–500: the
@@ -214,6 +220,9 @@ typedef struct {
   char            *filter_up;         /* the text upper-cased (regex=false)  */
   gboolean         filter_mycall;     /* drop [feed] call and its near calls */
   guint            filter_mycall_diff;/* … within this many edits (0–3)      */
+  char            *filter_bad;        /* bad calls as written; NULL = none   */
+  char           **filter_bad_pfx;    /* … the prefixes and calls, upper     */
+  char           **filter_bad_name;   /* … the country names, upper          */
   /* [rtty_palette] (the web page only) */
   struct {
     gboolean open_on_spot, autotune, afc, reverse, usos, second_decoder, clean, sound;

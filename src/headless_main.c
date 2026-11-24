@@ -2426,6 +2426,7 @@ int main(int argc, char **argv) {
     if (c->filter_call) {
       printf("  filter only calls %s %s\n", c->filter_regex ? "matching" : "containing", c->filter_call);
     }
+    if (c->filter_bad) { printf("  filter not the bad calls %s\n", c->filter_bad); }
     if (c->filter_mycall && c->feed_call && c->feed_call[0]) {
       printf("  filter not %s nor calls within %u characters of it\n", c->feed_call,
              c->filter_mycall_diff);
@@ -2698,6 +2699,9 @@ int main(int argc, char **argv) {
   if (h->cfg.filter_call) {
     g_message("filter: only calls %s \"%s\" go anywhere — the rest are dropped where they "
               "are decoded", h->cfg.filter_regex ? "matching" : "containing", h->cfg.filter_call);
+  }
+  if (h->cfg.filter_bad) {
+    g_message("filter: the bad calls (%s) are dropped where they are decoded", h->cfg.filter_bad);
   }
   if (h->cfg.filter_mycall) {
     if (h->cfg.feed_call && h->cfg.feed_call[0]) {

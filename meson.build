@@ -351,7 +351,7 @@ test('rbn-feed', skimmer_rbn_test, timeout : 120)
 
 # headless.ini parsing: defaults, band modes, host@ppm, refusals with reasons.
 skimmer_config_test = executable('skimmer-config-test',
-  ['src/config_test.c', 'src/headless/config.c'],
+  ['src/config_test.c', 'src/headless/config.c', 'src/headless/dxcc.c'],
   include_directories : [include_directories('src'), engine_inc],
   dependencies : engine_deps,
 )
@@ -368,7 +368,7 @@ test('peers', skimmer_peers_test, timeout : 60)
 
 # The hub's side of the hub ↔ worker link: handshake, int24 IQ, lines, lag.
 skimmer_hub_test = executable('skimmer-hub-test',
-  ['src/hub_test.c', 'src/headless/hub.c', 'src/headless/config.c', 'src/headless/web.c',
+  ['src/hub_test.c', 'src/headless/hub.c', 'src/headless/config.c', 'src/headless/dxcc.c', 'src/headless/web.c',
    'src/headless/visitors.c'],
   include_directories : [include_directories('src'), engine_inc],
   dependencies : engine_deps + [soup_dep],
@@ -533,6 +533,7 @@ test('update', skimmer_update_test,
 headless_sources = files(
   'src/headless/config.c',          # headless.ini, parsed and checked
   'src/headless/deepcw_model.c',    # the DeepCW model: check, fetch
+  'src/headless/dxcc.c',            # a call's DXCC, from the map's data
   'src/headless/discovery.c',       # instances finding each other on the LAN
   'src/headless/governor.c',        # adaptive RTTY, the thermal guard
   'src/headless/hub.c',             # the hub: bands passed to workers on other PCs
@@ -566,6 +567,15 @@ web_res = gnome.compile_resources('skimmer-web',
   source_dir : 'web',
   c_name : 'skim_web',
 )
+
+# A call's DXCC from the map's data (dxcc.c = SkMap.locate) and the bad
+# calls of [filter] by prefix, call and country name.
+skimmer_dxcc_test = executable('skimmer-dxcc-test',
+  ['src/dxcc_test.c', 'src/headless/config.c', 'src/headless/dxcc.c', web_res],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+)
+test('dxcc', skimmer_dxcc_test, timeout : 30)
 
 skimmer_headless = executable('skimmer-headless',
   ['src/headless_main.c', headless_sources, weights_res, web_res],

@@ -1,5 +1,6 @@
 /* config.c — see config.h. Part of skimmer-for-linux. GPL-3.0-or-later. */
 #include "config.h"
+#include "headless/dxcc.h"
 
 #include <gio/gio.h>
 #include <glib/gstdio.h>
@@ -135,6 +136,9 @@ static const char DEFAULT_CONFIG[] =
   "# other, or missing from a cut call) — the busts of its own transmissions;\n"
   "# a call MASTER.SCP knows passes all the same\n"
   "mycall=false\nmycall_diff=2\n"
+  "# bad calls, comma-separated, dropped the same way: a prefix (UA9 — every\n"
+  "# call that starts with it) or a whole call (OK1ABC, also OK1ABC/P)\n"
+  "bad=\n"
   "\n[rtty_palette]\n# the web page's RTTY palette over the waterfall (the browser only):\n"
   "# open_on_spot = a click on an RTTY spot opens it; bandwidth = the audio's\n"
   "# passband while it decodes (250-500 Hz); autotune centres a steady\n"
@@ -204,6 +208,9 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_free(cfg->archive_dir);
   g_free(cfg->filter_call);
   g_free(cfg->filter_up);
+  g_free(cfg->filter_bad);
+  g_strfreev(cfg->filter_bad_pfx);
+  g_strfreev(cfg->filter_bad_name);
   g_free(cfg->wspr_call);
   g_free(cfg->wspr_upload_url);
   g_free(cfg->ft8_call);
@@ -255,13 +262,33 @@ static gboolean near_mycall(const SkimHdConfig *cfg, const char *call) {
 }
 
 gboolean skim_hd_config_filter_on(const SkimHdConfig *cfg) {
-  return cfg->filter_call || (cfg->filter_mycall && cfg->feed_call && cfg->feed_call[0]);
+  return cfg->filter_call || cfg->filter_bad || (cfg->filter_mycall && cfg->feed_call && cfg->feed_call[0]);
+}
+
+/* A bad call: it starts with one of the prefixes, one of its /-parts is one
+ * of them (a whole call: OK1ABC drops DL/OK1ABC too), or its DXCC's name
+ * holds one of the names. */
+static gboolean bad_call(const SkimHdConfig *cfg, const char *call) {
+  char *up = g_ascii_strup(call, -1);
+  gboolean bad = FALSE;
+  if (cfg->filter_bad_pfx) {
+    char **parts = g_strsplit(up, "/", -1);
+    for (char **b = cfg->filter_bad_pfx; *b && !bad; b++) {
+      bad = g_str_has_prefix(up, *b);
+      for (char **p = parts; *p && !bad; p++) { bad = strcmp(*p, *b) == 0; }
+    }
+    g_strfreev(parts);
+  }
+  for (char **n = cfg->filter_bad_name; n && *n && !bad; n++) { bad = skim_hd_dxcc_name_has(up, *n); }
+  g_free(up);
+  return bad;
 }
 
 gboolean skim_hd_config_call_pass(const SkimHdConfig *cfg, const char *call) {
   if (cfg->filter_mycall && cfg->feed_call && cfg->feed_call[0] && near_mycall(cfg, call)) {
     return FALSE;
   }
+  if (cfg->filter_bad && bad_call(cfg, call)) { return FALSE; }
   if (cfg->filter_re) { return g_regex_match(cfg->filter_re, call, 0, NULL); }
   if (!cfg->filter_up) { return TRUE; }
   char *up = g_ascii_strup(call, -1);
@@ -731,6 +758,49 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
       h->filter_mycall_diff = (guint)d;
     }
     g_free(dv);
+    /* bad: a token of letters alone, four or more (spaces, dots, dashes in
+     * it: "Asiatic Russia", "St. Helena"), is a country's name; any other
+     * a prefix or a call (A-Z, 0-9, /) */
+    char *bv = g_key_file_get_value(kf, "filter", "bad", NULL);
+    if (bv && g_strstrip(bv)[0]) {
+      GPtrArray *pf = g_ptr_array_new(), *nm = g_ptr_array_new();
+      char **tok = g_strsplit_set(bv, ",;", -1);
+      gboolean ok = TRUE;
+      for (char **t = tok; *t && ok; t++) {
+        char *x = g_ascii_strup(g_strstrip(*t), -1);
+        if (!*x) { g_free(x); continue; }
+        gboolean letters = TRUE, callish = TRUE;
+        guint nl = 0;
+        for (const char *c = x; *c; c++) {
+          if (g_ascii_isupper(*c)) { nl++; }
+          else if (*c != ' ' && *c != '.' && *c != '-' && *c != '\'') { letters = FALSE; }
+          if (!g_ascii_isupper(*c) && !g_ascii_isdigit(*c) && *c != '/') { callish = FALSE; }
+        }
+        if (letters && nl >= 4) {
+          g_ptr_array_add(nm, x);
+        } else if (callish) {
+          g_ptr_array_add(pf, x);
+        } else {
+          ok = FALSE;
+          bad(error, path, "[filter] bad: \"%s\" is neither a prefix, a call nor a country", x);
+          g_free(x);
+        }
+      }
+      g_strfreev(tok);
+      if (!ok) {
+        g_ptr_array_free(pf, TRUE);
+        g_ptr_array_free(nm, TRUE);
+        g_free(bv);
+        return FALSE;
+      }
+      h->filter_bad = g_strdup(bv);
+      if (pf->len) { g_ptr_array_add(pf, NULL); h->filter_bad_pfx = (char **)g_ptr_array_free(pf, FALSE); }
+      else { g_ptr_array_free(pf, TRUE); }
+      if (nm->len) { g_ptr_array_add(nm, NULL); h->filter_bad_name = (char **)g_ptr_array_free(nm, FALSE); }
+      else { g_ptr_array_free(nm, TRUE); }
+      if (!h->filter_bad_pfx && !h->filter_bad_name) { g_clear_pointer(&h->filter_bad, g_free); }
+    }
+    g_free(bv);
   }
 
   {
@@ -1102,7 +1172,7 @@ const char *const SKIM_HD_EDITABLE[] = {
   "record.bands", "record.minutes", "record.dir", "record.start_utc",
   "archive.dir", "visitors.login", "visitors.free_from", "thermal.enabled", "thermal.limit_c", "thermal.average_min",
   "thermal.restore_margin_c", "thermal.probe_every_min", "thermal.probe_min",
-  "filter.call", "filter.regex", "filter.mycall", "filter.mycall_diff",
+  "filter.call", "filter.regex", "filter.mycall", "filter.mycall_diff", "filter.bad",
   "rtty_palette.open_on_spot", "rtty_palette.bandwidth", "rtty_palette.autotune", "rtty_palette.afc",
   "rtty_palette.afc_max_hz", "rtty_palette.afc_rate", "rtty_palette.reverse", "rtty_palette.usos",
   "rtty_palette.squelch_db", "rtty_palette.second_decoder", "rtty_palette.clean", "rtty_palette.sound",
