@@ -98,10 +98,18 @@ function show(name) {
   tab = name;
   for (const b of document.querySelectorAll('nav button')) b.classList.toggle('on', b.dataset.tab === name);
   for (const s of document.querySelectorAll('main > section')) s.hidden = s.id !== `tab-${name}`;
-  try { localStorage.setItem('skimmer-tab', name); } catch (e) { /* private window */ }
+  try { sessionStorage.setItem('skimmer-tab', name); } catch (e) { /* private window */ }
   if (tabs[name] && tabs[name].enter) tabs[name].enter();
 }
-for (const b of document.querySelectorAll('nav button')) b.addEventListener('click', () => show(b.dataset.tab));
+for (const b of document.querySelectorAll('nav button[data-tab]')) b.addEventListener('click', () => show(b.dataset.tab));
+// About: a palette over whatever tab is open (Esc or a click beside it closes it)
+on('#about-open', 'click', () => {
+  const d = $('#about');
+  $('#about-ver').textContent = status && status.version ? `v${status.version}` : '';
+  if (!d.open) d.showModal();
+});
+on('#about-close', 'click', () => $('#about').close());
+on('#about', 'click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 
 // ---- status ----------------------------------------------------------------------
 function age(s) {
@@ -132,11 +140,9 @@ function bandsDecoded(d) {
   });
 }
 
-// The bands the map leaves out (the eye in the ladder), per browser.
-const mapHidden = new Set((() => {
-  try { const v = JSON.parse(localStorage.getItem('skimmer-map-hidden') || '[]'); return Array.isArray(v) ? v : []; }
-  catch (e) { return []; }
-})());
+// A band the eye in the ladder leaves out: the DX cluster's band filter
+// (one filter for the page: the map, the cluster, the counts, the heat map).
+const bandOn = (b) => typeof Dxc === 'undefined' || Dxc.bandOn(b);
 const EYE_SVG = (cross) => '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" ' +
   'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/>' +
   `<circle cx="12" cy="12" r="3"/>${cross ? '<path d="M4 4l16 16"/>' : ''}</svg>`;
@@ -212,7 +218,14 @@ function renderStatus(d) {
   const decoded = bandsDecoded(d);
   const ageS = ladderAgeS(), ageMin = ageS / 60;
   const now = Date.now() / 1000;
-  const per = (band) => window.spots ? window.spots.list.filter((s) => s.band === band && s.age <= ageS) : [];
+  // the band's spots that pass the page's filters (the DX cluster's: call,
+  // distance, bearing, dB, speed, country, who made it, the age) — the mode
+  // and the band left out show their own way: grey in the bars, a shut eye
+  const keepMB = new Set(['mode', 'band']);
+  const passes = (s, skip) => typeof Dxc === 'undefined' || Dxc.passes(s, skip);
+  const per = (band) => window.spots ? window.spots.list.filter((s) => s.band === band && s.age <= ageS && passes(s, keepMB)) : [];
+  // a WSPR station: the same filters, less those of a spot (its dB, speed, source)
+  const keepW = new Set(['mode', 'band', 'age', 'db', 'speed', 'src']);
   // WSPR, while its decoder runs; FT8/FT4 while theirs does, each mode with a dial
   const wsprOn = !!(d.wspr && d.wspr.on && d.wspr.decoder);
   const wsprRx = new Map(wsprOn ? (d.wspr.rx || []).map((r) => [r.band, r]) : []);
@@ -223,7 +236,7 @@ function renderStatus(d) {
   const present = LADDER_MODES.filter(([m]) => (m === 'CW' ? decoded.some((b) => b.cw !== false)
     : m === 'RTTY' ? decoded.some((b) => b.rtty) : m === 'WSPR' ? wsprOn : dialModes.has(m)));
   const wsprSeen = (band) => (wsprOn && wspr.data && wspr.data.stations
-    ? wspr.data.stations.filter((x) => x.seen && now - x.seen[band] <= ageS).length : 0);
+    ? wspr.data.stations.filter((x) => x.seen && now - x.seen[band] <= ageS && passes(x, keepW)).length : 0);
   // per band, per mode: [spots, active]; null = the mode does not run there
   const rows = decoded.map((b) => {
     const sp = per(b.band), rt = b.rtty, fr = ft8Rx.get(b.band), wr = wsprRx.get(b.band);
@@ -240,8 +253,9 @@ function renderStatus(d) {
   const total = (v, k) => present.reduce((a, [m]) => a + (v[m] ? v[m][k] : 0), 0);
   const maxSpots = Math.max(1, ...rows.map((r) => total(r.v, 0)));
   const maxAct = Math.max(1, ...rows.map((r) => total(r.v, 1)));
-  const heat = heatByBand(decoded.map((b) => b.band), (band) => per(band).filter((x) => modeOn(x.mode)),
-                          wsprOn && modeOn('WSPR') ? wspr.data : null, ageS);
+  // the heat map: the modes counted, the bands shown
+  const heat = heatByBand(decoded.map((b) => b.band).filter(bandOn), (band) => per(band).filter((x) => modeOn(x.mode)),
+                          wsprOn && modeOn('WSPR') ? { stations: wspr.data.stations.filter((x) => passes(x, keepW)) } : null, ageS);
   const heatRows = [];
   // the stacked bar and its number (the modes counted); its tip, mode by mode
   const stack = (v, k, max, what, pausedOf) => {
@@ -283,7 +297,7 @@ function renderStatus(d) {
     const cwOn = b.cw !== false, rt = b.rtty;
     const col = typeof SkMap !== 'undefined' ? SkMap.bandColor(b.band) : '';   // the band's own colour
     const pausedOf = (m) => (m === 'CW' ? (cwOn && b.paused) || null : m === 'RTTY' ? (rt && rt.paused) || null : null);
-    const off = mapHidden.has(b.band);
+    const off = !bandOn(b.band);
     // a band with every mode paused is grey all along its row — its spots are from before the pause
     const allOff = (cwOn || !!rt) && (!cwOn || !!b.paused) && (!rt || !!rt.paused);
     const trCls = [off ? 'off-map' : '', allOff ? 'paused' : ''].filter(Boolean).join(' ');
@@ -303,7 +317,7 @@ function renderStatus(d) {
       }
     }
     return `<tr${trCls ? ` class="${trCls}"` : ''}><td class="eye"><button type="button" data-band="${esc(b.band)}" ` +
-      `title="${off ? 'not on the map — click: show' : 'on the map — click: hide'} ${esc(b.band)}" ` +
+      `title="${off ? 'left out — click: show' : 'shown — click: leave out'} ${esc(b.band)} (the map, the DX cluster, the heat map)" ` +
       `aria-pressed="${off ? 'false' : 'true'}">${off ? EYE_OFF : EYE_ON}</button></td>` +
       `<td class="b" style="color:${col}">${esc(b.band)}</td>` +
       stack(v, 0, maxSpots, `spots in ${ageMin} min`, () => null) +
@@ -318,7 +332,7 @@ function renderStatus(d) {
   const ro = (k, v) => `<span>${k} <b>${v}</b></span>`;
   // every number says over what: now, the last half hour, or since the start
   const anyRtty = decoded.some((b) => b.rtty);
-  const inAge = rows.reduce((a, r) => a + present.reduce((x, [m]) => x + (m !== 'WSPR' && modeOn(m) && r.v[m] ? r.v[m][0] : 0), 0), 0);
+  const inAge = rows.reduce((a, r) => a + (!bandOn(r.b.band) ? 0 : present.reduce((x, [m]) => x + (m !== 'WSPR' && modeOn(m) && r.v[m] ? r.v[m][0] : 0), 0)), 0);
   $('#readouts').innerHTML = [
     ro('decoders now', `${fmt(sumDec((b) => (b.cw !== false ? b.decoders : 0)))} CW` +
        `${anyRtty ? ` · ${fmt(sumDec((b) => (b.rtty ? b.rtty.decoders : 0)))} RTTY` : ''}`),
@@ -675,24 +689,19 @@ placeDxc();
   });
 })();
 
-// What the DX cluster shows goes to the map, less the bands its eye in the
-// ladder hides (kept in the browser).
+// What the DX cluster shows goes to the map (its filters are the page's: the
+// ladder's eyes and legend, the map's age buttons, the cluster's menus).
 const mapShown = { list: [], marked: null };
 function mapDraw() {
   if (typeof SkMap === 'undefined') return;
-  SkMap.update(mapShown.list.filter((s) => !mapHidden.has(s.band)).map((s) => ({ ...s, hi: s.call === mapShown.marked })),
+  SkMap.update(mapShown.list.map((s) => ({ ...s, hi: s.call === mapShown.marked })),
                { locator: spots.locator, call: spots.call, visitor: visitor.call });
 }
 on('#ladder', 'click', (e) => {
   const lg = e.target.closest('button[data-mode]');
   if (lg && typeof Dxc !== 'undefined') { Dxc.setMode(lg.dataset.mode, !Dxc.modeOn(lg.dataset.mode)); return; }
   const b = e.target.closest('button[data-band]');
-  if (!b) return;
-  const band = b.dataset.band;
-  if (mapHidden.has(band)) mapHidden.delete(band); else mapHidden.add(band);
-  try { localStorage.setItem('skimmer-map-hidden', JSON.stringify([...mapHidden])); } catch (err) { /* private window */ }
-  if (status) renderStatus(status);
-  mapDraw();
+  if (b && typeof Dxc !== 'undefined') Dxc.setBand(b.dataset.band, !Dxc.bandOn(b.dataset.band));   // 'sk-filter' redraws
 });
 // the age the map shows: its buttons, the DX cluster's UTC filter — one setting
 function renderAge() {
@@ -1810,9 +1819,8 @@ on('#settings', 'input', () => setDirty(true));
 
 // The callsign filter, as IP-rotator's DX filter (its DXC page): plain text
 // (part of a call, any case) or, with Regex, a regular expression ignoring
-// case; ticking Regex on an empty field puts in its default — every call but
-// the Russian and Belarusian ones. dxc.js's DX menu does the same.
-const DX_FILTER_DEFAULT = '^(?!^(?:R[A-Z]?|U[A-I0]|E[UVW])[0-9]{1,3}[A-Z]{1,4}(?:/[A-Z0-9]+)?$).+';
+// case. (Its preset regex went in v0.8.13: it missed calls — Bad calls, the
+// tile below, leaves calls out by prefix, call or country.)
 function filterCheck() {
   const inp = $('#filter-call'), re = $('#filter-regex').checked;
   let ok = true;
@@ -1822,10 +1830,17 @@ function filterCheck() {
   return ok;
 }
 on('#filter-call', 'input', filterCheck);
-on('#filter-regex', 'change', (e) => {
-  if (e.target.checked && !$('#filter-call').value.trim()) $('#filter-call').value = DX_FILTER_DEFAULT;
-  filterCheck();
-});
+on('#filter-regex', 'change', filterCheck);
+// Bad calls: comma-separated; each a prefix or a call (A-Z, 0-9, /), or —
+// four letters and more — a country's name (config.c says the same)
+function badCallsCheck() {
+  const toks = $('#filter-bad-calls').value.split(/[,;]/).map((t) => t.trim()).filter(Boolean);
+  const ok = toks.every((t) => /^[A-Z0-9/]+$/i.test(t) || (/^[A-Z .'-]+$/i.test(t) && t.replace(/[^A-Z]/gi, '').length >= 4));
+  $('#filter-bad-calls').classList.toggle('bad', !ok);
+  $('#filter-bad-calls-bad').hidden = ok;
+  return ok;
+}
+on('#filter-bad-calls', 'input', badCallsCheck);
 // the own call's filter names the call it compares with (Station and feed → Call)
 function mycallShow() {
   const c = $('[name="feed.call"]').value.trim().toUpperCase();
@@ -1886,6 +1901,7 @@ function fillSettings(d) {
     : '<tr><td colspan="3" class="mut">none yet — every save keeps the previous file</td></tr>');
   $('#set-msg').textContent = '';
   filterCheck();
+  badCallsCheck();
   mycallShow();
   if (status) { renderDcw(status.deepcw); renderV4(status.v4); }
 }
@@ -2043,6 +2059,7 @@ on('#settings', 'submit', async (e) => {
   $('#set-error').hidden = true;
   const wrong = checkFields();
   if (!filterCheck()) wrong.push($('#filter-call'));      // its own note under it
+  if (!badCallsCheck()) wrong.push($('#filter-bad-calls'));
   if (wrong.length) {
     notSaved(`${wrong.length === 1 ? 'one field is' : `${wrong.length} fields are`} not right — marked red below.`, wrong[0]);
     return;
@@ -2282,8 +2299,10 @@ async function poll() {
   }
 }
 
+// a page opened anew starts on Status; a reload (a restart after Save) stays
+// on its tab — kept for this browser tab only
 let saved = 'status';
-try { saved = localStorage.getItem('skimmer-tab') || 'status'; } catch (e) { /* private window */ }
+try { saved = sessionStorage.getItem('skimmer-tab') || 'status'; localStorage.removeItem('skimmer-tab'); } catch (e) { /* private window */ }
 show(document.getElementById(`tab-${saved}`) ? saved : 'status');
 visitorCheck().then(poll);
 setInterval(poll, 2000);

@@ -144,7 +144,7 @@ here; what was done and why is in git.
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 37 gates** (DeepCW skips without the model, golden skips
+- **`meson test` = 38 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
   only with gfortran). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).
@@ -170,7 +170,16 @@ here; what was done and why is in git.
   and the age buttons over the map set the DX cluster's Mode and UTC
   filters (`Dxc.setMode`/`setAge`, kept in `skdxc`); a mode left out stays
   grey in the bars and leaves the numbers, the heat map, the map and the
-  cluster; the table's status column says what a worker or a guard does
+  cluster; the ladder's band eye IS the DX cluster's band filter
+  (`Dxc.setBand`, one filter for the map, the cluster, the counts and the
+  heat map), and the counts and the heat map pass the cluster's other
+  filters too (`Dxc.passes`); the DX cluster's columns are wifilt's, in its
+  order and alignment (UTC, kHz, DX, km with the bearing's arrow, From,
+  Mode, dB, WPM, then Band, Country); the map's wheel zooms only inside
+  its circle; a newly opened page starts on Status (the tab is kept in
+  sessionStorage, for a reload); About (a `<dialog>`, everyone) names the
+  authors and decoders, README's Credits every licence;
+  the table's status column says what a worker or a guard does
   with the band; statistics (`stats.c`, three
   rings: 1 min × 7 d, 15 min × 90 d, 1 h × 2 y, saved in place; file
   version 6 = three modes, CW, RTTY and FT8 (FT8 + FT4: spots, senders
@@ -206,7 +215,12 @@ here; what was done and why is in git.
   (no ack → fewer rows). Gate `waterfall`: a tone's pixel and level. While WSPR decodes, each
   WSPR passband of the band shown is dark red with "WSPR RX" (status.json
   `wspr.dials[].lo_hz/hi_hz`); the calls near the cursor show in a tip at
-  the mouse.
+  the mouse. The audio packet ends with an f32: the passband's loudest
+  10 ms in dBFS before the AGC — the ICOM-style S-meter (dBm = dBFS + 10,
+  the Red Pitaya's full scale; S9 = −73 dBm). Listening from another tab,
+  the pill in the corner carries a live cut-out (±1 kHz, the passband's
+  edges): meanwhile the socket asks for that window only, and back on the
+  tab `hist` redraws the full picture.
 - **The RTTY palette** (`web/rtty-palette.js`, `[rtty_palette]`): decodes
   the waterfall's audio (8 kHz µ-law, the tuned frequency at the 600 Hz BFO,
   so mark = +85 Hz) in the browser with WIFILT's RTTY-ICOM modules, copied
@@ -221,8 +235,15 @@ here; what was done and why is in git.
   one more gzip member a minute from the main loop; a refused disk keeps
   the lines for the next try.
 - **The callsign filter** (`[filter] call=`, `regex=`; IP-rotator's DX
-  filter, `data/dxc.html` of ok1hra/IP-rotator, with its RU/BY-out default
-  regex: substring any case, or a caseless GRegex): a call that
+  filter, `data/dxc.html` of ok1hra/IP-rotator: substring any case, or a
+  caseless GRegex — its RU/BY preset left the page in 2026-11 at Dan's
+  word, it missed calls; `bad=` = **Bad calls**, comma-separated prefixes
+  or whole calls, and a word of ≥ 4 letters matched against the call's
+  DXCC name — `src/headless/dxcc.c` parses the page's own map data
+  (map50.js labels + IP-rotator's aliases, from the web GResource) and is
+  SkMap.locate in C, equal on all of MASTER.SCP; extra names: Belarus =
+  Belorussia, Kaliningrad and Franz Josef Land = Russia; the tile's text
+  names only prefixes and calls, on purpose; gate `dxcc`): a call that
   does not match is dropped in `take_text` right after the extractor names
   it (`SkimPipelineConfig.call_pass`, NULL = byte-identical), so it never
   reaches the station table, the stats, the map or any feed; `peer_spot` and

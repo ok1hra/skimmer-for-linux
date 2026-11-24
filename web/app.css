@@ -299,8 +299,15 @@ table.dxc { border-collapse: collapse; width: 100%; background: var(--well); fon
  * by dxc.js from dark to bright over the rows shown */
 .dxc td { padding: 3px 8px; color: #b8f7c0; font-size: 16px; border-bottom: 1px solid #0d1d11; white-space: nowrap; }
 .dxc tbody tr:nth-child(2n) td { background: #0a100b; }
-.dxc .c-khz, .dxc .c-km, .dxc .c-db, .dxc .c-speed, .dxc .c-az { text-align: right; }
-.dxc th.c-khz, .dxc th.c-km, .dxc th.c-db, .dxc th.c-speed, .dxc th.c-az { text-align: right; }
+/* wifilt's alignment: UTC and DX left, the numbers and the mode right; a gap
+ * between kHz and DX (here the speaker sits in it) */
+.dxc .c-khz, .dxc .c-km, .dxc .c-db, .dxc .c-speed, .dxc .c-mode { text-align: right; }
+.dxc th.c-khz, .dxc th.c-km, .dxc th.c-db, .dxc th.c-speed, .dxc th.c-mode { text-align: right; }
+.dxc .c-khz { padding-right: 8px; }
+.dxc td.c-call { padding-left: 8px; }
+.dxc td.c-km .arr { display: inline-block; margin-left: 4px; font-size: 1.3em; line-height: 1; color: #d8ffd8; transform-origin: 50% 50%; }
+.dxc td.c-db .v { display: inline-block; min-width: 3ch; text-align: right; }
+.dxc td.c-db .m { display: inline-block; min-width: 6ch; text-align: right; }
 .dxc td.c-call { font-weight: 700; letter-spacing: .03em; }
 .dxc td.c-db { font-weight: 700; }
 .dxc td.c-db .m { letter-spacing: -1px; margin-right: 6px; font-weight: 400; opacity: .9; }
@@ -434,6 +441,8 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
            border-left: 1px solid rgba(160,170,185,.35); border-right: 1px solid rgba(160,170,185,.35); }
 .wf-pass.on { background: rgba(255,196,64,.08); border-color: rgba(255,196,64,.55); }
 .wf-listen { display: inline-flex; align-items: center; gap: 6px; }
+/* the S-meter (waterfall.js smDraw): an ICOM's, beside the passband */
+.wf-smeter { width: 232px; height: 34px; border: 1px solid var(--ln2); border-radius: 2px; background: #05080c; }
 /* the speaker: grey and crossed out while muted; the same speaker green, not
    crossed, while listening */
 .wf-spk { line-height: 0; border: 1px solid var(--ln2); background: var(--deep); padding: 3px 5px; cursor: pointer;
@@ -523,11 +532,24 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .rp-rx .rtty-rx-char { color: var(--rtty-rx-char-color, inherit); }
 /* RTTY: a button of its own, in the RTTY colour; open = filled */
 /* listening from another tab: what is heard, mute, back to the waterfall */
-#wf-away { position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; gap: 1px; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+#wf-away { position: fixed; right: 16px; bottom: 16px; z-index: 20; display: flex; flex-direction: column; gap: 1px;
+           box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+#wf-away .wf-away-btns { display: flex; gap: 1px; }
+#wf-away .wf-away-btns .wf-away-go { flex: 1; }
+/* over the pill: the live cut-out, ±1 kHz, the passband's edges as two lines */
+#wf-away .wf-away-mini { position: relative; height: 80px; min-width: 260px; background: #00000c; border: 1px solid #ffc440;
+                         border-bottom: 0; border-radius: 2px 2px 0 0; overflow: hidden; }
+#wf-away .wf-away-mini canvas { display: block; width: 100%; height: 80px; image-rendering: pixelated; }
+#wf-away .wf-away-mini .pb { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid rgba(255,196,64,.9); }
+#wf-away .wf-away-mini .mid { position: absolute; top: 0; left: 50%; width: 0; height: 6px; border-left: 1px solid #ffc440; }
+#wf-away .wf-away-mini span { position: absolute; bottom: 2px; font-size: 10px; color: rgba(215,226,238,.75);
+                              text-shadow: 0 0 3px #000; pointer-events: none; }
+#wf-away .wf-away-mini .lo { left: 4px; }
+#wf-away .wf-away-mini .hi { right: 4px; }
 #wf-away[hidden] { display: none; }
 #wf-away button { font: inherit; font-size: 13px; letter-spacing: .04em; padding: 6px 12px; border: 1px solid #ffc440; cursor: pointer; }
-#wf-away .wf-away-go { color: var(--hot-ink); background: #ffc440; border-radius: 2px 0 0 2px; }
-#wf-away .wf-away-mute { color: #ffc440; background: var(--panel); border-radius: 0 2px 2px 0; }
+#wf-away .wf-away-go { color: var(--hot-ink); background: #ffc440; border-radius: 0 0 0 2px; }
+#wf-away .wf-away-mute { color: #ffc440; background: var(--panel); border-radius: 0 0 2px 0; }
 #wf-away button:hover { filter: brightness(1.15); }
 .wf-bar .wf-rtty { font-size: 12px; font-weight: 700; letter-spacing: .1em; color: var(--rtty);
                    border: 1px solid var(--rtty); border-radius: 2px; padding: 3px 9px; background: rgba(255,184,138,.08); }
@@ -606,3 +628,22 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .hdr-update { margin-left: 10px; font-size: 12px; color: var(--hot); text-decoration: none;
   border: 1px solid currentColor; border-radius: 3px; padding: 0 6px; white-space: nowrap; }
 .hdr-update:hover { text-decoration: underline; }
+
+/* ---- About (index.html #about): a palette over the page ---- */
+.about { max-width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; overflow: hidden;
+         background: var(--panel); color: var(--fg); border: 1px solid var(--ln2); box-shadow: 0 10px 32px rgba(0,0,0,.6); }
+.about[open] { display: flex; flex-direction: column; }
+.about::backdrop { background: rgba(3, 6, 10, .6); }
+.ab-head { display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 16px; background: var(--deep);
+           border-bottom: 1px solid var(--ln); }
+.ab-title { font-weight: 700; letter-spacing: .12em; text-transform: uppercase; font-size: 13px; color: var(--hot); }
+.ab-ver { font-size: 12px; }
+.ab-close { margin-left: auto; background: none; border: 0; color: var(--mut); font: 20px/1 RC, sans-serif; cursor: pointer; padding: 0 4px; }
+.ab-close:hover { color: var(--bad); }
+.ab-body { padding: 6px 18px 14px; overflow: auto; font-size: 14px; line-height: 1.45; }
+.ab-body a { color: var(--cq); }
+.ab-list { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 10px 0; }
+.ab-list dt { color: var(--hot); font-weight: 700; white-space: nowrap; }
+.ab-list dd { margin: 0; }
+.ab-dev { border-top: 1px solid var(--ln); padding-top: 10px; }
+@media (max-width: 560px) { .ab-list { grid-template-columns: 1fr; } .ab-list dd { margin-bottom: 4px; } }

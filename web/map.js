@@ -559,7 +559,7 @@ const SkMap = (() => {
         <span class="mut" data-k="zoom"></span>
       </div>
       <div class="map-canvas"><canvas></canvas><div class="map-read" hidden></div></div>
-      <div class="map-foot"><span class="map-count mut"></span><span class="mut">wheel: zoom · auto: 2,000 km or out to the farthest spot</span></div>`;
+      <div class="map-foot"><span class="map-count mut"></span><span class="mut">wheel over the circle: zoom · auto: 2,000 km or out to the farthest spot</span></div>`;
     const buttons = () => {
       for (const k of [...LAYERS, 'heat']) el.querySelector(`[data-o=${k}]`).classList.toggle('on', !!opt[k]);
     };
@@ -584,6 +584,9 @@ const SkMap = (() => {
     });
     const cv = el.querySelector('canvas');
     cv.addEventListener('wheel', (e) => {
+      // the wheel zooms inside the map's circle only; outside it the page scrolls
+      const r = cv.getBoundingClientRect();
+      if (!view || Math.hypot(e.clientX - r.left - view.cx, e.clientY - r.top - view.cy) > view.rr) return;
       e.preventDefault();
       const z = opt.zoom || autoZoom();
       opt.zoom = Math.min(20000, Math.max(800, z * (e.deltaY > 0 ? 1.2 : 1 / 1.2)));

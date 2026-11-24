@@ -24,13 +24,15 @@ grown far from it:*
   `sdr_receiver_hpsdr`): up to 8 receivers, 48/96/192 kHz, automatic
   discovery, clock correction — no other program in between.
 - **RTTY beside CW** on the same bands (45.45 Bd).
-- **A web interface**: an azimuthal map and a DX cluster of the last half
-  hour, two years of statistics (spots, decoders, CPU and its temperature),
-  a live **waterfall** of any band, and all the settings — usable from
-  afar, with the settings locked to the machine itself.
+- **A web interface**: an azimuthal map, the bands with a heat map of the
+  continents heard and a DX cluster of the last half hour — one set of
+  filters for all of them —, two years of statistics (spots, decoders, CPU
+  and its temperature), a live **waterfall** of any band with audio and an
+  S-meter, and all the settings — usable from afar, with the settings
+  locked to the machine itself.
 - **The feed**: RBN-grade call validation, a learned feed gate, a callsign
-  filter (IP-rotator's DX filter, and one that drops the busts of your own
-  call), an RBN Aggregator port, and a daily archive of every spot.
+  filter (IP-rotator's DX filter, bad calls by prefix, call or country,
+  and one that drops the busts of your own call), an RBN Aggregator port, and a daily archive of every spot.
 - **Several PCs, one radio**: a hub passes bands to worker PCs and merges
   other skimmers' feeds into its own.
 - **One file to run**: an AppImage for x86_64 Linux, and a systemd user
@@ -457,8 +459,9 @@ feed, every band with its newest stations, the feed policy, the learned gate
 and the `SKIM_*` switches), **Statistics** (seven days, one record a minute,
 kept across restarts in `~/.local/state/skimmer-for-linux/stats.bin`: spots
 per hour by band, active decoders, CPU, CPU temperature, IQ loss, totals), **Waterfall**,
-**Settings** and
-**Log**. It needs no internet; the JSON behind it is `/status.json`,
+**Settings**, **Log** and **About** (the authors and the decoders the
+skimmer runs on; every credit and licence is under [Credits](#credits)). A
+newly opened page starts on Status. It needs no internet; the JSON behind it is `/status.json`,
 `/stats.json`, `/api/log` and `/api/config` (and `POST /api/deepcw`, the
 model fetch).
 
@@ -470,7 +473,13 @@ the spectrum's envelope as an option, and the spotted calls upright where
 they were heard. A click in it plays that CW signal in the browser: the
 skimmer demodulates it (a passband of 50–500 Hz, shown as a trapezoid on
 the scale, a 600 Hz tone) and sends only the audio, 8 kB/s; the speaker
-icon mutes it, and the skimmer stops. The skimmer computes a band only while someone watches it
+icon mutes it, and the skimmer stops. An S-meter beside it, drawn as an
+ICOM transceiver's (S1–S9, then +20 to +60 dB in red), shows the passband's
+level before the AGC — dBm estimated as dBFS + 10, the Red Pitaya ADC's full
+scale. Listening goes on from another tab until muted: a pill in the
+corner says what is heard, with a live cut-out of the waterfall over it (the
+frequency in the middle, 1 kHz either side, two lines at the passband's
+edges). The skimmer computes a band only while someone watches it
 (about 0.3 % of a core) and sends each viewer just its window, a byte a
 pixel (about 7 kB/s at 1,400 px and 5 rows a second, less with the
 WebSocket's compression); each row is acknowledged, so a slow link over
@@ -494,8 +503,12 @@ day whole, and a crash loses at most the last minute.
 
 The **callsign filter** (`[filter] call=`, `regex=`) is IP-rotator's DX
 filter: part of a call (any case), or a regular expression (any case);
-ticking Regex on an empty field puts in its default, every call but the
-Russian and Belarusian ones.
+**Bad calls** (`[filter] bad=`) leaves calls out the other way:
+prefixes or whole calls, comma-separated (`UA9, OK1ABC, 3B8` — a prefix
+drops every call that starts with it, a whole call also drops it with a
+/part), and a word of four letters or more is matched against the call's
+DXCC name as the map has it (`Russia` drops European and Asiatic Russia,
+Kaliningrad, Franz Josef Land and Belarus as Belorussia).
 Only the calls that match go anywhere — the rest are dropped right where they
 are decoded, so they make no spot on the telnet feed or to the RBN, no dot on
 the map and no count in the statistics; peers' and workers' spots are held to
@@ -587,18 +600,57 @@ The decoder and the feed have more `SKIM_*` switches for the live-air work;
 
 ## Credits
 
-- **Richard Fakenberg, OK1BR** ([rifak.cz](https://rifak.cz)) wrote Skimmer
-  for Linux: the engine, the channelizer, the CW and RTTY decoders, callsign
-  validation, the spot pipeline. This fork only builds on his work. Many
-  thanks.
+Skimmer for Linux (this fork) is developed by **Dan, OK1HRA**, with the
+generous support of **Vojtěch Bubník, OK1IAK**. It is built on the original
+[Skimmer for Linux](https://github.com/OK1BR/skimmer-for-linux) by
+**Richard Fakenberg, OK1BR** ([rifak.cz](https://rifak.cz)) — the engine, the
+channelizer, the CW and RTTY decoders, callsign validation and the spot
+pipeline are his. It runs on the decoders and the work of many other
+authors; many thanks to all of them. The code changes of the fork were
+written with the help of Claude Code.
+
+### Decoders and code built in
+
+| What | Used for | Authors | Licence |
+|---|---|---|---|
+| Skimmer for Linux engine | channelizer, CW v1/v2/v3, RTTY, callsigns, spots | Richard Fakenberg OK1BR | GPL-3.0-or-later |
+| [WDSP](https://github.com/dl1ycf/pihpsdr) (subset, `vendor/wdsp/`) | FIR design, resampler | Warren Pratt NR0V; Linux port John Melton G0ORX/N6LYT; via piHPSDR (Christoph van Wüllen DL1YCF) | GPL |
+| [WSJT-X](https://wsjt.sourceforge.io) 3.0.2 wsprd (`vendor/wsprd/`) | the WSPR decoder (`skimmer-wsprd`) | Joe Taylor K1JT, Steven Franke K9AN; `fano.c` Phil Karn KA9Q; `nhash.c` Bob Jenkins | GPL-3.0 |
+| [WSJT-X](https://wsjt.sourceforge.io) 3.0.2 FT8/FT4 (`vendor/wsjtx-ft/`) | the FT8 and FT4 decoders (`skimmer-ft8d`) | Joe Taylor K1JT, Steven Franke K9AN, Bill Somerville G4WJS and the WSJT-X team | GPL-3.0 |
+| [deepcw-engine](https://github.com/e04/deepcw-engine) narrow model (`weights/deepcw-v4-narrow.bin`) | the CW v4 network's weights | e04 | MIT |
+| deepcw-engine's posterior stitcher (`dcw4_stitch.c`, a port) | CW v4: the network's output to characters | e04 | MIT |
+| [SDRIAK](https://github.com/bubnikv/sdriak) fused DeepCW kernel (`dcw4_kernel.c`, `dcw4_enc_*.c`, a C port) and `tools/deepcw_narrow_extract.py` | the CW v4 forward pass on the CPU | Vojtěch Bubník OK1IAK | GPL-3.0-or-later |
+| [deepcw-engine](https://github.com/e04/deepcw-engine) model — **not shipped**, fetched on request | DeepCW v1 (`cw:deepcw`) | e04 | AGPL-3.0-only |
+| [WIFILT](https://github.com/ok1hra/wifilt) RTTY-ICOM modules (`web/rtty/`) | the web page's RTTY palette | Dan OK1HRA | GPL-3.0 |
+| [IP-rotator](https://github.com/ok1hra/IP-rotator) map data, DXCC prefix aliases, DX filter (`web/map/`) | the azimuthal map, a call's DXCC, the callsign filter | Dan OK1HRA | the author's own, here GPL-3.0-or-later |
+| [Natural Earth](https://www.naturalearthdata.com) 1:50m countries and borders (in `web/map/map50.js`) | the map's land and borders | Natural Earth contributors | public domain |
+| [Roboto Condensed](https://fonts.google.com/specimen/Roboto+Condensed) (`web/fonts/`) | the web page's font | Christian Robertson, Google | Apache-2.0 |
+| [ONNX Runtime](https://github.com/microsoft/onnxruntime) C API header (`vendor/onnxruntime/`); the CPU runtime in the AppImage | DeepCW v1 (loaded with `dlopen`) | Microsoft | MIT |
+| [RNNoise](https://github.com/xiph/rnnoise) header (`vendor/rnnoise/`) | needed to compile WDSP only, not built | Jean-Marc Valin, Xiph.Org | BSD-3-Clause |
+| [libspecbleach](https://github.com/lucianodato/libspecbleach) header (`vendor/libspecbleach/`) | needed to compile WDSP only, not built | Luciano Dato | LGPL-2.1 |
+
+### Libraries it links
+
+[GLib/GIO](https://gitlab.gnome.org/GNOME/glib) (LGPL-2.1-or-later),
+[libsoup 3](https://gitlab.gnome.org/GNOME/libsoup) (LGPL-2.1-or-later),
+[FFTW 3](https://www.fftw.org) (GPL-2.0-or-later),
+[libcurl](https://curl.se) (curl licence, MIT-like),
+[libwebsockets](https://libwebsockets.org) (MIT), and libgfortran for
+`skimmer-ft8d` (GPL-3.0-or-later with the GCC runtime library exception).
+The AppImage is put together with
+[linuxdeploy](https://github.com/linuxdeploy/linuxdeploy) (MIT).
+
+### Data and services
+
+- **MASTER.SCP** — the Super Check Partial database,
+  [supercheckpartial.com](https://www.supercheckpartial.com), fetched and
+  kept up to date at run time.
 - **Pavel Demin** wrote [red-pitaya-notes](https://github.com/pavel-demin/red-pitaya-notes)
-  and its `sdr_receiver_hpsdr`, the receiver this fork talks to.
-- **Joe Taylor, K1JT, and Steven Franke, K9AN** wrote wsprd (WSJT-X), the WSPR
-  decoder built in (`vendor/wsprd/`), and with the WSJT-X team the FT8 and FT4
-  decoders built in (`vendor/wsjtx-ft/`).
-- **Philip Gladstone, N1DQ** runs [PSK Reporter](https://pskreporter.info).
-- **VE3NEA** wrote CW Skimmer Server, the reference used for the comparisons.
-- The fork's changes were written by Dan, OK1HRA, with the help of Claude Code.
+  (MIT) and its `sdr_receiver_hpsdr`, the receiver this skimmer talks to.
+- **Philip Gladstone, N1DQ** runs [PSK Reporter](https://pskreporter.info);
+  [WSPRnet](https://www.wsprnet.org) takes the WSPR spots.
+- **VE3NEA** wrote CW Skimmer Server, the reference used for the
+  comparisons.
 
 ## Licence
 

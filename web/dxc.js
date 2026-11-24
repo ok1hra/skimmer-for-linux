@@ -15,9 +15,12 @@
 'use strict';
 
 const Dxc = (() => {
+  // wifilt's DX cluster's columns, in its order and alignment (UTC, kHz, DX,
+  // km with the bearing's arrow, spotter, mode, dB, WPM — the eye reads the
+  // same table in both), then this skimmer's own: band, country
   const COLS = [
-    ['time', 'UTC'], ['khz', 'kHz'], ['play', ''], ['call', 'DX'], ['km', 'km'], ['az', '°'], ['db', 'dB'],
-    ['speed', 'WPM'], ['mode', 'Mode'], ['band', 'Band'], ['country', 'Country'], ['src', 'From'],
+    ['time', 'UTC'], ['khz', 'kHz'], ['play', ''], ['call', 'DX'], ['km', 'km'], ['src', 'From'], ['mode', 'Mode'],
+    ['db', 'dB'], ['speed', 'WPM'], ['band', 'Band'], ['country', 'Country'],
   ];
   const DEF = { bands: {}, call: '', regex: false, kmMin: 0, kmMax: 20000, azMin: 0, azMax: 360,
                 dbMin: -30, dbMax: 60, spMin: 0, spMax: 99, modes: { CW: true, RTTY: true, FT8: true, FT4: true, WSPR: true }, country: '',
@@ -25,13 +28,22 @@ const Dxc = (() => {
   const load = () => { try { return JSON.parse(localStorage.getItem('skdxc') || '{}'); } catch (e) { return {}; } };
   const F = { ...JSON.parse(JSON.stringify(DEF)), ...load() };
   if (!(F.age > 0 && F.age <= 30)) F.age = 30;            // the status page keeps half an hour
+  // v3: the band ladder's eyes are this band filter — the bands they hid
+  // from the map alone (skimmer-map-hidden, until v0.8.12) are out of it
+  if (!(F.v >= 3)) {
+    try {
+      const h = JSON.parse(localStorage.getItem('skimmer-map-hidden') || '[]');
+      if (Array.isArray(h)) for (const b of h) F.bands[b] = false;
+      localStorage.removeItem('skimmer-map-hidden');
+    } catch (e) { /* private window */ }
+  }
   // v2: FT8/FT4 (WSJT-X's SNR goes down to −24 dB) — the old floor of −10 dB
   // was the default, not a choice: it moves down with it
-  if (F.v !== 2) {
+  if (!(F.v >= 2)) {
     if (F.dbMin === -10) F.dbMin = -30;
     F.modes = { ...DEF.modes, ...(F.modes || {}) };
-    F.v = 2;
   }
+  F.v = 3;
   // every change is the user's: the ladder and the map's age buttons follow
   const save = () => {
     try { localStorage.setItem('skdxc', JSON.stringify(F)); } catch (e) { /* private window */ }
@@ -50,7 +62,7 @@ const Dxc = (() => {
   const meter = (v, r) => { const x = ratio(v, r); return '|'.repeat(x == null ? 6 : Math.max(1, Math.round(x * 6))); };
   const spanOf = (vals) => (vals.length ? { lo: Math.min(...vals), hi: Math.max(...vals) } : null);
   let kmR = null, dbR = null;                        // the rows shown, set by draw()
-  const ARR = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];
+  const thousands = (v) => String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
   const utc = (t) => { const d = new Date(t * 1000); return `${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}`; };
   const SPK = '<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M3 7.5h3.2L10.5 4v12L6.2 12.5H3z" fill="currentColor"/>' +
     '<path d="M13.2 7.2a4 4 0 0 1 0 5.6M15.6 5a7.2 7.2 0 0 1 0 10" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>';
@@ -61,23 +73,39 @@ const Dxc = (() => {
     if (!F.regex) return F.call.toUpperCase();
     try { return new RegExp(F.call, 'i'); } catch (e) { return false; }
   }
-  function pass(s) {
-    const re = callRe();
+  // the filters a spot passes; skip names the ones left to the caller (the
+  // ladder shows a band or a mode left out its own way)
+  function pass(s, skip) {
+    const no = (k) => !(skip && skip.has(k));
+    const re = no('call') && callRe();
     if (re && re !== false && (typeof re === 'string' ? !s.call.includes(re) : !re.test(s.call))) return false;
-    if (s.band && F.bands[s.band] === false) return false;
-    if (F.modes[s.mode] === false) return false;
-    if (s.age > F.age * 60) return false;
-    if (s.snr < F.dbMin || s.snr > F.dbMax) return false;
-    if (s.speed && (s.speed < F.spMin || s.speed > F.spMax)) return false;
+    if (no('band') && s.band && F.bands[s.band] === false) return false;
+    if (no('mode') && F.modes[s.mode] === false) return false;
+    if (no('age') && s.age > F.age * 60) return false;
+    if (no('db') && (s.snr < F.dbMin || s.snr > F.dbMax)) return false;
+    if (no('speed') && s.speed && (s.speed < F.spMin || s.speed > F.spMax)) return false;
     if (s.km != null && (s.km < F.kmMin || s.km > F.kmMax)) return false;
     if (s.az != null && (F.azMin <= F.azMax ? (s.az < F.azMin || s.az > F.azMax) : (s.az < F.azMin && s.az > F.azMax))) return false;
     if (F.country && !(s.where && s.where.name.toUpperCase().includes(F.country.toUpperCase()))) return false;
-    if (F.src[srcKind(s)] === false) return false;
+    if (no('src') && F.src[srcKind(s)] === false) return false;
     return true;
+  }
+  // a spot (or a WSPR station) from elsewhere on the page, with its place
+  const placeCache = new Map();
+  function placed(s) {
+    if (s.where !== undefined) return s;
+    let p = placeCache.get(s.call);
+    if (!p) {
+      const where = SkMap.locate(s.call), g = where ? SkMap.geo(SkMap.center(), where.lat, where.lon) : null;
+      p = { where, km: g ? g.km : null, az: g ? g.az : null };
+      if (placeCache.size > 5000) placeCache.clear();
+      placeCache.set(s.call, p);
+    }
+    return { ...s, ...p };
   }
   const active = {
     khz: () => Object.values(F.bands).some((v) => v === false),
-    call: () => !!F.call, km: () => F.kmMin > 0 || F.kmMax < 20000, az: () => F.azMin > 0 || F.azMax < 360,
+    call: () => !!F.call, km: () => F.kmMin > 0 || F.kmMax < 20000 || F.azMin > 0 || F.azMax < 360,
     db: () => F.dbMin > DEF.dbMin || F.dbMax < DEF.dbMax, speed: () => F.spMin > 0 || F.spMax < 99,
     mode: () => Object.values(F.modes).some((v) => v === false), country: () => !!F.country, src: () => Object.values(F.src).some((v) => !v),
     band: () => Object.values(F.bands).some((v) => v === false), time: () => F.age !== 30,
@@ -99,11 +127,10 @@ const Dxc = (() => {
           `<label><input type="checkbox" data-flag="regex"${F.regex ? ' checked' : ''}> Regex</label>` +
           (bad ? '<div class="bad">not a valid expression — ignored</div>' : '') +
           '<div class="fm-note">Without Regex, this matches plain text. With Regex enabled, it uses a JavaScript ' +
-          'regular expression and ignores letter case; ticking it on an empty field puts in the default — every ' +
-          'call but the Russian and Belarusian ones.</div>';
+          'regular expression and ignores letter case.</div>';
       }
-      case 'km': return `<div class="fm-t">Distance</div>${range('kmMin', 'kmMax', 0, 20000, 100, 'km')}`;
-      case 'az': return `<div class="fm-t">Bearing (a sector; 300 to 60 crosses north)</div>${range('azMin', 'azMax', 0, 360, 5, '°')}`;
+      case 'km': return `<div class="fm-t">Distance</div>${range('kmMin', 'kmMax', 0, 20000, 100, 'km')}` +
+        `<div class="fm-t">Bearing (a sector; 300 to 60 crosses north)</div>${range('azMin', 'azMax', 0, 360, 5, '°')}`;
       case 'db': return `<div class="fm-t">Signal (FT8/FT4: WSJT-X's SNR)</div>${range('dbMin', 'dbMax', -30, 60, 1, 'dB')}`;
       case 'speed': return `<div class="fm-t">Speed (WPM; RTTY: baud)</div>${range('spMin', 'spMax', 0, 99, 1, '')}`;
       case 'mode': return `<div class="fm-t">Mode</div>${checks('modes', ['CW', 'RTTY', 'FT8', 'FT4', 'WSPR'])}` +
@@ -130,7 +157,7 @@ const Dxc = (() => {
   }
   function closeMenu() { if (menu) { menu.remove(); menu = null; } }
   function resetCol(c) {
-    const keys = { khz: ['bands'], band: ['bands'], call: ['call', 'regex'], km: ['kmMin', 'kmMax'], az: ['azMin', 'azMax'],
+    const keys = { khz: ['bands'], band: ['bands'], call: ['call', 'regex'], km: ['kmMin', 'kmMax', 'azMin', 'azMax'],
                    db: ['dbMin', 'dbMax'], speed: ['spMin', 'spMax'], mode: ['modes'], country: ['country'], src: ['src'], time: ['age'] }[c] || [];
     for (const k of keys) F[k] = JSON.parse(JSON.stringify(DEF[k]));
   }
@@ -143,15 +170,7 @@ const Dxc = (() => {
     if (t.dataset.none) bandsKnown.forEach((b) => { F.bands[b] = false; });
     if (t.dataset.age) F.age = Number(t.dataset.age);
     if (t.dataset.obj) F[t.dataset.obj][t.dataset.key] = t.checked;
-    if (t.dataset.flag) {
-      F[t.dataset.flag] = t.checked;
-      // IP-rotator's DX filter: Regex ticked on an empty field puts in its default
-      if (t.dataset.flag === 'regex' && t.checked && !F.call) {
-        F.call = DX_FILTER_DEFAULT;
-        const inp = menu.querySelector('[data-f=call]');
-        if (inp) inp.value = F.call;
-      }
-    }
+    if (t.dataset.flag) F[t.dataset.flag] = t.checked;
     if (t.dataset.f) F[t.dataset.f] = t.type === 'number' ? Number(t.value) : t.value.trim();
     save();
     if (e.type === 'click' && (t.dataset.reset || t.dataset.all || t.dataset.none || t.dataset.age)) {
@@ -173,9 +192,10 @@ const Dxc = (() => {
       case 'play': return `<td class="c-play">${s.band && srcKind(s) !== 'peer'
         ? `<button type="button" class="dxc-play" data-band="${esc(s.band)}" data-khz="${s.khz}" data-mode="${esc(s.mode)}" title="${s.mode === 'FT8' || s.mode === 'FT4' ? `the FT8 palette: ${esc(s.mode)} at ${fmtKhz(s.khz)} kHz, its dial on the waterfall` : `listen on the waterfall: ${fmtKhz(s.khz)} kHz${s.mode === 'RTTY' ? ' — the RTTY palette decodes it' : ''}`}" aria-label="listen">${SPK}</button>` : ''}</td>`;
       case 'call': return `<td class="c-call">${esc(s.call)}</td>`;
-      case 'km': return s.km != null ? `<td class="c-km"${tone(s.km, kmR)}>${Math.round(s.km).toLocaleString('en-US')}</td>` : '<td class="c-km"></td>';
-      case 'az': return `<td class="c-az" title="${s.az != null ? `${Math.round(s.az)}°` : ''}">${s.az != null ? `${ARR[Math.round(s.az / 45) % 8]} ${Math.round(s.az)}` : ''}</td>`;
-      case 'db': return `<td class="c-db"${tone(s.snr, dbR)}><span class="m">${meter(s.snr, dbR)}</span>${s.snr}</td>`;
+      // as wifilt: the distance in thousands, the bearing as an arrow turned to it
+      case 'km': return s.km != null ? `<td class="c-km"${tone(s.km, kmR)} title="${Math.round(s.az)}°"><span class="km">${thousands(Math.round(s.km))}</span>` +
+        `<span class="arr" style="transform:rotate(${Math.round(s.az)}deg)">↑</span></td>` : '<td class="c-km"></td>';
+      case 'db': return `<td class="c-db"${tone(s.snr, dbR)}><span class="m">${meter(s.snr, dbR)}</span><span class="v">${s.snr}</span></td>`;
       case 'speed': return `<td class="c-speed">${s.speed || ''}</td>`;
       case 'mode': return `<td class="c-mode">${esc(s.mode)}</td>`;
       case 'band': return `<td class="c-band">${esc(s.band)}</td>`;
@@ -187,7 +207,7 @@ const Dxc = (() => {
   function draw() {
     if (!el) return;
     const vis = COLS.filter(([c]) => !F.hidden[c]);
-    const shown = rows.filter(pass);
+    const shown = rows.filter((s) => pass(s));
     kmR = spanOf(shown.filter((s) => s.km != null).map((s) => s.km));
     dbR = spanOf(shown.filter((s) => Number.isFinite(s.snr)).map((s) => s.snr));
     el.querySelector('.dxc-count').textContent = `${shown.length} of ${rows.length}`;
@@ -198,7 +218,7 @@ const Dxc = (() => {
       `<tr data-call="${esc(s.call)}" class="${s.age > 900 ? 'old' : ''}${s.call === marked ? ' hi' : ''}">${vis.map(([c]) => cell(c, s)).join('')}</tr>`).join('')
       : `<tr><td colspan="${vis.length}" class="mut">${rows.length ? 'the filters leave nothing' : 'no spots in the last half hour'}</td></tr>`;
     el.querySelector('.dxc-cols').innerHTML = COLS.map(([c, n]) =>
-      `<label><input type="checkbox" data-col="${c}"${F.hidden[c] ? '' : ' checked'}> ${n === '°' ? 'bearing' : c === 'play' ? 'listen' : n}</label>`).join('');
+      `<label><input type="checkbox" data-col="${c}"${F.hidden[c] ? '' : ' checked'}> ${c === 'play' ? 'listen' : c === 'km' ? 'km, bearing' : n}</label>`).join('');
     onChange(shown, marked);
   }
 
@@ -264,13 +284,19 @@ const Dxc = (() => {
       const where = SkMap.locate(s.call), g = where ? SkMap.geo(c, where.lat, where.lon) : null;
       return { ...s, where, km: g ? g.km : null, az: g ? g.az : null };
     });
-    if (!menu) draw(); else onChange(rows.filter(pass), marked);   // keep an open menu's focus
+    if (!menu) draw(); else onChange(rows.filter((s) => pass(s)), marked);   // keep an open menu's focus
   }
 
   // the page's other inputs for the same filters
   function setMode(m, on) {
     F.modes[m] = !!on;
     if (menu && menu.dataset.c === 'mode') closeMenu();
+    save();
+    if (el) draw();
+  }
+  function setBand(b, on) {
+    F.bands[b] = !!on;
+    if (menu && (menu.dataset.c === 'khz' || menu.dataset.c === 'band')) closeMenu();
     save();
     if (el) draw();
   }
@@ -281,5 +307,9 @@ const Dxc = (() => {
     save();
     if (el) draw();
   }
-  return { mount, update, age: () => F.age, modeOn: (m) => F.modes[m] !== false, setMode, setAge };
+  // the spots other parts of the page count (the band ladder, its heat map)
+  // pass the same filters — skip: the ones they show their own way
+  const passes = (s, skip) => pass(placed(s), skip);
+  return { mount, update, age: () => F.age, modeOn: (m) => F.modes[m] !== false, setMode, setAge,
+           bandOn: (b) => F.bands[b] !== false, setBand, passes };
 })();

@@ -71,6 +71,12 @@ const Wf = (() => {
   // hist: ask for the picture so far, drawn anew at this window and width
   function send(hist) {
     if (!ws || ws.readyState !== 1 || band < 0) return;
+    if (mini()) {                                      // away, listening: the pill's cut-out only
+      const m = miniWin();
+      miniAsked = true;
+      ws.send(`band=${band}&lo=${m.lo.toFixed(1)}&hi=${m.hi.toFixed(1)}&w=${m.w}&rate=${opt.rate}`);
+      return;
+    }
     const v = wanted();
     ws.send(`band=${band}&lo=${v.lo.toFixed(1)}&hi=${v.hi.toFixed(1)}&w=${W}&rate=${opt.rate}${hist ? `&hist=${H}` : ''}`);
   }
@@ -220,6 +226,68 @@ const Wf = (() => {
   // kept short (a backlog is dropped). The speaker mutes: the skimmer stops.
   const au = { f: 0, on: false, ctx: null, next: 0 };
   let markT = 0;
+
+  // ---- the S-meter ------------------------------------------------------------------
+  // As an ICOM transceiver draws it: thin blocks along a scale S1 … S9, then
+  // +20 … +60 dB in red. The level is the skimmer's: the passband's loudest
+  // 10 ms of each audio packet, before the AGC, in dBFS (waterfall.h). dBm
+  // = dBFS + SM_CAL: the Red Pitaya's ADC full scale (±1 V into 50 Ω) is
+  // +10 dBm — an estimate, as a transceiver's meter is. S9 = −73 dBm, 6 dB
+  // an S-unit; fast up, 12 dB/s down, the peak held a second.
+  const SM_CAL = 10, SM_S0 = -127, SM_S9 = -73, SM_TOP = -13, SM_SPLIT = 0.56;
+  const sm = { v: null, peak: null, peakT: 0, tipT: 0 };
+  function smX(dbm, w) {
+    const v = Math.max(SM_S0, Math.min(SM_TOP, dbm));
+    return v <= SM_S9 ? ((v - SM_S0) / (SM_S9 - SM_S0)) * SM_SPLIT * w
+      : (SM_SPLIT + ((v - SM_S9) / (SM_TOP - SM_S9)) * (1 - SM_SPLIT)) * w;
+  }
+  const smText = (dbm) => (dbm >= SM_S9 + 1 ? `S9+${Math.round(dbm - SM_S9)} dB` : `S${Math.max(0, Math.min(9, Math.round((dbm - SM_S0) / 6)))}`);
+  function smDraw() {
+    const c = $('#wf-smeter');
+    if (!c) return;
+    const dpr = devicePixelRatio || 1, w = c.clientWidth || 232, h = c.clientHeight || 34;
+    if (c.width !== Math.round(w * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+    const x = c.getContext('2d');
+    x.setTransform(dpr, 0, 0, dpr, 0, 0);
+    x.fillStyle = '#05080c'; x.fillRect(0, 0, w, h);
+    const L = 12, R = 22, bw = w - L - R;              // R: room for "+60dB"                  // the scale between its margins
+    x.font = '700 10px RC, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'alphabetic';
+    x.fillStyle = '#e8eef6'; x.textAlign = 'left'; x.fillText('S', 1, 11); x.textAlign = 'center';
+    for (const s of [1, 3, 5, 7, 9]) x.fillText(String(s), L + smX(SM_S0 + 6 * s, bw), 11);
+    x.fillStyle = '#ff4a3d';
+    for (const d of [20, 40, 60]) x.fillText(`+${d}`, L + smX(SM_S9 + d, bw), 11);
+    x.textAlign = 'right'; x.font = '700 8px RC, sans-serif'; x.fillText('dB', w - 1, 11);
+    // the scale's ticks: each S-unit, each 10 dB over S9
+    x.fillStyle = '#7d8fa6';
+    for (let s = 1; s <= 9; s++) x.fillRect(Math.round(L + smX(SM_S0 + 6 * s, bw)), 14, 1, s % 2 ? 3 : 2);
+    x.fillStyle = '#a33';
+    for (let d = 10; d <= 60; d += 10) x.fillRect(Math.round(L + smX(SM_S9 + d, bw)), 14, 1, d % 20 ? 2 : 3);
+    // the blocks: 2 px wide, a pixel apart; lit to the level, the peak's one
+    const lit = sm.v != null && au.on ? L + smX(sm.v, bw) : -1, pk = sm.peak != null && au.on ? L + smX(sm.peak, bw) : -1;
+    const s9 = L + SM_SPLIT * bw;
+    for (let px = L; px < L + bw - 1; px += 3) {
+      const red = px >= s9, on = px < lit || (pk >= 0 && Math.abs(px - pk) < 1.5);
+      x.fillStyle = on ? (red ? '#ff3b30' : '#f2f6fa') : (red ? '#3a1414' : '#1e2833');
+      x.fillRect(px, 19, 2, 11);
+    }
+  }
+  function smLevel(dbfs) {
+    const dbm = dbfs + SM_CAL, now = Date.now();
+    sm.v = sm.v == null || dbm > sm.v ? dbm : Math.max(dbm, sm.v - 1.2);   // a packet = 100 ms
+    if (sm.peak == null || dbm >= sm.peak || now - sm.peakT > 1000) { sm.peak = Math.max(dbm, sm.v); sm.peakT = now; }
+    smDraw();
+    if (now - sm.tipT > 700) {
+      sm.tipT = now;
+      const c = $('#wf-smeter');
+      if (c) c.title = `${smText(sm.v)} · ${Math.round(sm.v)} dBm (${Math.round(sm.v - SM_CAL)} dBFS in the passband; dBm = dBFS + ${SM_CAL}, an estimate — the Red Pitaya's full scale)`;
+    }
+  }
+  function smOff() {
+    sm.v = null; sm.peak = null;
+    smDraw();
+    const c = $('#wf-smeter');
+    if (c) c.title = 'S-meter: the level in the audio\'s passband while listening';
+  }
   const ULAW = (() => {
     const t = new Float32Array(256);
     for (let i = 0; i < 256; i++) {
@@ -275,6 +343,7 @@ const Wf = (() => {
     const half = hello.rate / 2;
     au.f = Math.max(b.centre_hz - half + 100, Math.min(b.centre_hz + half - 100, f));
     if (au.on) audioSend();
+    if (mini()) { send(); awayUi(); }                  // the cut-out follows it
     follow(au.f);
     audioUi();
   }
@@ -353,6 +422,7 @@ const Wf = (() => {
   }
   function audioOff(forget) {
     if (au.on) { au.on = false; audioSend(); }
+    smOff();
     if (forget) au.f = 0;
     audioUi();
     if (away) { awayUi(); clearTimeout(leaveT); leaveT = setTimeout(close, 30000); }   // muted away: stop as away does
@@ -361,6 +431,7 @@ const Wf = (() => {
     if (!au.on) return;
     const dv = new DataView(buf), n = dv.getUint16(2, true);
     if (dv.getUint8(1) !== band || !n) return;
+    if (buf.byteLength >= 8 + n + 4) smLevel(dv.getFloat32(8 + n, true));   // the S-meter
     const u = new Uint8Array(buf, 8, n), d = new Float32Array(n);
     for (let i = 0; i < n; i++) d[i] = ULAW[u[i]];
     bytes += buf.byteLength;
@@ -451,6 +522,8 @@ const Wf = (() => {
     if (ws && ws.readyState === 1) ws.send(`a=${seq}`);
     if (dv.getUint8(1) !== band) return;               // a row of the band left
     const px = new Uint8Array(buf, 32, w);
+    if (mini()) { miniRow(px, w, lo, hi); bytes += buf.byteLength; return; }
+    if (Math.abs((hi - lo) - MINI_SPAN) < 1 && Math.abs((hi - lo) - (view.hi - view.lo)) > 1) return;   // the cut-out's, late
     noteFloor(px);
     g.drawImage(cv, 0, 0, W, H - 1, 0, 1, W, H - 1);       // everything one row down
     g.fillStyle = '#00000c'; g.fillRect(0, 0, W, 1);
@@ -745,6 +818,7 @@ const Wf = (() => {
     $('#wf-bw').innerHTML = BWS.map((b) => `<option value="${b}">${b} Hz</option>`).join('');
     $('#wf-bw').value = String(opt.abw);
     audioUi();
+    smOff();
     bar();
     $('#wf-band').addEventListener('change', (e) => setBand(Number(e.target.value), 0));
     $('#wf-span').addEventListener('change', (e) => { opt.span = Number(e.target.value); reframe(false); });
@@ -870,23 +944,64 @@ const Wf = (() => {
   // skimmer then computes nothing for this page; back sooner, nothing stopped.
   // Not while listening: the station stays on the air until muted (a pill
   // in the corner says what is heard, mutes it, leads back), then 30 s.
+  // Over the pill, a live cut-out of the waterfall: the frequency heard in
+  // the middle, 1 kHz either side, two lines at the passband's edges — no
+  // spectrum. Meanwhile the socket asks for this window alone (small, the
+  // speed chosen); back on the tab, the full picture comes again, history
+  // and all.
+  const MINI_SPAN = 2000, MINI_H = 80;
+  let miniAsked = false, miniFloor = null, mcv = null, mg = null;
+  const mini = () => away && au.on && !!au.f;
+  function miniWin() {
+    const w = Math.max(120, Math.min(600, Math.round((mcv && mcv.clientWidth) || 260)));
+    return { lo: au.f - MINI_SPAN / 2, hi: au.f + MINI_SPAN / 2, w };
+  }
+  function miniRow(px, w, lo, hi) {
+    const m = miniWin();
+    if (!mg || Math.abs(lo - m.lo) > 1 || Math.abs(hi - m.hi) > 1) return;   // another window's, late
+    if (mcv.width !== m.w) { mcv.width = m.w; mcv.height = MINI_H; mg.fillStyle = '#00000c'; mg.fillRect(0, 0, m.w, MINI_H); }
+    const sorted = Array.from(px).filter((v) => v > 0).sort((a, b) => a - b);
+    if (sorted.length) { const p = sorted[Math.floor(sorted.length * 0.2)]; miniFloor = miniFloor == null ? p : miniFloor * 0.9 + p * 0.1; }
+    const dbFloor = (miniFloor || 0) / 2 - 160 - 3 + Number(opt.floor), scale = 255 / opt.range;
+    const img = mg.createImageData(w, 1), d = img.data;
+    for (let i = 0; i < w; i++) {
+      const c = px[i] ? Math.max(0, Math.min(255, Math.round((px[i] / 2 - 160 - dbFloor) * scale))) : 0;
+      d[i * 4] = LUT[c * 3]; d[i * 4 + 1] = LUT[c * 3 + 1]; d[i * 4 + 2] = LUT[c * 3 + 2]; d[i * 4 + 3] = 255;
+    }
+    mg.drawImage(mcv, 0, 0, mcv.width, MINI_H - 1, 0, 1, mcv.width, MINI_H - 1);   // one row down
+    const tmp = miniRow.cv || (miniRow.cv = document.createElement('canvas'));
+    tmp.width = w; tmp.height = 1;
+    tmp.getContext('2d').putImageData(img, 0, 0);
+    mg.imageSmoothingEnabled = false;
+    mg.drawImage(tmp, 0, 0, w, 1, 0, 0, mcv.width, 1);
+  }
   function awayUi() {
     let el = $('#wf-away');
     if (!el) {
       el = document.createElement('div');
       el.id = 'wf-away';
-      el.innerHTML = '<button type="button" class="wf-away-go" title="back to the waterfall"></button>' +
-        '<button type="button" class="wf-away-mute" title="stop listening">mute</button>';
+      el.innerHTML = '<div class="wf-away-mini" title="the frequency heard in the middle, 1 kHz either side; the lines: the passband">' +
+        '<canvas height="80"></canvas><i class="pb l"></i><i class="pb r"></i><i class="mid"></i>' +
+        '<span class="lo">−1 kHz</span><span class="hi">+1 kHz</span></div>' +
+        '<div class="wf-away-btns"><button type="button" class="wf-away-go" title="back to the waterfall"></button>' +
+        '<button type="button" class="wf-away-mute" title="stop listening">mute</button></div>';
       el.querySelector('.wf-away-go').addEventListener('click', () => show('waterfall'));
       el.querySelector('.wf-away-mute').addEventListener('click', () => audioOff(false));
       document.body.appendChild(el);
+      mcv = el.querySelector('canvas'); mg = mcv.getContext('2d');
     }
     el.hidden = !(away && au.on);
     const b = bandInfo();
     el.querySelector('.wf-away-go').textContent = `listening ${b ? `${b.name} · ` : ''}${fmtKhz(au.f / 1000, 2)} kHz`;
+    // the passband's edges, in the cut-out's 2 kHz
+    const half = Math.min(50, (abw() / 2 / MINI_SPAN) * 100);
+    el.querySelector('.pb.l').style.left = `${50 - half}%`;
+    el.querySelector('.pb.r').style.left = `${50 + half}%`;
   }
   function enter() {
     mount();
+    const back = miniAsked;                           // the pill's cut-out was streaming
+    miniAsked = false;
     away = false;
     awayUi();
     clearTimeout(leaveT);
@@ -895,7 +1010,7 @@ const Wf = (() => {
     drawScale();
     fetchSpots(true);                                // the last 15 min at once
     connect();
-    if (ws && ws.readyState === 1) send();
+    if (ws && ws.readyState === 1) send(back);        // after the cut-out: the picture so far again
   }
   function close() {
     away = false;
@@ -906,7 +1021,13 @@ const Wf = (() => {
   function leave() {
     away = true;
     clearTimeout(leaveT);
-    if (au.on) { awayUi(); return; }
+    if (au.on) {
+      awayUi();
+      miniFloor = null;
+      if (mg) { mg.fillStyle = '#00000c'; mg.fillRect(0, 0, mcv.width, mcv.height); }
+      send();                                          // the cut-out's window
+      return;
+    }
     leaveT = setTimeout(close, 30000);
   }
   return { enter, leave, listen, retune, state, paletteChanged, ft8Opened, ft8Focus, ft8Closed, ft8Ui, ft8Stamp };

@@ -39,6 +39,7 @@
     <button data-tab="waterfall">Waterfall</button>
     <!--admin--><button data-tab="settings">Settings</button>
     <button data-tab="log">Log</button><!--/admin-->
+    <button type="button" id="about-open" title="who made this skimmer, and on whose decoders">About</button>
     <a class="navlink" href="https://github.com/ok1hra/skimmer-for-linux" target="_blank" rel="noopener"
        title="the project on GitHub: sources, releases, issues (a new tab)">Git ↗</a>
   </nav>
@@ -174,7 +175,8 @@
       <span class="wf-listen"><button type="button" id="wf-audio" class="wf-spk" aria-label="listen"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M3 7.5h3.2L10.5 4v12L6.2 12.5H3z" fill="currentColor"/><path d="M13 6.5l5 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M13 13.5l5-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         <input id="wf-freq" class="wf-freq" inputmode="decimal" placeholder="kHz" autocomplete="off" spellcheck="false"
           aria-label="the frequency heard, kHz" title="the frequency heard (kHz; Enter tunes there, on any band shown here) — or the wheel over the spectrum"><span class="wf-unit">kHz</span>
-        <select id="wf-bw" title="the audio's passband"></select></span>
+        <select id="wf-bw" title="the audio's passband"></select>
+        <canvas id="wf-smeter" class="wf-smeter" width="232" height="34" aria-label="S-meter"></canvas></span>
       <button type="button" class="wf-auto wf-rtty" id="wf-rtty" title="the RTTY palette: decodes the frequency heard">RTTY</button>
       <button type="button" class="wf-auto wf-ft8" id="wf-ft8" hidden title="the FT8 palette: what the skimmer decodes on this band's FT8/FT4 dial (the view narrows to it)">FT8</button>
       <span class="wf-net mut" id="wf-net"></span>
@@ -274,8 +276,7 @@
             <button type="button" class="small" id="filter-clear">Clear</button>
           </div>
           <small class="note-s">Without Regex, this matches plain text. With Regex enabled, it is a regular
-            expression and ignores letter case; ticking Regex on an empty field puts in the default — every
-            call but the Russian and Belarusian ones (R…, UA–UI, EU–EW).</small>
+            expression and ignores letter case.</small>
           <div class="filter-row mycall">
             <label class="check"><input type="checkbox" name="filter.mycall" id="filter-mycall">
               <span>drop my call <b id="filter-mycall-call"></b> and the calls up to</span></label>
@@ -291,6 +292,16 @@
           <small class="note-s">Only the calls that pass go anywhere; empty = all. The rest are dropped right
             where they are decoded: no spot on the telnet feed or to the RBN, no dot on the map, not in the
             DX cluster nor the statistics — peers' and workers' spots too.</small>
+        </fieldset>
+        <fieldset>
+          <legend>Bad calls</legend>
+          <label>Bad calls <input name="filter.bad" id="filter-bad-calls" placeholder="e.g. UA9, OK1ABC, 3B8" spellcheck="false" autocomplete="off">
+            <small class="bad" id="filter-bad-calls-bad" hidden>only letters, digits and / in a prefix or a call</small></label>
+          <small class="note-s">Prefixes or whole calls, separated by commas, any case. A prefix drops every call
+            that starts with it (UA9 drops UA9ABC); a whole call drops that call, also with a /part (OK1ABC drops
+            OK1ABC/P and DL/OK1ABC). They are dropped right where they are decoded, as by the callsign filter: no
+            spot on the telnet feed or to the RBN, no dot on the map, not in the DX cluster nor the statistics —
+            peers' and workers' spots too.</small>
         </fieldset>
         <fieldset>
           <legend>Spot archive</legend>
@@ -488,6 +499,37 @@
   <a href="status.json">status.json</a> · <a href="stats.json">stats.json</a> ·
   <span id="updated"></span>
 </footer>
+<!-- About: a palette over the page, for everyone -->
+<dialog id="about" class="about" aria-labelledby="about-title">
+  <div class="ab-head"><span id="about-title" class="ab-title">About Skimmer for Linux</span>
+    <span class="ab-ver mut" id="about-ver"></span>
+    <button type="button" class="ab-close" id="about-close" title="close" aria-label="close">×</button></div>
+  <div class="ab-body">
+    <p>A CW, RTTY, FT8/FT4 and WSPR skimmer for the Red Pitaya, without a GUI: it decodes up to eight bands at once
+      and sends what it hears to a telnet DX cluster feed, the RBN and this page.</p>
+    <p>Based on the original <a href="https://github.com/OK1BR/skimmer-for-linux" target="_blank" rel="noopener">Skimmer
+      for Linux</a> by <b>Richard Fakenberg, OK1BR</b>, and running on the decoders of many authors:</p>
+    <dl class="ab-list">
+      <dt>CW v1, v2, v3 · RTTY</dt><dd>Richard Fakenberg OK1BR — the engine, the channelizer, callsign validation and the spot pipeline</dd>
+      <dt>CW v4 (DeepCW v2)</dt><dd>the narrow network and its stitcher by <b>e04</b>
+        (<a href="https://github.com/e04/deepcw-engine" target="_blank" rel="noopener">deepcw-engine</a>, MIT); its CPU kernel
+        ported from <a href="https://github.com/bubnikv/sdriak" target="_blank" rel="noopener">SDRIAK</a> by <b>Vojtěch Bubník OK1IAK</b> (GPL-3.0)</dd>
+      <dt>DeepCW v1</dt><dd>the model by <b>e04</b> (deepcw-engine, AGPL-3.0 — downloaded on request, never shipped)</dd>
+      <dt>FT8 · FT4</dt><dd><a href="https://wsjt.sourceforge.io" target="_blank" rel="noopener">WSJT-X</a> by <b>Joe Taylor K1JT</b>,
+        <b>Steven Franke K9AN</b>, <b>Bill Somerville G4WJS</b> and the WSJT-X team (GPL-3.0)</dd>
+      <dt>WSPR</dt><dd>wsprd of WSJT-X by <b>Joe Taylor K1JT</b> and <b>Steven Franke K9AN</b>, with Phil Karn KA9Q's Fano decoder (GPL-3.0)</dd>
+      <dt>RTTY palette</dt><dd>RTTY-ICOM of <a href="https://github.com/ok1hra/wifilt" target="_blank" rel="noopener">WIFILT</a> by <b>Dan OK1HRA</b> (GPL-3.0)</dd>
+      <dt>DSP</dt><dd>WDSP by <b>Warren Pratt NR0V</b> (Linux port John Melton G0ORX/N6LYT), FFTW by Matteo Frigo and Steven G. Johnson</dd>
+      <dt>Map · calls</dt><dd>the map and the DXCC prefixes of <a href="https://github.com/ok1hra/IP-rotator" target="_blank" rel="noopener">IP-rotator</a> (OK1HRA),
+        Natural Earth (public domain); <a href="https://www.supercheckpartial.com" target="_blank" rel="noopener">MASTER.SCP</a> (Super Check Partial)</dd>
+      <dt>Receiver</dt><dd>red-pitaya-notes' <code>sdr_receiver_hpsdr</code> by <b>Pavel Demin</b></dd>
+    </dl>
+    <p class="ab-dev">Developed by <b>Dan OK1HRA</b> with the generous support of <b>Vojta OK1IAK</b>.</p>
+    <p class="mut">GPL-3.0-or-later ·
+      <a href="https://github.com/ok1hra/skimmer-for-linux" target="_blank" rel="noopener">the sources</a> ·
+      <a href="https://github.com/ok1hra/skimmer-for-linux#credits" target="_blank" rel="noopener">every credit and licence</a></p>
+  </div>
+</dialog>
 <script src="app.js"></script>
 </body>
 </html>
