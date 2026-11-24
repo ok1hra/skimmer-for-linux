@@ -19,6 +19,8 @@
 <script src="rtty/rtty-rxlog.js" defer></script>
 <script src="rtty-palette.js" defer></script>
 <script src="ft8-palette.js" defer></script>
+<script src="js8/js8-protocol.js" defer></script>
+<script src="js8-palette.js" defer></script>
 <script src="waterfall.js" defer></script>
 </head>
 <body>
@@ -123,7 +125,7 @@
       <div class="legend" id="legend-spots"></div>
       <div class="chart" id="chart-spots"></div>
       <div id="ft8-spots" hidden>
-        <p class="sub mut">FT8 and FT4, on a scale of their own — each station that sent, spotted once a band in 10 min</p>
+        <p class="sub mut" id="ft8-spots-sub">FT8 and FT4, on a scale of their own — each station that sent, spotted once a band in 10 min</p>
         <div class="chart" id="chart-spots-ft8"></div>
       </div>
       <div class="timebar" id="timebar" hidden>
@@ -179,6 +181,7 @@
         <canvas id="wf-smeter" class="wf-smeter" width="232" height="34" aria-label="S-meter"></canvas></span>
       <button type="button" class="wf-auto wf-rtty" id="wf-rtty" title="the RTTY palette: decodes the frequency heard">RTTY</button>
       <button type="button" class="wf-auto wf-ft8" id="wf-ft8" hidden title="the FT8 palette: what the skimmer decodes on this band's FT8/FT4 dial (the view narrows to it)">FT8</button>
+      <button type="button" class="wf-auto wf-js8" id="wf-js8" hidden title="the JS8 palette: what the skimmer decodes on this band's JS8 dial, every submode, the frames put back into messages (the view narrows to it)">JS8</button>
       <span class="wf-net mut" id="wf-net"></span>
     </div>
     <canvas id="wf-spec-cv" class="wf-spec" hidden title="wheel: tune (Shift: 10 Hz steps) · a call: listen there (RTTY: the palette decodes it)"></canvas>
@@ -415,6 +418,30 @@
             locator when it sent one, in a datagram every 5 minutes — as WSJT-X reports. FT8 in the waterfall's bar (or a
             click on an FT8 spot) opens the FT8 palette: every message of the last 15 min, as WSJT-X's Band Activity.
             Not on a worker (its hub decodes FT8); a band the thermal guard has off decodes no FT8 either.</small>
+        </fieldset>
+        <fieldset>
+          <legend>JS8</legend>
+          <label class="check"><input type="checkbox" name="js8.enabled"> decode JS8 on every JS8 frequency inside the bands received</label>
+          <label>Submodes <input name="js8.submodes" placeholder="normal,fast,turbo,slow" spellcheck="false">
+            <small>normal (15 s), fast (10 s), turbo (6 s), slow (30 s, the deepest: −28 dB) — all decoded at once from the same audio; empty = all four</small></label>
+          <label class="check"><input type="checkbox" name="js8.feed" data-default="true"> spots to the telnet feed <small>(a deep frame's call only once confirmed; off: the web page only)</small></label>
+          <label class="check"><input type="checkbox" name="js8.serve" data-default="true"> one decoder a frequency kept running <small>(it combines a repeated frame across periods, and costs a tenth of the CPU of one run a period)</small></label>
+          <label>Clean from quality <input name="js8.clean" inputmode="decimal" placeholder="0.80" size="5">
+            <small>0.50–1.00: the decoder's quality (1 − hard errors/60) from which a frame is clean; under it a frame is deep and its call waits for a confirmation before the feed</small></label>
+          <label>Audio from <input name="js8.lo_hz" inputmode="numeric" placeholder="200" size="6"> to
+            <input name="js8.hi_hz" inputmode="numeric" placeholder="3500" size="6"> Hz above the dial
+            <small>from 200–1000, to 2000–4000</small></label>
+          <label>Bands <input name="js8.bands" placeholder="every band" spellcheck="false">
+            <small>the Bands names whose JS8 frequencies are decoded, e.g. "40m, 20m"; empty = every band</small></label>
+          <label>Decoders <input name="js8.threads" inputmode="numeric" placeholder="2" size="4">
+            <small>side by side (1–8); a period they are still behind on when its next is done is skipped</small></label>
+          <label class="check"><input type="checkbox" name="js8.upload"> send the confirmed stations to PSK Reporter <small>(under FT8 / FT4 → Call and Locator)</small></label>
+          <small class="note-s" id="js8-note"></small>
+          <small class="note-s">JS8Call-improved's own JS8 decoder (built in) on JS8Call's dial frequencies, every submode every
+            period — the radio's IQ, no extra receiver. A heartbeat, a CQ, a directed frame names its sender: a spot once a band in
+            10 min at its own frequency. JS8 has only a 12-bit check, so a frame read with many errors is deep: its call is on this
+            page at once, on the telnet feed once confirmed — a second decode within 30 min, MASTER.SCP, or confirmed on JS8 in the
+            last 90 days. The JS8 palette over the waterfall shows what the frames say.</small>
         </fieldset>
         <fieldset>
           <legend>Updates</legend>

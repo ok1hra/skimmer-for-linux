@@ -29,6 +29,9 @@ const Wf = (() => {
   // passband, it gets every packet, and the markers stand on the scale
   const pal = () => typeof RttyPal !== 'undefined' && RttyPal.isOpen();
   const ft8 = () => typeof Ft8Pal !== 'undefined' && Ft8Pal.isOpen();
+  // the digital palette open over the picture (FT8 or JS8, one at a time):
+  // it draws its period lines and stamps the senders
+  const dpal = () => (ft8() ? Ft8Pal : typeof Js8Pal !== 'undefined' && Js8Pal.isOpen() ? Js8Pal : null);
   const abw = () => (pal() ? RttyPal.bandwidth() : opt.abw);
 
   let ws = null, active = false, retry = 0, hello = null, band = -1, shownBand = '', leaveT = 0, away = false;
@@ -90,6 +93,7 @@ const Wf = (() => {
       g.fillStyle = '#00000c'; g.fillRect(0, 0, W, H);
       rowTimes = []; envelope = null;
       if (typeof Ft8Pal !== 'undefined') Ft8Pal.restamp();
+      if (typeof Js8Pal !== 'undefined') Js8Pal.restamp();
     } else if (v.lo !== view.lo || v.hi !== view.hi) {
       const tmp = document.createElement('canvas'); tmp.width = W; tmp.height = H;
       tmp.getContext('2d').drawImage(cv, 0, 0);
@@ -123,11 +127,19 @@ const Wf = (() => {
     if (band < 0 || !f || !f.on || !f.decoder || !f.dials) return [];
     return f.dials.filter((d) => d.rx === band && d.lo_hz && d.hi_hz);
   }
+  // [js8] gold: each JS8 dial's window (status.json "js8"), "JS8 RX"
+  function js8Here() {
+    const j = typeof status !== 'undefined' && status && status.js8;
+    if (band < 0 || !j || !j.on || !j.decoder || !j.dials) return [];
+    return j.dials.filter((d) => d.rx === band && d.lo_hz && d.hi_hz);
+  }
   const PASS = { wspr: { fill: 'rgba(120,10,10,.45)', text: '#e05a5a', foot: '#8a1414' },
-                 ft8: { fill: 'rgba(90,40,150,.26)', text: '#c59bff', foot: '#6b3fb0' } };
+                 ft8: { fill: 'rgba(90,40,150,.26)', text: '#c59bff', foot: '#6b3fb0' },
+                 js8: { fill: 'rgba(160,130,20,.26)', text: '#f2d46b', foot: '#a88a12' } };
   function passes() {
     return [...wsprHere().map((d) => ({ ...d, kind: 'wspr', label: 'WSPR RX' })),
-            ...ft8Here().map((d) => ({ ...d, kind: 'ft8', label: `${d.mode} RX` }))];
+            ...ft8Here().map((d) => ({ ...d, kind: 'ft8', label: `${d.mode} RX` })),
+            ...js8Here().map((d) => ({ ...d, kind: 'js8', label: 'JS8 RX' }))];
   }
   function placeWspr() {
     const box = $('#wf-wspr');
@@ -200,7 +212,7 @@ const Wf = (() => {
         sg.lineWidth = 1;
       }
     }
-    // WSPR's passbands dark red along the scale's foot, FT8/FT4's violet
+    // WSPR's passbands dark red along the scale's foot, FT8/FT4's violet, JS8's gold
     for (const d of passes()) {
       sg.fillStyle = PASS[d.kind].foot;
       sg.fillRect((d.lo_hz - view.lo) * px, 19, Math.max(2, (d.hi_hz - d.lo_hz) * px), 3);
@@ -400,14 +412,20 @@ const Wf = (() => {
       reframe(false);
     }
   }
-  // the button: there only while the skimmer decodes FT8/FT4; on while open
+  // the buttons: FT8 there only while the skimmer decodes FT8/FT4, JS8 while
+  // it decodes JS8; on while its palette is open
   function ft8Ui() {
-    const b = $('#wf-ft8');
-    if (!b) return;
-    b.hidden = typeof Ft8Pal === 'undefined' || !Ft8Pal.available();
-    b.classList.toggle('on', ft8());
+    const b = $('#wf-ft8'), j = $('#wf-js8');
+    if (b) {
+      b.hidden = typeof Ft8Pal === 'undefined' || !Ft8Pal.available();
+      b.classList.toggle('on', ft8());
+    }
+    if (j) {
+      j.hidden = typeof Js8Pal === 'undefined' || !Js8Pal.available();
+      j.classList.toggle('on', typeof Js8Pal !== 'undefined' && Js8Pal.isOpen());
+    }
   }
-  function ft8Stamp() { if (ft8() && g) Ft8Pal.stamp(g, rowTimes, xOf, W); }
+  function ft8Stamp() { const p = dpal(); if (p && g) p.stamp(g, rowTimes, xOf, W); }
   function rttyUi() {
     const b = $('#wf-rtty'), bw = $('#wf-bw');
     if (!b) return;
@@ -531,7 +549,7 @@ const Wf = (() => {
     putRow(w, lo, hi, 0);
     rowTimes.unshift(t);
     if (rowTimes.length > H) rowTimes.length = H;
-    if (ft8()) Ft8Pal.row(g, W, t, rowTimes[1]);       // a cycle's start: a faint line
+    if (dpal()) dpal().row(g, W, t, rowTimes[1]);     // a cycle's start: a faint line
     // the envelope: its window's rows smoothed; a new window starts it anew
     if (opt.spec) {
       if (!envelope || envelope.lo !== lo || envelope.hi !== hi || envelope.v.length !== w) {
@@ -568,7 +586,7 @@ const Wf = (() => {
       g.imageSmoothingEnabled = false;
       g.drawImage(rows[k].cv, 0, 0, w, 1, xOf(lo), y, xOf(hi) - xOf(lo), 1);
     }
-    if (ft8()) { Ft8Pal.restamp(); Ft8Pal.stamp(g, rowTimes, xOf, W); }   // the labels anew
+    if (dpal()) { dpal().restamp(); dpal().stamp(g, rowTimes, xOf, W); }   // the labels anew
     bytes += buf.byteLength;
   }
   function cloneRow(w) {
@@ -624,7 +642,8 @@ const Wf = (() => {
       prev = x;
       callHits.push({ x, s: c.s });
       spg.globalAlpha = 1 - 0.6 * Math.min(1, (now - c.s.t) / keep);
-      spg.fillStyle = c.s.mode === 'RTTY' ? '#ffb88a' : c.s.mode === 'FT8' || c.s.mode === 'FT4' ? '#c59bff' : '#e8eef6';
+      spg.fillStyle = c.s.mode === 'RTTY' ? '#ffb88a' : c.s.mode === 'FT8' || c.s.mode === 'FT4' ? '#c59bff'
+        : c.s.mode === 'JS8' ? '#f2d46b' : '#e8eef6';
       spg.fillRect(Math.round(c.x), 0, 1, 3);           // its frequency
       spg.save();
       spg.translate(Math.round(x) + 0.5, 4);
@@ -652,11 +671,13 @@ const Wf = (() => {
     const near = [...last.values()].sort((a, c) => c.t - a.t);
     const wsprIn = wsprHere().some((d) => f >= d.lo_hz && f <= d.hi_hz);
     const ft8In = ft8Here().filter((d) => f >= d.lo_hz && f <= d.hi_hz).map((d) => `${d.mode} RX`);
+    const js8In = js8Here().some((d) => f >= d.lo_hz && f <= d.hi_hz);
     el.innerHTML = near.slice(0, 4).map((s) =>
-      `<b class="${s.mode === 'RTTY' ? 'rtty' : s.mode === 'FT8' || s.mode === 'FT4' ? 'ft8' : ''}">${esc(s.call)}</b>`).join('') +
+      `<b class="${s.mode === 'RTTY' ? 'rtty' : s.mode === 'FT8' || s.mode === 'FT4' ? 'ft8' : s.mode === 'JS8' ? 'js8' : ''}">${esc(s.call)}</b>`).join('') +
       (near.length > 4 ? `<span class="mut">+${near.length - 4}</span>` : '') +
       (wsprIn ? '<b class="wspr">WSPR RX</b>' : '') +
       ft8In.map((l) => `<b class="ft8">${l}</b>`).join('') +
+      (js8In ? '<b class="js8">JS8 RX</b>' : '') +
       `<span class="f">${fmtKhz(f / 1000, 2)}</span>`;
     el.hidden = false;
     const box = $('#wf-box').getBoundingClientRect();
@@ -771,6 +792,8 @@ const Wf = (() => {
     if (i < 0) { netStatus(`${p.name} is not on this waterfall`, true); return; }
     // an FT8/FT4 spot: the FT8 palette on its dial (no audio: WSJT-X's tones)
     if ((p.mode === 'FT8' || p.mode === 'FT4') && typeof Ft8Pal !== 'undefined' && Ft8Pal.openAt(p.hz, p.mode)) return;
+    // a JS8 spot: the JS8 palette on its dial (what the frames say)
+    if (p.mode === 'JS8' && typeof Js8Pal !== 'undefined' && Js8Pal.openAt(p.hz)) return;
     if (i !== band) { setBand(i, p.hz); send(false); }   // the band first, then the audio in it
     else follow(p.hz);
     audioTune(p.hz);
@@ -906,6 +929,7 @@ const Wf = (() => {
     });
     rttyUi();
     $('#wf-ft8').addEventListener('click', () => { if (typeof Ft8Pal !== 'undefined') Ft8Pal.toggleOn(band); });
+    $('#wf-js8').addEventListener('click', () => { if (typeof Js8Pal !== 'undefined') Js8Pal.toggleOn(band); });
     ft8Ui();
     // a click on a call over the waterfall: listen there (RTTY: the palette too)
     sp.addEventListener('click', (e) => {
