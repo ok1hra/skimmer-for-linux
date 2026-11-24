@@ -57,6 +57,11 @@ miss=$(ldd "$R/usr/bin/skimmer-ft8d" 2>&1 | grep "not found")
 [[ -x $R/usr/bin/skimmer-ft8d && -z $miss ]]; check "skimmer-ft8d's libraries found ${miss:+— $miss}" $?
 out=$("$R/usr/bin/skimmer-ft8d" 2>&1); rc=$?
 [[ $rc == 2 && $out == *Usage:\ skimmer-ft8d* ]]; check "skimmer-ft8d runs" $?
+# JS8Call-improved's JS8 decoder: its libraries found, and it runs (usage = exit 2)
+miss=$(ldd "$R/usr/bin/skimmer-js8d" 2>&1 | grep "not found")
+[[ -x $R/usr/bin/skimmer-js8d && -z $miss ]]; check "skimmer-js8d's libraries found ${miss:+— $miss}" $?
+out=$("$R/usr/bin/skimmer-js8d" 2>&1); rc=$?
+[[ $rc == 2 && $out == *Usage:\ skimmer-js8d* ]]; check "skimmer-js8d runs" $?
 
 # the whole skimmer on the mock source: streaming, the web page answers
 HTTP=$((30000 + RANDOM % 5000))

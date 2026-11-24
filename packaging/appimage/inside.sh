@@ -7,7 +7,7 @@ export DEBIAN_FRONTEND=noninteractive APPIMAGE_EXTRACT_AND_RUN=1
 
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
-  build-essential gfortran meson ninja-build pkg-config file ca-certificates \
+  build-essential gfortran g++ libboost1.81-dev meson ninja-build pkg-config file ca-certificates \
   libglib2.0-dev libwebsockets-dev libfftw3-dev libcurl4-openssl-dev libsoup-3.0-dev \
   curl python3 >/dev/null                            # (the last two: the gates)
 
@@ -17,7 +17,7 @@ useradd -m builder
 mkdir -p /build/src && tar -xzf /in/src.tar.gz -C /build/src && chown -R builder /build
 cd /build
 runuser -u builder -- meson setup b src --buildtype=debugoptimized \
-  -Dbuild_suffix="${BUILD_SUFFIX:-}" -Dft8=enabled >/dev/null   # a release always has FT8
+  -Dbuild_suffix="${BUILD_SUFFIX:-}" -Dft8=enabled -Djs8=enabled >/dev/null   # a release always has FT8 and JS8
 runuser -u builder -- meson compile -C b
 runuser -u builder -- meson test -C b --print-errorlogs
 
@@ -28,6 +28,7 @@ A=/build/AppDir
 mkdir -p $A/usr/bin $A/usr/lib $A/usr/share/doc/skimmer-for-linux $A/usr/share/doc/onnxruntime
 cp b/skimmer-headless b/vendor/wsprd/skimmer-wsprd $A/usr/bin/   # + WSJT-X's wsprd ([wspr])
 cp b/vendor/wsjtx-ft/skimmer-ft8d $A/usr/bin/   # + WSJT-X's FT8/FT4 ([ft8]; brings libgfortran)
+cp b/vendor/js8call/skimmer-js8d $A/usr/bin/    # + JS8Call-improved's JS8 ([js8]; libstdc++)
 tar -xzf /dl/onnxruntime-linux-x64-1.21.0.tgz -C /build
 ORT=/build/onnxruntime-linux-x64-1.21.0
 cp $ORT/lib/libonnxruntime.so.1.21.0 $A/usr/lib/
@@ -39,6 +40,7 @@ cp /dl/linuxdeploy-x86_64.AppImage /build/linuxdeploy && chmod +x /build/linuxde
   -e $A/usr/bin/skimmer-headless \
   -e $A/usr/bin/skimmer-wsprd \
   -e $A/usr/bin/skimmer-ft8d \
+  -e $A/usr/bin/skimmer-js8d \
   -l $A/usr/lib/libonnxruntime.so.1.21.0 \
   -d /pkg/skimmer-headless.desktop -i /pkg/skimmer-headless.svg
 ln -sf libonnxruntime.so.1.21.0 $A/usr/lib/libonnxruntime.so.1

@@ -532,7 +532,7 @@
     <span class="ab-ver mut" id="about-ver"></span>
     <button type="button" class="ab-close" id="about-close" title="close" aria-label="close">×</button></div>
   <div class="ab-body">
-    <p>A CW, RTTY, FT8/FT4 and WSPR skimmer for the Red Pitaya, without a GUI: it decodes up to eight bands at once
+    <p>A CW, RTTY, FT8/FT4, JS8 and WSPR skimmer for the Red Pitaya, without a GUI: it decodes up to eight bands at once
       and sends what it hears to a telnet DX cluster feed, the RBN and this page.</p>
     <p>Based on the original <a href="https://github.com/OK1BR/skimmer-for-linux" target="_blank" rel="noopener">Skimmer
       for Linux</a> by <b>Richard Fakenberg, OK1BR</b>, and running on the decoders of many authors:</p>
@@ -544,6 +544,10 @@
       <dt>DeepCW v1</dt><dd>the model by <b>e04</b> (deepcw-engine, AGPL-3.0 — downloaded on request, never shipped)</dd>
       <dt>FT8 · FT4</dt><dd><a href="https://wsjt.sourceforge.io" target="_blank" rel="noopener">WSJT-X</a> by <b>Joe Taylor K1JT</b>,
         <b>Steven Franke K9AN</b>, <b>Bill Somerville G4WJS</b> and the WSJT-X team (GPL-3.0)</dd>
+      <dt>JS8</dt><dd><a href="https://github.com/JS8Call-improved/JS8Call-improved" target="_blank" rel="noopener">JS8Call-improved</a>'s
+        decoder (the C++ port of JS8Call by <b>Jordan Sherer KN4CRD</b>, by the JS8Call-improved team, GPL-3.0), built without Qt as
+        <a href="https://github.com/ok1hra/wifilt" target="_blank" rel="noopener">WIFILT</a> builds it; the palette's frame reading
+        and JSC dictionary from WIFILT by <b>Dan OK1HRA</b></dd>
       <dt>WSPR</dt><dd>wsprd of WSJT-X by <b>Joe Taylor K1JT</b> and <b>Steven Franke K9AN</b>, with Phil Karn KA9Q's Fano decoder (GPL-3.0)</dd>
       <dt>RTTY palette</dt><dd>RTTY-ICOM of <a href="https://github.com/ok1hra/wifilt" target="_blank" rel="noopener">WIFILT</a> by <b>Dan OK1HRA</b> (GPL-3.0)</dd>
       <dt>DSP</dt><dd>WDSP by <b>Warren Pratt NR0V</b> (Linux port John Melton G0ORX/N6LYT), FFTW by Matteo Frigo and Steven G. Johnson</dd>
