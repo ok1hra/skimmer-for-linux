@@ -21,7 +21,9 @@ gboolean skim_hd_helper_run(const char *const *argv, const char *cwd, const char
  * and returns (in *out) the lines it prints up to a line equal to `end`,
  * on the calling thread. A helper that died (EOF) is gone, the next ask
  * starts it again. A cancel kills it: the ask in progress fails with
- * G_IO_ERROR_CANCELLED. One ask at a time — the caller serialises. */
+ * G_IO_ERROR_CANCELLED. One ask at a time — the caller serialises. It is
+ * not tied to the starting thread (no PR_SET_PDEATHSIG: that fires when the
+ * thread ends); it ends when its stdin closes — the helper must exit on EOF. */
 typedef struct _SkimHdHelperServer SkimHdHelperServer;
 SkimHdHelperServer *skim_hd_helper_server_new(const char *const *argv, const char *cwd,
                                               const char *name, GCancellable *cancel);

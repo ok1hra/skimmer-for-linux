@@ -32,6 +32,18 @@ static void child_setup(gpointer unused) {
   prctl(PR_SET_PDEATHSIG, SIGKILL);
 }
 
+/* A kept helper: nice 10, but no PR_SET_PDEATHSIG — that fires when the
+ * THREAD that started the child ends, not the process, and the pool thread
+ * that starts a kept helper ends when it idles (live hra2 2026-11-24:
+ * skimmer-js8d killed 11 times in an hour, a period lost each time and
+ * the soft combining's history with it). A kept helper ends on its own
+ * when its stdin closes: the skimmer gone (the kernel closes the pipe) or
+ * re-executed (the pipe is close-on-exec), or the server freed. */
+static void child_setup_kept(gpointer unused) {
+  (void)unused;
+  if (nice(10) == -1) { /* as it is */ }
+}
+
 static void kill_helper(GCancellable *c, gpointer p) {
   (void)c;
   g_subprocess_force_exit(p);
@@ -112,7 +124,7 @@ static gboolean server_start(SkimHdHelperServer *s, GError **error) {
                                                      G_SUBPROCESS_FLAGS_STDOUT_PIPE |
                                                      G_SUBPROCESS_FLAGS_STDERR_SILENCE);
   g_subprocess_launcher_set_cwd(l, s->cwd);
-  g_subprocess_launcher_set_child_setup(l, child_setup, NULL, NULL);
+  g_subprocess_launcher_set_child_setup(l, child_setup_kept, NULL, NULL);
   s->p = g_subprocess_launcher_spawnv(l, (const char *const *)s->argv, error);
   g_object_unref(l);
   if (!s->p) { return FALSE; }

@@ -5,7 +5,11 @@
  *   - a failed exit names the helper and its stderr;
  *   - a cancel kills a running helper at once (G_IO_ERROR_CANCELLED);
  *   - a helper dies with the process that started it (the service unit
- *     signals the skimmer alone).
+ *     signals the skimmer alone);
+ *   - a kept helper (skimmer-js8d --serve) outlives the pool thread that
+ *     started it — PR_SET_PDEATHSIG fires when that THREAD ends, and pool
+ *     threads end when idle (live hra2 2026-11-24: 11 kills in an hour) —
+ *     and ends when its stdin closes (the skimmer gone, or the server freed).
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -118,6 +122,43 @@ static void dies_with_parent(void) {
   g_free(dir);
 }
 
+/* a kept helper: its pid with each answer */
+static SkimHdHelperServer *kept;
+static char *kept_pid;
+static gpointer ask_once(gpointer u) {
+  (void)u;
+  char *out = NULL;
+  GError *e = NULL;
+  if (skim_hd_helper_server_ask(kept, "one", "END", &out, &e)) { kept_pid = g_strdup(out); }
+  g_clear_error(&e);
+  g_free(out);
+  return NULL;
+}
+static void kept_outlives_thread(void) {
+  const char *argv[] = { "/bin/sh", "-c", "while read l; do echo \"$$ $l\"; echo END; done", NULL };
+  kept = skim_hd_helper_server_new(argv, "/", "sh", NULL);
+  GThread *t = g_thread_new("starter", ask_once, NULL);       /* started there, */
+  g_thread_join(t);                                           /* … that thread gone */
+  g_usleep(300 * 1000);
+  char *out = NULL;
+  GError *e = NULL;
+  const gboolean ok = skim_hd_helper_server_ask(kept, "two", "END", &out, &e);
+  const int pid = kept_pid ? atoi(kept_pid) : 0;
+  CHECK(kept_pid && ok && out && pid > 0 && atoi(out) == pid && strstr(out, " two"),
+        "a kept helper outlives the thread that started it (pid %s → %s)",
+        kept_pid ? g_strstrip(kept_pid) : "none", out ? g_strstrip(out) : (e ? e->message : "none"));
+  g_clear_error(&e);
+  g_free(out);
+  skim_hd_helper_server_free(kept);                           /* its stdin closes */
+  gboolean gone = FALSE;
+  for (int k = 0; k < 40 && !gone; k++) {
+    g_usleep(50 * 1000);
+    gone = pid > 0 && kill(pid, 0) != 0;
+  }
+  CHECK(gone, "… and ends when the server is freed");
+  g_free(kept_pid);
+}
+
 int main(void) {
   printf("=== skimmer-helper-run-test ===\n");
   dies_with_parent();
@@ -153,6 +194,7 @@ int main(void) {
   g_object_unref(l.c);
   g_main_loop_unref(loop);
   g_object_unref(shared);
+  kept_outlives_thread();
   printf("\n%s (%d failure%s)\n", fails ? "FAIL" : "PASS", fails, fails == 1 ? "" : "s");
   return fails ? 1 : 0;
 }
