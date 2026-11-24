@@ -2238,10 +2238,19 @@ static void worker_report(Hd *h) {
 static void peer_spot(const char *peer, const char *call, const char *mode, double freq_hz,
                       double snr_db, double speed, gpointer user) {
   Hd *h = user;
-  if (g_strcmp0(mode, "CW") != 0 && !h->cfg.feed_rtty) { return; }   /* CW-only feed */
+  /* a peer's FT8/FT4/JS8 CQ: a digital line on the telnet feed, never on the
+   * RBN Aggregator's port (as our own) — not a "0 BPS CQ" CW-style line */
+  const gboolean digi = g_strcmp0(mode, "FT8") == 0 || g_strcmp0(mode, "FT4") == 0 ||
+                        g_strcmp0(mode, "JS8") == 0;
+  if (!digi && g_strcmp0(mode, "CW") != 0 && !h->cfg.feed_rtty) { return; }   /* CW-only feed */
   if (!skim_hd_config_call_pass(&h->cfg, call)) { return; }           /* [filter] */
+  if (digi && !h->feed) { return; }                  /* the RBN port takes none */
   spot_origin = peer;
-  skim_rbn_feed_spot_external(h->feed ? h->feed : h->rbn, call, mode, freq_hz, snr_db, speed);
+  if (digi) {
+    skim_rbn_feed_spot_digital(h->feed, call, mode, freq_hz, snr_db, TRUE);
+  } else {
+    skim_rbn_feed_spot_external(h->feed ? h->feed : h->rbn, call, mode, freq_hz, snr_db, speed);
+  }
   spot_origin = NULL;
 }
 
