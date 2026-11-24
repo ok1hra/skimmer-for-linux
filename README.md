@@ -208,6 +208,21 @@ streaming from unless told to (`--take-over`).
   **FT8 palette** shows every message of a dial as WSJT-X's Band Activity.
   A busy band (FT8 + FT4, depth 2) costs about a fifth of a core (decoder
   and DSP), measured on recorded 20 m.
+- **JS8** beside it (`[js8] enabled=true`, Settings → JS8): every JS8 dial
+  frequency inside a band received (or only the bands in `bands=`) is decoded
+  in all four submodes at once — normal 15 s, fast 10 s, turbo 6 s, slow 30 s
+  (the deepest, down to −28 dB) — by JS8Call-improved's own decoder (built in
+  as `skimmer-js8d`, one process a dial kept running so it combines repeated
+  frames across periods). A heartbeat, a CQ or a directed frame names its
+  sender: a spot once in 10 min a band (`JS8 -18 dB CQ`, `DE` for a directed
+  frame), never on the RBN Aggregator's port. JS8 has only a 12-bit check, so
+  a frame read with many errors is *deep*: its call is on the web page at
+  once, on the telnet feed only once confirmed (a second decode within 30 min,
+  MASTER.SCP, or confirmed on JS8 in the last 90 days). `upload=true` reports
+  the confirmed stations to PSK Reporter. The waterfall's **JS8 palette**
+  shows what the frames say, put back together into messages (the compressed
+  text too) as JS8Call shows them. All four submodes cost about 2.5 % of a
+  core a band (the decoder) plus the DSP, measured on recorded 20/40/30 m.
 - **The RBN feed** sends only validated CQ calls that were read twice (or are
   in MASTER.SCP), settled in the station table, and were read lately. A
   **learned feed gate** (a logistic model over what the pipeline knew when it
@@ -279,11 +294,14 @@ program from a build tree only reports a newer release. The state is in
 Requirements: GLib/GIO ≥ 2.74, libsoup 3, libwebsockets, libcurl ≥ 7.85,
 FFTW (single and double precision), `meson` and `ninja`; `gfortran` for FT8/FT4
 (WSJT-X's decoders are Fortran — without it the build leaves FT8 out,
-`-Dft8=enabled` makes it required). On Debian 12/13:
+`-Dft8=enabled` makes it required); a C++20 compiler and Boost's headers
+(1.81: `libboost1.81-dev` on Debian 12, `libboost-dev` on 13) for JS8
+(JS8Call-improved's decoder — without them JS8 is left out, `-Djs8=enabled`
+makes it required). On Debian 12/13:
 
 ```sh
-sudo apt install meson ninja-build gfortran libglib2.0-dev libsoup-3.0-dev libwebsockets-dev \
-                 libfftw3-dev libcurl4-openssl-dev
+sudo apt install meson ninja-build gfortran g++ libboost1.81-dev libglib2.0-dev libsoup-3.0-dev \
+                 libwebsockets-dev libfftw3-dev libcurl4-openssl-dev
 git clone https://github.com/ok1hra/skimmer-for-linux.git
 cd skimmer-for-linux
 meson setup build
@@ -458,7 +476,7 @@ core for every channel it is decoding.
 feed, every band with its newest stations, the feed policy, the learned gate
 and the `SKIM_*` switches), **Statistics** (seven days, one record a minute,
 kept across restarts in `~/.local/state/skimmer-for-linux/stats.bin`: spots
-per hour by band, active decoders, CPU, CPU temperature, IQ loss, totals), **Waterfall**,
+per hour by band and mode — CW, RTTY, FT8/FT4, JS8 —, active decoders, CPU, CPU temperature, IQ loss, totals), **Waterfall**,
 **Settings**, **Log** and **About** (the authors and the decoders the
 skimmer runs on; every credit and licence is under [Credits](#credits)). A
 newly opened page starts on Status. It needs no internet; the JSON behind it is `/status.json`,
@@ -576,6 +594,7 @@ It needs bash, curl and Python 3, standard library only.
 | `<the AppImage>.prev` | the version an update replaced (*Back to* puts it back) |
 | `~/.local/state/skimmer-for-linux/wspr.tsv`, `wspr/` | The WSPR spots of the last 24 h; the decoder's work directory (its hash table) |
 | `~/.local/state/skimmer-for-linux/ft8/` | The FT8/FT4 decoder's work directory (a cycle's WAV while it is decoded) |
+| `~/.local/state/skimmer-for-linux/js8/`, `js8-known.tsv` | The JS8 decoder's work directory (a period's WAV while it is decoded); the calls confirmed on JS8 in the last 90 days (a deep frame of one goes to the feed at once) |
 
 ## Environment variables
 
@@ -617,6 +636,9 @@ written with the help of Claude Code.
 | [WDSP](https://github.com/dl1ycf/pihpsdr) (subset, `vendor/wdsp/`) | FIR design, resampler | Warren Pratt NR0V; Linux port John Melton G0ORX/N6LYT; via piHPSDR (Christoph van Wüllen DL1YCF) | GPL |
 | [WSJT-X](https://wsjt.sourceforge.io) 3.0.2 wsprd (`vendor/wsprd/`) | the WSPR decoder (`skimmer-wsprd`) | Joe Taylor K1JT, Steven Franke K9AN; `fano.c` Phil Karn KA9Q; `nhash.c` Bob Jenkins | GPL-3.0 |
 | [WSJT-X](https://wsjt.sourceforge.io) 3.0.2 FT8/FT4 (`vendor/wsjtx-ft/`) | the FT8 and FT4 decoders (`skimmer-ft8d`) | Joe Taylor K1JT, Steven Franke K9AN, Bill Somerville G4WJS and the WSJT-X team | GPL-3.0 |
+| [JS8Call-improved](https://github.com/JS8Call-improved/JS8Call-improved) decoder core (`vendor/js8call/`), built without Qt with [WIFILT](https://github.com/ok1hra/wifilt)'s decoder shim | the JS8 decoder (`skimmer-js8d`) | JS8Call by Jordan Sherer KN4CRD; the C++ port by the JS8Call-improved team; the shim Dan OK1HRA | GPL-3.0 |
+| [Eigen](https://eigen.tuxfamily.org) 3.4 (the part `<Eigen/Dense>` uses, in `vendor/js8call/`) | one small solve in the JS8 decoder | Benoît Jacob, Gaël Guennebaud and the Eigen contributors | MPL-2.0 |
+| [WIFILT](https://github.com/ok1hra/wifilt) JS8 protocol module and JSC dictionary (`web/js8/`) | the JS8 palette: frames to messages, the compressed text | Dan OK1HRA; the dictionary from JS8Call | GPL-3.0 |
 | [deepcw-engine](https://github.com/e04/deepcw-engine) narrow model (`weights/deepcw-v4-narrow.bin`) | the CW v4 network's weights | e04 | MIT |
 | deepcw-engine's posterior stitcher (`dcw4_stitch.c`, a port) | CW v4: the network's output to characters | e04 | MIT |
 | [SDRIAK](https://github.com/bubnikv/sdriak) fused DeepCW kernel (`dcw4_kernel.c`, `dcw4_enc_*.c`, a C port) and `tools/deepcw_narrow_extract.py` | the CW v4 forward pass on the CPU | Vojtěch Bubník OK1IAK | GPL-3.0-or-later |
@@ -635,8 +657,9 @@ written with the help of Claude Code.
 [libsoup 3](https://gitlab.gnome.org/GNOME/libsoup) (LGPL-2.1-or-later),
 [FFTW 3](https://www.fftw.org) (GPL-2.0-or-later),
 [libcurl](https://curl.se) (curl licence, MIT-like),
-[libwebsockets](https://libwebsockets.org) (MIT), and libgfortran for
-`skimmer-ft8d` (GPL-3.0-or-later with the GCC runtime library exception).
+[libwebsockets](https://libwebsockets.org) (MIT), libgfortran for
+`skimmer-ft8d` and libstdc++ for `skimmer-js8d` (GPL-3.0-or-later with the
+GCC runtime library exception); Boost's headers at build time (BSL-1.0).
 The AppImage is put together with
 [linuxdeploy](https://github.com/linuxdeploy/linuxdeploy) (MIT).
 

@@ -679,7 +679,9 @@ int main(void) {
     skim_rbn_feed_spot(f, "DL1CW", "CW", 14025100.0, 25.0, 22.0);
     skim_rbn_feed_spot_digital(f, "JA1FT", "FT8", 14075420.0, -12.0, TRUE);
     skim_rbn_feed_spot_digital(f, "VK2QSO", "FT4", 14081900.0, 3.0, FALSE);
-    check("ft8: the lines arrive", cap_wait(a, "JA1FT", 3000) && cap_wait(a, "VK2QSO", 3000));
+    skim_rbn_feed_spot_digital(f, "W1JS", "JS8", 14079200.0, -21.0, TRUE);
+    check("ft8: the lines arrive", cap_wait(a, "JA1FT", 3000) && cap_wait(a, "VK2QSO", 3000) &&
+                                       cap_wait(a, "W1JS", 3000));
     char *cw = cap_line(a, "DL1CW"), *l8 = cap_line(a, "JA1FT"), *l4 = cap_line(a, "VK2QSO");
     printf("       %s\n       %s\n       %s\n", cw ? cw : "(none)", l8 ? l8 : "(none)",
            l4 ? l4 : "(none)");
@@ -697,13 +699,22 @@ int main(void) {
            : 0;
     check("ft4: a station not calling CQ is DE", n == 7 && strcmp(mode, "FT4") == 0 &&
                                                      strcmp(type, "DE") == 0 && fabs(snr - 3) < 0.5);
+    char *lj = cap_line(a, "W1JS");
+    n = lj ? sscanf(lj, "DX de %23s %23s %15s %7s %lf dB %7s %15s", sp, khz, call, mode, &snr,
+                    type, zt)
+           : 0;
+    check("js8: DX de OK1BR-#: 14079.2 W1JS JS8 -21 dB CQ HHMMZ, the CW line's length",
+          n == 7 && strcmp(mode, "JS8") == 0 && strcmp(type, "CQ") == 0 && fabs(snr + 21) < 0.5 &&
+              fabs(g_ascii_strtod(khz, NULL) - 14079.2) < 0.05 && cw && strlen(lj) == strlen(cw));
+    g_free(lj);
     check("ft8: the time in the CW line's column, the same length",
           cw && l8 && strlen(cw) == strlen(l8) && strrchr(cw, 'Z') - cw == strrchr(l8, 'Z') - l8);
     check("ft8: the tap has them (speed 0)",
           strstr(tapped->str, "JA1FT FT8 14075420 -12 0;") != NULL &&
               strstr(tapped->str, "VK2QSO FT4 14081900 3 0;") != NULL);
-    check("ft8: the RBN's port gets the CW line, not the FT8/FT4 ones",
-          cap_wait(b, "DL1CW", 3000) && !cap_wait(b, "JA1FT", 500) && cap_count(b, "VK2QSO") == 0);
+    check("ft8: the RBN's port gets the CW line, not the FT8/FT4/JS8 ones",
+          cap_wait(b, "DL1CW", 3000) && !cap_wait(b, "JA1FT", 500) && cap_count(b, "VK2QSO") == 0 &&
+              cap_count(b, "W1JS") == 0);
     g_free(cw);
     g_free(l8);
     g_free(l4);

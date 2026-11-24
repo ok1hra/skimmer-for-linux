@@ -23,7 +23,7 @@ const Dxc = (() => {
     ['db', 'dB'], ['speed', 'WPM'], ['band', 'Band'], ['country', 'Country'],
   ];
   const DEF = { bands: {}, call: '', regex: false, kmMin: 0, kmMax: 20000, azMin: 0, azMax: 360,
-                dbMin: -30, dbMax: 60, spMin: 0, spMax: 99, modes: { CW: true, RTTY: true, FT8: true, FT4: true, WSPR: true }, country: '',
+                dbMin: -30, dbMax: 60, spMin: 0, spMax: 99, modes: { CW: true, RTTY: true, FT8: true, FT4: true, JS8: true, WSPR: true }, country: '',
                 src: { here: true, worker: true, peer: true }, age: 30, hidden: { src: true } };
   const load = () => { try { return JSON.parse(localStorage.getItem('skdxc') || '{}'); } catch (e) { return {}; } };
   const F = { ...JSON.parse(JSON.stringify(DEF)), ...load() };
@@ -131,9 +131,9 @@ const Dxc = (() => {
       }
       case 'km': return `<div class="fm-t">Distance</div>${range('kmMin', 'kmMax', 0, 20000, 100, 'km')}` +
         `<div class="fm-t">Bearing (a sector; 300 to 60 crosses north)</div>${range('azMin', 'azMax', 0, 360, 5, '°')}`;
-      case 'db': return `<div class="fm-t">Signal (FT8/FT4: WSJT-X's SNR)</div>${range('dbMin', 'dbMax', -30, 60, 1, 'dB')}`;
+      case 'db': return `<div class="fm-t">Signal (FT8/FT4, JS8: the SNR in 2500 Hz)</div>${range('dbMin', 'dbMax', -30, 60, 1, 'dB')}`;
       case 'speed': return `<div class="fm-t">Speed (WPM; RTTY: baud)</div>${range('spMin', 'spMax', 0, 99, 1, '')}`;
-      case 'mode': return `<div class="fm-t">Mode</div>${checks('modes', ['CW', 'RTTY', 'FT8', 'FT4', 'WSPR'])}` +
+      case 'mode': return `<div class="fm-t">Mode</div>${checks('modes', ['CW', 'RTTY', 'FT8', 'FT4', 'JS8', 'WSPR'])}` +
         '<div class="fm-note">The same switches as the eyes in the Bands legend: a mode left out is out of the ' +
         'bands\' counts, the heat map, the map and this table. WSPR has no rows here.</div>';
       case 'country': return `<div class="fm-t">Country contains</div><input data-f="country" value="${esc(F.country)}" placeholder="Japan, Russia…">`;
@@ -190,7 +190,7 @@ const Dxc = (() => {
       case 'time': return `<td class="c-time">${utc(s.t)}</td>`;
       case 'khz': return `<td class="c-khz">${fmtKhz(s.khz)}</td>`;
       case 'play': return `<td class="c-play">${s.band && srcKind(s) !== 'peer'
-        ? `<button type="button" class="dxc-play" data-band="${esc(s.band)}" data-khz="${s.khz}" data-mode="${esc(s.mode)}" title="${s.mode === 'FT8' || s.mode === 'FT4' ? `the FT8 palette: ${esc(s.mode)} at ${fmtKhz(s.khz)} kHz, its dial on the waterfall` : `listen on the waterfall: ${fmtKhz(s.khz)} kHz${s.mode === 'RTTY' ? ' — the RTTY palette decodes it' : ''}`}" aria-label="listen">${SPK}</button>` : ''}</td>`;
+        ? `<button type="button" class="dxc-play" data-band="${esc(s.band)}" data-khz="${s.khz}" data-mode="${esc(s.mode)}" title="${s.mode === 'FT8' || s.mode === 'FT4' ? `the FT8 palette: ${esc(s.mode)} at ${fmtKhz(s.khz)} kHz, its dial on the waterfall` : s.mode === 'JS8' ? `the JS8 palette: JS8 at ${fmtKhz(s.khz)} kHz, what its frames say, its dial on the waterfall` : `listen on the waterfall: ${fmtKhz(s.khz)} kHz${s.mode === 'RTTY' ? ' — the RTTY palette decodes it' : ''}`}" aria-label="listen">${SPK}</button>` : ''}</td>`;
       case 'call': return `<td class="c-call">${esc(s.call)}</td>`;
       // as wifilt: the distance in thousands, the bearing as an arrow turned to it
       case 'km': return s.km != null ? `<td class="c-km"${tone(s.km, kmR)} title="${Math.round(s.az)}°"><span class="km">${thousands(Math.round(s.km))}</span>` +

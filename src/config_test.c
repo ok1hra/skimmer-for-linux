@@ -10,6 +10,7 @@
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include <glib.h>
+#include <math.h>
 #include <glib/gstdio.h>
 #include <stdio.h>
 #include <string.h>
@@ -388,6 +389,39 @@ int main(void) {
           !parse(&c, "[bands]\n20m=14045500\n[ft8]\nhi_hz=5000\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[ft8]\nthreads=0\n", NULL) &&
           !parse(&c, "[bands]\n20m=14045500\n[ft8]\nthreads=9\n", NULL));
+    skim_hd_config_clear(&c);
+    check("[js8] default: off; all four submodes, to the feed, 200-3500 Hz, 2 threads, kept "
+          "running, clean from 0.80, no upload",
+          parse(&c, "[bands]\n20m=14045500\n", NULL) && !c.js8 && c.js8_submodes == 0xf &&
+          c.js8_feed && c.js8_lo_hz == 200 && c.js8_hi_hz == 3500 && c.js8_threads == 2 &&
+          c.js8_serve && fabs(c.js8_clean - 0.80) < 1e-9 && !c.js8_upload && !c.js8_bands);
+    check("[js8] blank values are the defaults (the web form's empty fields)",
+          parse(&c, "[bands]\n20m=14045500\n[js8]\nenabled=true\nsubmodes=\nlo_hz=\nhi_hz=\n"
+                    "threads=\nclean=\n", NULL) &&
+          c.js8 && c.js8_submodes == 0xf && c.js8_lo_hz == 200 && c.js8_threads == 2 &&
+          fabs(c.js8_clean - 0.80) < 1e-9);
+    check("[js8] read: normal + slow, page only, 300-3000 Hz, 4 threads, once a period, clean 0.9",
+          parse(&c, "[bands]\n20m=14045500\n40m=7045500\n[js8]\nenabled=true\nsubmodes=Normal, slow\n"
+                    "feed=false\nlo_hz=300\nhi_hz=3000\nthreads=4\nserve=false\nclean=0.9\n"
+                    "bands=40m\n", NULL) &&
+          c.js8 && c.js8_submodes == 0x9 && !c.js8_feed && c.js8_lo_hz == 300 && c.js8_hi_hz == 3000 &&
+          c.js8_threads == 4 && !c.js8_serve && fabs(c.js8_clean - 0.9) < 1e-9 && c.js8_bands &&
+          g_strv_length(c.js8_bands) == 1 && strcmp(c.js8_bands[0], "40m") == 0);
+    skim_hd_config_clear(&c);
+    check("[js8] refused: ultra, no submode, clean 0.4, lo 100, 9 threads, a band not received, "
+          "an upload without a call",
+          !parse(&c, "[bands]\n20m=14045500\n[js8]\nsubmodes=normal,ultra\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[js8]\nsubmodes=,\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[js8]\nclean=0.4\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[js8]\nlo_hz=100\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[js8]\nthreads=9\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[js8]\nbands=40m\n", NULL) &&
+          !parse(&c, "[bands]\n20m=14045500\n[station]\nlocator=JO70\n[js8]\nenabled=true\nupload=true\n", NULL));
+    check("[js8] upload: under [ft8] call/locator, else [feed] call and [station] locator",
+          parse(&c, "[bands]\n20m=14045500\n[feed]\ncall=ok1hra\n[station]\nlocator=jo70\n"
+                    "[js8]\nenabled=true\nupload=true\n", NULL) && c.js8_upload &&
+          parse(&c, "[bands]\n20m=14045500\n[ft8]\ncall=ok1hra\nlocator=jo70\n"
+                    "[js8]\nenabled=true\nupload=true\n", NULL));
     skim_hd_config_clear(&c);
     check("[rtty_palette] defaults: on a spot, 400 Hz, autotune, AFC 60/60, squelch off, sound",
           parse(&c, "[bands]\n20m=14045500\n[rtty_palette]\nbandwidth=\n", NULL) &&

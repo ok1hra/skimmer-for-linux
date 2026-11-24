@@ -20,7 +20,7 @@ on:
 env:
   DEBIAN_FRONTEND: noninteractive
   APT_DEPS: >-
-    meson ninja-build gfortran libglib2.0-dev libsoup-3.0-dev libwebsockets-dev libfftw3-dev
+    meson ninja-build gfortran g++ libboost-dev libglib2.0-dev libsoup-3.0-dev libwebsockets-dev libfftw3-dev
     libcurl4-openssl-dev
 
 jobs:

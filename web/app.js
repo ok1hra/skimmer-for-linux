@@ -100,6 +100,7 @@ function show(name) {
   for (const s of document.querySelectorAll('main > section')) s.hidden = s.id !== `tab-${name}`;
   try { sessionStorage.setItem('skimmer-tab', name); } catch (e) { /* private window */ }
   if (tabs[name] && tabs[name].enter) tabs[name].enter();
+  if (typeof Tour !== 'undefined') Tour.sync();         // the "?" on the pages with a tour
 }
 for (const b of document.querySelectorAll('nav button[data-tab]')) b.addEventListener('click', () => show(b.dataset.tab));
 // About: a palette over whatever tab is open (Esc or a click beside it closes it)
@@ -166,7 +167,7 @@ function renderFeedAddress(a) {
 // The modes of the band ladder, in its bars' order, each with its colour
 // class (m-cw …); whether one is counted is the page's one mode filter,
 // kept by dxc.js with the DX cluster's Mode column.
-const LADDER_MODES = [['CW', 'cw'], ['RTTY', 'rtty'], ['FT8', 'ft8'], ['FT4', 'ft4'], ['WSPR', 'wspr']];
+const LADDER_MODES = [['CW', 'cw'], ['RTTY', 'rtty'], ['FT8', 'ft8'], ['FT4', 'ft4'], ['JS8', 'js8'], ['WSPR', 'wspr']];
 const modeOn = (m) => typeof Dxc === 'undefined' || Dxc.modeOn(m);
 // the age the map, the ladder and the heat map show (5, 10, 15 or 30 min)
 const ladderAgeS = () => (typeof Dxc === 'undefined' ? 30 : Dxc.age()) * 60;
@@ -208,10 +209,10 @@ function renderStatus(d) {
   const workers = (d.hub && d.hub.workers) || [];
   // beside the map: the bands as a ladder — two stacked bars a band, each
   // mode its part in its colour (the legend in the head, in the bars'
-  // order): the spots of the age the map shows (CW, RTTY, FT8, FT4 from the
-  // spots list; WSPR its stations decoded), and how busy the decoders are
-  // now (CW and RTTY channel decoders reading a signal; FT8/FT4 the senders
-  // of the last minute; WSPR the stations of its newest cycle) — then where
+  // order): the spots of the age the map shows (CW, RTTY, FT8, FT4, JS8 from
+  // the spots list; WSPR its stations decoded), and how busy the decoders are
+  // now (CW and RTTY channel decoders reading a signal; FT8/FT4 and JS8 the
+  // senders of the last minute; WSPR the stations of its newest cycle) — then where
   // the band goes: a heatmap of the continents heard. A mode whose eye is
   // shut stays in the bar, grey, and leaves the numbers, the heat map, the
   // map and the DX cluster (one filter: dxc.js keeps it).
@@ -233,19 +234,23 @@ function renderStatus(d) {
   const ft8On = !!(d.ft8 && d.ft8.on && d.ft8.decoder && (d.ft8.dials || []).length);
   const ft8Rx = new Map(ft8On ? (d.ft8.rx || []).map((r) => [r.band, r]) : []);
   const dialModes = new Set(ft8On ? d.ft8.dials.map((x) => x.mode) : []);
+  // JS8 while its decoder runs a dial (every submode in one count)
+  const js8On = !!(d.js8 && d.js8.on && d.js8.decoder && (d.js8.dials || []).length);
+  const js8Rx = new Map(js8On ? (d.js8.rx || []).map((r) => [r.band, r]) : []);
   const present = LADDER_MODES.filter(([m]) => (m === 'CW' ? decoded.some((b) => b.cw !== false)
-    : m === 'RTTY' ? decoded.some((b) => b.rtty) : m === 'WSPR' ? wsprOn : dialModes.has(m)));
+    : m === 'RTTY' ? decoded.some((b) => b.rtty) : m === 'WSPR' ? wsprOn : m === 'JS8' ? js8On : dialModes.has(m)));
   const wsprSeen = (band) => (wsprOn && wspr.data && wspr.data.stations
     ? wspr.data.stations.filter((x) => x.seen && now - x.seen[band] <= ageS && passes(x, keepW)).length : 0);
   // per band, per mode: [spots, active]; null = the mode does not run there
   const rows = decoded.map((b) => {
-    const sp = per(b.band), rt = b.rtty, fr = ft8Rx.get(b.band), wr = wsprRx.get(b.band);
+    const sp = per(b.band), rt = b.rtty, fr = ft8Rx.get(b.band), jr = js8Rx.get(b.band), wr = wsprRx.get(b.band);
     const n = (m) => sp.filter((x) => x.mode === m).length;
     const v = {
       CW: b.cw !== false ? [n('CW'), b.paused ? 0 : b.active] : null,
       RTTY: rt ? [n('RTTY'), rt.paused ? 0 : rt.active] : null,
       FT8: fr || n('FT8') ? [n('FT8'), fr ? fr.active_ft8 || 0 : 0] : null,
       FT4: fr || n('FT4') ? [n('FT4'), fr ? fr.active_ft4 || 0 : 0] : null,
+      JS8: jr || n('JS8') ? [n('JS8'), jr ? jr.active_js8 || 0 : 0] : null,
       WSPR: wr ? [wsprSeen(b.band), wr.active || 0] : null,
     };
     return { b, v };
@@ -287,7 +292,7 @@ function renderStatus(d) {
     `<tr class="head-row legend-row"><th colspan="2"></th><th colspan="${nCols - 2}" class="l">${legend}</th></tr>` +
     '<tr class="head-row"><th title="on the map"></th><th class="l">band</th>' +
     `<th colspan="2" class="l" title="the spots of the last ${ageMin} min, mode by mode (WSPR: its stations decoded) — the age is the map's">spots ${ageMin} min</th>` +
-    '<th colspan="2" class="l" title="now: CW and RTTY channel decoders reading a signal, FT8/FT4 the senders of the last minute, WSPR the stations of its newest cycle">active decoders</th>' +
+    '<th colspan="2" class="l" title="now: CW and RTTY channel decoders reading a signal, FT8/FT4 and JS8 the senders of the last minute, WSPR the stations of its newest cycle">active decoders</th>' +
     '<th class="hm-pad"></th>' + CONT.map((c) => `<th class="hm" title="${CONT_NAME[c]}: the stations heard on the band in the last ${ageMin} min — the modes counted, each call once">${c}</th>`).join('') + '<th class="hm-pad"></th>' +
     '<th class="l" title="what the band does besides decoding: a worker decodes it, the thermal guard tests it, a mode is paused">status</th></tr>' +
     ladderOrder(rows.map((r) => r.b)).map((b) => {
@@ -831,11 +836,11 @@ function heatByBand(bands, per, w, ageS) {
   };
   const wt = (db) => 0.5 + Math.max(0, Math.min(40, Number(db) || 0)) / 40;
   for (const b of bands) {
-    out.set(b, new Map(CONT.map((c) => [c, { calls: new Set(), cw: new Set(), rtty: new Set(), ft8: new Set(), wspr: new Set(), w: new Map(), top: null }])));
+    out.set(b, new Map(CONT.map((c) => [c, { calls: new Set(), cw: new Set(), rtty: new Set(), ft8: new Set(), js8: new Set(), wspr: new Set(), w: new Map(), top: null }])));
     for (const s of per(b)) {
-      // FT8/FT4's SNR is WSJT-X's (in 2500 Hz, down to −24 dB): weighed as WSPR's
-      const digi = s.mode === 'FT8' || s.mode === 'FT4';
-      add(b, s.call, s.mode === 'RTTY' ? 'rtty' : digi ? 'ft8' : 'cw', digi ? wt(Number(s.snr) + 30) : wt(s.snr), s.snr);
+      // FT8/FT4's and JS8's SNR are in 2500 Hz (down to −24 and −28 dB): weighed as WSPR's
+      const js8 = s.mode === 'JS8', digi = js8 || s.mode === 'FT8' || s.mode === 'FT4';
+      add(b, s.call, s.mode === 'RTTY' ? 'rtty' : js8 ? 'js8' : digi ? 'ft8' : 'cw', digi ? wt(Number(s.snr) + 30) : wt(s.snr), s.snr);
     }
   }
   for (const s of (w && w.stations) || []) {
@@ -859,10 +864,10 @@ function heatCells(m, rows, dim, ageMin) {
     const sw = x ? [...x.w.values()].reduce((a, v) => a + v, 0) : 0;
     t.push(n ? 1 - Math.exp(-sw / 1.5) : 0);
     if (!n) return `<td class="hm" title="${CONT_NAME[c]}: none in ${ageMin} min"></td>`;
-    const parts = [['CW', x.cw], ['RTTY', x.rtty], ['FT8/FT4', x.ft8], ['WSPR', x.wspr]].filter(([, s]) => s.size)
+    const parts = [['CW', x.cw], ['RTTY', x.rtty], ['FT8/FT4', x.ft8], ['JS8', x.js8], ['WSPR', x.wspr]].filter(([, s]) => s.size)
       .map(([k, s]) => `${k} ${s.size}`).join(', ');
     const some = [...x.calls].slice(0, 12).join(' ') + (n > 12 ? ' …' : '');
-    const top = x.top ? ` · loudest ${esc(x.top.call)} ${x.top.db} dB${x.top.how === 'wspr' ? ' (WSPR)' : x.top.how === 'ft8' ? ' (FT8/FT4)' : ''}` : '';
+    const top = x.top ? ` · loudest ${esc(x.top.call)} ${x.top.db} dB${x.top.how === 'wspr' ? ' (WSPR)' : x.top.how === 'ft8' ? ' (FT8/FT4)' : x.top.how === 'js8' ? ' (JS8)' : ''}` : '';
     return `<td class="hm" title="${CONT_NAME[c]}: ${n} station${n > 1 ? 's' : ''} in ${ageMin} min (${parts})${top} — ${esc(some)}"></td>`;
   }).join('');
   rows.push({ t, dim });
@@ -951,8 +956,8 @@ function offClass(why) { return why === 'thermal' || why === 'v4-load' ? 'off-ho
 function pausedNow(band, mode) {
   const b = status && (status.bands || []).find((x) => x.band === band);
   if (!b) return null;
-  // FT8 is off with the band only when the thermal guard has it off
-  if (mode === 'FT8') return [b.paused, b.rtty && b.rtty.paused].find((p) => p === 'thermal') || null;
+  // FT8 and JS8 are off with the band only when the thermal guard has it off
+  if (mode === 'FT8' || mode === 'JS8') return [b.paused, b.rtty && b.rtty.paused].find((p) => p === 'thermal') || null;
   return mode === 'CW' ? (b.cw !== false ? b.paused : null) : (b.rtty ? b.rtty.paused : null);
 }
 // the thermal guard, one line: the mean against the limit, the bands paused
@@ -1027,11 +1032,16 @@ function renderStats() {
     [{ name: 'CW', series, color: modeColor('cw') },
      ...(d.rtty ? [{ name: 'RTTY', series: perHour(d.rtty), color: modeColor('rtty') }] : [])],
     (v) => fmt(v, v < 10 && v % 1 ? 1 : 0), 160, stats.logY, stats.smooth);
-  // FT8 + FT4 ([ft8]): far more spots than CW — a chart of their own below
-  $('#ft8-spots').hidden = !d.ft8;
-  if (d.ft8) {
-    Charts.mirror($('#chart-spots-ft8'), x, [{ name: 'FT8/FT4', series: perHour(d.ft8), color: modeColor('ft8') }],
-      (v) => fmt(v, v < 10 && v % 1 ? 1 : 0), 110, stats.logY, stats.smooth);
+  // FT8 + FT4 ([ft8]) and JS8 ([js8]): the digital modes, far more spots than
+  // CW — a chart of their own below, FT8/FT4 up and JS8 down from one zero
+  $('#ft8-spots').hidden = !d.ft8 && !d.js8;
+  if (d.ft8 || d.js8) {
+    $('#ft8-spots-sub').textContent = `${d.ft8 ? 'FT8 and FT4' : ''}${d.ft8 && d.js8 ? ' up, JS8 down from the same zero' : d.js8 ? 'JS8' : ''}` +
+      ', on a scale of their own — each station that sent, spotted once a band in 10 min';
+    Charts.mirror($('#chart-spots-ft8'), x,
+      [...(d.ft8 ? [{ name: 'FT8/FT4', series: perHour(d.ft8), color: modeColor('ft8') }] : []),
+       ...(d.js8 ? [{ name: 'JS8', series: perHour(d.js8), color: modeColor('js8') }] : [])],
+      (v) => fmt(v, v < 10 && v % 1 ? 1 : 0), d.ft8 && d.js8 ? 160 : 110, stats.logY, stats.smooth);
   }
   // a band's block: CW over RTTY (a mode the band does not decode: an empty
   // strip), both in one ramp — the strip's place says the mode, each its own scale
@@ -1039,8 +1049,8 @@ function renderStats() {
   // the thermal guard's pauses: the band's share off per bucket (CW and RTTY
   // go together; an older history has none)
   const offOf = (b) => {
-    const s = [d.cw, d.rtty, d.ft8].map((mm) => (mm && mm.thermal && mm.thermal[b]) || []);
-    const v = Array.from({ length: d.n }, (_, i) => Math.max(s[0][i] || 0, s[1][i] || 0, s[2][i] || 0));
+    const s = [d.cw, d.rtty, d.ft8, d.js8].map((mm) => (mm && mm.thermal && mm.thermal[b]) || []);
+    const v = Array.from({ length: d.n }, (_, i) => Math.max(...s.map((x) => x[i] || 0)));
     return v.some((f) => f > 0) ? v : null;
   };
   const offs = Object.fromEntries(d.bands.map((b) => [b, offOf(b)]));
@@ -1049,11 +1059,13 @@ function renderStats() {
     ...(d.rtty ? [{ label: 'RTTY', values: decoded(d.rtty, b), lo: '--seq-lo', hi: '--seq-hi' }] : []),
     // FT8: the stations heard sending a minute (it has no channel decoders)
     ...(d.ft8 ? [{ label: 'FT8', values: decoded(d.ft8, b), lo: '--seq-lo', hi: '--seq-hi' }] : []),
-  ] })), (v) => fmt(v, 1), 'active decoders · FT8: stations heard a minute');
+    ...(d.js8 ? [{ label: 'JS8', values: decoded(d.js8, b), lo: '--seq-lo', hi: '--seq-hi' }] : []),
+  ] })), (v) => fmt(v, 1), 'active decoders · FT8, JS8: stations heard a minute');
   const span = (l) => (amax[l] ? ` <span class="mut">0–${fmt(amax[l], amax[l] < 10 ? 1 : 0)}</span>` : '');
   $('#legend-active').innerHTML = '<span><i class="ramp" style="background:linear-gradient(90deg,var(--seq-lo),var(--seq-hi))"></i>' +
-    `${d.rtty || d.ft8 ? 'first strip ' : ''}CW${span('CW')}${d.rtty ? ` · then RTTY${span('RTTY')}` : ''}` +
-    `${d.ft8 ? ` · last FT8/FT4: the stations heard sending a minute${span('FT8')}` : ''}</span>` +
+    `${d.rtty || d.ft8 || d.js8 ? 'first strip ' : ''}CW${span('CW')}${d.rtty ? ` · then RTTY${span('RTTY')}` : ''}` +
+    `${d.ft8 ? ` · ${d.js8 ? 'then' : 'last'} FT8/FT4: the stations heard sending a minute${span('FT8')}` : ''}` +
+    `${d.js8 ? ` · last JS8: the stations heard sending a minute${span('JS8')}` : ''}</span>` +
     (Object.values(offs).some((v) => v) ? '<span><i style="background:var(--bad);opacity:.3"></i>off — paused by the thermal guard</span>' : '');
   // CPU: the CW and RTTY pipelines' threads and the rest of the process, stacked
   // under the total (history before the split has the total line only)
@@ -1081,7 +1093,7 @@ function renderCpu(d, x, g) {
 function renderLoad(x, g) {
   const cpuCw = g.cpu_cw || g.cpu.map(() => null), cpuRt = g.cpu_rtty || g.cpu.map(() => null);
   const anyRt = cpuRt.some((v) => v != null);
-  // the helper programs (skimmer-ft8d, skimmer-wsprd) run beside the process:
+  // the helper programs (skimmer-ft8d, skimmer-js8d, skimmer-wsprd) run beside the process:
   // on top of it, and in "all"
   const help = g.cpu_helpers || g.cpu.map(() => null), anyHelp = help.some((v) => v != null);
   const layers = [
@@ -1090,7 +1102,7 @@ function renderLoad(x, g) {
     { name: 'rest (IQ in, feed, web)', color: getComputedStyle(document.documentElement).getPropertyValue('--axis').trim(),
       values: g.cpu.map((v, i) => v == null || cpuCw[i] == null ? null
         : Math.max(0, v - cpuCw[i] - (anyRt ? cpuRt[i] || 0 : 0))) },
-    ...(anyHelp ? [{ name: 'FT8 and WSPR decoders (helpers)', color: modeColor('ft8'), values: help }] : []),
+    ...(anyHelp ? [{ name: 'FT8, JS8 and WSPR decoders (helpers)', color: modeColor('ft8'), values: help }] : []),
   ];
   const all = anyHelp ? g.cpu.map((v, i) => (v == null ? null : v + (help[i] || 0))) : g.cpu;
   const lostColor = Charts.seriesColor(7);
@@ -1118,8 +1130,9 @@ function renderTemp(x, g) {
 }
 function renderStatsTables(d) {
 
-  // CW, RTTY and FT8 one under the other — in the tiles and in every table cell
-  const modes = [['CW', d.cw], ...(d.rtty ? [['RTTY', d.rtty]] : []), ...(d.ft8 ? [['FT8', d.ft8]] : [])];
+  // CW, RTTY, FT8 and JS8 one under the other — in the tiles and in every table cell
+  const modes = [['CW', d.cw], ...(d.rtty ? [['RTTY', d.rtty]] : []), ...(d.ft8 ? [['FT8', d.ft8]] : []),
+    ...(d.js8 ? [['JS8', d.js8]] : [])];
   const all = (mm, k) => d.bands.reduce((a, b) => a + sum(mm[k][b]), 0);
   const tileM = (k, f, unit = '', title = '') => `<div class="tile"${title ? ` title="${esc(title)}"` : ''}><div class="k">${esc(k)}</div>` +
     modes.map(([l, mm]) => `<div class="v ml ${l.toLowerCase()}">${f(mm)} <small>${l}${unit ? ` · ${esc(unit)}` : ''}</small></div>`).join('') + '</div>';
@@ -1132,7 +1145,7 @@ function renderStatsTables(d) {
     tileM('spots', (mm) => fmt(all(mm, 'spots')), `in ${stats.hours} h`),
     tileM('calls decoded', (mm) => fmt(all(mm, 'stations')), '',
           'calls that came into a band\'s station list in the range — every call the decoder read and ' +
-          'validated, spotted or not (a call heard again after it dropped out counts again); FT8: the ' +
+          'validated, spotted or not (a call heard again after it dropped out counts again); FT8, JS8: the ' +
           'senders that appeared, none from the band in the 10 min before'),
     `<div class="tile" title="clients on the telnet feed (the skimmer server's port)"><div class="k">telnet clients</div>` +
       `<div class="v">${clNow == null ? '<span class="mut">feed off</span>' : fmt(clNow)} <small>now</small></div>` +
@@ -1154,7 +1167,7 @@ function renderStatsTables(d) {
     ['spots per hour', `the spots divided by the ${span} of the range`, (b, mm) => sum(mm.spots[b]) / hrs, (v) => fmt(v, 1)],
     [`calls decoded in ${span}`, 'calls that came into the band\'s station list — read and validated, spotted or not',
       (b, mm) => sum(mm.stations[b]), (v) => fmt(v)],
-    [`busy decoders, mean of ${span}`, 'channel decoders reading running text, on average over the range (FT8: the stations heard sending a minute)', (b, mm) => mean(mm.active[b]),
+    [`busy decoders, mean of ${span}`, 'channel decoders reading running text, on average over the range (FT8, JS8: the stations heard sending a minute)', (b, mm) => mean(mm.active[b]),
       (v) => fmt(v, 1)],
     [`SNR, mean of ${span}`, 'the typical SNR of the spots: the median of each minute\'s spots, averaged',
       (b, mm) => mean(mm.snr[b]), (v) => `${fmt(v)} dB`],
@@ -1609,6 +1622,43 @@ function wsprShow() {
     .map((b) => ({ name: b.name, hz: b.khz ? Math.round(parseKhz(b.khz) * 1000) : b.def }))
     .filter((b) => Number.isFinite(b.hz) && b.hz > 0);
   ft8Show(named.map((b) => b.hz), named.map((b) => b.name));
+  js8Show(named.map((b) => b.hz), named.map((b) => b.name));
+}
+
+// JS8 (Settings → JS8): JS8Call's dials that the bands as edited take — the
+// same rule as FT8's (js8.c) — and, from status, how it runs
+const JS8_DIALS = [['160m', 1842000], ['80m', 3578000], ['40m', 7078000], ['30m', 10130000],
+  ['20m', 14078000], ['17m', 18104000], ['15m', 21078000], ['12m', 24922000], ['10m', 28078000],
+  ['6m', 50318000]];
+function js8Show(centres, names) {
+  const el = $('#js8-note');
+  if (!el) return;
+  const only = (($('[name="js8.bands"]') || {}).value || '').split(/[\s,]+/).filter(Boolean);
+  if (only.length && names) centres = centres.map((c, i) => (only.includes(names[i]) ? c : null));
+  const num = (n, dv) => { const v = Number(($(`[name="js8.${n}"]`) || {}).value); return Number.isFinite(v) && v > 0 ? v : dv; };
+  const lo = num('lo_hz', 200), hi = num('hi_hz', 3500), edge = 0.45 * bandRate(), got = [];
+  for (const c of centres) {
+    if (c == null) continue;
+    for (const [band, dial] of JS8_DIALS) {
+      if (dial + lo < c - edge || dial + hi > c + edge || got.some((g) => g[1] === dial)) continue;
+      got.push([band, dial]);
+    }
+  }
+  const j = status && status.js8;
+  let run = '';
+  if (j && j.on) {
+    const last = j.last_cycle ? new Date(j.last_cycle).toISOString().slice(11, 19) + ' UTC' : '';
+    run = ` · running: ${j.dials.length ? j.dials.map((x) => esc(x.band)).join(', ') : 'no frequency'}` +
+      ` (${(j.submodes || []).map((x) => esc(x.name)).join(', ')})` +
+      (j.decoder ? '' : ' — <b class="bad">no decoder (skimmer-js8d) found</b>') +
+      ` · ${fmt(j.cycles)} periods decoded, ${fmt(j.decodes)} frames (${fmt(j.deep)} deep), ${fmt(j.spots)} spots` +
+      `, ${fmt(j.known)} calls confirmed on JS8` + (last ? ` · the last period at ${last}` : '') +
+      (j.skipped ? ` · <span class="warn">${fmt(j.skipped)} periods skipped (the decoders were behind)</span>` : '') +
+      (j.error ? ` · <span class="bad">${esc(j.error)}</span>` : '');
+  }
+  el.innerHTML = (got.length
+    ? `The bands below take ${got.map(([b, d]) => `<b>${esc(b)} JS8</b> ${fmtKhz(d / 1000)}`).join(', ')}`
+    : 'No JS8 frequency inside the bands below at this rate') + run;
 }
 
 // FT8 / FT4 (Settings → FT8 / FT4): WSJT-X's FT8/FT4 dials that the bands as
@@ -1664,9 +1714,9 @@ function ft8Show(centres, names) {
 }
 
 // the FT8 tile's own fields change which dials count
-on('#settings', 'input', (e) => { if (e.target.name && e.target.name.startsWith('ft8.')) wsprShow(); });
+on('#settings', 'input', (e) => { if (e.target.name && /^(ft8|js8)\./.test(e.target.name)) wsprShow(); });
 on('#settings', 'change', (e) => {
-  if (e.target.name && e.target.name.startsWith('ft8.')) wsprShow();
+  if (e.target.name && /^(ft8|js8)\./.test(e.target.name)) wsprShow();
   if (e.target.name === 'decode.engine') {
     for (const o of document.querySelectorAll('#band-rows select[data-k=engine] option[value=""]')) o.textContent = defaultEngineText();
   }

@@ -41,6 +41,8 @@ subdir('vendor/wdsp')
 subdir('vendor/wsprd')
 # WSJT-X's FT8/FT4 decoders (Fortran, a helper program) — VENDOR.md there.
 subdir('vendor/wsjtx-ft')
+# JS8Call-improved's JS8 decoder (C++20, a helper program) — VENDOR.md there.
+subdir('vendor/js8call')
 
 engine_inc = include_directories('src/engine', 'vendor/onnxruntime')
 # ONNX Runtime is NEVER linked: decode_deepcw dlopen()s it at run time
@@ -449,7 +451,7 @@ if ft8_enabled
   # skimmer-ft8d — decodes, no mirror from below the dial, the spots folded;
   # a decoder slower than the cycles skips the waiting ones.
   skimmer_ft8_test = executable('skimmer-ft8-test',
-    ['src/ft8_test.c', 'src/headless/ft8.c', 'src/headless/helper_run.c'],
+    ['src/ft8_test.c', 'src/headless/ft8.c', 'src/headless/digi_rx.c', 'src/headless/helper_run.c'],
     include_directories : [include_directories('src'), engine_inc],
     dependencies : engine_deps,
     link_with : engine_lib,
@@ -458,7 +460,7 @@ if ft8_enabled
        args : [skimmer_ft8d, skimmer_ft8code, skimmer_ft4code], timeout : 240)
   # The bench on real air: a recorded cf32 through the whole [ft8] (and with
   # --keep the cycles' WAVs, for WSJT-X's own jt9).
-  executable('skimmer-ft8-replay', ['src/ft8_replay_main.c', 'src/headless/ft8.c', 'src/headless/helper_run.c'],
+  executable('skimmer-ft8-replay', ['src/ft8_replay_main.c', 'src/headless/ft8.c', 'src/headless/digi_rx.c', 'src/headless/helper_run.c'],
     include_directories : [include_directories('src'), engine_inc],
     dependencies : engine_deps,
     link_with : engine_lib,
@@ -467,6 +469,29 @@ if ft8_enabled
     dependencies : [glib_dep, m_dep])
   test('ft8d', skimmer_ft8d_test,
        args : [skimmer_ft8d, skimmer_ft8code, skimmer_ft4code], timeout : 120)
+endif
+
+# JS8: skimmer-js8d (JS8Call-improved's decoder, vendor/js8call) on synthetic
+# air — frames of our packer, tones from upstream's own encoder; and the whole
+# [js8] (dials, lines, unpacking against WIFILT's js8-protocol.js, senders,
+# deep-frame confirmation, IQ at 48 and 192 kHz through the DSP and every
+# submode's periods).
+if js8_enabled
+  js8_sources = ['src/headless/js8.c', 'src/headless/js8_unpack.c', 'src/headless/digi_rx.c',
+                 'src/headless/helper_run.c']
+  skimmer_js8_test = executable('skimmer-js8-test', ['src/js8_test.c'] + js8_sources,
+    include_directories : [include_directories('src'), engine_inc],
+    dependencies : engine_deps,
+    link_with : engine_lib,
+  )
+  test('js8', skimmer_js8_test, args : [skimmer_js8d, skimmer_js8code], timeout : 300)
+  # The bench on real air: a recorded cf32 through the whole [js8] (and with
+  # --keep the periods' WAVs, for JS8Call).
+  executable('skimmer-js8-replay', ['src/js8_replay_main.c'] + js8_sources,
+    include_directories : [include_directories('src'), engine_inc],
+    dependencies : engine_deps,
+    link_with : engine_lib,
+  )
 endif
 
 # The governor: adaptive RTTY's hourly test (and the thermal guard).
@@ -557,6 +582,9 @@ headless_sources = files(
   'src/headless/web.c',             # the web page (libsoup 3)
   'src/headless/wspr.c',            # [wspr]: WSPR decoded beside, WSPRnet
   'src/headless/ft8.c',             # [ft8]: FT8/FT4 decoded beside, to the feed
+  'src/headless/digi_rx.c',         # a dial's 12 kHz USB audio in UTC periods (FT8, JS8)
+  'src/headless/js8.c',             # [js8]: JS8 decoded beside, to the feed
+  'src/headless/js8_unpack.c',      # what a JS8 frame says (callsigns, grid)
   'src/headless/helper_run.c',      # the decoder helpers run (ft8d, wsprd)
   'src/headless/pskreporter.c',     # [ft8] upload: to PSK Reporter (IPFIX/UDP)
 )

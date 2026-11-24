@@ -169,6 +169,20 @@ static const char DEFAULT_CONFIG[] =
   "# bands = the [bands] names whose dials are decoded (empty = every band), e.g. 40m, 20m\n"
   "enabled=false\nft8=true\nft4=true\nfeed=true\ndepth=2\nlo_hz=200\nhi_hz=3500\nthreads=2\nbands=\n"
   "upload=false\ncall=\nlocator=\n"
+  "\n[js8]\n# JS8 decoded beside CW/RTTY: every JS8 dial frequency inside a band received,\n"
+  "# in every submode at once (normal 15 s, fast 10 s, turbo 6 s, slow 30 s), by\n"
+  "# JS8Call-improved's own decoder (built in). Each station that sends (a\n"
+  "# heartbeat, a CQ, a directed frame) is a spot at its own frequency, once a\n"
+  "# band in 10 min. JS8 has only a 12-bit CRC: a frame read with many errors\n"
+  "# (quality under clean) is deep — its call reaches the telnet feed only once\n"
+  "# confirmed (a second decode within 30 min, MASTER.SCP, or confirmed on JS8\n"
+  "# in the last 90 days); the web page shows it at once. feed=false: the web\n"
+  "# page only. serve=true keeps one decoder a dial running, so it combines\n"
+  "# repeated frames across periods. upload=true sends the stations heard to\n"
+  "# PSK Reporter under [ft8] call and locator (empty = [feed] call, [station]\n"
+  "# locator). bands = the [bands] names whose dials are decoded (empty = all)\n"
+  "enabled=false\nsubmodes=normal,fast,turbo,slow\nfeed=true\nlo_hz=200\nhi_hz=3500\n"
+  "threads=2\nbands=\nserve=true\nclean=0.80\nupload=false\n"
   "\n[update]\n# once a day a look at the releases on GitHub (ok1hra/skimmer-for-linux):\n"
   "# auto = a newer version is downloaded, checked (sha256, a trial run on\n"
   "# this config) and swapped in for the running AppImage at hour_utc, the old\n"
@@ -216,6 +230,7 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_free(cfg->ft8_call);
   g_strfreev(cfg->ft8_bands);
   g_free(cfg->ft8_pskr_host);
+  g_strfreev(cfg->js8_bands);
   if (cfg->filter_re) { g_regex_unref(cfg->filter_re); }
   memset(cfg, 0, sizeof(*cfg));
 }
@@ -969,6 +984,69 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   }
 
   {
+    /* [js8]: the window as [ft8]'s; the submodes by name */
+    double lo, hi, thr, clean;
+    if (!opt_bool(kf, "js8", "enabled", FALSE, &h->js8, path, error) ||
+        !opt_bool(kf, "js8", "feed", TRUE, &h->js8_feed, path, error) ||
+        !opt_bool(kf, "js8", "serve", TRUE, &h->js8_serve, path, error) ||
+        !opt_bool(kf, "js8", "upload", FALSE, &h->js8_upload, path, error) ||
+        !opt_num(kf, "js8", "lo_hz", 200, 200, 1000, TRUE, &lo, path, error) ||
+        !opt_num(kf, "js8", "hi_hz", 3500, 2000, 4000, TRUE, &hi, path, error) ||
+        !opt_num(kf, "js8", "threads", 2, 1, 8, TRUE, &thr, path, error) ||
+        !opt_num(kf, "js8", "clean", 0.80, 0.50, 1.00, FALSE, &clean, path, error)) {
+      return FALSE;
+    }
+    h->js8_lo_hz = (guint)lo;
+    h->js8_hi_hz = (guint)hi;
+    h->js8_threads = (guint)thr;
+    h->js8_clean = clean;
+    static const char *const SUBS[] = { "normal", "fast", "turbo", "slow" };
+    h->js8_submodes = 0xf;
+    if (given(kf, "js8", "submodes", NULL)) {
+      char *sv = g_key_file_get_string(kf, "js8", "submodes", NULL);
+      char **w = g_strsplit_set(sv ? sv : "", ", ", -1);
+      guint bits = 0;
+      const char *unknown = NULL;
+      for (char **x = w; *x; x++) {
+        if (!**x) { continue; }
+        gboolean hit = FALSE;
+        for (guint i = 0; i < G_N_ELEMENTS(SUBS); i++) {
+          if (g_ascii_strcasecmp(*x, SUBS[i]) == 0) { bits |= 1u << i; hit = TRUE; }
+        }
+        if (!hit && !unknown) { unknown = *x; }
+      }
+      if (unknown || !bits) {
+        bad(error, path, "[js8] submodes \"%s\": some of normal, fast, turbo, slow",
+            unknown ? unknown : (sv ? sv : ""));
+        g_strfreev(w);
+        g_free(sv);
+        return FALSE;
+      }
+      h->js8_submodes = bits;
+      g_strfreev(w);
+      g_free(sv);
+    }
+    char *jb = g_key_file_get_string(kf, "js8", "bands", NULL);
+    if (jb && g_strstrip(jb)[0]) {
+      char **v = g_strsplit_set(jb, ", ", -1);
+      GPtrArray *a = g_ptr_array_new();
+      for (char **x = v; *x; x++) {
+        if (**x) { g_ptr_array_add(a, g_strdup(*x)); }
+      }
+      g_ptr_array_add(a, NULL);
+      h->js8_bands = (char **)g_ptr_array_free(a, FALSE);
+      g_strfreev(v);
+    }
+    g_free(jb);
+    const char *rc = h->ft8_call ? h->ft8_call : h->feed_call;
+    const char *rl = h->ft8_locator[0] ? h->ft8_locator : h->locator;
+    if (h->js8 && h->js8_upload && (!rc || !*rc || !rl[0])) {
+      return bad(error, path, "[js8] upload: PSK Reporter needs the receiver's call and locator — "
+                              "[ft8] call (or [feed] call) and [ft8] locator (or [station] locator)");
+    }
+  }
+
+  {
     /* [update]: what the daily look at the releases may do, and when */
     h->update_mode = 2;
     char *m = given(kf, "update", "mode", NULL) ? g_key_file_get_string(kf, "update", "mode", NULL)
@@ -1110,6 +1188,14 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     ok = bad(error, path, "no [bands] entries");
   }
   if (ok && h->nlisted && h->nb == 0) { ok = bad(error, path, "every band is off"); }
+  /* [js8] bands: each a band received */
+  for (char **x = h->js8_bands; ok && x && *x; x++) {
+    gboolean found = FALSE;
+    for (guint i = 0; i < h->nb && !found; i++) { found = strcmp(h->band[i].name, *x) == 0; }
+    if (!found && h->source != SKIM_HD_SOURCE_HUB) {
+      ok = bad(error, path, "[js8] bands: \"%s\" is no band received ([bands])", *x);
+    }
+  }
   /* [ft8] bands: each a band received */
   for (char **x = h->ft8_bands; ok && x && *x; x++) {
     gboolean found = FALSE;
@@ -1179,6 +1265,8 @@ const char *const SKIM_HD_EDITABLE[] = {
   "wspr.enabled", "wspr.upload", "wspr.call", "wspr.locator", "wspr.deep", "wspr.subtract",
   "ft8.enabled", "ft8.ft8", "ft8.ft4", "ft8.feed", "ft8.depth", "ft8.lo_hz", "ft8.hi_hz",
   "ft8.threads", "ft8.bands", "ft8.upload", "ft8.call", "ft8.locator",
+  "js8.enabled", "js8.submodes", "js8.feed", "js8.lo_hz", "js8.hi_hz", "js8.threads",
+  "js8.bands", "js8.serve", "js8.clean", "js8.upload",
   "update.mode", "update.hour_utc",
   NULL,
 };

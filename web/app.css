@@ -17,11 +17,11 @@
   /* the two modes, the same everywhere on Statistics: CW a pastel blue,
      RTTY a pastel peach — apart at a glance; the active-decoders heatmap
      has one calm ramp for both (the strip's place in a band says the mode) */
-  --cw: #8fb9ff; --rtty: #ffb88a; --ft8: #c59bff; --ft4: #ff8fd0; --wspr: #e05a5a;
-  /* the bands table's stacked bars: five modes side by side in one bar, so
-     five hues far apart at one weight — not the pastels above, whose blue,
+  --cw: #8fb9ff; --rtty: #ffb88a; --ft8: #c59bff; --ft4: #ff8fd0; --js8: #f2d46b; --wspr: #e05a5a;
+  /* the bands table's stacked bars: six modes side by side in one bar, so
+     six hues far apart at one weight — not the pastels above, whose blue,
      violet and pink run together when they touch */
-  --m-cw: #4f9dff; --m-rtty: #ff9838; --m-ft8: #a46bff; --m-ft4: #2fcf9f; --m-wspr: #f0485e;
+  --m-cw: #4f9dff; --m-rtty: #ff9838; --m-ft8: #a46bff; --m-ft4: #2fcf9f; --m-js8: #e3c22a; --m-wspr: #f0485e;
   --seq-lo: #121b28; --seq-hi: #9fb4d2;
   --grid: #1a283a; --axis: #2f4560; --tick: #6a7d96;
 }
@@ -100,6 +100,7 @@ h2.sect { margin: 4px 0 8px; }
 .tile .v.ml.cw, .grid .ml.cw { color: var(--cw); }
 .tile .v.ml.rtty, .grid .ml.rtty { color: var(--rtty); }
 .tile .v.ml.ft8, .grid .ml.ft8 { color: var(--ft8); }
+.tile .v.ml.js8, .grid .ml.js8 { color: var(--js8); }
 .tile .v.ml small { color: inherit; opacity: .75; }
 .grid td .ml { line-height: 1.3; }
 .grid td .ml + .ml { border-top: 1px dotted var(--ln); }
@@ -238,6 +239,7 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .m-cw { background: var(--m-cw) !important; } .m-rtty { background: var(--m-rtty) !important; }
 .m-ft8 { background: var(--m-ft8) !important; } .m-ft4 { background: var(--m-ft4) !important; }
 .m-wspr { background: var(--m-wspr) !important; }
+.m-js8 { background: var(--m-js8) !important; }
 /* a mode left out: the number counted, then all of them in dark grey */
 .ladder td.n .all { color: var(--faint); margin-left: 3px; }
 .ladder td.bar.stack i.x { background: var(--faint) !important; opacity: .55; }
@@ -566,14 +568,23 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .wf-tip b.rtty { color: var(--rtty); }
 .wf-tip b.wspr { color: #e05a5a; }
 .wf-tip b.ft8 { color: var(--ft8); }
+.wf-tip b.js8 { color: var(--js8); }
 /* FT8/FT4's windows over the waterfall, violet (waterfall.js placeWspr) */
 .wf-wspr > div.ft8 { background: rgba(90,40,150,.08); border-left-color: rgba(140,90,220,.7); border-right-color: rgba(140,90,220,.7); }
+/* JS8's windows over the waterfall, gold (waterfall.js placeWspr) */
+.wf-wspr > div.js8 { background: rgba(160,130,20,.08); border-left-color: rgba(227,194,42,.7); border-right-color: rgba(227,194,42,.7); }
 /* FT8: a button of its own, in the FT8 colour; open = filled */
 .wf-bar .wf-ft8 { font-size: 12px; font-weight: 700; letter-spacing: .1em; color: var(--ft8);
                   border: 1px solid var(--ft8); border-radius: 2px; padding: 3px 9px; background: rgba(197,155,255,.08); }
 .wf-bar .wf-ft8:hover { color: var(--fg); background: rgba(197,155,255,.2); }
 .wf-bar .wf-ft8.on { color: var(--hot-ink); background: var(--ft8); border-color: var(--ft8); }
 .wf-bar .wf-ft8[hidden] { display: none; }
+/* JS8: its button in the JS8 colour; open = filled */
+.wf-bar .wf-js8 { font-size: 12px; font-weight: 700; letter-spacing: .1em; color: var(--js8);
+                  border: 1px solid var(--js8); border-radius: 2px; padding: 3px 9px; background: rgba(242,212,107,.08); }
+.wf-bar .wf-js8:hover { color: var(--fg); background: rgba(242,212,107,.2); }
+.wf-bar .wf-js8.on { color: var(--hot-ink); background: var(--js8); border-color: var(--js8); }
+.wf-bar .wf-js8[hidden] { display: none; }
 
 /* ---- the FT8 palette over the waterfall (ft8-palette.js): WSJT-X's Band Activity ---- */
 .ft8-pal {
@@ -612,6 +623,15 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .fp-row b.from { font-weight: 700; }
 .fp-row b.hl { color: var(--ft8); }
 .fp-empty { color: var(--muted); font: 12px RC, sans-serif; padding-top: 6px; }
+/* the JS8 palette (js8-palette.js): the FT8 one's frame, JS8's gold, a
+   submode column; a deep call not confirmed yet faded with "?" */
+.js8-pal .fp-title { color: var(--js8); }
+.js8-pal .fp-cols, .js8-pal .fp-row { grid-template-columns: 4.6em 2em 2.6em 3.4em 1fr; }
+.js8-pal .fp-row .m { white-space: normal; overflow: visible; }
+.js8-pal .fp-row span { white-space: normal; }
+.js8-pal .fp-row.hl { background: rgba(242,212,107,.16); }
+.js8-pal .fp-row b.hl { color: var(--js8); }
+.js8-pal .fp-row b.q { opacity: .7; font-style: italic; }
 .wf-tip .f { color: var(--mut); font-size: 11px; }
 .wf-bar select:disabled { opacity: .6; }
 
@@ -647,3 +667,28 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .ab-list dd { margin: 0; }
 .ab-dev { border-top: 1px solid var(--ln); padding-top: 10px; }
 @media (max-width: 560px) { .ab-list { grid-template-columns: 1fr; } .ab-list dd { margin-bottom: 4px; } }
+
+/* ---- the guided tour (tour.js): the "?" in the menu, the page dimmed and
+   blurred around one part, a card with what it is ---- */
+nav .tour-q { align-self: center; width: 26px; height: 26px; padding: 0; margin: 0 8px; font-weight: 700;
+              font-size: 15px; letter-spacing: 0; line-height: 1; color: var(--accent);
+              border: 1px solid var(--accent); border-radius: 50%; }
+nav .tour-q:hover { background: var(--accent); color: var(--hot-ink); }
+.tour { position: fixed; inset: 0; z-index: 1000; }
+.tour[hidden] { display: none !important; }
+.tour-shade { position: fixed; background: rgba(4,8,13,.62); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+              transition: all .18s ease; }
+.tour-ring { position: fixed; border: 2px solid var(--accent); border-radius: 4px; box-shadow: 0 0 0 4px rgba(57,217,138,.18);
+             transition: all .18s ease; }
+.tour-card { position: fixed; width: min(400px, calc(100vw - 16px)); padding: 12px 14px 10px; background: var(--deep);
+             border: 1px solid var(--accent); border-radius: 4px; box-shadow: 0 10px 30px rgba(0,0,0,.6); color: var(--fg); }
+.tour-n { font-size: 11px; letter-spacing: .1em; color: var(--mut); }
+.tour-card h3 { margin: 2px 0 6px; font-size: 17px; letter-spacing: .03em; color: var(--accent); }
+.tour-x { margin: 0 0 10px; font-size: 14px; line-height: 1.45; }
+.tour-btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.tour-btns button { font: 13px 'RC', sans-serif; padding: 4px 10px; border-radius: 2px; cursor: pointer;
+                    background: none; color: var(--fg); border: 1px solid var(--ln2); }
+.tour-btns .tour-end { margin-right: auto; color: var(--mut); border-color: transparent; }
+.tour-btns .tour-end:hover { color: var(--bad); }
+.tour-btns .primary { background: var(--accent); color: var(--hot-ink); border-color: var(--accent); font-weight: 700; }
+body.touring { overflow: hidden; }

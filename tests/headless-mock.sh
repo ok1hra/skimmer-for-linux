@@ -6,7 +6,8 @@
 # both spots reach the telnet feed at the right frequency, /status.json says
 # so (with the built-in gate and the SKIM_* switches), SIGTERM stops it
 # cleanly, and a bad config stops the start with exit 2. [ft8] takes both
-# bands' FT8 and FT4 dials and decodes their cycles. 20m asks for
+# bands' FT8 and FT4 dials and decodes their cycles, [js8] both bands' JS8
+# dials in all four submodes. 20m asks for
 # DeepCW, which has no model here: it runs v2 and says why; the model
 # fetch (web and --fetch-deepcw-model) refuses a file that is not the
 # pinned one, and installs the real one from a local mirror when this
@@ -45,6 +46,8 @@ settle_nodict_s=0
 console_s=0
 http_port=$HTTP
 [ft8]
+enabled=true
+[js8]
 enabled=true
 EOF
 
@@ -149,14 +152,28 @@ fj=$(curl -s "http://127.0.0.1:$HTTP/api/ft8?dial=14074000")
 [[ $fj == '{"now":'*',"decodes":[]}' ]]; check "web: /api/ft8 — the decodes of a dial (none in the mock's noise)" $?
 [[ $(curl -s "http://127.0.0.1:$HTTP/" ) == *ft8-palette.js* && $(curl -s "http://127.0.0.1:$HTTP/ft8-palette.js") == *"const Ft8Pal"* ]]
 check "web: the FT8 palette is on the page" $?
+# [js8]: both bands' JS8 dials in all four submodes, the decoder found (kept
+# running), periods decoded — the mock sends no JS8: nothing, no error
+[[ $(py 'd["js8"]["on"], d["js8"]["decoder"], d["js8"]["serve"], ",".join(x["band"] for x in d["js8"]["dials"]), ",".join(x["name"] for x in d["js8"]["submodes"])') == "True True True 20m,40m normal,fast,turbo,slow" ]]
+check "status: [js8] on, the decoder there (kept running), 20m and 40m, all four submodes" $?
+for _ in $(seq 40); do
+  jj=$(curl -s "http://127.0.0.1:$HTTP/status.json" | python3 -c "import json,sys; f=json.load(sys.stdin)['js8']; print(f['cycles'] >= 6, f['decodes'], f['error'])" 2>/dev/null)
+  [[ $jj == "True "* ]] && break
+  sleep 0.5
+done
+[[ $jj == "True 0 None" ]]; check "status: [js8] periods decoded, nothing in the mock's noise, no error ($jj)" $?
+grep -q "js8: decoding 20m 14078.0, 40m 7078.0 (normal/fast/turbo/slow, one decoder a dial kept running, 2 threads, clean from quality 0.80); confirmed senders to the feed" "$T/log"
+check "log: the JS8 dials taken" $?
+jf=$(curl -s "http://127.0.0.1:$HTTP/api/js8?dial=14078000")
+[[ $jf == '{"now":'*',"frames":[]}' ]]; check "web: /api/js8 — the frames of a dial (none in the mock's noise)" $?
 page=$(curl -s "http://127.0.0.1:$HTTP/")
 [[ $page == *"<title>Skimmer for Linux</title>"* ]]; check "web: the page" $?
 [[ $(curl -s -o /dev/null -w '%{http_code} %{content_type}' "http://127.0.0.1:$HTTP/app.js") == "200 text/javascript"* ]]
 check "web: app.js" $?
 stj=$(curl -s "http://127.0.0.1:$HTTP/stats.json?hours=6")
 # (rtty: null until a minute with RTTY was recorded, and then never on 20m)
-[[ $(python3 -c "import json,sys; d=json.loads(sys.argv[1]); r=d['rtty']; print(d['bands'], d['n'], d['step_min'], r is None or all(v is None for v in r['spots']['20m']), len(d['cw']['spots']['20m']), sorted(d['global']), d['ft8'] is None or len(d['ft8']['active']['40m']))" "$stj" 2>&1) == "['20m', '40m'] 360 1 True 360 ['clients', 'cpu', 'cpu_cw', 'cpu_helpers', 'cpu_rtty', 'cpu_temp', 'lost', 'radio', 'streaming'] "* ]]
-check "web: stats.json (6 h, both bands, the global series, the helpers' CPU, FT8)" $?
+[[ $(python3 -c "import json,sys; d=json.loads(sys.argv[1]); r=d['rtty']; print(d['bands'], d['n'], d['step_min'], r is None or all(v is None for v in r['spots']['20m']), len(d['cw']['spots']['20m']), sorted(d['global']), d['ft8'] is None or len(d['ft8']['active']['40m']), 'js8' in d and (d['js8'] is None or len(d['js8']['active']['40m'])))" "$stj" 2>&1) == "['20m', '40m'] 360 1 True 360 ['clients', 'cpu', 'cpu_cw', 'cpu_helpers', 'cpu_rtty', 'cpu_temp', 'lost', 'radio', 'streaming'] "*" "* ]]
+check "web: stats.json (6 h, both bands, the global series, the helpers' CPU, FT8, JS8)" $?
 [[ $(curl -s "http://127.0.0.1:$HTTP/api/log") == '[{"t":'*'"text":"skimmer-headless '* ]]; check "web: the log" $?
 [[ $(curl -s -o /dev/null -w '%{http_code}' --path-as-is "http://127.0.0.1:$HTTP/../headless.ini") == 404 ]]
 check "web: no path out of the page" $?

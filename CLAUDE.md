@@ -144,9 +144,9 @@ here; what was done and why is in git.
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 38 gates** (DeepCW skips without the model, golden skips
+- **`meson test` = 39 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
-  only with gfortran). `headless-mock` runs
+  only with gfortran, `js8` only with C++20 + Boost headers). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).
 - **Hub, workers, peers** (`docs/HUB.md`): the PC with the radio passes the
   IQ of `@name` bands as int24 over TCP :7380 (`src/headless/hub.c`) to
@@ -161,7 +161,7 @@ here; what was done and why is in git.
   `web/map/` from IP-rotator) + the DX cluster with column filters
   (`web/dxc.js`), both from `/api/spots`, + the bands table (10 m on top:
   two stacked bars a band, spots of the map's age and active decoders, each
-  mode — CW, RTTY, FT8, FT4, WSPR — its part in its colour; FT8/FT4 active =
+  mode — CW, RTTY, FT8, FT4, JS8, WSPR — its part in its colour; FT8/FT4 (and JS8) active =
   the senders of the last minute, WSPR = its newest cycle's stations) with
   a heat map of the continents each band is open to (the modes counted,
   the map's age; how open, not how busy — two loud stations are an open
@@ -182,13 +182,14 @@ here; what was done and why is in git.
   the table's status column says what a worker or a guard does
   with the band; statistics (`stats.c`, three
   rings: 1 min × 7 d, 15 min × 90 d, 1 h × 2 y, saved in place; file
-  version 6 = three modes, CW, RTTY and FT8 (FT8 + FT4: spots, senders
-  that appeared, as "active" the senders heard a minute, SNR), and the
-  helper programs' CPU (`cpu_helpers`: skimmer-ft8d, skimmer-wsprd —
-  outside the process's own); version 5 added the thermal guard's pauses per
-  band (`thermal`, the share of the bucket off — red in "active decoders by
-  band"); a version 3, 4 or 5 file is carried over and kept as
-  `stats.bin.v3` / `.v4` / `.v5` for an older build; ≈ 32 MB), settings (one parser:
+  version 7 = four modes, CW, RTTY, FT8 (FT8 + FT4) and JS8 (every
+  submode; for both: spots, senders that appeared, as "active" the senders
+  heard a minute, SNR), and the helper programs' CPU (`cpu_helpers`:
+  skimmer-ft8d, skimmer-js8d — a kept-running one read from /proc —,
+  skimmer-wsprd — outside the process's own); version 5 added the thermal
+  guard's pauses per band (`thermal`, the share of the bucket off — red in
+  "active decoders by band"), 6 FT8; a version 3–6 file is carried over and
+  kept as `stats.bin.v3` … `.v6` for an older build; ≈ 43 MB), settings (one parser:
   `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
   backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
   Managers only (settings_from, no proxy headers, a Host that is this
@@ -206,7 +207,11 @@ here; what was done and why is in git.
   band keys of [Skimmer] only; else a file chosen in the browser). Rules and the audit:
   `docs/WEB-SECURITY.md` — keep them when adding an endpoint. Frequencies show
   with a space after the MHz (`fmtKhz` in app.js); the charts share one plot
-  frame and one crosshair.
+  frame and one crosshair. The "?" in the menu (Status, Statistics,
+  Waterfall; `web/tour.js`, 2026-11-24 at Dan's request) runs a guided tour:
+  the page dimmed and blurred around one part at a time, a card with what
+  it is — "Got it" next, Back, "End the tour"/Esc; parts not shown now are
+  skipped.
 - **The waterfall** (`src/headless/waterfall.c`, `web/waterfall.js`, WS
   `/ws/waterfall`): `rx_iq_cb` pushes every band's IQ, which returns at once
   while nobody watches it; a watched band runs FFTs of 8192 (16384 at
@@ -377,6 +382,39 @@ here; what was done and why is in git.
   call`/`locator` (empty = [feed] call, [station] locator — needed then);
   `pskreporter=host:port` is the gates' stand-in (a datagram a second).
   Needs a live check on air.
+- **JS8** (`[js8] enabled`, default off; `src/headless/js8.c`, 2026-11-24
+  at Dan's request — "deep detection below the noise, no compromise"; plan
+  `~/.claude/plans/vytvor-navrh-implementace-dala-noble-cascade-of-00096061-18cd-49d6-99b5-04c8ff11949c.md`,
+  decisions and numbers `docs/JS8.md`): every JS8 dial (JS8Call's list,
+  `SKIM_JS8_DIALS`) a received band holds (`bands=` as [ft8]), in all four
+  submodes at once — normal 15 s, fast 10 s, turbo 6 s, slow 30 s — from
+  one front end a dial (`src/headless/digi_rx.c`: ft8.c's DSP lifted out,
+  several UTC periods from one dial; FT8 stays byte-identical). Each period
+  → a WAV (a subdir per submode: periods start together) →
+  `skimmer-js8d` = JS8Call-improved's decoder core (`vendor/js8call/`:
+  WIFILT's pinned upstream subset + its Qt-free decoder_shim, JS8.cpp
+  sha256-pinned and cut by `extract_core.py`; C++20, Boost headers,
+  Eigen's Dense part), one process a dial kept running (`--serve`,
+  `SkimHdHelperServer` in helper_run.c: jobs on stdin, every answer ends
+  with `<DecodeFinished>`) — its soft combining sees earlier periods, and
+  it costs a tenth of one run a period (golden 20 m: 14 s vs 144 s CPU for
+  600 s, all four submodes). The helper prints raw frames (12 alphabet72
+  characters + 3 transmission bits + quality = 1 − hard errors/60);
+  `js8_unpack.c` reads the sender (heartbeat/CQ, compound, directed from,
+  compound-directed via the compound before it), checked against WIFILT's
+  js8-protocol.js. A frame under `clean` (0.80) is deep: its call goes to
+  the page at once, to the telnet feed (`JS8  -18 dB  CQ|DE`, never the
+  RBN port) and PSK Reporter (`upload`, under [ft8] call/locator) only once
+  confirmed — a second decode in another period within 30 min, MASTER.SCP,
+  or `<state>/js8-known.tsv` (confirmed on JS8 in 90 days). Once a call and
+  band in 10 min. status.json `js8`, `/api/js8?dial=&since=` (raw frames),
+  stats v7 mode 3. The page: JS8 (gold) in the ladder, heat map, DX
+  cluster, Statistics (the digital chart FT8 up / JS8 down), the waterfall
+  ("JS8 RX" windows, a JS8 button) and Settings → JS8; the JS8 palette
+  (`web/js8-palette.js`) puts the frames back into messages with WIFILT's
+  `web/js8/js8-protocol.js` + JSC dictionary (copied unchanged —
+  `web/js8/VENDOR.md`). Off on a worker and with the thermal guard's band.
+  `skimmer-js8-replay FILE.cf32` is the bench. Needs a live check on air.
 - **Updates** (`[update]`, default `mode=auto`, `hour_utc=3`;
   `src/headless/update.c`, 2026-11-22 at Dan's request): once a day the
   GitHub API's latest release of ok1hra/skimmer-for-linux; a newer one is
@@ -427,7 +465,9 @@ src/headless/ the product layer: config (headless.ini, one parser), source
               switches (SKIM_* visibility), stats (7-day history), web
               (libsoup server), logring, scp_update (MASTER.SCP updater),
               wspr ([wspr]: WSPR beside, WSPRnet), ft8 ([ft8]: FT8/FT4
-              beside, to the feed), update ([update]: a
+              beside, to the feed), digi_rx (a dial's 12 kHz USB audio in
+              UTC periods), js8 + js8_unpack ([js8]: JS8 beside, deep
+              frames confirmed), update ([update]: a
               newer release swapped in)
 web/          the web page (HTML, CSS, JS — built in as a GResource)
 src/headless_main.c  skimmer-headless: multi-band, no GUI (HPSDR P1 → N pipelines)
@@ -436,5 +476,6 @@ tests/golden/ the golden gate: real-air replay, byte for byte
 vendor/wdsp/  in-tree WDSP copy (FFT + resampler)
 vendor/wsprd/ WSJT-X's wsprd (the WSPR decoder → skimmer-wsprd, a helper)
 vendor/wsjtx-ft/ WSJT-X's FT8/FT4 decoders (Fortran → skimmer-ft8d, a helper)
+vendor/js8call/  JS8Call-improved's JS8 decoder via WIFILT's shim (C++20 → skimmer-js8d)
 vendor/onnxruntime/  ONNX Runtime C API header only (MIT) — dlopen at run time
 ```

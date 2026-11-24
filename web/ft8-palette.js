@@ -255,6 +255,8 @@ const Ft8Pal = (() => {
   function setOpen(v, want) {
     if (!!v === open && !want) return;
     const was = open;
+    // one digital palette at a time: the JS8 one closes (its view comes back first)
+    if (v && !was && typeof Js8Pal !== 'undefined' && Js8Pal.isOpen()) Js8Pal.close();
     open = !!v;
     if (open && !el) build();
     el.hidden = !open;
