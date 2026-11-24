@@ -471,6 +471,29 @@ if ft8_enabled
        args : [skimmer_ft8d, skimmer_ft8code, skimmer_ft4code], timeout : 120)
 endif
 
+# JS8: skimmer-js8d (JS8Call-improved's decoder, vendor/js8call) on synthetic
+# air — frames of our packer, tones from upstream's own encoder; and the whole
+# [js8] (dials, lines, unpacking against WIFILT's js8-protocol.js, senders,
+# deep-frame confirmation, IQ at 48 and 192 kHz through the DSP and every
+# submode's periods).
+if js8_enabled
+  js8_sources = ['src/headless/js8.c', 'src/headless/js8_unpack.c', 'src/headless/digi_rx.c',
+                 'src/headless/helper_run.c']
+  skimmer_js8_test = executable('skimmer-js8-test', ['src/js8_test.c'] + js8_sources,
+    include_directories : [include_directories('src'), engine_inc],
+    dependencies : engine_deps,
+    link_with : engine_lib,
+  )
+  test('js8', skimmer_js8_test, args : [skimmer_js8d, skimmer_js8code], timeout : 300)
+  # The bench on real air: a recorded cf32 through the whole [js8] (and with
+  # --keep the periods' WAVs, for JS8Call).
+  executable('skimmer-js8-replay', ['src/js8_replay_main.c'] + js8_sources,
+    include_directories : [include_directories('src'), engine_inc],
+    dependencies : engine_deps,
+    link_with : engine_lib,
+  )
+endif
+
 # The governor: adaptive RTTY's hourly test (and the thermal guard).
 skimmer_governor_test = executable('skimmer-governor-test',
   ['src/governor_test.c', 'src/headless/governor.c'],
