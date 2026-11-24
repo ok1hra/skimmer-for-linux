@@ -41,6 +41,8 @@ subdir('vendor/wdsp')
 subdir('vendor/wsprd')
 # WSJT-X's FT8/FT4 decoders (Fortran, a helper program) — VENDOR.md there.
 subdir('vendor/wsjtx-ft')
+# JS8Call-improved's JS8 decoder (C++20, a helper program) — VENDOR.md there.
+subdir('vendor/js8call')
 
 engine_inc = include_directories('src/engine', 'vendor/onnxruntime')
 # ONNX Runtime is NEVER linked: decode_deepcw dlopen()s it at run time

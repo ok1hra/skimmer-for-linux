@@ -9,3 +9,9 @@ option('build_suffix', type : 'string', value : '',
 # (vendor/wsjtx-ft → skimmer-ft8d). auto = only when gfortran is there.
 option('ft8', type : 'feature', value : 'auto',
        description : 'build skimmer-ft8d (needs a Fortran compiler)')
+
+# JS8 (src/headless/js8.c) decodes with JS8Call-improved's C++ core
+# (vendor/js8call → skimmer-js8d). auto = only with a C++20 compiler and
+# Boost's headers (crc, multi_index).
+option('js8', type : 'feature', value : 'auto',
+       description : 'build skimmer-js8d (needs C++20 and Boost headers)')
