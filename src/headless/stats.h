@@ -7,20 +7,23 @@
  * thermal guard had the band paused. FT8 (FT8 and FT4 together, ft8.h):
  * spots sent, the senders that appeared (none from that band in the 10 min
  * before), as "active" the senders heard in the minute, the median SNR of
- * its decodes, the thermal share — no fold or gate (NaN). Globally: CPU
- * (this process, the CW and RTTY pipelines' share, and the helper programs
- * it runs: skimmer-ft8d, skimmer-wsprd), the CPU temperature (peak), lost
+ * its decodes, the thermal share — no fold or gate (NaN). JS8 (all its
+ * submodes, js8.h) the same as FT8: spots (the page's, confirmed or not),
+ * senders that appeared, senders heard, median SNR, thermal share.
+ * Globally: CPU (this process, the CW and RTTY pipelines' share, and the
+ * helper programs it runs: skimmer-ft8d, skimmer-js8d, skimmer-wsprd), the
+ * CPU temperature (peak), lost
  * IQ, feed clients, whether the radio streamed and which one.
  *
- * The three rings live in a fixed-size file (~19 MB, held in memory too)
+ * The three rings live in a fixed-size file (~43 MB, held in memory too)
  * under ~/.local/state/skimmer-for-linux/stats.bin; every few minutes and at
  * exit the slots changed since are written into it in place (a few kB), so
  * a restart — every settings change is one — keeps the graphs.
  * Bands are matched by name: a band added later starts empty, a band
  * dropped from the config loses its history at the next save. Older files
  * are read and carried over: version 1 (no CPU split), 3 (no CPU
- * temperature), 4 (no thermal pauses) and 5 (no FT8, no helpers' CPU) with
- * those empty.
+ * temperature), 4 (no thermal pauses), 5 (no FT8, no helpers' CPU) and 6
+ * (no JS8) with those empty.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -32,8 +35,9 @@ G_BEGIN_DECLS
 
 #define SKIM_STATS_MINUTES (7 * 24 * 60)
 #define SKIM_STATS_BANDS   8
-#define SKIM_STATS_MODES   3              /* 0 = CW, 1 = RTTY, 2 = FT8 (+FT4) */
+#define SKIM_STATS_MODES   4              /* 0 = CW, 1 = RTTY, 2 = FT8 (+FT4), 3 = JS8 */
 #define SKIM_STATS_FT8     2
+#define SKIM_STATS_JS8     3
 
 typedef enum {
   SKIM_SM_SPOTS,           /* sent to the feed in the minute                 */
@@ -56,8 +60,8 @@ typedef enum {
   SKIM_SG_CPU_CW,          /* % of one core: the CW pipelines' threads       */
   SKIM_SG_CPU_RTTY,        /* % of one core: the RTTY pipelines' threads     */
   SKIM_SG_CPU_TEMP,        /* °C: the hottest CPU sensor, the minute's peak  */
-  SKIM_SG_CPU_HELPERS,     /* % of one core: the helper programs run (the FT8
-                            * and WSPR decoders), outside SKIM_SG_CPU        */
+  SKIM_SG_CPU_HELPERS,     /* % of one core: the helper programs run (the FT8,
+                            * JS8 and WSPR decoders), outside SKIM_SG_CPU    */
   SKIM_SG_N,
 } SkimStatsGlobalMetric;
 

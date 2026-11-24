@@ -1188,6 +1188,18 @@ static void stats_minute(Hd *h) {
       v[SKIM_SM_SNR] = fm.snr;
       if (h->guard_s) { v[SKIM_SM_THERMAL] = (float)rb->shed_s / (float)h->guard_s; }
     }
+    /* JS8 ([js8], every submode): the same as FT8's — its spots (the
+     * page's: confirmed or not), the senders that appeared, the senders
+     * heard, the median SNR */
+    SkimHdJs8Minute jm;
+    if (h->js8 && skim_hd_js8_minute(h->js8, i, &jm) && !g_atomic_int_get(&rb->ft8_paused)) {
+      float *v = m.band[i][SKIM_STATS_JS8];
+      v[SKIM_SM_SPOTS] = (float)jm.spots;
+      v[SKIM_SM_STATIONS] = (float)jm.appeared;
+      v[SKIM_SM_ACTIVE] = (float)jm.heard;
+      v[SKIM_SM_SNR] = jm.snr;
+      if (h->guard_s) { v[SKIM_SM_THERMAL] = (float)rb->shed_s / (float)h->guard_s; }
+    }
     rb->shed_s = 0;
   }
   h->guard_s = 0;

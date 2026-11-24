@@ -90,7 +90,8 @@ int main(void) {
     check("levels are averaged (… 11,14)", ac && g_str_has_suffix(ac, ",11,14"));
     char *sn = series_of(j, "snr", "20m");
     check("SNR is averaged too (… 11,14)", sn && g_str_has_suffix(sn, ",11,14"));
-    check("no RTTY recorded: rtty is null, nor FT8", strstr(j, "\"rtty\":null") && strstr(j, "\"ft8\":null"));
+    check("no RTTY recorded: rtty is null, nor FT8, nor JS8", strstr(j, "\"rtty\":null") &&
+          strstr(j, "\"ft8\":null") && strstr(j, "\"js8\":null"));
     check("global series present", strstr(j, "\"global\":{\"cpu\":[") != NULL);
     g_free(sp); g_free(ac); g_free(sn); g_free(j);
     char *auto_j = skim_stats_json(s, now, 168, 0);
@@ -450,13 +451,13 @@ int main(void) {
       m.glob[SKIM_SG_CPU_HELPERS] = 12;
       skim_stats_put(s, now + 1 + i, &m);
     }
-    skim_stats_free(s);                          /* written as version 6     */
+    skim_stats_free(s);                          /* written as version 7     */
     s = skim_stats_open(path, bands, 2);
     j = skim_stats_json(s, now + 2, 1, 60);
     const char *f8 = strstr(j, "\"ft8\":{");
     char *fs = series_of(f8, "spots", "40m"), *fa = series_of(f8, "active", "40m"),
          *fn = series_of(f8, "snr", "40m"), *f20 = series_of(f8, "spots", "20m");
-    check("saved as version 6 and reopened: FT8's spots summed (20), active averaged (25), SNR -12",
+    check("saved as version 7 and reopened: FT8's spots summed (20), active averaged (25), SNR -12",
           fs && strcmp(fs, "20") == 0 && fa && strcmp(fa, "25") == 0 && fn && strcmp(fn, "-12") == 0);
     check("… 20m had no FT8 (null); the helpers' CPU 12", f20 && strcmp(f20, "null") == 0 &&
           strstr(j, "\"cpu_helpers\":[12]"));
@@ -467,6 +468,101 @@ int main(void) {
     char *keep = g_strconcat(path, ".v5", NULL);
     GStatBuf kb;
     check("… the version 5 file kept beside it, as it was (for an older build)",
+          g_stat(keep, &kb) == 0 && (gsize)kb.st_size == len);
+    g_remove(keep);
+    g_free(keep);
+    g_remove(path);
+  }
+
+  printf("== a version 6 file (CW, RTTY and FT8, no JS8)\n");
+  {
+    typedef struct {
+      char    magic[8];
+      guint32 version, minutes, bands, modes, sm_n, sg_n;
+      char    names[SKIM_STATS_BANDS][16];
+      guint32 ntier, tier_res[3], tier_len[3], pad;
+    } H6;
+    enum { M6 = 3, N6 = SKIM_STATS_BANDS * M6 * SKIM_SM_N + SKIM_SG_N };
+    typedef struct {
+      gint64 start;
+      float  band[SKIM_STATS_BANDS][M6][SKIM_SM_N];
+      float  glob[SKIM_SG_N];
+      guint8 n[N6];
+    } S6;
+    const guint res[3] = { 1, 15, 60 }, tl[3] = { SKIM_STATS_MINUTES, 90 * 24 * 4, 2 * 365 * 24 };
+    gsize len = sizeof(H6);
+    for (int t = 0; t < 3; t++) { len += tl[t] * sizeof(S6); }
+    char *buf = g_malloc0(len);
+    H6 *h = (H6 *)buf;
+    memcpy(h->magic, "SKIMSTAT", 8);
+    h->version = 6;
+    h->bands = SKIM_STATS_BANDS;
+    h->modes = M6;
+    h->sm_n = SKIM_SM_N;
+    h->sg_n = SKIM_SG_N;
+    h->ntier = 3;
+    for (int t = 0; t < 3; t++) { h->tier_res[t] = res[t]; h->tier_len[t] = tl[t]; }
+    g_strlcpy(h->names[0], "20m", 16);
+    g_strlcpy(h->names[1], "40m", 16);
+    gsize off = sizeof(H6);
+    for (int t = 0; t < 3; t++) {
+      S6 *sl = (S6 *)(buf + off);
+      for (guint i = 0; i < tl[t]; i++) {
+        for (guint b = 0; b < SKIM_STATS_BANDS; b++)
+          for (guint k = 0; k < M6; k++)
+            for (guint j = 0; j < SKIM_SM_N; j++) sl[i].band[b][k][j] = NAN;
+        for (guint j = 0; j < SKIM_SG_N; j++) sl[i].glob[j] = NAN;
+      }
+      S6 *one = &sl[(now / res[t]) % tl[t]];
+      one->start = now - now % res[t];
+      /* 20m FT8 (band 0, mode 2): 7 spots; 40m RTTY (band 1, mode 1): 3 */
+      one->band[0][2][SKIM_SM_SPOTS] = 7;
+      one->n[(0 * M6 + 2) * SKIM_SM_N + SKIM_SM_SPOTS] = 1;
+      one->band[0][2][SKIM_SM_ACTIVE] = 11;
+      one->n[(0 * M6 + 2) * SKIM_SM_N + SKIM_SM_ACTIVE] = 1;
+      one->band[1][1][SKIM_SM_SPOTS] = 3;
+      one->n[(1 * M6 + 1) * SKIM_SM_N + SKIM_SM_SPOTS] = 1;
+      one->band[1][1][SKIM_SM_ACTIVE] = 1;
+      one->n[(1 * M6 + 1) * SKIM_SM_N + SKIM_SM_ACTIVE] = 1;
+      one->glob[SKIM_SG_CPU_HELPERS] = 9;
+      one->n[SKIM_STATS_BANDS * M6 * SKIM_SM_N + SKIM_SG_CPU_HELPERS] = 1;
+      off += tl[t] * sizeof(S6);
+    }
+    g_file_set_contents(path, buf, (gssize)len, NULL);
+    g_free(buf);
+    const char *bands[] = { "20m", "40m" };
+    SkimStats *s = skim_stats_open(path, bands, 2);
+    char *j = skim_stats_json(s, now, 1, 60);
+    char *fs = series_of(strstr(j, "\"ft8\":"), "spots", "20m");
+    char *rs = series_of(strstr(j, "\"rtty\":"), "spots", "40m");
+    check("20m FT8's spots and 40m RTTY's carried over in their own modes",
+          fs && strcmp(fs, "7") == 0 && rs && strcmp(rs, "3") == 0);
+    check("… the helpers' CPU too; JS8 empty", strstr(j, "\"cpu_helpers\":[9]") && strstr(j, "\"js8\":null"));
+    g_free(fs); g_free(rs); g_free(j);
+    for (int i = 0; i < 2; i++) {                 /* JS8 from now on: 40m */
+      SkimStatsMinute m = minute_of(0, 0, 0, NAN);
+      m.band[1][SKIM_STATS_JS8][SKIM_SM_SPOTS] = 2;
+      m.band[1][SKIM_STATS_JS8][SKIM_SM_STATIONS] = 1;
+      m.band[1][SKIM_STATS_JS8][SKIM_SM_ACTIVE] = i ? 5 : 3;
+      m.band[1][SKIM_STATS_JS8][SKIM_SM_SNR] = -20;
+      skim_stats_put(s, now + 1 + i, &m);
+    }
+    skim_stats_free(s);                          /* written as version 7     */
+    s = skim_stats_open(path, bands, 2);
+    j = skim_stats_json(s, now + 2, 1, 60);
+    const char *j8 = strstr(j, "\"js8\":{");
+    char *js = series_of(j8, "spots", "40m"), *ja = series_of(j8, "active", "40m"),
+         *jn = series_of(j8, "snr", "40m"), *j20 = series_of(j8, "spots", "20m");
+    check("saved as version 7 and reopened: JS8's spots summed (4), active averaged (4), SNR -20",
+          js && strcmp(js, "4") == 0 && ja && strcmp(ja, "4") == 0 && jn && strcmp(jn, "-20") == 0);
+    check("… 20m had no JS8 (null)", j20 && strcmp(j20, "null") == 0);
+    fs = series_of(strstr(j, "\"ft8\":"), "spots", "20m");
+    check("… the old FT8 minute still there", fs && strcmp(fs, "7") == 0);
+    g_free(js); g_free(ja); g_free(jn); g_free(j20); g_free(fs); g_free(j);
+    skim_stats_free(s);
+    char *keep = g_strconcat(path, ".v6", NULL);
+    GStatBuf kb;
+    check("… the version 6 file kept beside it, as it was (for an older build)",
           g_stat(keep, &kb) == 0 && (gsize)kb.st_size == len);
     g_remove(keep);
     g_free(keep);
