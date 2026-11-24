@@ -21,7 +21,8 @@
  * radio whose line is still there gets skim_hpsdr_stop_orphan() — the stop
  * goes out only when that radio's stream really comes to that port and no
  * socket of this machine holds it. Anyone else's stream goes to their own
- * address, so it is never touched.
+ * address, so it is never touched. A stream lost while we run keeps its
+ * line too: it may be ours still, only unread for a while (drop()). 
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -320,7 +321,16 @@ static void try_start(P1 *p) {
 }
 
 static void drop(P1 *p) {
+  /* The client saw no packet for its watchdog's 2 s and judged the radio
+   * taken — but a stall of this process reads the same (hra2 2026-11-24
+   * 07:37: a skimmer out of memory), and the radio streamed on to the port
+   * we just closed: busy, our own orphan, and with its note gone every
+   * restart gave up (exit 3, for 36 min). So the note stays and the search
+   * judges it: stop_orphan() stops the stream only when it still comes to
+   * that port; another client's goes to its own address, left alone. */
+  const guint16 port = p->rp ? skim_hpsdr_client_local_port(p->rp) : 0;
   free_client(p);                                     /* sends no stop: not ours */
+  if (port) { streams_set(p->host, port); }
   p->streaming = FALSE;
   p1_state(p, "stream lost from %s (another client took the radio, or it left "
               "the network) — searching %s", p->host, p->base.cfg->hosts_text);

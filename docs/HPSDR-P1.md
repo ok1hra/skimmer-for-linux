@@ -41,6 +41,11 @@ receivers, see below.
   three EP6 packets from that radio, and only then send the stop from that
   same port. Someone else's stream goes to their address and port, so it
   never arrives there and is never stopped; the line is dropped either way.
+  A stream lost **while we run** keeps its line (2026-11-24): the client's
+  2 s watchdog cannot tell a radio taken from a stall of this process, and
+  hra2 (out of memory at 07:37Z) dropped a stream the radio kept sending to
+  the port it had just closed — busy, the note gone, every restart gave up
+  for 36 min. The search after the loss judges the line like any other.
 - **EP2 control and stop are accepted from ANY address.** A second client that
   keeps refreshing its control frames would retune the owner's receivers, and a
   stop from anyone kills the owner's stream. So after our stream is gone, the

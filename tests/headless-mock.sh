@@ -469,6 +469,60 @@ rc=0; XDG_CONFIG_HOME=$T/orph timeout 20 "$HL" --http-port 0 --status-every 0 > 
   ! grep -q "stop from $OTHER" "$T/orphan/events" && [[ ! -e $T/state/skimmer-for-linux/hpsdr-streams ]]
 check "someone else's stream (a noted port it does not come to): left alone, exit 3, the note gone" $?
 kill $FAKE 2>/dev/null; wait $FAKE 2>/dev/null
+
+# ---- a stream lost while we run, still ours: this process stalled ---------------
+# (hra2 2026-11-24 07:37: out of memory, the client's watchdog judged the radio
+# taken, the radio streamed on to the closed port, every restart gave up.) The
+# fake radio goes quiet 2 s into the stream — the watchdog drops it — and on
+# the search's discovery streams on to the old port, busy, as the radio did.
+python3 - "$T/stall" <<'PY' &
+import socket, sys, time, os
+d = sys.argv[1]; os.makedirs(d, exist_ok=True)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("127.0.0.1", 0))
+s.setblocking(False)
+target = None; seq = 0; log = open(d + "/events", "w", buffering=1)
+open(d + "/port", "w").write("%d" % s.getsockname()[1])
+end = time.time() + 30; nxt = time.time(); quiet_at = None; quiet = False; starts = 0
+while time.time() < end:
+    try:
+        b, a = s.recvfrom(2048)
+        if b[:3] == b"\xef\xfe\x02":
+            if quiet:
+                log.write("discovery while quiet: streaming on to %d\n" % target[1]); quiet = False
+            s.sendto(b"\xef\xfe" + bytes([3 if target else 2]) + bytes([0, 0x11, 0x22, 0x33, 0x44, 0x55, 30, 6]) + b"R_PITAYA" + bytes([8]) + bytes(40), a)
+        elif b[:4] == b"\xef\xfe\x04\x00":
+            log.write("stop from %d%s\n" % (a[1], " (streaming there)" if target and a[1] == target[1] else ""))
+            if target and a == target: target = None
+        elif b[:4] == b"\xef\xfe\x04\x01":
+            starts += 1; log.write("start from %d\n" % a[1]); target = a
+            if starts == 1: quiet_at = time.time() + 2
+        continue
+    except BlockingIOError:
+        pass
+    if quiet_at and time.time() >= quiet_at:
+        quiet_at = None; quiet = True; log.write("quiet\n")
+    if target and not quiet and time.time() >= nxt:
+        for _ in range(20):
+            s.sendto(b"\xef\xfe\x01\x06" + seq.to_bytes(4, "big") + bytes(1024), target); seq += 1
+        nxt = time.time() + 0.01
+    else:
+        time.sleep(0.001)
+PY
+FAKE=$!
+for _ in $(seq 50); do [[ -s $T/stall/port ]] && break; sleep 0.1; done
+export SKIM_HPSDR_DISCOVER=127.0.0.1:$(cat "$T/stall/port")
+rm -f "$T/state/skimmer-for-linux/hpsdr-streams"
+XDG_CONFIG_HOME=$T/orph timeout -s TERM 25 "$HL" --http-port 0 --status-every 0 > "$T/stall.log" 2>&1 &
+SPID=$!
+for _ in $(seq 150); do (( $(grep -c "radio: streaming" "$T/stall.log") >= 2 )) && break; kill -0 $SPID 2>/dev/null || break; sleep 0.1; done
+P1ST=$(sed -n 's/^start from //p' "$T/stall/events" | sed -n 1p)
+P2ST=$(sed -n 's/^start from //p' "$T/stall/events" | sed -n 2p)
+grep -q "stream lost from 127.0.0.1" "$T/stall.log" && grep -q "orphan stream is stopped" "$T/stall.log" &&
+  (( $(grep -c "radio: streaming" "$T/stall.log") >= 2 )) && kill -0 $SPID 2>/dev/null &&
+  grep -qx "stop from $P1ST (streaming there)" "$T/stall/events" && [[ -n $P2ST && $P2ST != "$P1ST" ]]
+check "a lost stream still coming to our port: stopped from it, the radio started anew, no exit 3" $?
+kill -TERM $SPID 2>/dev/null; wait $SPID 2>/dev/null
+kill $FAKE 2>/dev/null; wait $FAKE 2>/dev/null
 unset SKIM_HPSDR_DISCOVER
 
 if ((fails)); then
