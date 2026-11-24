@@ -207,7 +207,11 @@ here; what was done and why is in git.
   band keys of [Skimmer] only; else a file chosen in the browser). Rules and the audit:
   `docs/WEB-SECURITY.md` — keep them when adding an endpoint. Frequencies show
   with a space after the MHz (`fmtKhz` in app.js); the charts share one plot
-  frame and one crosshair.
+  frame and one crosshair. The "?" in the menu (Status, Statistics,
+  Waterfall; `web/tour.js`, 2026-11-24 at Dan's request) runs a guided tour:
+  the page dimmed and blurred around one part at a time, a card with what
+  it is — "Got it" next, Back, "End the tour"/Esc; parts not shown now are
+  skipped.
 - **The waterfall** (`src/headless/waterfall.c`, `web/waterfall.js`, WS
   `/ws/waterfall`): `rx_iq_cb` pushes every band's IQ, which returns at once
   while nobody watches it; a watched band runs FFTs of 8192 (16384 at
