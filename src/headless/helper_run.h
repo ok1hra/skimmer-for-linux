@@ -28,5 +28,9 @@ SkimHdHelperServer *skim_hd_helper_server_new(const char *const *argv, const cha
 gboolean            skim_hd_helper_server_ask(SkimHdHelperServer *s, const char *line,
                                               const char *end, char **out, GError **error);
 void                skim_hd_helper_server_free(SkimHdHelperServer *s);
+/* The running helper's CPU (utime + stime, clock ticks) from /proc, 0 when
+ * none runs; any thread — a kept helper's CPU reaches the children's
+ * times only once it ends. */
+guint64             skim_hd_helper_server_ticks(SkimHdHelperServer *s);
 
 G_END_DECLS

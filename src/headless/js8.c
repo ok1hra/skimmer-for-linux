@@ -356,7 +356,7 @@ static gboolean run_decoder(SkimHdJs8 *j, Slot *s, guint sub, const char *wav, c
   if (!s->srv) {
     char *prog = g_canonicalize_filename(j->decoder, NULL);
     const char *argv[] = { prog, "--serve", NULL };
-    s->srv = skim_hd_helper_server_new(argv, s->work, j->decoder, j->cancel);
+    g_atomic_pointer_set(&s->srv, skim_hd_helper_server_new(argv, s->work, j->decoder, j->cancel));
     g_free(prog);
   }
   gboolean ok = skim_hd_helper_server_ask(s->srv, line, "<DecodeFinished>", out, error);
@@ -733,6 +733,14 @@ void skim_hd_js8_push_at(SkimHdJs8 *j, guint b, const float *iq, guint n, gint64
   for (guint k = 0; k < j->by_band[b]->len; k++) {
     skim_digi_rx_feed(((Slot *)j->by_band[b]->pdata[k])->rx, iq, n, now);
   }
+}
+
+guint64 skim_hd_js8_helper_ticks(SkimHdJs8 *j) {
+  guint64 t = 0;
+  for (guint k = 0; j && k < j->nslots; k++) {
+    t += skim_hd_helper_server_ticks(g_atomic_pointer_get(&j->slot[k].srv));
+  }
+  return t;
 }
 
 char *skim_hd_js8_dials_text(SkimHdJs8 *j) {

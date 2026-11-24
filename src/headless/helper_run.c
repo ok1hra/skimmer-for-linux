@@ -17,6 +17,8 @@
 #include "helper_run.h"
 
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
 #include <unistd.h>
@@ -80,11 +82,13 @@ struct _SkimHdHelperServer {
   GOutputStream *in;
   GDataInputStream *out;
   gulong        hid;
+  volatile gint pid;                             /* the running one, 0 = none */
 };
 
 static void server_stop(SkimHdHelperServer *s) {
   if (!s->p) { return; }
   if (s->hid) { g_cancellable_disconnect(s->cancel, s->hid); s->hid = 0; }
+  g_atomic_int_set(&s->pid, 0);
   g_subprocess_force_exit(s->p);
   g_clear_object(&s->out);
   s->in = NULL;                                  /* owned by the subprocess */
@@ -112,6 +116,8 @@ static gboolean server_start(SkimHdHelperServer *s, GError **error) {
   s->p = g_subprocess_launcher_spawnv(l, (const char *const *)s->argv, error);
   g_object_unref(l);
   if (!s->p) { return FALSE; }
+  const char *id = g_subprocess_get_identifier(s->p);
+  g_atomic_int_set(&s->pid, id ? atoi(id) : 0);
   s->in = g_subprocess_get_stdin_pipe(s->p);
   s->out = g_data_input_stream_new(g_subprocess_get_stdout_pipe(s->p));
   g_data_input_stream_set_newline_type(s->out, G_DATA_STREAM_NEWLINE_TYPE_LF);
@@ -159,6 +165,24 @@ gboolean skim_hd_helper_server_ask(SkimHdHelperServer *s, const char *line, cons
   }
   *out = g_string_free(got, FALSE);
   return TRUE;
+}
+
+guint64 skim_hd_helper_server_ticks(SkimHdHelperServer *s) {
+  const gint pid = s ? g_atomic_int_get(&s->pid) : 0;
+  if (pid <= 0) { return 0; }
+  char path[32], buf[1024];
+  g_snprintf(path, sizeof path, "/proc/%d/stat", pid);
+  FILE *f = fopen(path, "r");
+  if (!f) { return 0; }
+  const size_t n = fread(buf, 1, sizeof buf - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  const char *p = strrchr(buf, ')');
+  unsigned long ut = 0, st = 0;
+  if (!p || sscanf(p + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &st) != 2) {
+    return 0;
+  }
+  return (guint64)ut + st;
 }
 
 void skim_hd_helper_server_free(SkimHdHelperServer *s) {

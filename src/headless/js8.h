@@ -135,6 +135,10 @@ char      *skim_hd_js8_status_json(SkimHdJs8 *j);
  * {"now":ms,"frames":[{t,dial,band,sub,snr,dt,df,type,q,raw,call,deep,ok,text}…]}. */
 char      *skim_hd_js8_frames_json(SkimHdJs8 *j, double dial_hz, gint64 since_ms);
 
+/* The kept-running decoders' CPU now (clock ticks, /proc) — the part of
+ * the helpers' CPU the children's times do not hold yet. */
+guint64    skim_hd_js8_helper_ticks(SkimHdJs8 *j);
+
 char      *skim_js8_find_decoder(void);
 
 G_END_DECLS

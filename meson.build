@@ -583,6 +583,8 @@ headless_sources = files(
   'src/headless/wspr.c',            # [wspr]: WSPR decoded beside, WSPRnet
   'src/headless/ft8.c',             # [ft8]: FT8/FT4 decoded beside, to the feed
   'src/headless/digi_rx.c',         # a dial's 12 kHz USB audio in UTC periods (FT8, JS8)
+  'src/headless/js8.c',             # [js8]: JS8 decoded beside, to the feed
+  'src/headless/js8_unpack.c',      # what a JS8 frame says (callsigns, grid)
   'src/headless/helper_run.c',      # the decoder helpers run (ft8d, wsprd)
   'src/headless/pskreporter.c',     # [ft8] upload: to PSK Reporter (IPFIX/UDP)
 )

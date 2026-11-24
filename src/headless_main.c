@@ -80,6 +80,7 @@
 #include "headless/waterfall.h"
 #include "headless/wspr.h"
 #include "headless/ft8.h"
+#include "headless/js8.h"
 #include "headless/pskreporter.h"
 #include "headless/skimsrv.h"
 #include "headless/visitors.h"
@@ -148,7 +149,7 @@ typedef struct {
   volatile gint remote_spots[M_N]; /* … the spots it sent, CW / RTTY (link thread) */
   gint          remote_prev[M_N];   /* main loop: at the last minute's end    */
   guint         shed_s;        /* main loop: the minute's s the thermal guard had it off */
-  volatile gint ft8_paused;    /* the thermal guard has the band off: no FT8 either */
+  volatile gint ft8_paused;    /* the thermal guard has the band off: no FT8 (nor JS8) either */
 } Band;
 
 typedef struct {
@@ -211,7 +212,8 @@ typedef struct {
   SkimHdWaterfall *wf;         /* the page's waterfall (idle while unwatched) */
   SkimHdWspr *wspr;            /* [wspr]: WSPR decoded beside; NULL = off     */
   SkimHdFt8  *ft8;             /* [ft8]: FT8/FT4 decoded beside; NULL = off   */
-  SkimPskr   *pskr;            /* [ft8] upload: to PSK Reporter; NULL = off   */
+  SkimHdJs8  *js8;             /* [js8]: JS8 decoded beside; NULL = off       */
+  SkimPskr   *pskr;            /* [ft8]/[js8] upload: to PSK Reporter; NULL = off */
   char      *archive_err;      /* the last flush error logged (no repeats)    */
   gint64    minute;            /* the unix minute being collected             */
   guint64   min_frames_prev, min_lost_prev;
@@ -381,6 +383,9 @@ static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double cent
   skim_hd_wspr_push(h->wspr, i, iq, n);        /* nothing without a WSPR dial */
   if (h->ft8 && !g_atomic_int_get(&b->ft8_paused)) {   /* … an FT8/FT4 dial; off with the */
     skim_hd_ft8_push(h->ft8, i, iq, n);                 /* thermal guard's band          */
+  }
+  if (h->js8 && !g_atomic_int_get(&b->ft8_paused)) {   /* … a JS8 dial, the same       */
+    skim_hd_js8_push(h->js8, i, iq, n);
   }
   if (b->worker) {                             /* decoded on another PC     */
     if (h->hub) { skim_hd_hub_push(h->hub, i, iq, n, rate, centre); }
@@ -1048,6 +1053,14 @@ static void status_build(Hd *h, gboolean print) {
   } else {
     g_string_append(json, "{\"on\":false}");
   }
+  g_string_append(json, ",\"js8\":");
+  if (h->js8) {
+    char *jj = skim_hd_js8_status_json(h->js8);
+    g_string_append(json, jj);
+    g_free(jj);
+  } else {
+    g_string_append(json, "{\"on\":false}");
+  }
   g_string_append(json, ",\"pskreporter\":");
   if (h->pskr) {
     char *pj = skim_pskr_status_json(h->pskr);
@@ -1216,10 +1229,13 @@ static void stats_minute(Hd *h) {
           (float)(100.0 * (double)(mode_ns[k] - h->min_mode_prev[k]) / 1e9 / wall);
     }
   }
-  /* the helper programs (skimmer-ft8d, skimmer-wsprd): their CPU is not in
-   * this process's; NaN until one ran */
-  const guint64 child = cpu_ticks_of(TRUE);
-  m.glob[SKIM_SG_CPU_HELPERS] = wall > 0 && h->min_cpu_us && (h->ft8 || h->wspr) && child >= h->min_child_prev
+  /* the helper programs (skimmer-ft8d, skimmer-js8d, skimmer-wsprd): their
+   * CPU is not in this process's; NaN until one ran. A kept-running
+   * skimmer-js8d reaches the children's times only once it ends: its CPU
+   * so far is read from /proc */
+  const guint64 child = cpu_ticks_of(TRUE) + (h->js8 ? skim_hd_js8_helper_ticks(h->js8) : 0);
+  m.glob[SKIM_SG_CPU_HELPERS] = wall > 0 && h->min_cpu_us && (h->ft8 || h->js8 || h->wspr) &&
+                                        child >= h->min_child_prev
                                     ? (float)(100.0 * (double)(child - h->min_child_prev) /
                                               (double)sysconf(_SC_CLK_TCK) / wall)
                                     : NAN;
@@ -2124,6 +2140,36 @@ static char *web_ft8(GHashTable *q, SkimHdWebWho who, guint *st, const char **ty
   return skim_hd_ft8_decodes_json(h->ft8, dial > 0 ? dial : 0, since > 0 ? since : 0);
 }
 
+/* GET /api/js8: the JS8 frames of the last 15 min (js8.h) — ?dial=Hz one
+ * dial, &since=<unix ms> the newer ones only (the palette polls). */
+static char *web_js8(GHashTable *q, SkimHdWebWho who, guint *st, const char **type, gpointer user) {
+  (void)who; (void)st; (void)type;
+  Hd *h = user;
+  if (!h->js8) { return g_strdup("{\"off\":true}"); }
+  const char *d = q ? g_hash_table_lookup(q, "dial") : NULL, *s = q ? g_hash_table_lookup(q, "since") : NULL;
+  const double dial = d ? g_ascii_strtod(d, NULL) : 0;
+  const gint64 since = s ? g_ascii_strtoll(s, NULL, 10) : 0;
+  return skim_hd_js8_frames_json(h->js8, dial > 0 ? dial : 0, since > 0 ? since : 0);
+}
+
+/* A station JS8 heard sending (a decoder thread of js8.c, folded there):
+ * [filter], then — confirmed only — PSK Reporter ([js8] upload) and the
+ * telnet feed (never the RBN's port); a deep call not confirmed yet, or
+ * [js8] feed=false, or no feed: the page alone. */
+static void js8_spot(const char *call, double freq_hz, int snr_db, gboolean cq, const char *band,
+                     const char *grid, gint64 t, gboolean confirmed, gpointer user) {
+  Hd *h = user;
+  if (!skim_hd_config_call_pass(&h->cfg, call)) { return; }   /* [filter] */
+  if (confirmed && h->pskr && h->cfg.js8_upload) {
+    skim_pskr_add(h->pskr, call, grid, freq_hz, snr_db, "JS8", band, t);
+  }
+  if (confirmed && h->cfg.js8_feed && h->feed) {
+    skim_rbn_feed_spot_digital(h->feed, call, "JS8", freq_hz, snr_db, cq);   /* tap → the log */
+  } else {
+    spot_log_add(h, call, "JS8", freq_hz, snr_db, 0);
+  }
+}
+
 /* A station FT8/FT4 heard sending (a decoder thread of ft8.c, already folded
  * there): [filter], then PSK Reporter ([ft8] upload: once an hour a band and
  * mode, pskreporter.h) and the telnet feed — never the RBN's port — or, with
@@ -2132,7 +2178,7 @@ static void ft8_spot(const char *call, const char *mode, double freq_hz, int snr
                      const char *band, const char *grid, gint64 t, gpointer user) {
   Hd *h = user;
   if (!skim_hd_config_call_pass(&h->cfg, call)) { return; }   /* [filter] */
-  if (h->pskr) { skim_pskr_add(h->pskr, call, grid, freq_hz, snr_db, mode, band, t); }
+  if (h->pskr && h->cfg.ft8_upload) { skim_pskr_add(h->pskr, call, grid, freq_hz, snr_db, mode, band, t); }
   if (h->cfg.ft8_feed && h->feed) {
     skim_rbn_feed_spot_digital(h->feed, call, mode, freq_hz, snr_db, cq);   /* tap → the log */
   } else {
@@ -2854,6 +2900,28 @@ int main(int argc, char **argv) {
     g_free(dials);
   }
 
+  /* PSK Reporter ([ft8] / [js8] upload, one receiver under [ft8] call and
+   * locator): before the spots come; a worker's hub reports its IQ */
+  const gboolean up8 = c->ft8 && c->ft8_upload, upj = c->js8 && c->js8_upload;
+  if ((up8 || upj) && c->source != SKIM_HD_SOURCE_HUB) {
+    char *sw = g_strdup_printf("skimmer-for-linux %s%s (%s%s%s)", SKIMMER_VERSION, SKIMMER_BUILD,
+                               up8 ? "WSJT-X 3.0.2 FT8/FT4" : "", up8 && upj ? ", " : "",
+                               upj ? "JS8Call-improved JS8" : "");
+    const SkimPskrConfig pc = {
+      .call = c->ft8_call ? c->ft8_call : c->feed_call,
+      .locator = c->ft8_locator[0] ? c->ft8_locator : c->locator,
+      .software = sw, .host = c->ft8_pskr_host, .port = (guint16)c->ft8_pskr_port,
+      .interval_s = c->ft8_pskr_host ? 1 : 0,  /* the gate's stand-in: at once */
+    };
+    h->pskr = skim_pskr_new(&pc);
+    g_message("pskreporter: the %s%s%s stations heard to PSK Reporter (%s:%u) as %s %s, a datagram every %s",
+              up8 ? "FT8/FT4" : "", up8 && upj ? " and " : "", upj ? "JS8" : "",
+              c->ft8_pskr_host ? c->ft8_pskr_host : SKIM_PSKR_HOST,
+              c->ft8_pskr_port ? c->ft8_pskr_port : SKIM_PSKR_PORT, pc.call, pc.locator,
+              c->ft8_pskr_host ? "1 s (a stand-in)" : "5 min");
+    g_free(sw);
+  }
+
   if (c->ft8 && c->source == SKIM_HD_SOURCE_HUB) {   /* [ft8]: before the web page reads it */
     g_message("ft8: off on a worker — its hub decodes FT8/FT4 from the same IQ");
   } else if (c->ft8) {
@@ -2866,22 +2934,6 @@ int main(int argc, char **argv) {
       .bands = (const char *const *)c->ft8_bands,
       .dir = fdir, .spot = ft8_spot, .user = h,
     };
-    if (c->ft8_upload) {                       /* PSK Reporter: before the spots come */
-      char *sw = g_strdup_printf("skimmer-for-linux %s%s (WSJT-X 3.0.2 FT8/FT4 decoder)",
-                                 SKIMMER_VERSION, SKIMMER_BUILD);
-      const SkimPskrConfig pc = {
-        .call = c->ft8_call ? c->ft8_call : c->feed_call,
-        .locator = c->ft8_locator[0] ? c->ft8_locator : c->locator,
-        .software = sw, .host = c->ft8_pskr_host, .port = (guint16)c->ft8_pskr_port,
-        .interval_s = c->ft8_pskr_host ? 1 : 0,  /* the gate's stand-in: at once */
-      };
-      h->pskr = skim_pskr_new(&pc);
-      g_message("ft8: the stations heard to PSK Reporter (%s:%u) as %s %s, a datagram every %s",
-                c->ft8_pskr_host ? c->ft8_pskr_host : SKIM_PSKR_HOST,
-                c->ft8_pskr_port ? c->ft8_pskr_port : SKIM_PSKR_PORT, pc.call, pc.locator,
-                c->ft8_pskr_host ? "1 s (a stand-in)" : "5 min");
-      g_free(sw);
-    }
     h->ft8 = skim_hd_ft8_new(&fc, h->nb, names, centres, c->rate);
     g_free(fdir);
     char *dials = skim_hd_ft8_dials_text(h->ft8);
@@ -2900,6 +2952,42 @@ int main(int argc, char **argv) {
     g_free(dials);
   }
 
+  if (c->js8 && c->source == SKIM_HD_SOURCE_HUB) {   /* [js8]: before the web page reads it */
+    g_message("js8: off on a worker — its hub decodes JS8 from the same IQ");
+  } else if (c->js8) {
+    double centres[SKIM_HD_MAX_BANDS];
+    for (guint i = 0; i < h->nb; i++) { centres[i] = h->band[i].centre_hz; }
+    char *jdir = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", NULL);
+    const SkimHdJs8Config jc = {
+      .submodes = c->js8_submodes, .lo_hz = c->js8_lo_hz, .hi_hz = c->js8_hi_hz,
+      .threads = c->js8_threads, .serve = c->js8_serve, .clean_quality = c->js8_clean,
+      .bands = (const char *const *)c->js8_bands, .dir = jdir, .spot = js8_spot, .user = h,
+    };
+    h->js8 = skim_hd_js8_new(&jc, h->nb, names, centres, c->rate);
+    g_free(jdir);
+    char *dials = skim_hd_js8_dials_text(h->js8);
+    char *jj = skim_hd_js8_status_json(h->js8);
+    if (!*dials) {
+      g_message("js8: no JS8 frequency inside the bands received (dial + %u-%u Hz within "
+                "45 %% of the rate around a centre) — nothing to decode", c->js8_lo_hz, c->js8_hi_hz);
+    } else {
+      GString *subs = g_string_new(NULL);
+      static const char *const SUBS[] = { "normal", "fast", "turbo", "slow" };
+      for (guint k = 0; k < 4; k++) {
+        if (c->js8_submodes & (1u << k)) { g_string_append_printf(subs, "%s%s", subs->len ? "/" : "", SUBS[k]); }
+      }
+      g_message("js8: decoding %s (%s, %s, %u thread%s, clean from quality %.2f)%s", dials, subs->str,
+                c->js8_serve ? "one decoder a dial kept running" : "a decoder run a period",
+                c->js8_threads, c->js8_threads == 1 ? "" : "s", c->js8_clean,
+                !strstr(jj, "\"decoder\":true") ? " — but no decoder (skimmer-js8d) found"
+                : !c->js8_feed ? "; the web page only, not the feed"
+                : !h->feed ? "; no telnet feed — the web page only" : "; confirmed senders to the feed");
+      g_string_free(subs, TRUE);
+    }
+    g_free(jj);
+    g_free(dials);
+  }
+
   SkimHdWeb *web = NULL;
   if (h->http_port > 0) {
     double centres[SKIM_HD_MAX_BANDS];
@@ -2908,7 +2996,7 @@ int main(int argc, char **argv) {
     const SkimHdWebHooks hooks = {
       .status = web_status, .stats = web_stats, .log = web_log, .config = web_config,
       .skimmers = web_skimmers, .spots = web_spots, .skimsrv = web_skimsrv, .wspr = web_wspr,
-      .ft8 = web_ft8,
+      .ft8 = web_ft8, .js8 = web_js8,
       .config_post = web_config_post, .config_import = web_config_import,
       .restart = web_restart, .rollback = web_rollback,
       .deepcw = web_deepcw,
@@ -3004,6 +3092,7 @@ int main(int argc, char **argv) {
   g_clear_pointer(&h->src, skim_iq_source_free);
   g_clear_pointer(&h->wspr, skim_hd_wspr_free);      /* nothing pushes into it */
   g_clear_pointer(&h->ft8, skim_hd_ft8_free);        /* … before the feed it spots to */
+  g_clear_pointer(&h->js8, skim_hd_js8_free);
   g_clear_pointer(&h->pskr, skim_pskr_free);         /* … and what waits, sent once */
   g_clear_pointer(&h->wf, skim_hd_waterfall_free);   /* nothing pushes into it */
   g_clear_pointer(&h->vis, skim_hd_visitors_free);   /* the open visits logged */

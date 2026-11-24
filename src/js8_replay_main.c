@@ -11,7 +11,7 @@
  *
  * --oneshot runs the helper once a period (no state between periods)
  * instead of one kept running a dial; --clean is the quality from which a
- * frame counts as clean (default 0.75).
+ * frame counts as clean (default 0.80, as [js8] clean).
  *
  * The start is the .meta's start_unix (else its "start:" to the second);
  * --start overrides it.
@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
   const char *file = NULL, *keep = NULL, *decoder = NULL, *subs = "normal,fast,turbo,slow";
   guint threads = 2;
   gboolean serve = TRUE;
-  double start = 0, start_arg = 0, clean = 0.75;
+  double start = 0, start_arg = 0, clean = 0.80;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--threads") && i + 1 < argc) { threads = (guint)atoi(argv[++i]); }
     else if (!strcmp(argv[i], "--submodes") && i + 1 < argc) { subs = argv[++i]; }

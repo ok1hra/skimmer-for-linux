@@ -102,6 +102,17 @@
  *            call) and locator (empty = [station] locator) — both needed
  *            then; pskreporter (host:port, the gate's stand-in; not on the
  *            page). Not on a worker: its hub decodes.
+ *   [js8]    enabled (default false): JS8 decoded on every JS8 dial inside a
+ *            band received, in every submode (js8.h, JS8Call-improved's
+ *            decoder); submodes ("normal,fast,turbo,slow"); feed (true):
+ *            each station that sends to the telnet feed — a deep frame's
+ *            call only once confirmed (false: the web page only); lo_hz,
+ *            hi_hz (200, 3500, as [ft8]); threads (2, 1–8); bands (empty =
+ *            every band); serve (true: one decoder process a dial kept
+ *            running, its soft combining across periods; false: one run a
+ *            period); clean (0.80, 0.50–1.00): the decoder's quality from
+ *            which a frame is clean, under it deep; upload (false): the
+ *            stations heard to PSK Reporter under [ft8] call/locator
  *   [update] mode auto (default) | notify | off: the daily look at the
  *            GitHub releases and what a newer one gets (update.h);
  *            hour_utc (0-23, default 3): when auto swaps it in
@@ -250,6 +261,16 @@ typedef struct {
   char             ft8_locator[8];    /* "" = [station] locator               */
   char            *ft8_pskr_host;     /* NULL = report.pskreporter.info       */
   guint            ft8_pskr_port;     /* 0 = 4739                             */
+  /* [js8] (js8.h) */
+  gboolean         js8;               /* decode JS8 beside                    */
+  guint            js8_submodes;      /* SKIM_JS8_M_* bits                    */
+  gboolean         js8_feed;          /* the senders to the telnet feed       */
+  guint            js8_lo_hz, js8_hi_hz; /* the audio window above the dial   */
+  guint            js8_threads;       /* decoder threads                      */
+  char           **js8_bands;         /* the [bands] names decoded; NULL = all */
+  gboolean         js8_serve;         /* a decoder process kept a dial        */
+  double           js8_clean;         /* quality from which a frame is clean  */
+  gboolean         js8_upload;        /* the stations heard to PSK Reporter   */
   /* [update] (update.h) */
   guint            update_mode;       /* SkimHdUpdateMode: 0 off, 1 notify, 2 auto */
   guint            update_hour;       /* UTC hour auto installs at            */
