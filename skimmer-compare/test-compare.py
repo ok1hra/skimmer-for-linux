@@ -726,8 +726,65 @@ def call_filter_test():
     check({e["call"] for e in Nf.events} >= {"RA1AAA"}, "without call_filter: unchanged, RA1AAA only-R")
     with open(os.path.join(root, "compare.ini"), "w") as fh:
         fh.write(ini % "^OK")
-    check("filters calls with" in Config(os.path.join(root, "compare.ini")).filter_warning,
-          "compare.ini ending with another regex than headless.ini's: warned")
+    w = Config(os.path.join(root, "compare.ini")).filter_warning
+    check("disagree on" in w and "UA3BEF" not in w and "spots but compare leaves out (4L1AB" in w,
+          "compare.ini ending with another regex than headless.ini's: warned, with a call (%s)" % w)
+
+
+def bad_filter():
+    print("=== bad filter — headless's [filter] bad (prefixes, calls, countries) in compare")
+    from skimcmp.dxcc import Dxcc, HeadlessFilter
+    d = Dxcc(os.path.join(HERE, "..", "web", "map"))
+    known = [("OK1HRA", "OK"), ("OL5Y", "OK"), ("DL1ABC", "DL"), ("DA0HQ", "DL"), ("UA3ABC", "UA/E"),
+             ("RA9XY", "UA/AS"), ("R0AA", "UA/AS"), ("UA2FF", "UA2"), ("EW1AB", "EU"), ("M0ABC", "G"),
+             ("MM0XYZ", "GM"), ("2E0AAA", "G"), ("EA8AB", "EA8"), ("W1AW", "K"), ("KL7AB", "KL"),
+             ("AH6X", "KH6"), ("JA1ABC", "JA"), ("OK1HRA/P", "OK"), ("F/OK1HRA", "OK"),
+             ("SV9/OK1HRA", "OK"), ("QQQ", None)]
+    got = [(c, d.locate(c)) for c in [k for k, _ in known]]
+    check(got == known, "DXCC as skimmer-dxcc-test's known answers (%s)"
+          % [g for g, k in zip(got, known) if g != k])
+    # the port call by call against the C build, when one is at hand
+    exe = os.environ.get("SKIM_DXCC_TEST") or os.path.join(HERE, "..", "builddir", "skimmer-dxcc-test")
+    scp = os.path.expanduser("~/.config/skimmer-for-linux/master.scp")
+    if os.access(exe, os.X_OK) and os.path.exists(scp):
+        calls = sorted({l.strip().upper() for l in open(scp, errors="replace")
+                        if l.strip() and not l.startswith(("#", "!!"))})
+        lst = os.path.join(tempfile.mkdtemp(prefix="compare-dxcc-"), "calls.txt")
+        with open(lst, "w") as fh:
+            fh.write("\n".join(calls) + "\n")
+        out = subprocess.run([exe, lst], capture_output=True, text=True).stdout.splitlines()
+        diff = [l for l in out if l.split("\t")[1] != (d.locate(l.split("\t")[0]) or "-")]
+        check(len(out) == len(calls) and not diff,
+              "the port equals %s on all %d MASTER.SCP calls (%s)" % (exe, len(calls), diff[:5]))
+    else:
+        print("  (skip  the port against skimmer-dxcc-test: no build at %s)" % exe)
+    f = HeadlessFilter({"bad": "Russia, OK1ABC, 9A"}, d)
+    res = {c: f.passes(c) for c in ("UA3ABC", "R2026DX", "EU1AB", "DL/OK1ABC", "OK1ABD", "9A2AB", "UR5ABC")}
+    check(res == {"UA3ABC": False, "R2026DX": False, "EU1AB": False, "DL/OK1ABC": False,
+                  "OK1ABD": True, "9A2AB": False, "UR5ABC": True},
+          "bad: a country (Belorussia holds Russia), a whole call in any part, a prefix (%s)" % res)
+    root = tempfile.mkdtemp(prefix="compare-bad-")
+    os.makedirs(os.path.join(root, "logs"))
+    with open(os.path.join(root, "headless.ini"), "w") as fh:
+        fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n[filter]\nregex=false\ncall=\nbad=Russia\n")
+    with open(os.path.join(root, "master.scp"), "w") as fh:
+        fh.write("UA3BEF\nEW8OM\nOK1RRR\n")
+    ini = ("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\nmap = %s\n"
+           "[remote]\nwindows = 7000-7091\n[local filter]\n2026-10-01T13:00 = %%s\n"
+           % os.path.join(HERE, "..", "web", "map"))
+    for line, warn in (("bad=Russia", False), ("^(?!(?:R[A-Z]?|U[A-I][A-Z]?)[0-9]).+", True)):
+        with open(os.path.join(root, "compare.ini"), "w") as fh:
+            fh.write(ini % line)
+        cfg = Config(os.path.join(root, "compare.ini"))
+        w = cfg.filter_warning
+        check(bool(w) == warn and (not warn or ("EW8OM" in w and "UA3BEF" not in w)),
+              "headless bad=Russia vs [local filter] %s: %s" % (line, "warned (Belarus)" if warn else "agree"))
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write(ini % "bad=Russia")
+    cf = Config(os.path.join(root, "compare.ini")).call_filter
+    check([cf.passes(epoch("14:00:00"), c) for c in ("UA3BEF", "EW8OM", "OK1RRR")] == [False, False, True]
+          and cf.passes(epoch("12:00:00"), "UA3BEF"),
+          "[local filter] bad=Russia: compare drops what headless drops, from its time on")
 
 
 def dead_feed():
@@ -995,6 +1052,7 @@ if __name__ == "__main__":
     split_episodes()
     remote_plan_test()
     call_filter_test()
+    bad_filter()
     dead_feed()
     rtty()
     paused_bands()

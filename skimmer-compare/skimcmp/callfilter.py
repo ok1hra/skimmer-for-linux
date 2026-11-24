@@ -11,16 +11,36 @@ filter refuses is left out of the comparison — L's own spots there are
 already filtered, so for L it changes nothing unless the filter changed.
 
 The regex is matched as headless matches it: GRegex with G_REGEX_CASELESS,
-g_regex_match — a search anywhere in the call, any case.
+g_regex_match — a search anywhere in the call, any case. A value "bad=…" is
+headless's own [filter] bad list (prefixes, whole calls, country names —
+skimcmp/dxcc.py, the same DXCC rules), applied exactly as headless does.
 """
 import re
 from bisect import bisect_right
 
+from .dxcc import Dxcc, HeadlessFilter
 from .windows import parse_since
 
 
-def filter_plan(cp):
-    """[(since epoch, compiled regex or None)] from compare.ini, sorted."""
+class BadList:
+    """A [local filter] value "bad=…": headless's bad list, with a regex's
+    search() and pattern so CallFilter treats it like one."""
+
+    def __init__(self, value, map_dir):
+        self.pattern = value
+        kv = {"bad": value.partition("=")[2]}
+        try:
+            self.f = HeadlessFilter(kv)
+        except ValueError:
+            self.f = HeadlessFilter(kv, Dxcc(map_dir))    # a country name: the map's data
+
+    def search(self, call):
+        """True or None, as re's search() is a match or None."""
+        return True if self.f.passes(call) else None
+
+
+def filter_plan(cp, map_dir=None):
+    """[(since epoch, compiled regex, BadList or None)] from compare.ini, sorted."""
     plan = []
     if cp.has_section("local filter"):
         for k, v in cp.items("local filter", raw=True):
@@ -29,8 +49,11 @@ def filter_plan(cp):
                 continue
             v = v.strip()
             try:
-                plan.append((t, re.compile(v, re.I) if v else None))
-            except re.error as e:
+                if v.lower().startswith("bad="):
+                    plan.append((t, BadList(v, map_dir)))
+                else:
+                    plan.append((t, re.compile(v, re.I) if v else None))
+            except (re.error, ValueError, OSError) as e:
                 raise SystemExit("compare.ini [local filter] %s: %s" % (k, e))
     return sorted(plan, key=lambda x: x[0])
 

@@ -10,6 +10,7 @@ import re
 import sys
 
 from .callfilter import CallFilter, filter_plan
+from .dxcc import Dxcc, HeadlessFilter, read_filter
 from .windows import load_local, parse_since, remote_plan
 
 # name: (default, min, max, meaning) — the page shows the meaning as help
@@ -49,40 +50,72 @@ def clamp_params(src, base):
     return out
 
 
-def headless_filter(path):
-    """The regex skimmer-headless filters calls with now ([filter] call and
-    regex of its headless.ini; a plain call is a caseless substring), "" for
-    none, None when the file cannot be read."""
-    sec, kv = None, {}
+# calls the filter check tries besides MASTER.SCP's: one of many countries
+# and the forms a prefix rule may read otherwise (portable, special event)
+PROBES = ("OK1ABC", "OL5Y", "DL1ABC", "DA0HQ", "G4ABC", "M0ABC", "GM3ABC", "EI2AB", "F5ABC",
+          "ON4ABC", "PA3ABC", "HB9ABC", "OE1ABC", "I2ABC", "EA3ABC", "CT1ABC", "SP5ABC",
+          "OM3ABC", "HA5ABC", "YO3ABC", "LZ1ABC", "SV1ABC", "9A2AB", "S51AB", "YU1AB", "E71AB",
+          "Z31AB", "ZA1AB", "LY2AB", "YL2AB", "ES5AB", "OH2AB", "SM5ABC", "LA9AB", "OZ1ABC",
+          "TF3AB", "UR5ABC", "US0AB", "EW1ABC", "EU1AB", "EV1A", "ER1AB", "4L1AB", "4X1AB",
+          "TA1AB", "UN7AB", "UK8AB", "EX8AB", "UA1ABC", "UA3ABC", "RA3AB", "R3AB", "RN9AB",
+          "UA9ABC", "UA0ABC", "UA2FF", "RA2FA", "R1FJ", "R2026DX", "UAA0AA", "RA/OK1ABC",
+          "DL/UA3ABC", "UA3ABC/P", "OK1ABC/UA9", "K1ABC", "W1AW", "N2AB", "KH6AB", "AH6AB",
+          "KL7AB", "VE3ABC", "XE1AB", "PY2AB", "LU1AB", "L21AB", "CE3AB", "ZS6AB", "5B4AB",
+          "JA1ABC", "BY1AB", "HL2AB", "VU2AB", "VK2ABC", "ZL2AB", "9M2AB", "YB1AB", "A61AB")
+
+
+def _scp_calls(path):
+    calls = set()
     try:
-        with open(path, errors="replace") as fh:
+        with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                line = line.strip()
-                if line.startswith("["):
-                    sec = line.strip("[]").strip()
-                elif sec == "filter" and "=" in line and not line.startswith("#"):
-                    k, _, v = line.partition("=")
-                    kv[k.strip()] = v.strip()
+                line = line.strip().upper()
+                if line and not line.startswith(("#", "!!")):
+                    calls.add(line)
     except OSError:
-        return None
-    call = kv.get("call", "")
-    if not call:
-        return ""
-    return call if kv.get("regex", "false").lower() in ("true", "1", "yes") else re.escape(call)
+        pass
+    return calls
 
 
-def filter_drift(headless_ini, cf):
-    """A warning when the newest [local filter] entry is not what
-    headless.ini filters with now — compare would credit W with calls L may
-    not spot (or the other way round)."""
-    now = headless_filter(headless_ini)
-    if now is None:
+def filter_drift(headless_ini, cf, scp_path, map_dir):
+    """A warning when the newest [local filter] entry does not filter as
+    headless.ini's [filter] (call, regex, bad — prefixes, calls, country
+    names) does now, tried call by call on MASTER.SCP and PROBES: L refuses
+    a call compare keeps (W credited with it), or the other way round (data
+    left out for nothing)."""
+    kv = read_filter(headless_ini)
+    if kv is None:
         return ""
-    last = cf.describe()[-1][1] if cf.describe() else ""
-    if now != last:
-        return ("the local skimmer filters calls with %r, but compare.ini [local filter] "
-                "ends with %r — add a line \"<UTC since> = <regex>\"" % (now, last))
-    return ""
+    try:
+        try:
+            hf = HeadlessFilter(kv)
+        except ValueError:
+            if not kv.get("bad"):
+                raise
+            hf = HeadlessFilter(kv, Dxcc(map_dir))     # a country name: the map's data
+    except (OSError, ValueError, re.error) as e:
+        return "cannot check the local skimmer's [filter] against compare.ini [local filter]: %s" % e
+    last = cf.plan[-1][1] if cf.plan else None
+    if not hf and last is None:
+        return ""
+    keeps = (lambda c: True) if last is None else (lambda c: last.search(c) is not None)
+    calls = sorted(_scp_calls(scp_path) | set(PROBES))
+    l_out = [c for c in calls if not hf.passes(c) and keeps(c)]
+    c_out = [c for c in calls if hf.passes(c) and not keeps(c)]
+    if not l_out and not c_out:
+        return ""
+    eg = lambda xs: ", ".join(xs[:6]) + (" …" if len(xs) > 6 else "")
+    say = []
+    if l_out:
+        say.append("%d the skimmer refuses but compare keeps (W credited with them: %s)"
+                   % (len(l_out), eg(l_out)))
+    if c_out:
+        say.append("%d the skimmer spots but compare leaves out (%s)" % (len(c_out), eg(c_out)))
+    return ("the local skimmer's [filter] (%s) and compare.ini [local filter]'s last line (%s) "
+            "disagree on %d of %d calls tried: %s — add a line \"<UTC since> = <regex>\" "
+            "(or \"<UTC since> = bad=<its bad list>\")"
+            % (hf.describe(), last.pattern if last is not None else "empty",
+               len(l_out) + len(c_out), len(calls), "; ".join(say)))
 
 
 class Config:
@@ -106,9 +139,12 @@ class Config:
         if not self.local_windows or not self.remote_windows:
             raise SystemExit("no local windows (%s) or no remote windows (%s)"
                              % (self.headless_ini, self.path))
-        self.call_filter = CallFilter(filter_plan(cp))    # L's [filter] by time
+        # the web page's map data: headless tells a call's country from it
+        self.map_dir = p("map", "../web/map")
+        self.call_filter = CallFilter(filter_plan(cp, self.map_dir))    # L's [filter] by time
         self.filter_about = cp.get("local", "filter_about", fallback="", raw=True)
-        self.filter_warning = filter_drift(self.headless_ini, self.call_filter)
+        self.filter_warning = filter_drift(self.headless_ini, self.call_filter, self.scp,
+                                           self.map_dir)
         if self.filter_warning:
             sys.stderr.write("WARNING: %s\n" % self.filter_warning)
         self.local_name = cp.get("local", "name", fallback="Local skimmer")
