@@ -451,7 +451,7 @@ if ft8_enabled
   # skimmer-ft8d — decodes, no mirror from below the dial, the spots folded;
   # a decoder slower than the cycles skips the waiting ones.
   skimmer_ft8_test = executable('skimmer-ft8-test',
-    ['src/ft8_test.c', 'src/headless/ft8.c', 'src/headless/helper_run.c'],
+    ['src/ft8_test.c', 'src/headless/ft8.c', 'src/headless/digi_rx.c', 'src/headless/helper_run.c'],
     include_directories : [include_directories('src'), engine_inc],
     dependencies : engine_deps,
     link_with : engine_lib,
@@ -460,7 +460,7 @@ if ft8_enabled
        args : [skimmer_ft8d, skimmer_ft8code, skimmer_ft4code], timeout : 240)
   # The bench on real air: a recorded cf32 through the whole [ft8] (and with
   # --keep the cycles' WAVs, for WSJT-X's own jt9).
-  executable('skimmer-ft8-replay', ['src/ft8_replay_main.c', 'src/headless/ft8.c', 'src/headless/helper_run.c'],
+  executable('skimmer-ft8-replay', ['src/ft8_replay_main.c', 'src/headless/ft8.c', 'src/headless/digi_rx.c', 'src/headless/helper_run.c'],
     include_directories : [include_directories('src'), engine_inc],
     dependencies : engine_deps,
     link_with : engine_lib,
@@ -559,6 +559,7 @@ headless_sources = files(
   'src/headless/web.c',             # the web page (libsoup 3)
   'src/headless/wspr.c',            # [wspr]: WSPR decoded beside, WSPRnet
   'src/headless/ft8.c',             # [ft8]: FT8/FT4 decoded beside, to the feed
+  'src/headless/digi_rx.c',         # a dial's 12 kHz USB audio in UTC periods (FT8, JS8)
   'src/headless/helper_run.c',      # the decoder helpers run (ft8d, wsprd)
   'src/headless/pskreporter.c',     # [ft8] upload: to PSK Reporter (IPFIX/UDP)
 )
