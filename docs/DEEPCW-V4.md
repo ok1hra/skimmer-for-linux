@@ -74,6 +74,15 @@ The network only; SDRIAK puts it at ~97 % of a keyed channel's cost (the
 channel's DFT and the stitcher are the rest). Idle channels run no
 inference (the keyed-line gate).
 
+Idle channels store nothing either: the frames between two overs that no
+window covered are the stitcher's gap, kept as its two ends, and a take
+reads it cut to word_boundary + 1 frames (every frame of it reads the same
+uncovered blank, and the blank run's length is only tested against the word
+boundary) — byte-identical to upstream's zero row per frame (gate
+dcw4-stream: its digest, 2 h gaps). Upstream's way took a row of 42 floats
+for every frame since a channel's last over: on hra2 (v0.8.11–0.8.13, 6
+bands × 768 channels) ~10 GB an hour until the OOM killer, 2026-11-23/24.
+
 ## From posteriors to what the engine reads
 
 The rest of the engine (extractor, station table, RBN gate, learned gate)

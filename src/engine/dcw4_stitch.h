@@ -86,6 +86,8 @@ gint64 skim_dcw4_stitch_window_start(const SkimDcw4Stitch *s, gint64 end_frame);
  * start; is_final: the last window (no right ramp, everything freezes). */
 void   skim_dcw4_stitch_add_window(SkimDcw4Stitch *s, gint64 start, const float *logp,
                                    guint count, gboolean is_final);
+/* Rows held for the averaging (a quiet stretch between overs holds none). */
+guint  skim_dcw4_stitch_stored_rows(const SkimDcw4Stitch *s);
 /* Commit what is frozen (everything when final) and read the rest. */
 void   skim_dcw4_stitch_take(SkimDcw4Stitch *s, gboolean final, SkimDcw4Take *out);
 /* The stream restarts at output frame `frame` after a gap the channel did

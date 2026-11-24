@@ -52,6 +52,13 @@ struct _SkimDcw4Stitch {
 
   gint64  origin;                      /* the stream's first frame (0 upstream) */
   gint64  row_base;
+  /* ours: frames [gap_lo, gap_hi) no window covered (the channel sends none
+   * while its line is quiet) are not stored — rows [row_base, gap_lo) are,
+   * then the rows from gap_hi on. Upstream keeps a zero row for each, and
+   * after hours of quiet a channel's next over took a row for every frame
+   * of them (2026-11-24, 25 GB on hra2). No gap: both G_MAXINT64. */
+  gint64  gap_lo, gap_hi;
+  gint64  rows_cap;                    /* the most rows since the arrays were made */
   GArray *sums;                        /* float [rows][42]  */
   GArray *weights;                     /* float [rows]      */
   gint64  covered_end, frozen_end, committed_end;
@@ -98,6 +105,7 @@ SkimDcw4Stitch *skim_dcw4_stitch_new(const SkimDcw4StitchConfig *cfg, double fps
   s->spans = g_array_new(FALSE, FALSE, sizeof(SkimDcw4Span));
   s->pending = g_string_new(NULL);
   s->hist_n = MAX(llround(cfg->history_s * fps), 1);
+  s->gap_lo = s->gap_hi = G_MAXINT64;
   return s;
 }
 
@@ -115,6 +123,7 @@ gint64 skim_dcw4_stitch_covered_end(const SkimDcw4Stitch *s) { return s->covered
 gint64 skim_dcw4_stitch_frozen_end(const SkimDcw4Stitch *s) { return s->frozen_end; }
 gint64 skim_dcw4_stitch_committed_end(const SkimDcw4Stitch *s) { return s->committed_end; }
 gint64 skim_dcw4_stitch_blank_frames(const SkimDcw4Stitch *s) { return s->blank_frames; }
+guint skim_dcw4_stitch_stored_rows(const SkimDcw4Stitch *s) { return s->weights->len; }
 
 static gint64 context_start(const SkimDcw4Stitch *s) {
   return MAX(s->origin, s->frozen_end - s->left_context_f);
@@ -163,20 +172,106 @@ static float *dilated_log_probs(const SkimDcw4Stitch *s, const float *logits, gu
   return dil;
 }
 
-static void ensure_rows(SkimDcw4Stitch *s, gint64 end_frame) {
-  const gint64 rows = (gint64)s->weights->len;
-  const gint64 missing = end_frame - s->row_base - rows;
-  if (missing <= 0) { return; }
+static gboolean has_gap(const SkimDcw4Stitch *s) { return s->gap_lo < s->gap_hi; }
+static gint64 gap_len(const SkimDcw4Stitch *s) { return has_gap(s) ? s->gap_hi - s->gap_lo : 0; }
+
+static void clear_gap(SkimDcw4Stitch *s) { s->gap_lo = s->gap_hi = G_MAXINT64; }
+
+/* the frame after the last stored row (the gap counted) */
+static gint64 stored_end(const SkimDcw4Stitch *s) {
+  return s->row_base + (gint64)s->weights->len + gap_len(s);
+}
+
+/* frame → its stored row; -1: not stored (dropped, in the gap, not yet
+ * covered) — read as uncovered, exactly as upstream's zero-weight row */
+static gint64 row_of(const SkimDcw4Stitch *s, gint64 f) {
+  if (f < s->row_base) { return -1; }
+  if (f < s->gap_lo) { return f - s->row_base < (gint64)s->weights->len ? f - s->row_base : -1; }
+  if (f < s->gap_hi) { return -1; }
+  const gint64 r = f - s->row_base - gap_len(s);
+  return r < (gint64)s->weights->len ? r : -1;
+}
+
+/* a gap at row_base is no gap: the rows simply start after it */
+static void normalise_gap(SkimDcw4Stitch *s) {
+  if (has_gap(s) && s->gap_lo <= s->row_base) {
+    s->row_base = s->gap_hi;
+    clear_gap(s);
+  }
+}
+
+/* the gap's zero rows stored after all (a window reaching into it) */
+static void fill_gap(SkimDcw4Stitch *s) {
+  if (!has_gap(s)) { return; }
+  const guint at = (guint)(s->gap_lo - s->row_base), n = (guint)gap_len(s);
+  const guint tail = s->weights->len - at;
+  g_array_set_size(s->sums, s->sums->len + n * NC);
+  g_array_set_size(s->weights, s->weights->len + n);
+  float *sums = (float *)s->sums->data, *weights = (float *)s->weights->data;
+  memmove(sums + (gsize)(at + n) * NC, sums + (gsize)at * NC, (gsize)tail * NC * sizeof(float));
+  memset(sums + (gsize)at * NC, 0, (gsize)n * NC * sizeof(float));
+  memmove(weights + at + n, weights + at, (gsize)tail * sizeof(float));
+  memset(weights + at, 0, (gsize)n * sizeof(float));
+  s->rows_cap = MAX(s->rows_cap, (gint64)s->weights->len);
+  clear_gap(s);
+}
+
+/* rows up to end_frame for a window from start: a window after a quiet
+ * stretch leaves that stretch as the gap (one at a time — a second one is
+ * stored as upstream stores it; CW v4 takes after every window, and that
+ * drops the first one) */
+static void ensure_rows(SkimDcw4Stitch *s, gint64 start, gint64 end_frame) {
+  if (has_gap(s) && start < s->gap_hi && end_frame > s->gap_lo) { fill_gap(s); }
+  const gint64 se = stored_end(s);
+  if (end_frame <= se) { return; }
+  gint64 from = se;
+  if (start > se && !has_gap(s)) {
+    s->gap_lo = se;
+    s->gap_hi = start;
+    normalise_gap(s);
+    from = start;
+  }
+  const gint64 missing = end_frame - from;
   g_array_set_size(s->sums, s->sums->len + (guint)(missing * NC));
   g_array_set_size(s->weights, s->weights->len + (guint)missing);
+  s->rows_cap = MAX(s->rows_cap, (gint64)s->weights->len);
+}
+
+static void drop_stored(SkimDcw4Stitch *s, gint64 rows) {
+  rows = MIN(rows, (gint64)s->weights->len);
+  if (rows <= 0) { return; }
+  g_array_remove_range(s->sums, 0, (guint)(rows * NC));
+  g_array_remove_range(s->weights, 0, (guint)rows);
+  s->row_base += rows;
 }
 
 static void drop_rows_before(SkimDcw4Stitch *s, gint64 frame) {
-  const gint64 drop = MIN(frame - s->row_base, (gint64)s->weights->len);
-  if (drop <= 0) { return; }
-  g_array_remove_range(s->sums, 0, (guint)(drop * NC));
-  g_array_remove_range(s->weights, 0, (guint)drop);
-  s->row_base += drop;
+  if (frame <= s->row_base) { return; }
+  if (!has_gap(s) || frame <= s->gap_lo) {
+    drop_stored(s, frame - s->row_base);
+  } else {
+    drop_stored(s, s->gap_lo - s->row_base);      /* the rows before the gap */
+    if (frame < s->gap_hi) {
+      normalise_gap(s);                           /* the rows now start after it */
+    } else {
+      s->row_base = s->gap_hi;
+      clear_gap(s);
+      drop_stored(s, frame - s->row_base);
+    }
+  }
+  /* GArray never gives memory back: a quiet channel would keep its
+   * biggest over's arrays for good */
+  if (s->rows_cap > 256 && (gint64)s->weights->len * 4 < s->rows_cap) {
+    GArray *sums = g_array_sized_new(FALSE, TRUE, sizeof(float), s->sums->len);
+    GArray *weights = g_array_sized_new(FALSE, TRUE, sizeof(float), s->weights->len);
+    g_array_append_vals(sums, s->sums->data, s->sums->len);
+    g_array_append_vals(weights, s->weights->data, s->weights->len);
+    g_array_free(s->sums, TRUE);
+    g_array_free(s->weights, TRUE);
+    s->sums = sums;
+    s->weights = weights;
+    s->rows_cap = weights->len;
+  }
 }
 
 /* add_window(): the window's frames beyond the frozen point are averaged
@@ -189,7 +284,7 @@ void skim_dcw4_stitch_add_window(SkimDcw4Stitch *s, gint64 start, const float *l
     return;
   }
   const gint64 end = start + count;
-  ensure_rows(s, end);
+  ensure_rows(s, start, end);
   float *lp = dilated_log_probs(s, logp, count);
   float *sums = (float *)s->sums->data, *weights = (float *)s->weights->data;
   for (gint64 f = MAX((gint64)0, s->frozen_end - start); f < (gint64)count; f++) {
@@ -198,7 +293,7 @@ void skim_dcw4_stitch_add_window(SkimDcw4Stitch *s, gint64 start, const float *l
     const float w = (float)MAX(s->cfg.min_view_weight,
                                smoothstep(left / s->cfg.left_ramp_s) *
                                smoothstep(right / s->cfg.right_ramp_s));
-    const gint64 row = start + f - s->row_base;
+    const gint64 row = row_of(s, start + f);
     if (row < 0) { continue; }         /* SDRIAK guard: a frame already dropped */
     float *sr = sums + (gsize)row * NC;
     const float *l = lp + (gsize)f * NC;
@@ -210,15 +305,47 @@ void skim_dcw4_stitch_add_window(SkimDcw4Stitch *s, gint64 start, const float *l
   s->frozen_end = is_final ? s->covered_end : MAX(s->frozen_end, end - s->freeze_guard_f);
 }
 
+/* A take's read [start, end) with the gap in it cut to `keep` frames, the
+ * last of them standing for the gap's last frame: index i is frame
+ * start + i, or start + i + cut_k from index `cut` on. Every frame of the
+ * gap reads the same (uncovered), so the greedy reading only sees a
+ * shorter blank run — still ≥ word_boundary_f, the one length it tests. */
+typedef struct {
+  gint64 start, n, cut, cut_k;
+} Read;
+
+static Read read_plan(const SkimDcw4Stitch *s, gint64 start, gint64 end) {
+  Read r = { start, end - start, G_MAXINT64, 0 };
+  if (!has_gap(s)) { return r; }
+  const gint64 gl = MAX(s->gap_lo, start), gh = MIN(s->gap_hi, end);
+  const gint64 keep = s->word_boundary_f + 1;
+  if (gh - gl > keep) {
+    r.cut_k = gh - gl - keep;
+    r.cut = gl - start + keep - 1;
+    r.n -= r.cut_k;
+  }
+  return r;
+}
+
+static gint64 read_frame(const Read *r, gint64 i) { return r->start + i + (i >= r->cut ? r->cut_k : 0); }
+
+/* frame → index; -1: a frame of the gap cut out (it reads uncovered) */
+static gint64 read_index(const Read *r, gint64 f) {
+  const gint64 i = f - r->start;
+  if (i < r->cut) { return i; }
+  if (i < r->cut + r->cut_k) { return -1; }
+  return i - r->cut_k;
+}
+
 /* _read_scores(): the averaged log-probs; an uncovered frame reads blank.
- * Returns [end − start][42], g_free. */
-static float *read_scores(const SkimDcw4Stitch *s, gint64 start, gint64 end) {
-  float *sc = g_new(float, (gsize)(end - start) * NC);
+ * Returns [r->n][42], g_free. */
+static float *read_scores(const SkimDcw4Stitch *s, const Read *r) {
+  float *sc = g_new(float, (gsize)r->n * NC);
   const float *sums = (const float *)s->sums->data, *weights = (const float *)s->weights->data;
-  for (gint64 f = start; f < end; f++) {
-    float *o = sc + (gsize)(f - start) * NC;
-    const gint64 row = f - s->row_base;
-    const float w = row >= 0 && row < (gint64)s->weights->len ? weights[row] : 0.0f;
+  for (gint64 i = 0; i < r->n; i++) {
+    float *o = sc + (gsize)i * NC;
+    const gint64 row = row_of(s, read_frame(r, i));
+    const float w = row >= 0 ? weights[row] : 0.0f;
     if (w > 0) {
       const float *sr = sums + (gsize)row * NC;
       for (int c = 0; c < NC; c++) { o[c] = sr[c] / w; }
@@ -300,7 +427,7 @@ static gboolean lane_text(GString *out, const SkimDcw4Span *spans, guint from, g
 }
 
 /* ours: rows [from, to) of scores (read from `start`) into the history */
-static void history_put(SkimDcw4Stitch *s, const float *scores, gint64 start, gint64 from,
+static void history_put(SkimDcw4Stitch *s, const float *scores, const Read *r, gint64 from,
                         gint64 to) {
   if (to <= from) { return; }
   if (!s->hist) {                                   /* the first over: made now */
@@ -308,8 +435,11 @@ static void history_put(SkimDcw4Stitch *s, const float *scores, gint64 start, gi
     s->hist_lo = s->hist_hi = from;
   }
   if (from != s->hist_hi) { s->hist_lo = from; }    /* a gap: start over */
-  for (gint64 f = from; f < to; f++) {
-    memcpy(s->hist + (gsize)(f % s->hist_n) * NC, scores + (gsize)(f - start) * NC,
+  /* only the last hist_n frames stay readable (an earlier one's slot is
+   * written again by a later frame of this same call) */
+  for (gint64 f = MAX(from, to - s->hist_n); f < to; f++) {
+    const gint64 i = read_index(r, f);               /* -1: the gap's, as its last */
+    memcpy(s->hist + (gsize)(f % s->hist_n) * NC, scores + (gsize)(i >= 0 ? i : r->cut) * NC,
            NC * sizeof(float));
   }
   s->hist_hi = to;
@@ -336,17 +466,18 @@ void skim_dcw4_stitch_take(SkimDcw4Stitch *s, gboolean final, SkimDcw4Take *t) {
   t->spans = (const SkimDcw4Span *)s->spans->data;
   t->pending = s->pending->str;
   const gint64 start = s->committed_end;
-  const gint64 n = s->covered_end - start;
-  if (n <= 0) { return; }
+  if (s->covered_end - start <= 0) { return; }
+  const Read r = read_plan(s, start, s->covered_end);
+  const gint64 n = r.n;
   const gboolean starts_word = !s->has_committed || s->previous == SYM_SPACE;
-  float *scores = read_scores(s, start, s->covered_end);
+  float *scores = read_scores(s, &r);
   int *argmax = g_new(int, (gsize)n);
   GArray *spans = decode_greedy(s, scores, n, argmax);
   SkimDcw4Span *sp = (SkimDcw4Span *)spans->data;
   for (guint i = 0; i < spans->len; i++) {
     sp[i].p = (float)exp((double)scores[(gsize)sp[i].start * NC + sp[i].cls]);
-    sp[i].start += start;
-    sp[i].end += start;
+    sp[i].start = read_frame(&r, sp[i].start);
+    sp[i].end = read_frame(&r, sp[i].end);
   }
   const gint64 limit = final ? G_MAXINT64 : s->frozen_end;
   guint cc = 0;
@@ -375,7 +506,14 @@ void skim_dcw4_stitch_take(SkimDcw4Stitch *s, gboolean final, SkimDcw4Take *t) {
   Symbol ps = s->previous;
   gint64 bf = s->blank_frames;
   for (gint64 f = s->committed_end; f < release_end; f++) {
-    if (argmax[f - start] == SPACE) {
+    const gint64 i = read_index(&r, f);
+    if (i < 0) {                                     /* the gap cut out: all blank */
+      const gint64 skip = MIN(read_frame(&r, r.cut), release_end) - f;
+      bf += skip;
+      f += skip - 1;
+      continue;
+    }
+    if (argmax[i] == SPACE) {
       ps = SYM_SPACE;
       bf = 0;
     } else {
@@ -388,7 +526,7 @@ void skim_dcw4_stitch_take(SkimDcw4Stitch *s, gboolean final, SkimDcw4Take *t) {
     s->committed_end = release_end;
   }
   t->ends_word = s->has_committed && s->previous == SYM_SPACE;
-  history_put(s, scores, start, start, s->committed_end);
+  history_put(s, scores, &r, start, s->committed_end);
   drop_rows_before(s, s->committed_end);
   /* pending: the spans that reach past the committed end */
   GArray *pend = g_array_new(FALSE, FALSE, sizeof(SkimDcw4Span));
@@ -411,6 +549,7 @@ void skim_dcw4_stitch_restart(SkimDcw4Stitch *s, gint64 frame) {
   s->origin = s->row_base = s->covered_end = s->frozen_end = s->committed_end = frame;
   g_array_set_size(s->sums, 0);
   g_array_set_size(s->weights, 0);
+  clear_gap(s);
   s->previous = s->has_committed ? SYM_SPACE : SYM_NONE;
   s->blank_frames = 0;
   s->hist_lo = s->hist_hi = frame;

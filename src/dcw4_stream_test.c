@@ -129,6 +129,80 @@ static char *final_text(SkimDcw4Stitch *st, gint64 at, const float *g, guint T) 
   return g_string_free(s, FALSE);
 }
 
+/* ---- a gap the channel did not decode (windows stop while the line is quiet) ---- */
+
+static guint g_rows_max;
+
+static void digest_take(GChecksum *ck, SkimDcw4Stitch *st, const SkimDcw4Take *t) {
+  g_rows_max = MAX(g_rows_max, skim_dcw4_stitch_stored_rows(st));
+  GString *d = g_string_new(NULL);
+  g_string_append_printf(d, "n%u sw%d ew%d p|%s| psw%d c%" G_GINT64_FORMAT " b%" G_GINT64_FORMAT " f%"
+                         G_GINT64_FORMAT " v%" G_GINT64_FORMAT ";",
+                         t->n_spans, t->starts_word, t->ends_word, t->pending, t->pending_starts_word,
+                         skim_dcw4_stitch_committed_end(st), skim_dcw4_stitch_blank_frames(st),
+                         skim_dcw4_stitch_frozen_end(st), skim_dcw4_stitch_covered_end(st));
+  for (guint i = 0; i < t->n_spans; i++) {
+    float p = t->spans[i].p;
+    guint32 pb;
+    memcpy(&pb, &p, 4);
+    g_string_append_printf(d, "%u:%" G_GINT64_FORMAT "-%" G_GINT64_FORMAT ":%08x,", t->spans[i].cls,
+                           t->spans[i].start, t->spans[i].end, pb);
+  }
+  g_checksum_update(ck, (const guchar *)d->str, (gssize)d->len);
+  const gint64 ce = skim_dcw4_stitch_committed_end(st);
+  for (gint64 f = ce - 400; f < ce + 4; f++) {
+    const float *r = skim_dcw4_stitch_row(st, f);
+    g_checksum_update(ck, r ? (const guchar *)r : (const guchar *)"-", r ? NC * sizeof(float) : 1);
+  }
+  g_string_free(d, TRUE);
+}
+
+/* windows every `step` frames over [from, to) of g (absolute frames of a
+ * stream of `len` frames; g covers it), none final: an over the gate ends */
+static void gap_over(SkimDcw4Stitch *st, GChecksum *ck, GString *text, gboolean *has,
+                     const float *g, gint64 from, gint64 to, gint64 step) {
+  SkimDcw4Take t;
+  for (gint64 end = from + 2 * step; end <= to; end += step) {
+    const gint64 s = skim_dcw4_stitch_window_start(st, end);
+    skim_dcw4_stitch_add_window(st, s, g + s * NC, (guint)(end - s), FALSE);
+    g_rows_max = MAX(g_rows_max, skim_dcw4_stitch_stored_rows(st));
+    skim_dcw4_stitch_take(st, FALSE, &t);
+    emit(text, has, &t);
+    digest_take(ck, st, &t);
+  }
+}
+
+/* one case: over A at the stream's start or late, then over B `gap` frames
+ * later; `edge`: B's first character on the first frame of its window */
+static char *gap_case(const SkimDcw4StitchConfig *sc, double fps, gint64 a_at, gint64 gap,
+                      gboolean edge, GChecksum *ck) {
+  const gint64 step = (gint64)llround(sc->step_s * fps);
+  const gint64 seg = (gint64)llround(sc->max_segment_s * fps);
+  const gint64 a_end = a_at + 300, b0 = a_end + gap, len = b0 + 400;
+  float *g = blank_stream((gsize)len);
+  write_text(g, (gsize)a_at + 40, 8, "OK1HRA");
+  /* a character in the last frames of A: still pending when its windows stop */
+  spike(g, (gsize)a_end - 20, cls_of('K'));
+  spike(g, (gsize)a_end - 19, cls_of('K'));
+  const gint64 b_first = b0 + 2 * step - seg;     /* B's first window starts here */
+  write_text(g, (gsize)(edge ? b_first : b_first + 30), 8, "5NN TU");
+  GString *text = g_string_new(NULL);
+  gboolean has = FALSE;
+  SkimDcw4Stitch *st = skim_dcw4_stitch_new(sc, fps);
+  if (a_at > 0) { skim_dcw4_stitch_restart(st, 0); }
+  gap_over(st, ck, text, &has, g, a_at, a_end, step);
+  gap_over(st, ck, text, &has, g, b0, len, step);
+  SkimDcw4Take t;
+  const gint64 s = skim_dcw4_stitch_window_start(st, len);
+  skim_dcw4_stitch_add_window(st, s, g + s * NC, (guint)(len - s), TRUE);
+  skim_dcw4_stitch_take(st, TRUE, &t);
+  emit(text, &has, &t);
+  digest_take(ck, st, &t);
+  g_free(g);
+  skim_dcw4_stitch_free(st);
+  return g_string_free(text, FALSE);
+}
+
 /* ---- synthetic baseband ---------------------------------------------------------- */
 
 static guint64 g_rng = 1;
@@ -303,6 +377,39 @@ int main(void) {
     char *t = final_text(st, 500, h, 100);
     check("after restart the text starts a new word", strcmp(t, "^5NN") == 0);
     g_free(t); g_free(g); g_free(h); skim_dcw4_stitch_free(st);
+  }
+
+  {
+    /* an over, then two hours of a quiet line (no windows), then the next
+     * over: the read is the same as ever — the digest of every take (its
+     * spans, posteriors, pending text, counters and the call reader's
+     * rows) is v0.8.13's, whose stitcher stored a zero row for every frame
+     * of the gap — and no row of the gap is stored (25 GB on hra2,
+     * 2026-11-24) */
+    const gint64 two_h = (gint64)llround(2 * 3600 * fps);
+    struct { gint64 a_at, gap; gboolean edge; const char *text; } cs[] = {
+      { 0, two_h, FALSE, "OK1HRA K 5NN TU" }, { 0, two_h, TRUE, "OK1HRA K 5NN TU" },
+      { 5000, two_h, FALSE, "OK1HRA K 5NN TU" }, { 0, 700, FALSE, "OK1HRA K 5NN TU" },
+      { 0, 90, TRUE, "OK1HRA 5NN TUK" },
+    };
+    GChecksum *ck = g_checksum_new(G_CHECKSUM_SHA256);
+    gboolean texts = TRUE;
+    guint rows_gap = 0;
+    for (guint i = 0; i < G_N_ELEMENTS(cs); i++) {
+      g_rows_max = 0;
+      char *t = gap_case(&sc, fps, cs[i].a_at, cs[i].gap, cs[i].edge, ck);
+      texts = texts && strcmp(t, cs[i].text) == 0;
+      if (cs[i].gap == two_h) { rows_gap = MAX(rows_gap, g_rows_max); }
+      g_free(t);
+    }
+    printf("      most rows stored across a 2 h gap: %u\n", rows_gap);
+    check("a gap of 2 h between overs: both read", texts);
+    check("…every take as before the gap stopped being stored",
+          strcmp(g_checksum_get_string(ck),
+                 "ed04757f11f6b4ecfd806867c363b3a549bbf87170242f0b6d83d8fff9f79d8c") == 0);
+    check("…and no row of the gap is stored (≤ 2 windows' rows)",
+          rows_gap <= 2 * (guint)llround(sc.max_segment_s * fps));
+    g_checksum_free(ck);
   }
 
   /* ---- R */
