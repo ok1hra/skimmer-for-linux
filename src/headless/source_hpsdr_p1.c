@@ -286,6 +286,12 @@ static void b_drop(P1 *p) {
 static void b_try(P1 *p) {
   const SkimHdConfig *c = p->base.cfg;
   if (!p->nrx_ip[1] || p->b.streaming || !p->streaming) { return; }
+  if (!c->rp_b_host && !p->b.peer[0]) {        /* the agent may not have had it yet (DHCP) */
+    SkimHpsdrInfo ia;
+    if (skim_hpsdr_discover(p->host, radio_port(), 500, &ia, NULL) && ia.agent) {
+      g_strlcpy(p->b.peer, ia.agent_peer, sizeof(p->b.peer));
+    }
+  }
   const char *host = c->rp_b_host ? c->rp_b_host : p->b.peer[0] ? p->b.peer : NULL;
   if (!host) {
     b_state(p, "has no address: the board runs no skimmer agent to name it — set [rp] b_host");

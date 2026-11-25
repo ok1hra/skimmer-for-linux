@@ -161,6 +161,27 @@ library:
   from either IP refuses it unless the manager confirms (`take_over`) —
   this skimmer's own stream does not count. A reinstall keeps the card's
   inputs and the first backup.
+- **The board's SSH host keys.** Pavel's image makes new ones at every
+  boot (only the RSA key is in its overlay — measured 2026-11-25: ed25519,
+  ecdsa, dsa dated the boot), so a pinned host key fails after any reboot.
+  The install copies `/etc/ssh/ssh_host_*` to `apps/skimmer_rp/hostkeys/`
+  and the skimmer's start.sh puts them back (and restarts sshd) when they
+  differ: once installed, the board keeps one identity. Before the install
+  a reboot shows a new key: the skimmer refuses it with the key alone
+  (`host_key_changed`) and trusts it only when the root password is typed
+  again (its old entry removed from known_hosts first).
+- **Socket paths.** ssh's master socket and the askpass's live in
+  `<runtime>/skimmer-rp`, or `/tmp/skimmer-rp-<uid>` (0700, ours, no
+  symlink) when that path would pass a unix socket's 108 bytes; neither:
+  no kept master.
+- **Verified on rp-f08908, 2026-11-25** as a new user would: uninstall,
+  reboot (the key gone from RAM), a skimmer state with no key and no
+  known_hosts, connect with the password, install, reboot — the agent
+  started by itself, the same host key, the skimmer's key still accepted;
+  SkimSrv (mvl0, 8 RX) and the released skimmer (eth0, 5 RX) streamed from
+  the agent with no client change, 0 FIFO overflows, the agent ≈ 38 % of a
+  core for 13 × 96 kHz. A rule: after development on the board, run this
+  again before a release (Dan, 2026-11-25).
 - **Uninstall**: start.sh.pavel back, the agent and its directory gone,
   Pavel's start.sh run. The key stays in RAM until the next boot.
 - **Inputs** (`sel`): live through `ctl sel`, and into start.sh's `sel=`

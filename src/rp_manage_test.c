@@ -82,7 +82,11 @@ static const char fake_ssh[] =
     "done\n"
     "echo \"$host $pwmode $*\" >> \"$R/ssh.log\"\n"
     "[ \"$host\" = \"$FAKE_HOST\" ] || { echo \"ssh: connect to host $host port 22: No route to host\" >&2; exit 255; }\n"
+    "if [ -f \"$R/hostkey_changed\" ] && [ $pwmode = 0 ]; then\n"
+    "  echo '@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@' >&2; echo 'Host key verification failed.' >&2; exit 255\n"
+    "fi\n"
     "if [ $pwmode = 1 ]; then\n"
+    "  rm -f \"$R/hostkey_changed\"\n"
     "  pw=$(\"$SSH_ASKPASS\" \"root@$host's password: \") || { echo 'Permission denied' >&2; exit 255; }\n"
     "  [ \"$pw\" = \"$FAKE_PW\" ] || { echo 'Permission denied, please try again.' >&2; exit 255; }\n"
     "else\n"
@@ -183,6 +187,8 @@ int main(int argc, char **argv) {
   put("run/.keep", "", 0);
   put("tmp/.keep", "", 0);
   put("root/.keep", "", 0);
+  put("etc/ssh/ssh_host_ed25519_key", "HOSTKEY-PRIVATE\n", 0600);
+  put("etc/ssh/ssh_host_ed25519_key.pub", "ssh-ed25519 HOSTKEY board\n", 0);
   put("stock", "", 0);
   {
     GString *ee = g_string_sized_new(8192);
@@ -269,6 +275,18 @@ int main(int argc, char **argv) {
 
   a.password = NULL;
   check("the next connect needs no password", run_job(rp, SKIM_HD_RP_CONNECT, &a));
+  put("hostkey_changed", "", 0);                 /* the board rebooted: a new host key */
+  check("a changed host key: the key alone is not enough", !run_job(rp, SKIM_HD_RP_CONNECT, &a));
+  j = skim_hd_rp_json(rp);
+  check("… asks for the password, and says why", has(j, "\"host_key_changed\":true") &&
+        has(j, "\"need_password\":true") && has(j, "another SSH host key"));
+  g_free(j);
+  a.password = "s3cret pass";
+  check("… the password trusts the new one", run_job(rp, SKIM_HD_RP_CONNECT, &a));
+  j = skim_hd_rp_json(rp);
+  check("… and the flags clear", has(j, "\"host_key_changed\":false") && has(j, "\"connected\":true"));
+  g_free(j);
+  a.password = NULL;
   char *log = get("ssh.log");
   check("the password never reached ssh's command line", log && !has(log, "s3cret"));
   g_free(log);
@@ -333,6 +351,13 @@ int main(int argc, char **argv) {
   char *ak2 = get("media/mmcblk0p1/apps/skimmer_rp/authorized_keys");
   check("the key kept on the card", ak2 && pub && has(ak2, pub));
   g_free(ak2);
+  check("the board's host keys kept on the card, and start.sh puts them back",
+        exists("media/mmcblk0p1/apps/skimmer_rp/hostkeys/ssh_host_ed25519_key") &&
+            exists("media/mmcblk0p1/apps/skimmer_rp/hostkeys/ssh_host_ed25519_key.pub"));
+  ss = get("media/mmcblk0p1/start.sh");
+  check("… start.sh restores them and restarts sshd only when they differ",
+        has(ss, "cmp -s $apps_dir/skimmer_rp/hostkeys/ssh_host_ed25519_key") && has(ss, "/etc/init.d/sshd restart"));
+  g_free(ss);
   check("the agent and its stop.sh on the card",
         exists("media/mmcblk0p1/apps/skimmer_rp/skimmer-rp") && exists("media/mmcblk0p1/apps/skimmer_rp/stop.sh"));
   check("the upload left nothing in /tmp", !exists("tmp/skimmer-rp.new"));

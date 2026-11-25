@@ -46,6 +46,7 @@ struct _SkimHdRp {
   SkimHdRpJob job;
   char   *step, *error;
   gboolean need_password, connected;
+  gboolean host_changed;  /* the board showed another host key than known  */
   GHashTable *board;  /* the probe's key=value                           */
   struct { char host[16]; int state; gboolean agent; } ip[2]; /* see IP_* */
   char   *status;     /* the agent's last `ctl status`                     */
@@ -222,11 +223,17 @@ static GPtrArray *ssh_argv(SkimHdRp *rp, const char *host, gboolean password) {
                          "-o", "ControlPath=none" };
     for (guint i = 0; i < G_N_ELEMENTS(pw); i++) { g_ptr_array_add(a, g_strdup(pw[i])); }
   } else {
-    const char *k[] = { "-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey",
-                        "-o", "ControlMaster=auto", "-o", "ControlPersist=600" };
+    const char *k[] = { "-o", "BatchMode=yes", "-o", "PreferredAuthentications=publickey" };
     for (guint i = 0; i < G_N_ELEMENTS(k); i++) { g_ptr_array_add(a, g_strdup(k[i])); }
-    g_ptr_array_add(a, g_strdup("-o"));
-    g_ptr_array_add(a, g_strdup_printf("ControlPath=%s/cm-%%C", rp->rundir));
+    if (rp->rundir) {
+      const char *m[] = { "-o", "ControlMaster=auto", "-o", "ControlPersist=600" };
+      for (guint i = 0; i < G_N_ELEMENTS(m); i++) { g_ptr_array_add(a, g_strdup(m[i])); }
+      g_ptr_array_add(a, g_strdup("-o"));
+      g_ptr_array_add(a, g_strdup_printf("ControlPath=%s/cm-%%C", rp->rundir));
+    } else {
+      g_ptr_array_add(a, g_strdup("-o"));
+      g_ptr_array_add(a, g_strdup("ControlPath=none"));
+    }
   }
   g_ptr_array_add(a, g_strdup("-l"));
   g_ptr_array_add(a, g_strdup("root"));
@@ -339,6 +346,10 @@ void skim_hd_rp_askpass_main(int argc, char **argv) {
 /* A command with the password: ssh asks this binary, which asks the socket. */
 static gboolean ssh_password(SkimHdRp *rp, const char *host, const char *pw, const char *script,
                              GError **error) {
+  if (!rp->rundir) {
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "no private directory for the askpass socket");
+    return FALSE;
+  }
   char *path = g_strdup_printf("%s/ask-%d-%08x.sock", rp->rundir, (int)getpid(), g_random_int());
   struct sockaddr_un sa = { .sun_family = AF_UNIX };
   if (strlen(path) >= sizeof(sa.sun_path)) {
@@ -543,8 +554,14 @@ static gboolean job_connect(Job *j, GError **error) {
   set_step(rp, "connecting with the key");
   GError *e = NULL;
   if (!key_works(rp, j->host, &e)) {
+    /* Pavel's image makes new host keys at every boot (it runs from RAM)
+     * until the install keeps them on the card: a changed key is then no
+     * attack but a reboot — still, only the password (the manager's word
+     * that this is the board) makes the skimmer trust the new one */
+    const gboolean changed = e && (strstr(e->message, "IDENTIFICATION HAS CHANGED") ||
+                                   strstr(e->message, "Host key verification failed"));
     const gboolean refused = e && strstr(e->message, "ermission denied");
-    if (!refused) {
+    if (!refused && !changed) {
       g_propagate_error(error, e);
       return FALSE;
     }
@@ -552,10 +569,23 @@ static gboolean job_connect(Job *j, GError **error) {
     if (!j->pw || !*j->pw) {
       g_mutex_lock(&rp->mu);
       rp->need_password = TRUE;
+      rp->host_changed = changed;
+      rp->connected = FALSE;
       g_mutex_unlock(&rp->mu);
-      g_set_error(error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED,
-                  "the board does not know the skimmer's key yet — type its root password once");
+      g_set_error(error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED, "%s",
+                  changed ? "the board shows another SSH host key than before (Pavel's image makes "
+                            "new ones at every boot until the skimmer's agent is installed; or the "
+                            "card was re-imaged) — type its root password to trust it"
+                          : "the board does not know the skimmer's key yet — type its root password once");
       return FALSE;
+    }
+    if (changed) {                              /* the password vouches for the new key */
+      set_step(rp, "forgetting the board's old host key");
+      char *kh = g_build_filename(rp->dir, "known_hosts", NULL);
+      const char *argv[] = { rp->keygen ? rp->keygen : "ssh-keygen", "-q", "-R", j->host, "-f", kh, NULL };
+      int code = -1;
+      run(rp, argv, NULL, NULL, 20, NULL, NULL, &code, NULL);
+      g_free(kh);
     }
     set_step(rp, "putting the skimmer's key on the board");
     char *pub = read_pub(rp);
@@ -581,6 +611,7 @@ static gboolean job_connect(Job *j, GError **error) {
   }
   g_mutex_lock(&rp->mu);
   rp->need_password = FALSE;
+  rp->host_changed = FALSE;
   rp->connected = TRUE;
   g_mutex_unlock(&rp->mu);
   return probe(j, error);
@@ -674,6 +705,15 @@ static char *start_sh(guint8 a, guint8 b) {
       "echo 1 > /proc/sys/net/ipv4/conf/all/arp_filter\n"
       "echo 2 > /proc/sys/net/ipv4/conf/all/rp_filter\n"
       "\n"
+      "# the board's SSH host keys, kept on the card at the install: the image makes new\n"
+      "# ones at every boot, and the skimmer would no longer know its board\n"
+      "if ls $apps_dir/skimmer_rp/hostkeys/ssh_host_*_key >/dev/null 2>&1; then\n"
+      "  if ! cmp -s $apps_dir/skimmer_rp/hostkeys/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key; then\n"
+      "    cp $apps_dir/skimmer_rp/hostkeys/ssh_host_* /etc/ssh/ && chmod 600 /etc/ssh/ssh_host_*_key\n"
+      "    /etc/init.d/sshd restart > /dev/null 2>&1\n"
+      "  fi\n"
+      "fi\n"
+      "\n"
       "# the skimmer's key, kept on the card (the board runs from RAM)\n"
       "if [ -f $apps_dir/skimmer_rp/authorized_keys ]; then\n"
       "  mkdir -p /root/.ssh && chmod 700 /root/.ssh\n"
@@ -742,6 +782,7 @@ static gboolean job_install(Job *j, GError **error) {
       "printf '#! /bin/sh\\nkillall skimmer-rp 2>/dev/null\\nexit 0\\n' > $D/stop.sh\n"
       "chmod 755 $D/stop.sh 2>/dev/null || true\n"
       "[ -f $R/root/.ssh/authorized_keys ] && grep " RP_TAG " $R/root/.ssh/authorized_keys > $D/authorized_keys || true\n"
+      "mkdir -p $D/hostkeys && cp $R/etc/ssh/ssh_host_*_key $R/etc/ssh/ssh_host_*_key.pub $D/hostkeys/ 2>/dev/null || true\n"
       "if [ ! -f $C/start.sh.pavel ] && ! grep -q " RP_TAG " $C/start.sh; then cp $C/start.sh $C/start.sh.pavel; fi\n"
       "cat > $C/start.sh.new <<'SKIMMER_EOF'\n%sSKIMMER_EOF\n"
       "chmod 755 $C/start.sh.new 2>/dev/null || true\n"
@@ -1095,6 +1136,7 @@ char *skim_hd_rp_json(SkimHdRp *rp) {
   g_free(key);
   kv_bool(o, "connected", rp->connected, TRUE);
   kv_bool(o, "need_password", rp->need_password, TRUE);
+  kv_bool(o, "host_key_changed", rp->host_changed, TRUE);
   kv_str(o, "job", rp->running ? job_name(rp->job) : NULL, TRUE);
   kv_str(o, "step", rp->step, TRUE);
   kv_str(o, "error", rp->error, TRUE);
@@ -1121,15 +1163,34 @@ char *skim_hd_rp_json(SkimHdRp *rp) {
   return g_string_free(o, FALSE);
 }
 
+/* A private dir for ssh's master socket ("cm-" + 40 hex) and the askpass's:
+ * <runtime>/skimmer-rp, or — a socket path has 108 bytes at most — a
+ * /tmp/skimmer-rp-<uid> of our own (0700, ours, no symlink); NULL: none
+ * fits, ssh then runs without a kept master. */
+static gboolean private_dir(const char *d) {
+  g_mkdir_with_parents(d, 0700);
+  struct stat st;
+  if (lstat(d, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid()) { return FALSE; }
+  return chmod(d, 0700) == 0;
+}
+
+static char *run_dir(void) {
+  char *d = g_build_filename(g_get_user_runtime_dir(), "skimmer-rp", NULL);
+  if (strlen(d) + 45 < sizeof(((struct sockaddr_un *)0)->sun_path) && private_dir(d)) { return d; }
+  g_free(d);
+  d = g_strdup_printf("/tmp/skimmer-rp-%u", (unsigned)getuid());
+  if (private_dir(d)) { return d; }
+  g_free(d);
+  return NULL;
+}
+
 SkimHdRp *skim_hd_rp_new(const char *state_dir, const char *agent, const char *host) {
   SkimHdRp *rp = g_new0(SkimHdRp, 1);
   g_mutex_init(&rp->mu);
   rp->dir = g_build_filename(state_dir, "rp", NULL);
   g_mkdir_with_parents(rp->dir, 0700);
   g_chmod(rp->dir, 0700);
-  rp->rundir = g_build_filename(g_get_user_runtime_dir(), "skimmer-rp", NULL);
-  g_mkdir_with_parents(rp->rundir, 0700);
-  g_chmod(rp->rundir, 0700);
+  rp->rundir = run_dir();
   rp->agent = agent ? g_strdup(agent) : skim_hd_rp_agent_path();
   const char *ssh = g_getenv("SKIM_RP_SSH");
   rp->ssh = ssh && *ssh ? g_strdup(ssh) : g_find_program_in_path("ssh");
