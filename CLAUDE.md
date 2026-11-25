@@ -44,6 +44,13 @@ and still has its TCI client.
   stream it stops by itself is its own orphan — still coming to the port of
   a run of ours that died, or of a stream this run lost (a stall), which
   nothing on this machine holds any more (`docs/HPSDR-P1.md`).
+  Since 2026-11-25 (Dan) the skimmer may also run that board's software: a
+  manager's explicit action in Settings (or `--redpitaya`) connects with the
+  root password typed once and never stored, installs the skimmer's agent in
+  place of Pavel Demin's servers, sets each receiver's input, and uninstalls
+  it again (Pavel's start.sh back) — never on its own, and never while
+  another client streams from the board unless the manager confirms it
+  (`docs/REDPITAYA.md`).
 - **RBN feed must never emit unvalidated callsigns** — M4 (validation) gates M6
   (RBN).
 - **Every commit and tag is GPG-signed** (`commit.gpgsign=true`, key
@@ -133,9 +140,10 @@ here; what was done and why is in git.
   shown as "DeepCW v1" (key `deepcw`). `docs/DEEPCW-V4.md`; needs a live
   check on air.
 - **IQ sources: TCI, or HPSDR Protocol 1 direct** (Red Pitaya
-  `sdr_receiver_hpsdr`, 48/96/192 kHz, clock ppm correction; the wire is
+  `sdr_receiver_hpsdr`, 48/96/192/384 kHz, clock ppm correction; the wire is
   RF-inverted and ingest conjugates — `docs/HPSDR-P1.md`). `skimmer-headless`
-  runs up to 8 receivers (one pipeline per band and mode — CW, and RTTY
+  runs up to 16 receivers: 8 an IP of the board, `ip=b` bands from its
+  second IP, `in=2` from IN2 (one pipeline per band and mode — CW, and RTTY
   beside it on the same IQ where `[bands]` says `rtty`; one telnet feed,
   console + web status). `[radio] host=auto` (the default) takes the
   first idle Red Pitaya a broadcast discovery finds; `--find-radios` lists
@@ -144,7 +152,23 @@ here; what was done and why is in git.
   `[decode] suppress_cw_on_rtty` (default off) the band's CW drops decodes
   on them — without it the CW pipeline is byte-for-byte unchanged. The FFTW planner is not thread-safe:
   plan create/destroy goes through `skim_fftw_lock()`.
-- **`meson test` = 39 gates** (DeepCW skips without the model, golden skips
+- **The managed Red Pitaya** (`docs/REDPITAYA.md`, branch redpitaya
+  2026-11-25): the skimmer's agent `rp/agent/skimmer-rp.c` (static armhf,
+  `-Drp_agent`, shipped in the AppImage) replaces Pavel Demin's two
+  servers on the same bitstream — Protocol 1 as his on both IPs, each
+  receiver's input live (the Hermes ADC word from the skimmer's own
+  client only), its orphan stop, `ctl status`, NEON FIFO reads and UDP
+  GSO. `src/headless/rp_manage.c` runs the board over the system's ssh:
+  the root password once (askpass = this binary over a unix socket, never
+  stored), the skimmer's key, the board's host keys kept on the card,
+  install / uninstall (Pavel's start.sh kept as start.sh.pavel),
+  `/api/redpitaya` (managers), `--redpitaya CMD [HOST]`. `[rp] mode`
+  p1 | extended (IN1 → IP A, IN2 → IP B), `b_host`, `b_rate`; 384 kHz
+  takes 4 receivers an IP and ~7× the PC's CPU a band. Settings → Red
+  Pitaya (diagram, buttons), Statistics → Red Pitaya. After any change on
+  the board, re-run the new-user install check (REDPITAYA.md). Two-antenna
+  phasing is a design only: `docs/PHASING.md`.
+- **`meson test` = 42 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
   only with gfortran, `js8` only with C++20 + Boost headers). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).
@@ -182,14 +206,15 @@ here; what was done and why is in git.
   the table's status column says what a worker or a guard does
   with the band; statistics (`stats.c`, three
   rings: 1 min × 7 d, 15 min × 90 d, 1 h × 2 y, saved in place; file
-  version 7 = four modes, CW, RTTY, FT8 (FT8 + FT4) and JS8 (every
+  version 8 = 16 bands and the Red Pitaya's series (FPGA °C, its load,
+  Mb/s each IP; version 7 = 8 bands) and four modes, CW, RTTY, FT8 (FT8 + FT4) and JS8 (every
   submode; for both: spots, senders that appeared, as "active" the senders
   heard a minute, SNR), and the helper programs' CPU (`cpu_helpers`:
   skimmer-ft8d, skimmer-js8d — a kept-running one read from /proc —,
   skimmer-wsprd — outside the process's own); version 5 added the thermal
   guard's pauses per band (`thermal`, the share of the bucket off — red in
   "active decoders by band"), 6 FT8; a version 3–6 file is carried over and
-  kept as `stats.bin.v3` … `.v6` for an older build; ≈ 43 MB), settings (one parser:
+  kept as `stats.bin.v3` … `.v7` for an older build; ≈ 84 MB), settings (one parser:
   `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
   backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
   Managers only (settings_from, no proxy headers, a Host that is this
@@ -468,7 +493,10 @@ src/headless/ the product layer: config (headless.ini, one parser), source
               beside, to the feed), digi_rx (a dial's 12 kHz USB audio in
               UTC periods), js8 + js8_unpack ([js8]: JS8 beside, deep
               frames confirmed), update ([update]: a
-              newer release swapped in)
+              newer release swapped in), rp_manage (the Red Pitaya
+              over ssh: key, install, inputs, status)
+rp/agent/     skimmer-rp: the agent on the Red Pitaya (C, POSIX, static armhf)
+rp/spike/     rp-spike: measurements on the board (F0), its PC-side scripts
 web/          the web page (HTML, CSS, JS — built in as a GResource)
 src/headless_main.c  skimmer-headless: multi-band, no GUI (HPSDR P1 → N pipelines)
 weights/      learned weights built into skimmer-headless (feed-gate.ini)

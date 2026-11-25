@@ -109,7 +109,7 @@ int main(int argc, char **argv) {
                                 .serve = serve, .clean_quality = clean, .dir = dir,
                                 .decoder = decoder, .keep_wav = keep, .no_known = TRUE,
                                 .spot = spot_cb };
-  SkimHdJs8 *j = skim_hd_js8_new(&cfg, 1, names, &centre, rate);
+  SkimHdJs8 *j = skim_hd_js8_new(&cfg, 1, names, &centre, (const double[]){ rate, rate });
   char *dials = skim_hd_js8_dials_text(j);
   printf("# %s: centre %.1f kHz, %.0f kHz, start %.3f; dials %s; %s, %s, clean q %.2f, %u threads\n",
          file, centre / 1e3, rate / 1e3, start, dials, subs, serve ? "serve" : "oneshot", clean,

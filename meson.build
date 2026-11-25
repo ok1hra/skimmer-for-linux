@@ -144,6 +144,36 @@ skimmer_hpsdr_test = executable('skimmer-hpsdr-test',
 )
 test('hpsdr-client', skimmer_hpsdr_test, timeout : 60)
 
+# Offline gate — the skimmer's Red Pitaya agent (rp/agent/skimmer-rp.c: plain
+# C + pthreads, the board's build is static armhf via rp/build-arm.sh) built
+# for this machine and run in --sim on two loopback addresses, driven by
+# skim_hpsdr_client: Pavel's discovery byte for byte, the SKRP marker, two
+# streams (96 + 384 kHz), inputs switched live, ctl status, the orphan stop.
+skimmer_rp_host = executable('skimmer-rp-host',
+  ['rp/agent/skimmer-rp.c'],
+  dependencies : [threads_dep, m_dep],
+)
+skimmer_rp_agent_test = executable('skimmer-rp-agent-test',
+  ['src/rp_agent_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('rp-agent', skimmer_rp_agent_test, args : [skimmer_rp_host], timeout : 60)
+
+# … and the same source for the board: static armhf (Pavel's Alpine is musl,
+# so nothing shared), shipped in the AppImage for rp_manage to install.
+arm_cc = find_program('arm-linux-gnueabihf-gcc', required : get_option('rp_agent'))
+if arm_cc.found()
+  skimmer_rp_armhf = custom_target('skimmer-rp-armhf',
+    input : 'rp/agent/skimmer-rp.c',
+    output : 'skimmer-rp-armhf',
+    command : [arm_cc, '-O2', '-Wall', '-Wextra', '-static', '-march=armv7-a', '-mfpu=neon',
+               '-mfloat-abi=hard', '-s', '-o', '@OUTPUT@', '@INPUT@', '-lm'],
+    build_by_default : true,
+  )
+endif
+
 # Live gate — discovery + IQ ingest straight from an HPSDR Protocol 1
 # receiver (Red Pitaya sdr_receiver_hpsdr); records cf32 + .meta for replay.
 executable('skimmer-hpsdr-probe',
@@ -519,6 +549,18 @@ skimmer_skimsrv_test = executable('skimmer-skimsrv-test',
 )
 test('skimsrv', skimmer_skimsrv_test, timeout : 30)
 
+# The Red Pitaya over SSH against a fake board (a fake ssh, the real agent
+# in --sim): the password once through the askpass and never in argv or a
+# file, the key, the probe, install refused while another client streams,
+# Pavel's start.sh kept and put back, the inputs live and kept, the status.
+skimmer_rp_manage_test = executable('skimmer-rp-manage-test',
+  ['src/rp_manage_test.c', 'src/headless/rp_manage.c'],
+  include_directories : [include_directories('src'), engine_inc],
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('rp-manage', skimmer_rp_manage_test, args : [skimmer_rp_host], timeout : 120)
+
 # Golden gate: real-air IQ + decode-tap slices through the whole engine with
 # no SKIM_* switches — every output byte-identical to tests/golden/
 # expected.sha256. Inputs live outside git (tests/golden/README.md); without
@@ -587,6 +629,7 @@ headless_sources = files(
   'src/headless/js8_unpack.c',      # what a JS8 frame says (callsigns, grid)
   'src/headless/helper_run.c',      # the decoder helpers run (ft8d, wsprd)
   'src/headless/pskreporter.c',     # [ft8] upload: to PSK Reporter (IPFIX/UDP)
+  'src/headless/rp_manage.c',       # the Red Pitaya over SSH: key, install, inputs, status
 )
 
 # The web page's static files (web/), built in.
@@ -616,6 +659,11 @@ skimmer_headless = executable('skimmer-headless',
 # config, two bands, telnet spot, /status.json, SIGTERM, a refused config.
 test('headless-mock', find_program('tests/headless-mock.sh'),
   args : [skimmer_headless], timeout : 120)
+
+# Two-IP gate: skimmer-headless on both IPs of a board that runs the agent
+# (skimmer-rp-host --sim): B named by the agent, b_rate, in=2 through P1.
+test('rp-two-ip', find_program('tests/rp-two-ip.sh'),
+  args : [skimmer_headless, skimmer_rp_host], timeout : 60)
 
 # Hub gate: a hub and a worker on this machine (mock source) — a band
 # passed on, decoded there, spotted on the hub's feed; the peer duplicate;

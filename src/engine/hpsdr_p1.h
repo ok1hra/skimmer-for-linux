@@ -42,6 +42,13 @@ typedef struct {
   guint8   board_id;
   guint    nrx;
   char     name[9];              /* "R_PITAYA" (bytes 0x0B..0x12), NUL-ended  */
+  /* The skimmer's agent (rp/agent/skimmer-rp.c) runs the board: */
+  gboolean agent;
+  guint8   agent_major, agent_minor;
+  guint8   agent_mode;           /* 0 = Protocol 1                            */
+  guint8   agent_sel;            /* bit r = receiver r on IN2                 */
+  guint8   agent_inst;           /* 0 = eth0 (DDC 0–7), 1 = mvl0 (DDC 8–15)   */
+  char     agent_peer[16];       /* the other instance's IPv4 ("" = none)     */
 } SkimHpsdrInfo;
 
 /* Unicast discovery to host:port; blocks up to timeout_ms. */
@@ -87,7 +94,8 @@ void skim_hpsdr_client_set_closed_cb(SkimHpsdrClient *c, SkimHpsdrClosedCb cb, g
 
 /* Discover, configure (rate, one receiver, DDC centre) and start the stream;
  * returns once the first IQ packet is in (≤ 2 s). rate ∈ {48000, 96000,
- * 192000} (0 = 192000). center_hz is the TRUE centre: the frequency word
+ * 192000, 384000} (0 = 192000; 384 kHz only on a 122.88 MHz board's server —
+ * Pavel's 125 MHz one ignores the code and stays at its last rate). center_hz is the TRUE centre: the frequency word
  * sent is center_hz / (1 + clock_ppm·1e-6), so a sampling clock that runs
  * clock_ppm fast still lands the DDC on center_hz. A busy radio fails with
  * SKIM_HPSDR_ERROR_BUSY unless take_over. */
@@ -117,6 +125,12 @@ guint64     skim_hpsdr_client_packets(SkimHpsdrClient *c);
 guint64     skim_hpsdr_client_lost_frames(SkimHpsdrClient *c);
 /* The UDP port of this machine the stream comes to (0 = not started). */
 guint16     skim_hpsdr_client_local_port(SkimHpsdrClient *c);
+/* The receivers' ADC inputs for the next start: bit r = receiver r on IN2.
+ * Only the skimmer's agent takes them (Pavel's server has its inputs on its
+ * command line and ignores the word — it is not even sent to it). */
+void        skim_hpsdr_client_set_inputs(SkimHpsdrClient *c, guint8 mask);
+/* TRUE once started on a board that runs the skimmer's agent. */
+gboolean    skim_hpsdr_client_agent(SkimHpsdrClient *c);
 
 /* An orphan stream: a client of THIS machine died without its stop (a
  * crash), and host:port streams on to its local_port, which nothing here

@@ -150,6 +150,12 @@
       <p class="sub mut" id="cpu-sub">CPU in % of one core (left), what the CW and RTTY decoders take of it; IQ frames lost on the wire, % in the worst minute of each bucket (right); below, the hottest CPU sensor in the hottest minute of each bucket</p>
       <div id="cpu-load"><div class="legend" id="legend-cpu"></div><div class="chart" id="chart-cpu"></div></div>
       <div class="legend" id="legend-temp"></div><div class="chart" id="chart-temp"></div></div>
+    <div class="chart-card" id="card-rp" hidden><h2>Red Pitaya <span class="mut" id="rp-card-sub"></span></h2>
+      <div class="tiles rp-tiles" id="rp-tiles"></div>
+      <p class="sub mut">the board's FPGA in the hottest minute of each bucket (the Zynq-7020 is rated to 85 °C); below, the Mb/s each IP sent — every client's, not only this skimmer's</p>
+      <div class="legend" id="legend-rptemp"></div><div class="chart" id="chart-rptemp"></div>
+      <div class="legend" id="legend-rpnet"></div><div class="chart" id="chart-rpnet"></div>
+      <p class="sub mut" id="rp-card-note"></p></div>
     <details class="more keep" id="stats-tbl">
       <summary id="stats-table-h">Table: the bands over the range</summary>
       <div class="wrap"><table id="stats-table" class="grid"></table></div>
@@ -214,9 +220,19 @@
             names it, or the hub's address[:port]</small></label>
           <label>Rate <select name="radio.rate" data-default="96000">
             <option value="48000">48 kHz</option><option value="96000">96 kHz</option>
-            <option value="192000">192 kHz</option></select></label>
+            <option value="192000">192 kHz</option><option value="384000" title="4 receivers an IP; each band costs ~7× the CPU of 96 kHz on this PC (measured: 54 % of a core for CW+RTTY)">384 kHz (4 receivers)</option></select></label>
           <label>Clock ppm <input name="radio.clock_ppm" inputmode="decimal" placeholder="0">
             <small>for the hosts without @ppm</small></label>
+          <label class="rp-only">Layout <select name="rp.mode" data-default="p1">
+            <option value="p1">P1 — both inputs into one set of 16 receivers, each band its input</option>
+            <option value="extended">two antennas — IN1 → IP A, IN2 → IP B</option></select>
+            <small>the board's two IPs: A = the host above (receivers 1–8), B = its second address (9–16);
+            the input of a band needs the skimmer's agent on the board (Red Pitaya below)</small></label>
+          <label class="rp-only">Rate IP B <select name="rp.b_rate" data-default="">
+            <option value="">as IP A</option><option value="48000">48 kHz</option><option value="96000">96 kHz</option>
+            <option value="192000">192 kHz</option><option value="384000" title="4 receivers an IP; each band costs ~7× the CPU of 96 kHz on this PC (measured: 54 % of a core for CW+RTTY)">384 kHz (4 receivers)</option></select></label>
+          <label class="rp-only">Address IP B <input name="rp.b_host" placeholder="the agent names it">
+            <small>empty = the address the skimmer's agent reports</small></label>
         </fieldset>
         <fieldset>
           <legend>Decoding</legend>
@@ -464,10 +480,32 @@
             (<code>skimmer-headless-x86_64.AppImage</code>): it keeps its name across updates.</small>
         </fieldset>
       </div>
+      <fieldset id="rp-card" class="rp-only">
+        <legend>Red Pitaya <span class="mut" id="rp-sub">…</span></legend>
+        <svg id="rp-diagram" class="rp-diagram" viewBox="0 0 660 176" role="img" aria-label="the board's inputs, receiver sets, IPs and who takes them"></svg>
+        <div id="rp-state" class="rp-state mut"></div>
+        <div class="rp-actions">
+          <input type="password" id="rp-pw" placeholder="root password (once)" autocomplete="off" hidden>
+          <button type="button" class="small" id="rp-connect" title="with the skimmer's own key; the first time the board's root password, never stored">Connect</button>
+          <button type="button" class="small" id="rp-install" title="the skimmer's agent in place of Pavel Demin's two servers (his start.sh kept)">Install the agent</button>
+          <button type="button" class="small" id="rp-uninstall" title="Pavel Demin's start.sh back, and run">Uninstall</button>
+          <label class="rp-take"><input type="checkbox" id="rp-take"> even while another client streams</label>
+        </div>
+        <div id="rp-ext" class="rp-ext" hidden>
+          <div class="mut">Inputs for another client (an IP this skimmer does not take — e.g. CW Skimmer Server), kept on the board:</div>
+          <div id="rp-ext-rows"></div>
+          <button type="button" class="small" id="rp-ext-apply">Apply on the board</button>
+        </div>
+        <small class="note-s">The skimmer talks to its board over SSH with its own key. Connect asks once for the board's
+          root password (it is never stored) and puts the key there. <i>Install</i> replaces Pavel Demin's two servers with
+          the skimmer's agent on the same FPGA image: Protocol 1 on both IPs as before (CW Skimmer Server and others work
+          unchanged), plus each receiver's input and the board's state for Statistics. <i>Uninstall</i> puts Pavel's start
+          back. Nothing changes on the board without one of these buttons.</small>
+      </fieldset>
       <fieldset>
         <legend>Bands <span class="mut" id="band-count"></span></legend>
         <div class="wrap"><table class="grid bands-edit">
-          <thead><tr><th>RX</th><th title="received — an unticked band stays in the list, off">on</th><th>name</th><th>centre kHz</th><th title="what the receiver takes in: its centre ± half the rate">kHz from – to</th><th>CW</th><th>engine</th><th>RTTY</th><th title="empty = this PC; a worker's name = received here, its IQ passed to that worker, which decodes it">decoded by</th><th></th></tr></thead>
+          <thead><tr><th>RX</th><th title="received — an unticked band stays in the list, off">on</th><th>name</th><th>centre kHz</th><th title="what the receiver takes in: its centre ± half the rate">kHz from – to</th><th class="rp-only" title="the board's IP: A = receivers 1–8, B = 9–16 (8 each)">IP</th><th class="rp-only" title="the ADC input (needs the skimmer's agent on the board)">input</th><th>CW</th><th>engine</th><th>RTTY</th><th title="empty = this PC; a worker's name = received here, its IQ passed to that worker, which decodes it">decoded by</th><th></th></tr></thead>
           <tbody id="band-rows"></tbody>
         </table></div>
         <datalist id="worker-names"></datalist>
@@ -475,7 +513,7 @@
         <button type="button" id="band-skimsrv" class="small" title="the bands CW Skimmer Server uses: its rate and the segments ticked there, from its SkimSrv.ini — found on this PC (wine), or a file you choose">From CW Skimmer</button>
         <input type="file" id="band-skimsrv-file" accept=".ini" hidden>
         <div id="band-from" class="band-from"></div>
-        <small class="mut">the Rate (Radio, one for every receiver) sets the segments, as CW Skimmer has them: 45.5, 91 or 182 kHz each from a band's low edge — tick up to 8, one receiver each, in frequency order; a segment's centre can be moved (empty = its own); <i>Add band</i> = a band of your own anywhere. The Mb/s are the IQ the radio sends this PC over the network.</small>
+        <small class="mut">the Rate (Radio) sets the segments, as CW Skimmer has them: 45.5, 91 or 182 kHz each from a band's low edge — tick up to 8 a Red Pitaya IP (16 with IP B), one receiver each, in frequency order; a segment's centre can be moved (empty = its own); <i>Add band</i> = a band of your own anywhere. The Mb/s are the IQ the radio sends this PC over the network.</small>
       </fieldset>
       <fieldset>
         <legend>Recording raw IQ</legend>

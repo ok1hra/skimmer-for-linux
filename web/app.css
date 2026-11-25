@@ -692,3 +692,27 @@ nav .tour-q:hover { background: var(--accent); color: var(--hot-ink); }
 .tour-btns .tour-end:hover { color: var(--bad); }
 .tour-btns .primary { background: var(--accent); color: var(--hot-ink); border-color: var(--accent); font-weight: 700; }
 body.touring { overflow: hidden; }
+
+/* Settings → Red Pitaya: the board's diagram, its state, the buttons */
+.rp-diagram { width: 100%; max-width: 660px; height: auto; display: block; margin: 4px 0 8px; }
+.rp-diagram .box { fill: var(--deep); stroke: var(--ln2); }
+.rp-diagram .box.on { stroke: var(--accent); }
+.rp-diagram .box.busy { stroke: var(--warn); }
+.rp-diagram .box.off { stroke: var(--faint); stroke-dasharray: 4 3; }
+.rp-diagram text { fill: var(--fg); font: 13px var(--mono); }
+.rp-diagram text.mut { fill: var(--mut); font-size: 11px; }
+.rp-diagram path { fill: none; stroke: var(--ln2); stroke-width: 2; }
+.rp-diagram path.on { stroke: var(--accent); }
+.rp-diagram path.busy { stroke: var(--warn); }
+.rp-state { min-height: 1.3em; margin: 2px 0 6px; }
+.rp-state.bad { color: var(--bad); }
+.rp-actions { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.rp-actions input[type=password] { width: 14em; }
+#settings .rp-take, .rp-take { display: inline-flex; flex-direction: row; gap: 4px; align-items: center; font-size: 13px; color: var(--mut); margin: 0; }
+#settings .rp-take input { margin: 0; width: auto; }
+.rp-take.hi { color: var(--warn); }
+.rp-ext { margin: 8px 0 0; }
+.rp-ext-row { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; margin: 4px 0; font-size: 13px; }
+.rp-ext-row b { width: 3.5em; }
+#settings.no-rp .rp-only, .no-rp .rp-only { display: none; }
+td.rxl { white-space: nowrap; }

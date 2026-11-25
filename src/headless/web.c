@@ -366,7 +366,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
      * for those who may manage the skimmer only */
     if (!admin && (strcmp(path, "/api/config") == 0 || strcmp(path, "/api/log") == 0 ||
                    strcmp(path, "/api/skimmers") == 0 || strcmp(path, "/api/skimsrv") == 0 ||
-                   strcmp(path, "/api/update") == 0)) {
+                   strcmp(path, "/api/update") == 0 || strcmp(path, "/api/redpitaya") == 0)) {
       reply_error(msg, SOUP_STATUS_FORBIDDEN, "only from an address that may change the settings");
       return;
     }
@@ -405,6 +405,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                       : strcmp(path, "/api/spots") == 0    ? k->spots
                       : strcmp(path, "/api/skimsrv") == 0  ? k->skimsrv
                       : strcmp(path, "/api/update") == 0   ? k->update
+                      : strcmp(path, "/api/redpitaya") == 0 ? k->redpitaya
                       : strcmp(path, "/api/wspr") == 0     ? k->wspr
                       : strcmp(path, "/api/ft8") == 0      ? k->ft8
                       : strcmp(path, "/api/js8") == 0      ? k->js8
@@ -438,6 +439,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                        : strcmp(path, "/api/deepcw") == 0   ? k->deepcw
                        : strcmp(path, "/api/v4bench") == 0  ? k->v4bench
                        : strcmp(path, "/api/update") == 0   ? k->update_post
+                       : strcmp(path, "/api/redpitaya") == 0 ? k->redpitaya_post
                                                             : NULL;
     if (!hook) {
       reply_error(msg, SOUP_STATUS_NOT_FOUND, "not found");

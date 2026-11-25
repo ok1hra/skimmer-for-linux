@@ -1074,6 +1074,7 @@ function renderStats() {
   // (null): the card shows the temperature alone
   $('#card-cpu').hidden = !g.cpu && !g.cpu_temp;
   if (g.cpu || g.cpu_temp) renderCpu(d, x, g);
+  renderRp(x, g);
   ['#chart-spots', '#chart-active', '#chart-cpu', '#chart-temp'].forEach((id) => loading(id, false));
   renderStatsTables(d);
 }
@@ -1463,8 +1464,9 @@ on('#settings', 'input', (e) => {
   t.value = u;
   try { t.setSelectionRange(a, b); } catch (err) { /* not a text field */ }
 });
-const MAX_BANDS = 8;          // receivers: the bands on
-const MAX_LISTED = 16;        // [bands] lines, the ones off included
+const MAX_BANDS = 8;          // receivers an IP: the bands on it (a Red Pitaya's IP A, IP B)
+const maxOn = (ip) => (ipRate(ip) === 384000 ? 4 : MAX_BANDS);   // 384 kHz: 4 (the board's ARM)
+const MAX_LISTED = 32;        // [bands] lines, the ones off included
 
 // Read-only settings (an address outside [web] settings_from) stay readable:
 // a choice list still opens to show its options, a text field can be selected
@@ -1500,11 +1502,12 @@ for (const ev of ['input', 'change']) {
 // edge), the first from the band's low edge, the next right above it. The
 // rate is one for every receiver (the Red Pitaya's), so it sets the list;
 // up to 8 of them are on (its receivers).
-const SEG_BANDS = [['160m', 1800000, 1, 1, 1], ['80m', 3500000, 2, 1, 1], ['40m', 7000000, 1, 1, 1],
-  ['30m', 10100000, 1, 1, 1], ['20m', 14000000, 2, 1, 1], ['17m', 18068000, 1, 1, 1], ['15m', 21000000, 2, 1, 1],
-  ['12m', 24890000, 1, 1, 1], ['10m', 28000000, 2, 2, 1], ['6m', 50000000, 4, 2, 1]];
+// (the last column, 384 kHz: not CW Skimmer's — a segment of 364 kHz each)
+const SEG_BANDS = [['160m', 1800000, 1, 1, 1, 1], ['80m', 3500000, 2, 1, 1, 1], ['40m', 7000000, 1, 1, 1, 1],
+  ['30m', 10100000, 1, 1, 1, 1], ['20m', 14000000, 2, 1, 1, 1], ['17m', 18068000, 1, 1, 1, 1], ['15m', 21000000, 2, 1, 1, 1],
+  ['12m', 24890000, 1, 1, 1, 1], ['10m', 28000000, 2, 2, 1, 1], ['6m', 50000000, 4, 2, 1, 1]];
 function segments(rate) {
-  const col = rate === 48000 ? 2 : rate === 192000 ? 4 : 3, step = (rate * 91) / 96;
+  const col = rate === 48000 ? 2 : rate === 192000 ? 4 : rate === 384000 ? 5 : 3, step = (rate * 91) / 96;
   const out = [];
   for (const b of SEG_BANDS) {
     for (let k = 0; k < b[col]; k++) out.push({ name: k ? `${b[0]}-${k + 1}` : b[0], hz: Math.round(b[1] + step / 2 + k * step) });
@@ -1533,7 +1536,7 @@ function withSegments(list, rate) {
   const out = [];
   for (const s of segments(rate)) {
     const i = left.findIndex((b) => b.name === s.name), b = i >= 0 ? left.splice(i, 1)[0] : null;
-    if (!b) { out.push({ seg: true, def: s.hz, name: s.name, khz: '', cw: true, engine: '', rtty: false, on: false, worker: '' }); continue; }
+    if (!b) { out.push({ seg: true, def: s.hz, name: s.name, khz: '', cw: true, engine: '', rtty: false, on: false, worker: '', ip: 'a', input: 1 }); continue; }
     const hz = bandHz(b);
     out.push({ ...b, seg: true, def: s.hz, khz: b.khz && hz !== s.hz && !(b.seg && hz === b.def) ? b.khz : '' });
   }
@@ -1545,8 +1548,12 @@ function withSegments(list, rate) {
 }
 // a band off that is still saved: its own, or a segment set up beyond a plain CW one
 function setUp(b) {
-  return !b.seg || !b.cw || b.rtty || !!b.worker || !!b.khz || !!b.engine;
+  return !b.seg || !b.cw || b.rtty || !!b.worker || !!b.khz || !!b.engine || b.ip === 'b' || b.input === 2;
 }
+// the board's two IPs: a Red Pitaya source only; extended = IN1 → A, IN2 → B
+const rpOn = () => $('[name="radio.type"]').value === 'hpsdr-p1';
+const rpSplit = () => $('[name="rp.mode"]').value === 'extended';
+const ipRate = (ip) => (ip === 'b' && Number($('[name="rp.b_rate"]').value)) || bandRate();
 // A band's CW engine: '' = the default ([decode] engine, "cw" in [bands]),
 // so a new default reaches it; a named one (cw:v4) stays whatever the
 // default becomes. The file cannot tell "cw:v3" under a v3 default from
@@ -1558,6 +1565,7 @@ function defaultEngineText() {
 }
 
 function bandRow(b, may, rx, rate) {
+  const ip = b.ip === 'b' ? 'b' : 'a', input = rpSplit() ? (ip === 'b' ? 2 : 1) : b.input === 2 ? 2 : 1;
   const tr = document.createElement('tr');
   const dis = may ? '' : ' disabled';
   tr.classList.toggle('off', !b.on);
@@ -1567,18 +1575,22 @@ function bandRow(b, may, rx, rate) {
   const span = Number.isFinite(hz) && hz > 0
     ? `${fmtKhz((hz - rate / 2) / 1000, 0, ' ')} – ${fmtKhz((hz + rate / 2) / 1000, 0, ' ')}` : '–';
   tr.innerHTML =
-    `<td>${b.on ? `RX${rx}` : '<span class="mut">off</span>'}</td>` +
+    `<td class="rxl">${b.on ? `${rpOn() ? `${ip.toUpperCase()}·` : ''}RX${rx}` : '<span class="mut">off</span>'}</td>` +
     `<td><input type="checkbox" data-k="on"${b.on ? ' checked' : ''}${dis} title="received"></td>` +
     (b.seg ? `<td class="segname" title="a segment of the rate">${esc(b.name)}</td>`
       : `<td><input data-k="name" value="${esc(b.name)}" size="6"${dis} title="a band of your own"></td>`) +
     `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${b.seg ? ` placeholder="${esc(fmtKhz(b.def / 1000, null, ' '))}" title="empty = the segment's centre; a number moves it"` : ''}${dis}></td>` +
     `<td class="mut span">${span}</td>` +
+    `<td class="rp-only"><select data-k="ip"${dis}><option value="a">A</option><option value="b">B</option></select></td>` +
+    `<td class="rp-only"><select data-k="input"${dis}${rpSplit() ? ' disabled title="two antennas: the IP names the input"' : ''}><option value="1">IN1</option><option value="2">IN2</option></select></td>` +
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
     `<td><select data-k="engine"${dis}><option value="">${esc(defaultEngineText())}</option><option value="v3">v3.1</option><option value="v4">v4.0 DeepCW</option><option value="v2">v2</option><option value="deepcw" title="not tested with this skimmer">DeepCW v1 (not tested)</option></select></td>` +
     `<td><input type="checkbox" data-k="rtty"${b.rtty ? ' checked' : ''}${dis}></td>` +
     `<td><input data-k="worker" value="${esc(b.worker || '')}" list="worker-names" size="8" placeholder="this PC"${dis}></td>` +
     `<td>${b.seg ? '' : `<button type="button" data-a="del" title="remove this band of your own"${may ? '' : ' disabled'}>✕</button>`}</td>`;
-  tr.querySelector('select').value = b.engine;
+  tr.querySelector('select[data-k=engine]').value = b.engine;
+  tr.querySelector('select[data-k=ip]').value = ip;
+  tr.querySelector('select[data-k=input]').value = String(input);
   if (!may) applyLock(tr, false);
   return tr;
 }
@@ -1734,32 +1746,45 @@ function readBands() {
     rtty: tr.querySelector('[data-k=rtty]').checked,
     on: tr.querySelector('[data-k=on]').checked,
     worker: tr.querySelector('[data-k=worker]').value.trim(),
+    ip: tr.querySelector('[data-k=ip]').value,
+    input: Number(tr.querySelector('[data-k=input]').value),
   }));
 }
 function drawBands(list, note) {
   const may = cfg.data && cfg.data.may_change, rate = bandRate();
-  let rx = 0;
-  $('#band-rows').replaceChildren(...list.map((b) => bandRow(b, may, b.on ? ++rx : 0, rate)));
+  const n = { a: 0, b: 0 };
+  if (!rpOn()) for (const b of list) b.ip = 'a';
+  $('#band-rows').replaceChildren(...list.map((b) => {
+    const ip = b.ip === 'b' ? 'b' : 'a';
+    return bandRow(b, may, b.on ? ++n[ip] : 0, ipRate(ip));
+  }));
+  const rx = n.a + n.b;
   // the workers this hub knows: named in a band, connected, or found on the LAN
   const names = new Set(list.map((b) => b.worker).filter(Boolean));
   for (const w of (status && status.hub && status.hub.workers) || []) names.add(w.name);
   for (const n of cfg.lanWorkers || []) names.add(n);
   $('#worker-names').innerHTML = [...names].map((n) => `<option value="${esc(n)}">`).join('');
-  const mbps = wireMbps(rx, rate);
-  $('#band-count').textContent = `${rx} of ${MAX_BANDS} receivers · ${rate / 1000} kHz each` +
-    `${rx ? ` · ≈ ${Math.round(mbps)} Mb/s of IQ on the wire` : ''}${note ? ` · ${note}` : ''}`;
-  $('#band-count').classList.toggle('bad', rx > MAX_BANDS || !!note);
+  const ma = wireMbps(n.a, rate), mb = wireMbps(n.b, ipRate('b'));
+  const ipText = (k, cnt, r, m) => `${rpOn() ? `IP ${k} ` : ''}${cnt} of ${maxOn(k.toLowerCase())} receivers · ${r / 1000} kHz` +
+    `${cnt ? ` · ≈ ${Math.round(m)} Mb/s` : ''}`;
+  $('#band-count').textContent = ipText('A', n.a, rate, ma) +
+    (n.b ? ` | ${ipText('B', n.b, ipRate('b'), mb)} | together ≈ ${Math.round(ma + mb)} Mb/s of a 1 Gb/s link` : '') +
+    `${note ? ` · ${note}` : ''}`;
+  $('#band-count').classList.toggle('bad', n.a > maxOn('a') || n.b > maxOn('b') || !!note);
+  rpDiagram();
   $('#band-add').disabled = !may || list.filter((b) => b.on || setUp(b)).length >= MAX_LISTED;
   wsprShow();
 }
 // ticking a band on or off renumbers the receivers; a ninth stays off
 on('#band-rows', 'change', (e) => {
   const k = e.target.dataset && e.target.dataset.k;
-  if (k === 'on') {
-    const list = readBands();
-    if (e.target.checked && list.filter((b) => b.on).length > MAX_BANDS) {
-      e.target.checked = false;
-      drawBands(readBands(), `the radio has ${MAX_BANDS} receivers: turn one off first`);
+  if (k === 'on' || k === 'ip') {
+    const list = readBands(), tr = e.target.closest('tr');
+    const ip = tr.querySelector('[data-k=ip]').value;
+    if ((k === 'ip' || e.target.checked) && list.filter((b) => b.on && b.ip === ip).length > maxOn(ip)) {
+      if (k === 'on') e.target.checked = false;
+      else e.target.value = ip === 'a' ? 'b' : 'a';
+      drawBands(readBands(), `IP ${ip.toUpperCase()} takes ${maxOn(ip)} receivers at ${ipRate(ip) / 1000} kHz: turn one off first`);
       return;
     }
     drawBands(list);
@@ -1783,8 +1808,8 @@ on('#band-rows', 'click', (e) => {
 });
 on('#band-add', 'click', () => {
   const list = readBands();
-  const on = list.filter((b) => b.on).length < MAX_BANDS;   // a ninth line starts off
-  list.push({ seg: false, def: 0, name: '', khz: '', cw: true, engine: '', rtty: false, on });
+  const on = list.filter((b) => b.on && b.ip !== 'b').length < MAX_BANDS;   // a ninth on A starts off
+  list.push({ seg: false, def: 0, name: '', khz: '', cw: true, engine: '', rtty: false, on, ip: 'a', input: 1 });
   drawBands(list);
   setDirty(true);
 });
@@ -1865,6 +1890,16 @@ on('[name="radio.rate"]', 'change', () => {
   if (!cfg.data) return;
   drawBands(withSegments(readBands(), bandRate()));
 });
+// the source, the layout, IP B's rate: the bands' columns, spans and inputs follow
+function rpLayout() { $('#settings').classList.toggle('no-rp', !rpOn()); }
+for (const n of ['radio.type', 'rp.mode', 'rp.b_rate']) {
+  on(`[name="${n}"]`, 'change', () => {
+    if (!cfg.data) return;
+    rpLayout();
+    drawBands(readBands());
+    rpRefresh();
+  });
+}
 on('#settings', 'input', () => setDirty(true));
 
 // The callsign filter, as IP-rotator's DX filter (its DXC page): plain text
@@ -1928,7 +1963,8 @@ function fillSettings(d) {
   const fileEngine = d.values['decode.engine'] || 'v3';
   drawBands(withSegments(d.bands.map((b) => ({ name: b.name, khz: fmtKhz(b.centre_hz / 1000, null, ' '), cw: b.cw,
                                   engine: b.engine === fileEngine ? '' : b.engine, rtty: b.rtty, on: b.on !== false,
-                                  worker: b.worker || '' })), bandRate()));
+                                  worker: b.worker || '', ip: b.ip || 'a', input: b.input || 1 })), bandRate()));
+  rpLayout();
   $('#band-from').textContent = '';
   const lock = $('#set-lock');
   lock.hidden = d.may_change;
@@ -1954,6 +1990,7 @@ function fillSettings(d) {
   badCallsCheck();
   mycallShow();
   if (status) { renderDcw(status.deepcw); renderV4(status.v4); }
+  rpRefresh();
 }
 
 function formBody() {
@@ -1973,6 +2010,8 @@ function formBody() {
     if (b.rtty) modes.push('rtty');
     if (!b.on) modes.push('off');
     if (b.worker) modes.push(`@${b.worker}`);
+    if (rpOn() && b.ip === 'b') modes.push('ip=b');
+    if (rpOn() && !rpSplit() && b.input === 2) modes.push('in=2');
     lines.push(`${b.name}=${Number.isFinite(hz) ? hz : b.khz}${modes.length ? ` ${modes.join(',')}` : ''}`);
   }
   p.set('bands', lines.join('\n'));
@@ -2356,3 +2395,182 @@ try { saved = sessionStorage.getItem('skimmer-tab') || 'status'; localStorage.re
 show(document.getElementById(`tab-${saved}`) ? saved : 'status');
 visitorCheck().then(poll);
 setInterval(poll, 2000);
+
+// ---- Settings → Red Pitaya: the board over SSH (/api/redpitaya, rp_manage.c) ----------
+// The state comes from the skimmer (its key, the board, the job running);
+// the diagram from the form as edited (the bands' IPs and inputs, the
+// layout) and the IPs' state. Every action is a button — nothing on the
+// board changes otherwise.
+const rp = { d: null, timer: 0 };
+const svgEsc = (t) => esc(String(t));
+function rpDiagram() {
+  const svg = $('#rp-diagram');
+  if (!svg || !cfg.data) return;
+  const list = readBands().filter((b) => b.on);
+  const split = rpSplit();
+  const sets = ['a', 'b'].map((ip) => {
+    const bs = list.filter((b) => (b.ip === 'b' ? 'b' : 'a') === ip);
+    const ins = new Set(bs.map((b) => (split ? (ip === 'b' ? 2 : 1) : b.input === 2 ? 2 : 1)));
+    return { ip, n: bs.length, rate: ipRate(ip), ins };
+  });
+  const st = (rp.d && rp.d.ips) || [];
+  const host = (k) => (st[k] && st[k].host) || (k ? ($('[name="rp.b_host"]').value.trim() || 'IP B') : (($('[name="radio.host"]').value.split(',')[0] || '').split('@')[0].trim() || 'IP A'));
+  const who = (k) => {
+    if (sets[k].n) return ['this skimmer', `${sets[k].n} band${sets[k].n === 1 ? '' : 's'} · ${sets[k].rate / 1000} kHz`, 'on'];
+    const s = st[k] && st[k].state;
+    if (s === 'busy') return ['another client', 'streams from it now', 'busy'];
+    return ['free', 'for another client (CW Skimmer…)', 'off'];
+  };
+  const y = [40, 120];
+  let g = '';
+  for (let i = 0; i < 2; i++) {                       // the inputs
+    g += `<rect class="box" x="6" y="${y[i] - 18}" width="72" height="36" rx="4"/>` +
+         `<text x="42" y="${y[i] + 5}" text-anchor="middle">IN${i + 1}</text>`;
+  }
+  for (let k = 0; k < 2; k++) {                       // the receiver sets and IPs
+    const s = sets[k], w = who(k);
+    for (const inp of [1, 2]) {
+      const used = s.ins.has(inp) || (split && inp === k + 1);
+      if (!used && !(split && inp === k + 1)) continue;
+      g += `<path class="${s.n ? 'on' : ''}" d="M78 ${y[inp - 1]} C 130 ${y[inp - 1]}, 130 ${y[k]}, 180 ${y[k]}"/>`;
+    }
+    g += `<rect class="box ${s.n ? 'on' : ''}" x="180" y="${y[k] - 26}" width="170" height="52" rx="4"/>` +
+         `<text x="265" y="${y[k] - 4}" text-anchor="middle">receivers ${k ? '9–16' : '1–8'}</text>` +
+         `<text class="mut" x="265" y="${y[k] + 14}" text-anchor="middle">${s.n ? `${s.n} of 8 · ${s.rate / 1000} kHz` : 'none for this skimmer'}</text>` +
+         `<path class="${w[2]}" d="M350 ${y[k]} L 400 ${y[k]}"/>` +
+         `<rect class="box ${w[2]}" x="400" y="${y[k] - 26}" width="110" height="52" rx="4"/>` +
+         `<text x="455" y="${y[k] - 4}" text-anchor="middle">IP ${k ? 'B' : 'A'}</text>` +
+         `<text class="mut" x="455" y="${y[k] + 14}" text-anchor="middle">${svgEsc(host(k))}</text>` +
+         `<path class="${w[2]}" d="M510 ${y[k]} L 530 ${y[k]}"/>` +
+         `<text x="536" y="${y[k] - 4}">${svgEsc(w[0])}</text>` +
+         `<text class="mut" x="536" y="${y[k] + 14}">${svgEsc(w[1])}</text>`;
+  }
+  g += `<text class="mut" x="265" y="172" text-anchor="middle">${split ? 'two antennas: IN1 → IP A, IN2 → IP B' : 'P1: each band its input, both IPs from one set of 16'}</text>`;
+  svg.innerHTML = g;
+}
+function rpRender() {
+  const d = rp.d;
+  if (!d) return;
+  const b = d.board || {};
+  const sub = !d.ssh ? 'ssh is not installed on this PC (openssh-client)'
+    : !d.connected ? (d.key ? 'not connected' : 'not connected yet — Connect puts the skimmer\'s key there')
+    : `${b.hw || '?'} · Alpine ${b.alpine || '?'} · ${b.installed && b.agent ? b.agent.replace('skimmer-rp', 'skimmer agent') : b.stock ? 'Pavel Demin\'s servers' : 'no servers running'}`;
+  $('#rp-sub').textContent = sub;
+  const busy = !!d.job;
+  const stEl = $('#rp-state');
+  stEl.classList.toggle('bad', !busy && !!d.error);
+  stEl.textContent = busy ? `${d.job}: ${d.step || '…'}` : d.error || (d.connected ? 'connected' : '');
+  const may = cfg.data && cfg.data.may_change;
+  $('#rp-pw').hidden = !d.need_password;
+  $('#rp-connect').disabled = !may || busy || !d.ssh;
+  const supported = (b.hw || '').startsWith('STEM_122-16SDR') && b.pavel && b.xdevcfg;
+  $('#rp-install').disabled = !may || busy || !d.connected || !supported || !d.agent_file;
+  $('#rp-install').title = !d.agent_file ? 'this build carries no Red Pitaya agent'
+    : !supported && d.connected ? 'only a STEMlab 122.88-16 SDR on Pavel Demin\'s image' : 'the skimmer\'s agent in place of Pavel Demin\'s two servers (his start.sh kept)';
+  $('#rp-install').textContent = b.installed ? 'Reinstall the agent' : 'Install the agent';
+  $('#rp-uninstall').disabled = !may || busy || !d.connected || !b.backup;
+  $('.rp-take').classList.toggle('hi', /another client/.test(d.error || ''));
+  // inputs for another client: on an IP this skimmer takes no band from
+  const list = cfg.data ? readBands().filter((x) => x.on) : [];
+  const free = ['a', 'b'].filter((ip) => !list.some((x) => (x.ip === 'b' ? 'b' : 'a') === ip));
+  const ext = $('#rp-ext');
+  ext.hidden = !(b.installed && d.connected && free.length);
+  if (!ext.hidden) {
+    const sel = (b.sel || '').split(',').map((v) => parseInt(v, 16) || 0);
+    $('#rp-ext-rows').innerHTML = free.map((ip) => {
+      const m = sel[ip === 'b' ? 1 : 0] || 0;
+      return `<div class="rp-ext-row" data-ip="${ip}"><b>IP ${ip.toUpperCase()}</b>` +
+        [...Array(8).keys()].map((r) => `<label><input type="checkbox" data-r="${r}"${m >> r & 1 ? ' checked' : ''}> RX${r + 1} IN2</label>`).join('') + '</div>';
+    }).join('');
+  }
+  rpDiagram();
+}
+async function rpRefresh() {
+  clearTimeout(rp.timer);
+  if (!cfg.data || !cfg.data.may_change || !rpOn()) return;
+  try { rp.d = await getJSON('api/redpitaya'); rpRender(); } catch (e) { $('#rp-state').textContent = e.message; }
+  // a job: follow it closely; otherwise now and then while Settings is open
+  const visible = !!($('#rp-card') && $('#rp-card').offsetParent);
+  if (rp.d && rp.d.job) rp.timer = setTimeout(rpRefresh, 1000);
+  else if (visible) rp.timer = setTimeout(rpRefresh, 10000);
+}
+async function rpAction(fields) {
+  try {
+    await post('api/redpitaya', new URLSearchParams(fields));
+  } catch (e) {
+    $('#rp-state').textContent = e.message;
+    $('#rp-state').classList.add('bad');
+  }
+  rpRefresh();
+}
+on('#rp-connect', 'click', () => {
+  const host = (($('[name="radio.host"]').value.split(',')[0] || '').split('@')[0] || '').trim();
+  if (!host || host === 'auto') {
+    $('#rp-state').textContent = 'put the board\'s address in Hosts first (not auto)';
+    $('#rp-state').classList.add('bad');
+    return;
+  }
+  const pw = $('#rp-pw').value;
+  $('#rp-pw').value = '';                               // typed once, never kept here
+  rpAction({ action: 'connect', host, ...(pw ? { password: pw } : {}) });
+});
+on('#rp-pw', 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#rp-connect').click(); } });
+on('#rp-install', 'click', () => {
+  const take = $('#rp-take').checked;
+  if (!confirm('Install the skimmer\'s agent on the Red Pitaya?\n\nPavel Demin\'s start.sh is kept (start.sh.pavel) and comes back with Uninstall. ' +
+               'Both IPs\' streams stop for a moment while the agent takes over' + (take ? ' — including another client\'s.' : '.'))) return;
+  rpAction({ action: 'install', ...(take ? { take_over: '1' } : {}) });
+});
+on('#rp-uninstall', 'click', () => {
+  const take = $('#rp-take').checked;
+  if (!confirm('Put Pavel Demin\'s start.sh back and run it? The skimmer\'s agent leaves the board.')) return;
+  rpAction({ action: 'uninstall', ...(take ? { take_over: '1' } : {}) });
+});
+on('#rp-ext-apply', 'click', () => {
+  const sel = (rp.d && rp.d.board && rp.d.board.sel || '').split(',').map((v) => parseInt(v, 16) || 0);
+  for (const row of document.querySelectorAll('#rp-ext-rows .rp-ext-row')) {
+    let m = 0;
+    for (const c of row.querySelectorAll('input[data-r]')) if (c.checked) m |= 1 << Number(c.dataset.r);
+    sel[row.dataset.ip === 'b' ? 1 : 0] = m;
+  }
+  rpAction({ action: 'sel', sel_a: String(sel[0] || 0), sel_b: String(sel[1] || 0), persist: '1' });
+});
+
+// ---- Statistics → Red Pitaya: the board (status.redpitaya, from the skimmer's
+// agent on it) and its history (rp_temp, rp_mbps_a/b). From outside the LAN
+// without addresses, load and memory (status_public); no agent: no card.
+function renderRp(x, g) {
+  const r = status && status.redpitaya;
+  const has = (a) => a && a.some((v) => v != null);
+  const card = $('#card-rp');
+  card.hidden = !(r && r.managed) && !has(g.rp_temp) && !has(g.rp_mbps_a) && !has(g.rp_mbps_b);
+  if (card.hidden) return;
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const fpgaClass = (t) => (t >= 85 ? 'hot' : t >= 75 ? 'warm' : 'cool');
+  $('#rp-card-sub').textContent = r ? `${r.board || ''}${r.firmware ? ` · ${r.firmware.replace('skimmer-rp', 'skimmer agent')}` : ''}` : '';
+  const tiles = [];
+  const tile = (k, v, title = '') => tiles.push(`<div class="tile"${title ? ` title="${esc(title)}"` : ''}><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`);
+  if (r && r.fpga_c != null) tile('FPGA', `<b class="temp ${fpgaClass(r.fpga_c)}">${fmt(r.fpga_c)} °C</b>`, 'the Zynq\'s own sensor (XADC); rated to 85 °C');
+  if (r && r.uptime_s != null) tile('up', `${fmt(r.uptime_s / 86400, 1)} days`);
+  if (r && r.rp_load != null) tile('load', fmt(r.rp_load, 2), 'the board\'s 1-minute load average (2 cores)');
+  for (const [k, ip] of ((r && r.ips) || []).entries()) {
+    const name = `IP ${k ? 'B' : 'A'}`;
+    const what = ip.streaming
+      ? `${ip.receivers} × ${fmt((ip.rate || 0) / 1000)} kHz${ip.mbps != null ? ` · ${fmt(ip.mbps, 1)} Mb/s` : ''}`
+      : '<span class="mut">idle</span>';
+    tile(name, what, `${ip.host || ''}${ip.client ? ` → ${ip.client}` : ''}${ip.link_mbps ? ` · link ${ip.link_mbps} Mb/s` : ''}` +
+      `${ip.overflows ? ` · FIFO overflows ${ip.overflows}` : ''}${ip.orphan_stops ? ` · orphans stopped ${ip.orphan_stops}` : ''}`);
+  }
+  $('#rp-tiles').innerHTML = tiles.join('');
+  const ramp = [[55, css('--ok')], [70, css('--ok')], [78, css('--warn')], [85, css('--bad')]];
+  $('#legend-rptemp').innerHTML = '<span><i class="ramp" style="background:linear-gradient(90deg,var(--ok),var(--ok) 35%,var(--warn) 65%,var(--bad))"></i>FPGA, the hottest minute</span>';
+  Charts.line($('#chart-rptemp'), x, g.rp_temp || x.t.map(() => null),
+    { name: 'FPGA, the hottest minute', color: css('--ok'), ramp, fmtV: (v) => `${fmt(v)} °C`,
+      fmtTick: (v) => `${fmt(v)} °C`, height: 110, minSpan: 20, mark: { value: 85, label: 'rated 85 °C' } });
+  const a = g.rp_mbps_a || x.t.map(() => null), b = g.rp_mbps_b || x.t.map(() => null);
+  const layers = [{ name: 'IP A', color: Charts.seriesColor(0), values: a }, { name: 'IP B', color: Charts.seriesColor(1), values: b }];
+  $('#legend-rpnet').innerHTML = layers.map((l) => `<span><i style="background:${l.color}"></i>${l.name}</span>`).join('') + '<span><i class="line"></i>both</span>';
+  Charts.area($('#chart-rpnet'), x, layers, a.map((v, i) => (v == null && b[i] == null ? null : (v || 0) + (b[i] || 0))),
+    (v) => `${fmt(v, 1)} Mb/s`, 'Mb/s from the board');
+  $('#rp-card-note').textContent = r && r.age_s > 60 ? `the board's last status is ${Math.round(r.age_s)} s old` : '';
+}

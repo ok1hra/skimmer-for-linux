@@ -10,12 +10,22 @@
  *            host    one radio or a list (comma separated, tried in order),
  *                    each optionally host@ppm: that radio's own clock error;
  *                    auto (or none) = the radios a broadcast discovery finds
- *            rate    48000 / 96000 / 192000 — one rate for all receivers
+ *            rate    48000 / 96000 / 192000 / 384000 (4 receivers an IP at
+ *                    384 kHz) — IP A's receivers; IP B's is [rp] b_rate
  *            clock_ppm  for the radios without @ppm
  *   [bands]  <name>=<centre Hz> [modes], in receiver order (RX1 first);
  *            modes a comma list of cw, cw:v3, cw:v4, cw:v2, cw:deepcw, rtty — none = cw
  *            with [decode] engine; off = the band is kept, not received;
- *            @name = received here, decoded by the worker "name" (hub.h)
+ *            @name = received here, decoded by the worker "name" (hub.h);
+ *            ip=b = from the board's second IP (mvl0, DDC 8–15; default
+ *            ip=a, [radio] host); in=2 = from the ADC input IN2 (the
+ *            skimmer's agent on the board only, docs/REDPITAYA.md) — 8
+ *            bands an IP, 16 in all
+ *   [rp]     mode — p1 (default: one set of 16 DDCs, each band its input,
+ *            in=) or extended (two antennas: every ip=a band on IN1, every
+ *            ip=b band on IN2 — in= is then implied), b_host — the second IP
+ *            (default: the agent on [radio] host names it), b_rate — its
+ *            rate (default [radio] rate)
  *   [decode] engine=v3|v4|v2|deepcw (the bands that name none), log=true|false,
  *            v4_workers (0 = half the CPUs): CW v4's inference threads,
  *            v4_guard (default true): the governor's v4 load guard,
@@ -127,8 +137,10 @@
 
 G_BEGIN_DECLS
 
-#define SKIM_HD_MAX_BANDS 8           /* sdr_receiver_hpsdr's receiver count */
-#define SKIM_HD_MAX_LISTED 16         /* [bands] lines, the ones off included */
+#define SKIM_HD_MAX_BANDS 16          /* both IPs of a Red Pitaya, 8 each     */
+#define SKIM_HD_IP_RX     8           /* sdr_receiver_hpsdr's receivers an IP */
+#define SKIM_HD_IP_RX_384 4           /* … of them at 384 kHz (the board's ARM) */
+#define SKIM_HD_MAX_LISTED 32         /* [bands] lines, the ones off included */
 #define SKIM_HD_HOST_AUTO "auto"      /* [radio] host: what a broadcast finds */
 
 typedef enum {
@@ -147,6 +159,11 @@ typedef struct {
   gboolean     rtty;                  /* decode RTTY beside it               */
   gboolean     off;                   /* listed, not received ("off")        */
   char         worker[32];            /* "@name": decoded there; "" = here   */
+  guint8       ip;                    /* 0 = IP A ([radio] host: eth0, DDC
+                                       * 0–7), 1 = IP B (mvl0, DDC 8–15)     */
+  guint8       input;                 /* 0 = IN1, 1 = IN2 (the agent only)   */
+  guint        rate;                  /* its IQ rate: its IP's ([radio] rate,
+                                       * [rp] b_rate)                        */
 } SkimHdBand;
 
 typedef struct {
@@ -159,6 +176,11 @@ typedef struct {
   char            *hosts_text;        /* "a, b" for messages                 */
   guint            rate;
   double           ppm;               /* clock_ppm for the radios w/o @ppm   */
+  /* [rp] — the board's second IP (bands with ip=b) */
+  gboolean         rp_split;          /* mode=extended: IN1 → IP A, IN2 → IP B */
+  char            *rp_b_host;         /* NULL = the agent's discovery names it */
+  guint            rp_b_rate;         /* its rate (default [radio] rate)      */
+  guint            nb_ip[2];          /* bands received on each IP            */
   /* [bands] — band[]: the ones received, in receiver order; listed[]:
    * every line in file order, the ones off included (the settings page) */
   SkimHdBand       band[SKIM_HD_MAX_BANDS];

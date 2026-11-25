@@ -7,10 +7,14 @@
  *              to the address AND PORT the start came from, so one socket
  *              sends everything and receives the stream.
  *   EP2 (to)   EF FE 01 02 seq[4] + 2 × (7F 7F 7F C0 C1 C2 C3 C4 + 504 B)
- *              C0=0x00: C1[1:0] rate 0/1/2 = 48/96/192 kHz, C4[5:3] nrx−1
+ *              C0=0x00: C1[1:0] rate 0/1/2/3 = 48/96/192/384 kHz, C4[5:3] nrx−1
  *              C0=0x04, 0x06 … 0x10, 0x24: RX1 … RX8 frequency, Hz,
  *              big-endian (the server turns it into a phase increment
- *              against its nominal 125 MHz)
+ *              against its nominal ADC clock: 122.88 or 125 MHz)
+ *              C0=0x1C (only to the skimmer's agent, rp/agent): the ADC of
+ *              each receiver, 2 bits each — C1 RX1..RX4, C2 RX5..RX8 (RX8
+ *              beyond Protocol 1's seven); the start then carries "SKRP"
+ *              in bytes 4–7, and only such a client's word is taken
  *   EP6 (from) EF FE 01 06 seq[4] + 2 × (7F 7F 7F C0..C4 + 504 B); per
  *              sample and receiver I[3] Q[3] (24-bit BE, signed), then a
  *              16-bit mic word: 504 / (6·nrx + 2) samples per frame.
@@ -106,6 +110,8 @@ struct _SkimHpsdrClient {
   guint    rate;
   guint8   rate_code;
   guint    nrx;
+  guint8   adc_mask;             /* bit r = receiver r on IN2 (agent only)   */
+  gboolean agent;                /* the board runs the skimmer's agent       */
 
   /* Receive thread only. */
   guint32  ep2_seq;
@@ -201,6 +207,13 @@ static void send_cmd(int fd, const struct sockaddr_in *dst, guint8 b2, guint8 b3
   sendto(fd, pkt, sizeof(pkt), 0, (const struct sockaddr *)dst, sizeof(*dst));
 }
 
+/* The start to the skimmer's agent: "SKRP" in the padding marks the client
+ * whose ADC word (C0=0x1C) the agent takes. */
+static void send_start_marked(int fd, const struct sockaddr_in *dst) {
+  guint8 pkt[64] = { 0xEF, 0xFE, 0x04, 0x01, 'S', 'K', 'R', 'P' };
+  sendto(fd, pkt, sizeof(pkt), 0, (const struct sockaddr *)dst, sizeof(*dst));
+}
+
 /* ---- discovery -------------------------------------------------------------- */
 
 static gboolean parse_discovery(const guint8 *d, gssize n, SkimHpsdrInfo *out) {
@@ -218,13 +231,29 @@ static gboolean parse_discovery(const guint8 *d, gssize n, SkimHpsdrInfo *out) {
   }
   out->name[8] = '\0';
   out->nrx = d[0x13];
+  /* The skimmer's own agent on the board (rp/agent) answers a request
+   * whose padding says SKRP (bytes 4..7 — byte 3 is part of the command,
+   * so Pavel Demin's server answers it as a plain discovery) with its marker
+   * after the standard 20 bytes; anything else leaves them zero. */
+  if (n >= 0x1D && memcmp(d + 0x14, "SKRP", 4) == 0) {
+    out->agent = TRUE;
+    out->agent_major = d[0x18];
+    out->agent_minor = d[0x19];
+    out->agent_mode = d[0x1A];
+    out->agent_sel = d[0x1B];
+    out->agent_inst = d[0x1C];
+    if (n >= 0x21 && (d[0x1D] | d[0x1E] | d[0x1F] | d[0x20])) {   /* the other IP (0.2+) */
+      g_snprintf(out->agent_peer, sizeof(out->agent_peer), "%u.%u.%u.%u", d[0x1D], d[0x1E],
+                 d[0x1F], d[0x20]);
+    }
+  }
   return TRUE;
 }
 
 /* Discovery on an open socket: send, wait for the reply from dst. */
 static gboolean discover_fd(int fd, const struct sockaddr_in *dst,
                             guint timeout_ms, SkimHpsdrInfo *out) {
-  guint8 req[63] = { 0xEF, 0xFE, 0x02 };
+  guint8 req[63] = { 0xEF, 0xFE, 0x02, 0x00, 'S', 'K', 'R', 'P' };   /* SKRP: see parse_discovery */
   sendto(fd, req, sizeof(req), 0, (const struct sockaddr *)dst, sizeof(*dst));
   const gint64 end = g_get_monotonic_time() + (gint64)timeout_ms * 1000;
   for (;;) {
@@ -274,7 +303,7 @@ GArray *skim_hpsdr_discover_all(const char *bcast, guint16 port, guint timeout_m
   int on = 1;
   setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
   GArray *out = g_array_new(FALSE, TRUE, sizeof(SkimHpsdrFound));
-  guint8 req[63] = { 0xEF, 0xFE, 0x02 };
+  guint8 req[63] = { 0xEF, 0xFE, 0x02, 0x00, 'S', 'K', 'R', 'P' };   /* SKRP: see parse_discovery */
   if (sendto(fd, req, sizeof(req), 0, (const struct sockaddr *)&dst, sizeof(dst)) < 0) {
     g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED,
                 "discovery broadcast to %s: %s", bcast ? bcast : "255.255.255.255",
@@ -315,13 +344,18 @@ GArray *skim_hpsdr_discover_all(const char *bcast, guint16 port, guint timeout_m
 static guint8 rx_freq_c0(guint rx) { return rx < 7 ? (guint8)(0x04 + 2 * rx) : 0x24; }
 
 /* Control word k of the session: 0 = rate + receiver count, 1..nrx = the
- * receivers' frequencies. */
+ * receivers' frequencies, nrx + 1 = the receivers' ADCs (the agent only). */
 static void put_ctrl(const SkimHpsdrClient *c, guint k, guint8 *fr) {
   fr[0] = fr[1] = fr[2] = 0x7F;
   if (k == 0) {
     fr[3] = 0x00;
     fr[4] = c->rate_code;
     fr[7] = (guint8)(((c->nrx - 1) & 7) << 3);
+  } else if (k == c->nrx + 1) {
+    fr[3] = 0x1C;
+    for (guint r = 0; r < 8; r++) {
+      if (c->adc_mask >> r & 1) { fr[4 + r / 4] |= (guint8)(1u << (2 * (r % 4))); }
+    }
   } else {
     fr[3] = rx_freq_c0(k - 1);
     const guint32 hz = htonl(c->rx[k - 1].freq_word);
@@ -332,7 +366,7 @@ static void put_ctrl(const SkimHpsdrClient *c, guint k, guint8 *fr) {
 /* All nrx + 1 control words, two per packet (an odd count repeats the
  * rate word). */
 static void send_ep2(SkimHpsdrClient *c) {
-  const guint words = c->nrx + 1;
+  const guint words = c->nrx + 1 + (c->agent ? 1 : 0);
   for (guint k = 0; k < words; k += 2) {
     guint8 pkt[PKT_BYTES] = { 0xEF, 0xFE, 0x01, 0x02 };
     const guint32 seq = htonl(c->ep2_seq++);
@@ -582,9 +616,10 @@ gboolean skim_hpsdr_client_start_multi(SkimHpsdrClient *c, guint rate,
     case 48000:  c->rate_code = 0; break;
     case 96000:  c->rate_code = 1; break;
     case 192000: c->rate_code = 2; break;
+    case 384000: c->rate_code = 3; break;    /* the 122.88 MHz boards' servers */
     default:
       g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED,
-                  "HPSDR P1 sample rate %u not supported (48/96/192 kHz)", rate);
+                  "HPSDR P1 sample rate %u not supported (48/96/192/384 kHz)", rate);
       return FALSE;
   }
   for (guint r = 0; r < nrx; r++) {
@@ -641,9 +676,14 @@ gboolean skim_hpsdr_client_start_multi(SkimHpsdrClient *c, guint rate,
   g_mutex_unlock(&c->lock);
 
   /* Configure first, so the first EP6 packet already has our layout. */
+  c->agent = info.agent;
   send_ep2(c);
   send_ep2(c);
-  send_cmd(c->fd, &c->dst, 0x04, 0x01);
+  if (c->agent) {
+    send_start_marked(c->fd, &c->dst);
+  } else {
+    send_cmd(c->fd, &c->dst, 0x04, 0x01);
+  }
   c->last_refresh_us = c->started_us = g_get_monotonic_time();
 
   g_atomic_int_set(&c->run, 1);
@@ -724,6 +764,10 @@ guint64 skim_hpsdr_client_lost_frames(SkimHpsdrClient *c) {
   g_mutex_unlock(&c->lock);
   return v;
 }
+
+void skim_hpsdr_client_set_inputs(SkimHpsdrClient *c, guint8 mask) { c->adc_mask = mask; }
+
+gboolean skim_hpsdr_client_agent(SkimHpsdrClient *c) { return c->agent; }
 
 guint16 skim_hpsdr_client_local_port(SkimHpsdrClient *c) {
   if (c->fd < 0) { return 0; }

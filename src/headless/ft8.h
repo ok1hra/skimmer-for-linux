@@ -138,7 +138,7 @@ typedef struct _SkimHdFt8 SkimHdFt8;
 /* The bands in receiver order (names, centres) at rate. Never NULL: with no
  * dial covered or no decoder it idles and says why (skim_hd_ft8_status_json). */
 SkimHdFt8 *skim_hd_ft8_new(const SkimHdFt8Config *cfg, guint nb, const char *const *names,
-                           const double *centres, double rate);
+                           const double *centres, const double *rates);
 void       skim_hd_ft8_free(SkimHdFt8 *f);
 
 /* Source thread: one IQ block of band b (returns at once without a dial). */

@@ -113,7 +113,7 @@ typedef struct _SkimHdJs8 SkimHdJs8;
 
 /* names[]/centres[] of the nb receivers at `rate`. */
 SkimHdJs8 *skim_hd_js8_new(const SkimHdJs8Config *cfg, guint nb, const char *const *names,
-                           const double *centres, double rate);
+                           const double *centres, const double *rates);
 void       skim_hd_js8_free(SkimHdJs8 *j);
 void       skim_hd_js8_push(SkimHdJs8 *j, guint b, const float *iq, guint n);
 void       skim_hd_js8_push_at(SkimHdJs8 *j, guint b, const float *iq, guint n, gint64 t_end_us);

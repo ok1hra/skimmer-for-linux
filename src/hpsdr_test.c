@@ -314,9 +314,9 @@ int main(void) {
 
   printf("argument / reachability errors:\n");
   SkimHpsdrClient *bad = skim_hpsdr_client_new("127.0.0.1", m_port);
-  ok = skim_hpsdr_client_start(bad, 384000, 14e6, 0, FALSE, &err);
+  ok = skim_hpsdr_client_start(bad, 768000, 14e6, 0, FALSE, &err);
   CHECK(!ok && g_error_matches(err, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED),
-        "384 kHz refused (%s)", err ? err->message : "started!");
+        "768 kHz refused — Protocol 1 has no code for it (%s)", err ? err->message : "started!");
   g_clear_error(&err);
   skim_hpsdr_client_free(bad);
   bad = skim_hpsdr_client_new("127.0.0.1", (guint16)(m_port + 1));

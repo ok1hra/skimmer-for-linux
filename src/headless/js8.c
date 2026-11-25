@@ -570,7 +570,7 @@ static void decode_job(gpointer data, gpointer user) {
 /* ---- life ------------------------------------------------------------------------ */
 
 SkimHdJs8 *skim_hd_js8_new(const SkimHdJs8Config *cfg, guint nb, const char *const *names,
-                           const double *centres, double rate) {
+                           const double *centres, const double *rates) {
   SkimHdJs8 *j = g_new0(SkimHdJs8, 1);
   g_mutex_init(&j->lock);
   g_cond_init(&j->idle);
@@ -613,7 +613,7 @@ SkimHdJs8 *skim_hd_js8_new(const SkimHdJs8Config *cfg, guint nb, const char *con
       want = names && names[b] && strcmp(names[b], *x) == 0;
     }
     for (const SkimJs8Dial *d = SKIM_JS8_DIALS; want && np && d->band; d++) {
-      if (!skim_js8_covers(centres[b], rate, d->dial_hz, j->lo_hz, j->hi_hz) ||
+      if (!skim_js8_covers(centres[b], rates[b], d->dial_hz, j->lo_hz, j->hi_hz) ||
           j->nslots >= SKIM_JS8_MAX_SLOTS) {
         continue;
       }
@@ -644,7 +644,7 @@ SkimHdJs8 *skim_hd_js8_new(const SkimHdJs8Config *cfg, guint nb, const char *con
         g_free(kd);
         g_mkdir_with_parents(s->keep[sub_of[k]], 0755);
       }
-      s->rx = skim_digi_rx_new(rate, centres[b], d->dial_hz, j->lo_hz, j->hi_hz, periods, np,
+      s->rx = skim_digi_rx_new(rates[b], centres[b], d->dial_hz, j->lo_hz, j->hi_hz, periods, np,
                                cycle_cb, s);
       g_ptr_array_add(j->by_band[b], s);
       j->nslots++;

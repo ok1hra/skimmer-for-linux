@@ -22,7 +22,16 @@
  * goes out only when that radio's stream really comes to that port and no
  * socket of this machine holds it. Anyone else's stream goes to their own
  * address, so it is never touched. A stream lost while we run keeps its
- * line too: it may be ours still, only unread for a while (drop()). 
+ * line too: it may be ours still, only unread for a while (drop()).
+ *
+ * The board's second IP (bands with ip=b, config.h): the skimmer's agent
+ * serves DDC 8–15 on mvl0's address. That stream follows the first: once
+ * IP A streams, IP B ([rp] b_host, else the address the agent's discovery
+ * names) starts with the ip=b bands at [rp] b_rate, the same clock
+ * correction — and is retried every few seconds while it is busy (another
+ * client, never taken over unless take_over was given for this start) or
+ * silent. Losing it never stops IP A, nor the skimmer. Each receiver's
+ * input (in=2) goes in its stream's start (hpsdr_p1.h; the agent only).
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -42,17 +51,33 @@
  * reply is final at once. */
 #define RADIO_SEARCH_S 30
 
-G_STATIC_ASSERT(SKIM_HD_MAX_BANDS <= SKIM_HPSDR_MAX_RX);
+G_STATIC_ASSERT(SKIM_HD_IP_RX <= SKIM_HPSDR_MAX_RX);
+G_STATIC_ASSERT(SKIM_HD_MAX_BANDS <= 2 * SKIM_HD_IP_RX);
 
 typedef struct {
   SkimIqSource *s;
   guint         band;
 } Rx;
 
+/* IP B: the board's second stream (ip=b bands). */
+typedef struct {
+  SkimHpsdrClient *cl;
+  gboolean         streaming;
+  volatile gint    closed;
+  gboolean         take_over;          /* one-shot, as IP A's               */
+  char             host[64];           /* where it streams (or was tried)    */
+  char             peer[16];           /* the agent's word for it            */
+  char             state[96];
+} IpB;
+
 typedef struct {
   SkimIqSource     base;
   gboolean         take_over;
   SkimHpsdrClient *rp;
+  IpB              b;
+  guint            nrx_ip[2];          /* bands on each IP                   */
+  guint            band_of[2][SKIM_HD_IP_RX];  /* receiver → band            */
+  guint8           inputs[2];          /* bit r = receiver r on IN2          */
   gboolean         streaming, gave_up;
   gint64           search_since_us;    /* 0 = not searching                  */
   volatile gint    closed;             /* set by the client's thread         */
@@ -177,21 +202,31 @@ static void rx_iq_cb(const float *iq, guint n, double rate, double centre, gpoin
 }
 
 static void closed_cb(gpointer user) { g_atomic_int_set(&((P1 *)user)->closed, 1); }
+static void closed_b_cb(gpointer user) { g_atomic_int_set(&((P1 *)user)->b.closed, 1); }
+
+/* A client for IP ip's bands: receivers, callbacks, inputs; centres out. */
+static SkimHpsdrClient *client_for(P1 *p, guint ip, const char *host, double *centres) {
+  const SkimHdConfig *c = p->base.cfg;
+  SkimHpsdrClient *cl = skim_hpsdr_client_new(host, radio_port());
+  for (guint r = 0; r < p->nrx_ip[ip]; r++) {
+    const guint b = p->band_of[ip][r];
+    centres[r] = c->band[b].centre_hz;
+    skim_hpsdr_client_set_rx_iq_cb(cl, r, rx_iq_cb, &p->rx[b]);
+  }
+  skim_hpsdr_client_set_inputs(cl, p->inputs[ip]);
+  return cl;
+}
 
 /* Start streaming from host at ppm; FALSE (state set) when the start fails. */
 static gboolean start_on(P1 *p, const char *host, double ppm, gboolean took) {
   const SkimHdConfig *c = p->base.cfg;
   GError *err = NULL;
-  double centres[SKIM_HD_MAX_BANDS];
+  double centres[SKIM_HD_IP_RX];
   p->take_over = FALSE;                         /* one-shot: the first start   */
-  p->rp = skim_hpsdr_client_new(host, radio_port());
-  for (guint b = 0; b < c->nb; b++) {
-    centres[b] = c->band[b].centre_hz;
-    skim_hpsdr_client_set_rx_iq_cb(p->rp, b, rx_iq_cb, &p->rx[b]);
-  }
+  p->rp = client_for(p, 0, host, centres);
   skim_hpsdr_client_set_closed_cb(p->rp, closed_cb, p);
   g_atomic_int_set(&p->closed, 0);
-  if (!skim_hpsdr_client_start_multi(p->rp, c->rate, centres, c->nb, ppm, took, &err)) {
+  if (!skim_hpsdr_client_start_multi(p->rp, c->rate, centres, p->nrx_ip[0], ppm, took, &err)) {
     p1_state(p, "%s: start failed: %s", host, err->message);
     g_clear_error(&err);
     g_clear_pointer(&p->rp, skim_hpsdr_client_free);
@@ -203,9 +238,93 @@ static gboolean start_on(P1 *p, const char *host, double ppm, gboolean took) {
   p->streaming = TRUE;
   p->search_since_us = 0;
   p1_state(p, "streaming — %s, %u RX × %u kHz, clock %+.2f ppm%s",
-           skim_hpsdr_client_device(p->rp), c->nb, c->rate / 1000, ppm,
+           skim_hpsdr_client_device(p->rp), p->nrx_ip[0], c->rate / 1000, ppm,
            took ? " (taken over)" : "");
+  if (p->inputs[0] && !skim_hpsdr_client_agent(p->rp)) {
+    g_warning("radio: %s runs no skimmer agent — in=2 bands take IN1 (Settings → Red Pitaya "
+              "installs it)", host);
+  }
+  if (p->nrx_ip[1]) {                           /* the board names its second IP */
+    SkimHpsdrInfo info;
+    if (skim_hpsdr_discover(host, radio_port(), 500, &info, NULL) && info.agent) {
+      g_strlcpy(p->b.peer, info.agent_peer, sizeof(p->b.peer));
+    }
+  }
   return TRUE;
+}
+
+/* ---- IP B ---------------------------------------------------------------------- */
+
+static void b_state(P1 *p, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
+static void b_state(P1 *p, const char *fmt, ...) {
+  char s[96];
+  va_list ap;
+  va_start(ap, fmt);
+  g_vsnprintf(s, sizeof(s), fmt, ap);
+  va_end(ap);
+  if (strcmp(s, p->b.state) != 0) {
+    g_strlcpy(p->b.state, s, sizeof(p->b.state));
+    g_message("radio: IP B %s", s);
+  }
+}
+
+static void b_free(P1 *p) {
+  if (!p->b.cl) { return; }
+  g_clear_pointer(&p->b.cl, skim_hpsdr_client_free);
+  streams_set(p->b.host, 0);
+}
+
+/* IP B's stream lost: as drop() — its note stays for the orphan check. */
+static void b_drop(P1 *p) {
+  const guint16 port = skim_hpsdr_client_local_port(p->b.cl);
+  b_free(p);
+  if (port) { streams_set(p->b.host, port); }
+  p->b.streaming = FALSE;
+  b_state(p, "%s: stream lost — trying again", p->b.host);
+}
+
+static void b_try(P1 *p) {
+  const SkimHdConfig *c = p->base.cfg;
+  if (!p->nrx_ip[1] || p->b.streaming || !p->streaming) { return; }
+  if (!c->rp_b_host && !p->b.peer[0]) {        /* the agent may not have had it yet (DHCP) */
+    SkimHpsdrInfo ia;
+    if (skim_hpsdr_discover(p->host, radio_port(), 500, &ia, NULL) && ia.agent) {
+      g_strlcpy(p->b.peer, ia.agent_peer, sizeof(p->b.peer));
+    }
+  }
+  const char *host = c->rp_b_host ? c->rp_b_host : p->b.peer[0] ? p->b.peer : NULL;
+  if (!host) {
+    b_state(p, "has no address: the board runs no skimmer agent to name it — set [rp] b_host");
+    return;
+  }
+  g_strlcpy(p->b.host, host, sizeof(p->b.host));
+  SkimHpsdrInfo info;
+  if (!skim_hpsdr_discover(host, radio_port(), 500, &info, NULL)) {
+    b_state(p, "%s: no reply", host);
+    return;
+  }
+  const gboolean took = info.busy && p->b.take_over;
+  if (info.busy && !took && !stop_orphan(p, host)) {
+    b_state(p, "%s: busy (another client) — trying again", host);
+    return;
+  }
+  p->b.take_over = FALSE;
+  double centres[SKIM_HD_IP_RX];
+  p->b.cl = client_for(p, 1, host, centres);
+  skim_hpsdr_client_set_closed_cb(p->b.cl, closed_b_cb, p);
+  g_atomic_int_set(&p->b.closed, 0);
+  GError *err = NULL;
+  if (!skim_hpsdr_client_start_multi(p->b.cl, c->rp_b_rate, centres, p->nrx_ip[1], p->ppm_now,
+                                     took, &err)) {
+    b_state(p, "%s: start failed: %s", host, err->message);
+    g_clear_error(&err);
+    g_clear_pointer(&p->b.cl, skim_hpsdr_client_free);
+    return;
+  }
+  streams_set(host, skim_hpsdr_client_local_port(p->b.cl));
+  p->b.streaming = TRUE;
+  b_state(p, "streaming — %s, %u RX × %u kHz%s", skim_hpsdr_client_device(p->b.cl),
+          p->nrx_ip[1], c->rp_b_rate / 1000, took ? " (taken over)" : "");
 }
 
 /* Where the broadcast of host=auto goes: SKIM_HPSDR_DISCOVER=addr[:port]
@@ -339,6 +458,7 @@ static void drop(P1 *p) {
 static void p1_start(SkimIqSource *s) {
   P1 *p = (P1 *)s;
   try_start(p);
+  b_try(p);
   p->ticks = 1;
 }
 
@@ -347,6 +467,8 @@ static void p1_tick(SkimIqSource *s) {
   if (p->gave_up) { return; }
   if (p->streaming && g_atomic_int_get(&p->closed)) { drop(p); }
   if (!p->streaming && p->ticks % 3 == 0) { try_start(p); }
+  if (p->b.streaming && g_atomic_int_get(&p->b.closed)) { b_drop(p); }
+  if (!p->b.streaming && p->ticks % 3 == 0) { b_try(p); }
   p->ticks++;
 }
 
@@ -355,16 +477,25 @@ static void p1_status(SkimIqSource *s, SkimIqSourceStatus *o) {
   memset(o, 0, sizeof(*o));
   o->streaming = p->streaming;
   o->gave_up = p->gave_up;
-  g_strlcpy(o->state, p->state, sizeof(o->state));
+  if (p->nrx_ip[1] && p->b.state[0]) {
+    g_snprintf(o->state, sizeof(o->state), "%s; IP B %s", p->state, p->b.state);
+  } else {
+    g_strlcpy(o->state, p->state, sizeof(o->state));
+  }
   g_strlcpy(o->host, p->host, sizeof(o->host));
   o->ppm = p->ppm_now;
   o->packets = p->rp ? skim_hpsdr_client_packets(p->rp) : 0;
   o->lost_frames = p->rp ? skim_hpsdr_client_lost_frames(p->rp) : 0;
+  if (p->b.cl) {
+    o->packets += skim_hpsdr_client_packets(p->b.cl);
+    o->lost_frames += skim_hpsdr_client_lost_frames(p->b.cl);
+  }
 }
 
 static void p1_free(SkimIqSource *s) {
   P1 *p = (P1 *)s;
-  free_client(p);                                     /* stops — if still ours */
+  b_free(p);                                          /* stops — if still ours */
+  free_client(p);
   g_free(p);
 }
 
@@ -374,11 +505,18 @@ SkimIqSource *skim_iq_source_hpsdr_p1_new(const SkimHdConfig *cfg, gboolean take
   P1 *p = g_new0(P1, 1);
   p->base.vt = &P1_VT;
   p->take_over = take_over;
+  p->b.take_over = take_over;
   g_strlcpy(p->host, cfg->hosts[0], sizeof(p->host));
   p->ppm_now = cfg->host_ppm[0];
   for (guint b = 0; b < SKIM_HD_MAX_BANDS; b++) {
     p->rx[b].s = &p->base;
     p->rx[b].band = b;
+  }
+  for (guint b = 0; b < cfg->nb; b++) {        /* each IP's receivers, in band order */
+    const guint ip = cfg->band[b].ip ? 1 : 0;
+    const guint r = p->nrx_ip[ip]++;
+    p->band_of[ip][r] = b;
+    if (cfg->band[b].input) { p->inputs[ip] |= (guint8)(1u << r); }
   }
   return &p->base;
 }
