@@ -101,7 +101,8 @@ static int server_runs(const char *iface, int *pid_out) {
     if (n <= 0) continue;
     buf[n] = 0;
     const char *arg0 = buf, *arg1 = buf + strlen(buf) + 1;
-    if (arg1 < buf + n && strstr(arg0, "sdr-receiver-hpsdr") && strcmp(arg1, iface) == 0) {
+    if (arg1 < buf + n && ((strstr(arg0, "sdr-receiver-hpsdr") && strcmp(arg1, iface) == 0) ||
+                           (strstr(arg0, "skimmer-rp") && strcmp(arg1, "serve") == 0))) {
       found = 1;
       if (pid_out) *pid_out = atoi(e->d_name);
     }
@@ -315,13 +316,13 @@ static void cmd_pair(int argc, char **argv) {
 /* blast IP PORT MBPS SECONDS [IFACE_IP] — 1032-byte UDP datagrams in
  * batches of 25 (as the server sends), seq in bytes 4..7 (big-endian). */
 static void cmd_blast(int argc, char **argv) {
-  if (argc < 5) { fprintf(stderr, "blast IP PORT MBPS SECONDS [SRC_IP]\n"); exit(2); }
+  if (argc < 5) { fprintf(stderr, "blast IP PORT MBPS SECONDS [SRC_IP|-] [gso]\n"); exit(2); }
   const double mbps = atof(argv[3]), secs = atof(argv[4]);
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   if (s < 0) { perror("socket"); exit(1); }
   int big = 4 << 20;
   setsockopt(s, SOL_SOCKET, SO_SNDBUF, &big, sizeof(big));
-  if (argc > 5) {
+  if (argc > 5 && strcmp(argv[5], "-") != 0) {
     struct sockaddr_in src = { .sin_family = AF_INET };
     inet_pton(AF_INET, argv[5], &src.sin_addr);
     if (bind(s, (struct sockaddr *)&src, sizeof(src)) < 0) { perror("bind"); exit(1); }
@@ -342,6 +343,15 @@ static void cmd_blast(int argc, char **argv) {
     msg[i].msg_hdr.msg_name = &dst;
     msg[i].msg_hdr.msg_namelen = sizeof(dst);
   }
+  const int gso = argc > 6 && strcmp(argv[6], "gso") == 0;
+  if (gso) {                                      /* UDP_SEGMENT: one send, 25 datagrams */
+    int seg = SIZE;
+    if (setsockopt(s, 17 /* SOL_UDP */, 103 /* UDP_SEGMENT */, &seg, sizeof(seg)) < 0) { perror("UDP_SEGMENT"); exit(1); }
+  }
+  static uint8_t flat[BATCH * SIZE];
+  struct iovec fiov = { flat, sizeof(flat) };
+  struct msghdr fmsg = { .msg_name = &dst, .msg_namelen = sizeof(dst), .msg_iov = &fiov, .msg_iovlen = 1 };
+  for (int i = 0; i < BATCH; i++) { flat[i * SIZE] = 0xef; flat[i * SIZE + 1] = 0xfe; flat[i * SIZE + 2] = 1; flat[i * SIZE + 3] = 6; }
   const double pps = mbps * 1e6 / ((SIZE + 42) * 8.0);
   uint32_t seq = 0;
   uint64_t sent = 0, failed = 0;
@@ -350,8 +360,14 @@ static void cmd_blast(int argc, char **argv) {
     const double t = now_s(CLOCK_MONOTONIC) - t0;
     if (t >= secs) break;
     if (sent + BATCH > t * pps) { usleep(100); continue; }
-    for (int i = 0; i < BATCH; i++) { uint32_t be = htonl(seq++); memcpy(buf[i] + 4, &be, 4); }
-    int n = sendmmsg(s, msg, BATCH, 0);
+    int n;
+    if (gso) {
+      for (int i = 0; i < BATCH; i++) { uint32_t be = htonl(seq++); memcpy(flat + i * SIZE + 4, &be, 4); }
+      n = sendmsg(s, &fmsg, 0) < 0 ? -1 : BATCH;
+    } else {
+      for (int i = 0; i < BATCH; i++) { uint32_t be = htonl(seq++); memcpy(buf[i] + 4, &be, 4); }
+      n = sendmmsg(s, msg, BATCH, 0);
+    }
     if (n < 0) { failed++; seq -= BATCH; usleep(100); continue; }
     sent += (uint64_t)n;
     if (n < BATCH) seq -= (uint32_t)(BATCH - n);
@@ -362,12 +378,116 @@ static void cmd_blast(int argc, char **argv) {
          sent / dt * (SIZE + 42) * 8 / 1e6, mbps, (unsigned long long)failed, 100.0 * cpu / dt);
 }
 
+/* One read of FIFO r's window in a way under test; returns the words popped
+ * into out (2 per 128 bits). mode 0: a 64-bit load (the servers' way);
+ * 1: NEON 128 bits at the base; 2: NEON 256 bits; 3: LDM of 4 words (128 bits). */
+static int read_mode(volatile uint64_t *base, int mode, uint64_t *out) {
+  switch (mode) {
+  case 1:
+    __asm__ volatile("vld1.64 {d0-d1}, [%0]\n vst1.64 {d0-d1}, [%1]" : : "r"(base), "r"(out) : "d0", "d1", "memory");
+    return 2;
+  case 2:
+    __asm__ volatile("vld1.64 {d0-d3}, [%0]\n vst1.64 {d0-d3}, [%1]" : : "r"(base), "r"(out) : "d0", "d1", "d2", "d3", "memory");
+    return 4;
+  case 3: {
+    uint32_t a, b, c, d;
+    __asm__ volatile("ldmia %4, {%0, %1, %2, %3}" : "=r"(a), "=r"(b), "=r"(c), "=r"(d) : "r"(base) : "memory");
+    out[0] = (uint64_t)b << 32 | a;
+    out[1] = (uint64_t)d << 32 | c;
+    return 2;
+  }
+  default:
+    out[0] = *base;
+    return 1;
+  }
+}
+
+/* burst IFACE RATE_REG HZ MODE SECS OUT — RX1 read the MODE way: rate, CPU,
+ * repeated words (a duplicate = the window did NOT pop per beat), IQ to OUT. */
+static void cmd_burst(int argc, char **argv) {
+  if (argc < 7) { fprintf(stderr, "burst IFACE RATE_REG HZ MODE SECS OUT\n"); exit(2); }
+  map_all(1);
+  Inst *in = writable(argv[1]);
+  const unsigned reg = (unsigned)atoi(argv[2]);
+  const double hz = atof(argv[3]), secs = atof(argv[5]);
+  const int mode = atoi(argv[4]);
+  const double rate = rate_of(reg);
+  const size_t want = (size_t)(rate * secs);
+  float *iq = malloc((want + 8) * 2 * sizeof(float));
+  *in->rate = (uint16_t)reg;
+  *in->sel = 0;
+  for (int i = 0; i < 8; i++) *in->freq[i] = phase_word(hz);
+  usleep(10000);
+  reset(in);
+  size_t have = 0, dups = 0, ovf = 0;
+  uint64_t prev = 0, w[4];
+  const double t0 = now_s(CLOCK_MONOTONIC), c0 = now_s(CLOCK_PROCESS_CPUTIME_ID);
+  while (have < want) {
+    uint16_t c = *in->cntr[0];
+    if (c >= 2048) { ovf++; reset(in); continue; }
+    size_t n = c / 2;
+    if (n < 4) { usleep(200); continue; }
+    n &= ~(size_t)3;
+    for (size_t k = 0; k < n && have < want;) {
+      const int got = read_mode(in->data[0], mode, w);
+      for (int g = 0; g < got && have < want; g++) {
+        if (have && w[g] == prev) dups++;
+        prev = w[g];
+        word_iq(w[g], &iq[2 * have], &iq[2 * have + 1]);
+        have++;
+      }
+      k += (size_t)got;
+    }
+  }
+  const double dt = now_s(CLOCK_MONOTONIC) - t0, cpu = now_s(CLOCK_PROCESS_CPUTIME_ID) - c0;
+  printf("%s mode %d: %zu words in %.3f s = %.0f/s (nominal %.0f), repeated %zu, overflows %zu, cpu %.0f %%\n",
+         in->iface, mode, have, dt, have / dt, rate, dups, ovf, 100.0 * cpu / dt);
+  write_cf32(argv[6], iq, have, rate, hz);
+  free(iq);
+}
+
+/* rdcost IFACE RATE_REG NRX SECS MODE SLEEP_SAMPLES — the readout's CPU as the
+ * agent would do it: NRX FIFOs only (the rest left to overflow), the MODE way,
+ * sleeping until SLEEP_SAMPLES are due (0 = poll every 200 µs). */
+static void cmd_rdcost(int argc, char **argv) {
+  if (argc < 7) { fprintf(stderr, "rdcost IFACE RATE_REG NRX SECS MODE SLEEP_SAMPLES\n"); exit(2); }
+  map_all(1);
+  Inst *in = writable(argv[1]);
+  const unsigned reg = (unsigned)atoi(argv[2]);
+  const int nrx = atoi(argv[3]), mode = atoi(argv[5]);
+  const double secs = atof(argv[4]), rate = rate_of(reg);
+  const int batch = atoi(argv[6]);
+  *in->rate = (uint16_t)reg;
+  usleep(10000);
+  reset(in);
+  uint64_t got = 0, ovf = 0, w[4];
+  const double t0 = now_s(CLOCK_MONOTONIC), c0 = now_s(CLOCK_PROCESS_CPUTIME_ID);
+  while (now_s(CLOCK_MONOTONIC) - t0 < secs) {
+    uint16_t c = *in->cntr[0];
+    if (c >= 2048) { ovf++; reset(in); continue; }
+    size_t n = (c / 2) & ~(size_t)3;
+    if (n < (size_t)(batch > 4 ? batch : 4)) {
+      if (batch > 0) usleep((useconds_t)((batch - n) * 1e6 / rate) + 50);
+      else usleep(200);
+      continue;
+    }
+    for (int r = 0; r < nrx; r++)
+      for (size_t k = 0; k < n;) k += (size_t)read_mode(in->data[r], mode, w);
+    got += n;
+  }
+  const double dt = now_s(CLOCK_MONOTONIC) - t0, cpu = now_s(CLOCK_PROCESS_CPUTIME_ID) - c0;
+  printf("%s %.0f S/s × %d RX mode %d batch %d: %.0f S/s per RX, overflows %llu, cpu %.0f %%\n",
+         in->iface, rate, nrx, mode, batch, got / dt, (unsigned long long)ovf, 100.0 * cpu / dt);
+}
+
 int main(int argc, char **argv) {
   if (argc >= 2 && strcmp(argv[1], "info") == 0) { cmd_info(); return 0; }
   if (argc >= 2 && strcmp(argv[1], "capture") == 0) { cmd_capture(argc - 1, argv + 1); return 0; }
   if (argc >= 2 && strcmp(argv[1], "readout") == 0) { cmd_readout(argc - 1, argv + 1); return 0; }
   if (argc >= 2 && strcmp(argv[1], "pair") == 0) { cmd_pair(argc - 1, argv + 1); return 0; }
   if (argc >= 2 && strcmp(argv[1], "blast") == 0) { cmd_blast(argc - 1, argv + 1); return 0; }
+  if (argc >= 2 && strcmp(argv[1], "burst") == 0) { cmd_burst(argc - 1, argv + 1); return 0; }
+  if (argc >= 2 && strcmp(argv[1], "rdcost") == 0) { cmd_rdcost(argc - 1, argv + 1); return 0; }
   fprintf(stderr,
           "rp-spike info                                   registers of both instances (read-only)\n"
           "rp-spike capture IFACE RATE_REG HZ SECS OUT [IN] RX1 IQ to OUT (cf32 raw + .meta)\n"

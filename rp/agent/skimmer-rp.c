@@ -36,6 +36,13 @@
 #include <math.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <netinet/udp.h>
+#ifndef UDP_SEGMENT
+#define UDP_SEGMENT 103
+#endif
+#ifndef SOL_UDP
+#define SOL_UDP 17
+#endif
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -53,7 +60,7 @@
 #include <unistd.h>
 
 #define AGENT_MAJOR 0
-#define AGENT_MINOR 2
+#define AGENT_MINOR 3
 #define ADC_HZ      122.88e6
 #define NRX         8
 #define MODE_P1     0
@@ -209,6 +216,28 @@ static uint64_t fifo_read(Inst *in, int rx) {
   return sim_word(in, rx);
 }
 
+/* How the FIFOs are read (--read; measured with rp-spike's burst/rdcost
+ * before one is made the default): 0 = one 64-bit load a sample (Pavel's
+ * server), 1 = NEON 128 bits at the window's base (2 samples) — only if the
+ * bitstream pops a sample per beat whatever the address. */
+static int read_mode;
+static int use_gso = 1;             /* --gso 0: sendmmsg as Pavel's server */
+
+static void fifo_read_n(Inst *in, int rx, uint64_t *out, int n) {
+#if defined(__arm__)
+  if (read_mode == 1 && !hw.sim) {
+    int k = 0;
+    for (; k + 2 <= n; k += 2) {
+      __asm__ volatile("vld1.64 {d0-d1}, [%0]\n vst1.64 {d0-d1}, [%1]"
+                       : : "r"(in->data[rx]), "r"(out + k) : "d0", "d1", "memory");
+    }
+    for (; k < n; k++) { out[k] = *in->data[rx]; }
+    return;
+  }
+#endif
+  for (int k = 0; k < n; k++) { out[k] = fifo_read(in, rx); }
+}
+
 static uint32_t phase_word(uint32_t hz) { return (uint32_t)floor(hz / ADC_HZ * (1 << 30) + 0.5); }
 
 /* ---- EP6: the stream ----------------------------------------------------------- */
@@ -222,7 +251,7 @@ static void *ep6_thread(void *arg) {
     127, 127, 127, 24, 0, 0, 0, 0,
     127, 127, 127, 32, 66, 66, 66, 66,
   };
-  uint8_t data[NRX][4096];
+  static __thread uint64_t data[NRX][512];
   uint8_t buffer[25 * 1032];
   struct iovec iov[25];
   struct mmsghdr dgram[25];
@@ -239,28 +268,48 @@ static void *ep6_thread(void *arg) {
     dgram[i].msg_hdr.msg_name = &to;
     dgram[i].msg_hdr.msg_namelen = sizeof(to);
   }
+  /* GSO: the m datagrams of a batch as one send (UDP_SEGMENT, kernel 4.18+),
+   * cut into 1032-byte datagrams by the kernel — each identical to one
+   * sendmmsg would send; refused once, sendmmsg from then on */
+  int gso = use_gso;
+  char cbuf[CMSG_SPACE(sizeof(uint16_t))];
+  struct iovec giov = { buffer, 0 };
+  struct msghdr gmsg = { .msg_name = &to, .msg_namelen = sizeof(to), .msg_iov = &giov, .msg_iovlen = 1,
+                         .msg_control = cbuf, .msg_controllen = sizeof(cbuf) };
+  memset(cbuf, 0, sizeof(cbuf));
+  struct cmsghdr *cm = CMSG_FIRSTHDR(&gmsg);
+  cm->cmsg_level = SOL_UDP;
+  cm->cmsg_type = UDP_SEGMENT;
+  cm->cmsg_len = CMSG_LEN(sizeof(uint16_t));
+  const uint16_t seg = 1032;
+  memcpy(CMSG_DATA(cm), &seg, sizeof(seg));
   int header_offset = 0;
   in->seq = 0;
   fifo_reset(in);
+  int was = in->receivers;
   while (in->enable) {
     const int receivers = in->receivers;
     const int size = receivers * 6 + 2, n = 504 / size, m = 256 / n;
+    /* only the receivers asked for are read (the rest overflow on their
+     * own — F0: that stalls nobody); a new count realigns them all */
+    if (receivers != was) {
+      was = receivers;
+      fifo_reset(in);
+      continue;
+    }
     unsigned c = fifo_count(in);
     if (c >= 2048) {
       in->overflows++;
       fifo_reset(in);
       continue;
     }
-    if (c < (unsigned)(m * n * 4)) {
-      usleep(1000);
+    const unsigned need = (unsigned)(m * n * 4);
+    if (c < need) {                    /* sleep until the batch is due, not 1 ms polls */
+      long us = (long)((need - c) / 2 * 1e6 / rate_hz(in));
+      usleep((useconds_t)(us < 200 ? 200 : us > 20000 ? 20000 : us));
       continue;
     }
-    for (int i = 0; i < m * n * 2; i++) {
-      for (int r = 0; r < NRX; r++) {                /* all 8 drained in lockstep */
-        const uint64_t w = fifo_read(in, r);
-        memcpy(data[r] + i * 8, &w, 8);
-      }
-    }
+    for (int r = 0; r < receivers; r++) { fifo_read_n(in, r, data[r], m * n * 2); }
     if (hw.sim) { hw.taken[in->k] += (uint64_t)(m * n * 2); }
     for (int i = 0; i < m; i++) {
       const uint32_t be = htonl(in->seq++);
@@ -274,12 +323,23 @@ static void *ep6_thread(void *arg) {
       p += 8;
       memset(p, 0, 504);
       for (int j = 0; j < n; j++) {
-        for (int r = 0; r < receivers; r++) { memcpy(p + r * 6, data[r] + data_offset, 6); }
-        data_offset += 8;
+        for (int r = 0; r < receivers; r++) { memcpy(p + r * 6, &data[r][data_offset], 6); }
+        data_offset++;
         p += size;
       }
     }
-    const int sent = sendmmsg(in->sock, dgram, m, 0);
+    int sent;
+    if (gso) {
+      giov.iov_len = (size_t)m * 1032;
+      sent = sendmsg(in->sock, &gmsg, 0) < 0 ? -1 : m;
+      if (sent < 0 && (errno == EINVAL || errno == ENOPROTOOPT || errno == EIO || errno == EOPNOTSUPP)) {
+        logf_("%s: UDP GSO refused (%s) — sendmmsg from now on", in->name, strerror(errno));
+        gso = use_gso = 0;
+        sent = sendmmsg(in->sock, dgram, m, 0);
+      }
+    } else {
+      sent = sendmmsg(in->sock, dgram, m, 0);
+    }
     if (sent > 0) { in->packets += (uint64_t)sent; }
   }
   in->active = 0;
@@ -589,7 +649,8 @@ static void status_json(FILE *f) {
     }
     fclose(mi);
   }
-  fprintf(f, "{\"agent\":\"%d.%d\",\"board\":", AGENT_MAJOR, AGENT_MINOR);
+  fprintf(f, "{\"agent\":\"%d.%d\",\"read_mode\":%d,\"gso\":%s,\"board\":", AGENT_MAJOR, AGENT_MINOR,
+          read_mode, use_gso ? "true" : "false");
   json_str(f, rev);
   fprintf(f, ",\"mode\":\"p1\",\"sim\":%s", hw.sim ? "true" : "false");
   if (isnan(t)) { fprintf(f, ",\"fpga_c\":null"); } else { fprintf(f, ",\"fpga_c\":%.1f", t); }
@@ -729,6 +790,8 @@ static void parse_bind(Inst *in, const char *spec) {
 static void usage(void) {
   fprintf(stderr,
           "skimmer-rp serve [--sim] [--bind A[,B]] [--sel A,B] [--ctl PATH] [--orphan-s N]\n"
+          "                 [--read 0|1] [--gso 0|1]\n"
+          "   --read 1: NEON reads of 2 samples (once measured on the bitstream); --gso 0: no UDP GSO\n"
           "   A, B: an interface (eth0, mvl0 — port 1024) or addr:port (--sim)\n"
           "   --sel: each instance's input mask (bit r set = receiver r on IN2)\n"
           "skimmer-rp ctl [--ctl PATH] status | version | sel a|b MASK\n");
@@ -752,6 +815,8 @@ int main(int argc, char **argv) {
   for (int i = 2; i < argc; i++) {
     if (strcmp(argv[i], "--sim") == 0) { hw.sim = 1; }
     else if (strcmp(argv[i], "--bind") == 0 && i + 1 < argc) { binds = argv[++i]; }
+    else if (strcmp(argv[i], "--read") == 0 && i + 1 < argc) { read_mode = atoi(argv[++i]) == 1; }
+    else if (strcmp(argv[i], "--gso") == 0 && i + 1 < argc) { use_gso = atoi(argv[++i]) != 0; }
     else if (strcmp(argv[i], "--sel") == 0 && i + 1 < argc) {
       if (sscanf(argv[++i], "%i,%i", &sel[0], &sel[1]) < 1) { usage(); }
     } else if (strcmp(argv[i], "--ctl") == 0 && i + 1 < argc) { ctl_path = argv[++i]; }
