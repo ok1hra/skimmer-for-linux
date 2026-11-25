@@ -129,6 +129,33 @@ Other modes, as Linrad has them:
 - **Adapt then fix** (Linrad's semi-automatic way): take the band-wide
   weight MVDR found on the interferer and hold it.
 
+### What two antennas can and cannot do
+
+Two antennas give two degrees of freedom **at each frequency**. Per
+channel that means one null while the wanted signal is kept, or the
+wanted signal maximised (MRC). Never two nulls in the same channel. What
+the per-channel design adds over one band-wide weight (Linrad's Fixed, or
+a weight applied in the FPGA):
+
+- **Each station its own weight**: MRC/MVDR per channel lifts every
+  station at once, each with its own arrival phase and amplitude
+  (diversity against QSB and polarisation). A band-wide weight helps one
+  direction and can hurt the rest.
+- **Different interferers in different parts of the band**: each channel
+  nulls whatever dominates its own neighbourhood (R_n is estimated in
+  groups of a few kHz). Two sources that occupy different frequencies are
+  both nulled, each where it is.
+- **Not possible with two antennas**: two interferers on the same
+  frequencies from different directions (e.g. two broadband noise sources
+  both covering the whole band). The channel can null only one of them,
+  and MVDR then finds the best compromise. More nulls at one frequency
+  need more antennas (N antennas → N − 1 nulls), so a third input and
+  another board.
+- **Null depth** is limited by how well the estimate holds. Linrad's
+  figure: a 1 % amplitude mismatch leaves about −40 dB. The interferer
+  must also stand above the noise in the quiet channels to be learned at
+  all.
+
 ### Continuity
 
 The decoders see one stream, and the weights must not modulate it:
@@ -287,7 +314,8 @@ interfaces:
 
 ## Open questions for P0
 
-- What does the station have on IN2? A second antenna (spaced how far, for
+- (2026-11-25: IN2 is empty at the station; Dan will say when an antenna
+  can go there — ask then, not before.) What does the station have on IN2? A second antenna (spaced how far, for
   which bands?), a noise antenna for nulling, or another polarisation?
   The answer sets the first mode to tune (MVDR for nulling, MRC for
   diversity).
