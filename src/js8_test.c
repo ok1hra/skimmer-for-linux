@@ -445,10 +445,12 @@ static void deep(const char *dir) {
 }
 
 /* A decoder slower than the periods: one at work, the rest wait, and each
- * newer period of the dial skips the one before it. */
+ * newer period of the dial skips the one before it. The fake takes 8 s: the
+ * four periods' IQ must all be in before the first decode ends, and with 3 s
+ * a loaded machine (the golden gate beside it) did not make it in time. */
 static void slow(const char *dir) {
   char *fake = g_build_filename(dir, "slow-js8d", NULL);
-  g_file_set_contents(fake, "#!/bin/sh\nsleep 3\necho '<DecodeFinished>'\n", -1, NULL);
+  g_file_set_contents(fake, "#!/bin/sh\nsleep 8\necho '<DecodeFinished>'\n", -1, NULL);
   g_chmod(fake, 0755);
   const char *names[] = { "20m" };
   const double centres[] = { CENTRE };
