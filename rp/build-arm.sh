@@ -11,5 +11,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc-arm-linux-g
 DOCKER
 fi
 podman run --rm -v "$(dirname "$src")":/src:ro,Z -v "$(dirname "$out")":/out:Z skimmer-rp-cross \
-  arm-linux-gnueabihf-gcc -O2 -Wall -Wextra -static -march=armv7-a -mfpu=neon -mfloat-abi=hard \
+  arm-linux-gnueabihf-gcc -O2 -Wall -Wextra -static -march=armv7-a -mfpu=neon -mfloat-abi=hard -s \
   -o "/out/$(basename "$out")" "/src/$(basename "$src")" -lm

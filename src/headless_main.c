@@ -7,6 +7,7 @@
  *                    [--list-switches] [--fetch-deepcw-model]
  *                    [--install-service] [--uninstall-service] [--find-radios]
  *                    [--find-skimmers]
+ *                    [--redpitaya connect|probe|status|install|uninstall [HOST]]
  *
  * An IQ source (headless/source.h — a Red Pitaya running sdr_receiver_hpsdr,
  * up to 8 receivers at once) feeds one engine pipeline per band and mode
@@ -57,6 +58,7 @@
 #include <string.h>
 #include <errno.h>
 #include <glib/gstdio.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include "headless/archive.h"
@@ -83,6 +85,7 @@
 #include "headless/js8.h"
 #include "headless/pskreporter.h"
 #include "headless/skimsrv.h"
+#include "headless/rp_manage.h"
 #include "headless/visitors.h"
 #include "headless/web.h"
 #include "engine/callsign.h"
@@ -253,6 +256,9 @@ typedef struct {
   char         *dcw_err;
   GThread      *dcw_thread;
   GCancellable *dcw_cancel;
+  SkimHdRp     *rp;            /* the Red Pitaya over SSH (rp_manage.h)       */
+  guint         rp_tick;       /* seconds since its last status read          */
+  gboolean      rp_probed;
 } Hd;
 
 /* ---- pipeline callbacks (engine threads) ----------------------------------------- */
@@ -1284,10 +1290,13 @@ static void worker_report(Hd *h);
 static void restart_soon(Hd *h, const char *why);
 
 /* 1 Hz: link supervision, rates, status. */
+static void rp_tick(Hd *h);
+
 static gboolean tick(gpointer data) {
   Hd *h = data;
   skim_iq_source_tick(h->src);
   skim_iq_source_status(h->src, &h->src_st);
+  rp_tick(h);
   if (h->src_st.gave_up) {
     h->exit_code = EXIT_NO_RADIO;
     g_main_loop_quit(h->loop);
@@ -1822,6 +1831,197 @@ static char *radios_lines(const char *prefix) {
 }
 
 /* --find-radios */
+/* --- the Red Pitaya over SSH (rp_manage.h) ------------------------------------- */
+
+/* The board rp_manage talks to: the first [radio] host that is an address
+ * (not auto) — eth0's IP of the managed board. */
+static const char *rp_default_host(const SkimHdConfig *c) {
+  for (char **p = c->hosts; p && *p; p++) {
+    if (strcmp(*p, SKIM_HD_HOST_AUTO) != 0) { return *p; }
+  }
+  return NULL;
+}
+
+/* The board's state once at start (key only — never a prompt), then the
+ * agent's status every 10 s while it runs the board. */
+static void rp_tick(Hd *h) {
+  if (!h->rp) { return; }
+  if (!h->rp_probed) {
+    h->rp_probed = TRUE;
+    char *key = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", "rp", "id_ed25519", NULL);
+    if (g_file_test(key, G_FILE_TEST_EXISTS)) {
+      skim_hd_rp_start(h->rp, SKIM_HD_RP_PROBE, NULL, NULL, NULL, NULL);
+    }
+    g_free(key);
+    return;
+  }
+  if (++h->rp_tick >= 10 && skim_hd_rp_managed(h->rp)) {
+    h->rp_tick = 0;
+    skim_hd_rp_start(h->rp, SKIM_HD_RP_STATUS, NULL, NULL, NULL, NULL);   /* busy: next time */
+  }
+}
+
+/* GET /api/redpitaya (managers): rp_manage's state. */
+static char *web_redpitaya(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
+                           gpointer user) {
+  (void)q; (void)who; (void)st; (void)type;
+  Hd *h = user;
+  return h->rp ? skim_hd_rp_json(h->rp) : g_strdup("{\"ssh\":false}");
+}
+
+static gboolean form_true(GHashTable *form, const char *k) {
+  const char *v = g_hash_table_lookup(form, k);
+  return v && (strcmp(v, "1") == 0 || strcmp(v, "true") == 0 || strcmp(v, "on") == 0);
+}
+
+static guint8 form_mask(GHashTable *form, const char *k) {
+  const char *v = g_hash_table_lookup(form, k);
+  return v ? (guint8)g_ascii_strtoull(v, NULL, 0) : 0;
+}
+
+/* POST /api/redpitaya (managers): action=connect (host, password — only
+ * the first time) | probe | status | install (take_over, sel_a, sel_b) |
+ * uninstall (take_over) | sel (sel_a, sel_b, persist). The job runs on;
+ * GET /api/redpitaya follows it. */
+static char *web_redpitaya_post(GHashTable *form, guint *st, gpointer user) {
+  Hd *h = user;
+  if (!h->rp) { return json_error(st, SOUP_STATUS_NOT_FOUND, "no Red Pitaya management here"); }
+  const char *action = g_hash_table_lookup(form, "action");
+  static const struct { const char *name; SkimHdRpJob job; } acts[] = {
+    { "connect", SKIM_HD_RP_CONNECT }, { "probe", SKIM_HD_RP_PROBE },
+    { "status", SKIM_HD_RP_STATUS },   { "install", SKIM_HD_RP_INSTALL },
+    { "uninstall", SKIM_HD_RP_UNINSTALL }, { "sel", SKIM_HD_RP_SEL },
+  };
+  int job = -1;
+  for (guint i = 0; action && i < G_N_ELEMENTS(acts); i++) {
+    if (strcmp(action, acts[i].name) == 0) { job = (int)acts[i].job; }
+  }
+  if (job < 0) { return json_error(st, SOUP_STATUS_BAD_REQUEST, "unknown action"); }
+  /* this skimmer's own stream is no reason to refuse an install */
+  const char *ours[2] = { h->src_st.streaming && h->src_st.host[0] ? h->src_st.host : NULL, NULL };
+  char *pw = g_hash_table_lookup(form, "password");
+  SkimHdRpArgs a = {
+    .host = g_hash_table_lookup(form, "host"),
+    .password = pw && *pw ? pw : NULL,
+    .take_over = form_true(form, "take_over"),
+    .persist = form_true(form, "persist"),
+    .sel_a = form_mask(form, "sel_a"),
+    .sel_b = form_mask(form, "sel_b"),
+    .sel_given = g_hash_table_contains(form, "sel_a") || g_hash_table_contains(form, "sel_b"),
+    .ours = ours,
+  };
+  GError *e = NULL;
+  const gboolean ok = skim_hd_rp_start(h->rp, (SkimHdRpJob)job, &a, NULL, NULL, &e);
+  if (pw) { memset(pw, 0, strlen(pw)); }      /* the job has its own copy */
+  if (!ok) {
+    char *body = json_error(st, SOUP_STATUS_CONFLICT, e->message);
+    g_error_free(e);
+    return body;
+  }
+  g_message("redpitaya: %s started from the web page", action);
+  return g_strdup("{\"ok\":true}");
+}
+
+static gboolean cli_job_over, cli_job_ok;
+
+static void cli_job_done(SkimHdRp *rp, SkimHdRpJob job, gboolean ok, gpointer loop) {
+  (void)rp; (void)job;
+  cli_job_over = TRUE;
+  cli_job_ok = ok;
+  g_main_loop_quit(loop);
+}
+
+static gboolean cli_job(SkimHdRp *rp, SkimHdRpJob job, const SkimHdRpArgs *a) {
+  GMainLoop *loop = g_main_loop_new(NULL, FALSE);
+  GError *e = NULL;
+  cli_job_over = FALSE;
+  if (!skim_hd_rp_start(rp, job, a, cli_job_done, loop, &e)) {
+    g_printerr("redpitaya: %s\n", e->message);
+    g_error_free(e);
+    g_main_loop_unref(loop);
+    return FALSE;
+  }
+  g_main_loop_run(loop);
+  g_main_loop_unref(loop);
+  return cli_job_ok;
+}
+
+/* A password from the terminal, not echoed (NULL: no terminal). */
+static char *read_password(const char *prompt) {
+  FILE *tty = fopen("/dev/tty", "r+");
+  if (!tty) { return NULL; }
+  struct termios old, quiet;
+  const int fd = fileno(tty);
+  const gboolean term = tcgetattr(fd, &old) == 0;
+  if (term) {
+    quiet = old;
+    quiet.c_lflag &= ~(tcflag_t)ECHO;
+    tcsetattr(fd, TCSAFLUSH, &quiet);
+  }
+  fputs(prompt, tty);
+  fflush(tty);
+  char buf[256];
+  char *got = fgets(buf, sizeof(buf), tty) ? g_strdup(g_strchomp(buf)) : NULL;
+  memset(buf, 0, sizeof(buf));
+  if (term) { tcsetattr(fd, TCSAFLUSH, &old); }
+  fputs("\n", tty);
+  fclose(tty);
+  return got;
+}
+
+/* --redpitaya CMD [HOST]: the same jobs as the web page, in the foreground. */
+static int redpitaya_cli(const char *cmd, const char *host, const SkimHdConfig *c,
+                         gboolean take_over) {
+  static const struct { const char *name; SkimHdRpJob job; } acts[] = {
+    { "connect", SKIM_HD_RP_CONNECT }, { "probe", SKIM_HD_RP_PROBE },
+    { "status", SKIM_HD_RP_STATUS },   { "install", SKIM_HD_RP_INSTALL },
+    { "uninstall", SKIM_HD_RP_UNINSTALL },
+  };
+  int job = -1;
+  for (guint i = 0; i < G_N_ELEMENTS(acts); i++) {
+    if (strcmp(cmd, acts[i].name) == 0) { job = (int)acts[i].job; }
+  }
+  if (job < 0) {
+    g_printerr("--redpitaya: connect, probe, status, install or uninstall\n");
+    return EXIT_CONFIG;
+  }
+  if (!host) { host = rp_default_host(c); }
+  if (!host) {
+    g_printerr("--redpitaya: which board? (HOST after the options, or [radio] host)\n");
+    return EXIT_CONFIG;
+  }
+  char *state = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", NULL);
+  SkimHdRp *rp = skim_hd_rp_new(state, NULL, host);
+  g_free(state);
+  SkimHdRpArgs a = { .host = host, .take_over = take_over };
+  /* every job needs the key working: connect (with its probe) first */
+  gboolean ok = cli_job(rp, SKIM_HD_RP_CONNECT, &a);
+  char *st = skim_hd_rp_json(rp);
+  const gboolean need = !ok && strstr(st, "\"need_password\":true") != NULL;
+  g_free(st);
+  if (need) {
+    char *prompt = g_strdup_printf("root password of %s (typed once, never stored): ", host);
+    char *pw = read_password(prompt);
+    g_free(prompt);
+    if (pw) {
+      a.password = pw;
+      ok = cli_job(rp, SKIM_HD_RP_CONNECT, &a);
+      memset(pw, 0, strlen(pw));
+      g_free(pw);
+      a.password = NULL;
+    }
+  }
+  if (ok && job != SKIM_HD_RP_CONNECT && job != SKIM_HD_RP_PROBE) {
+    const SkimHdRpArgs b = { .take_over = take_over };   /* install: the card's inputs kept */
+    ok = cli_job(rp, (SkimHdRpJob)job, &b);
+  }
+  char *j = skim_hd_rp_json(rp);
+  printf("%s\n", j);
+  g_free(j);
+  skim_hd_rp_free(rp);
+  return ok ? 0 : 1;
+}
+
 static int find_radios_cli(void) {
   char *l = radios_lines("  ");
   if (l[0]) {
@@ -2320,6 +2520,7 @@ static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const c
 }
 
 int main(int argc, char **argv) {
+  skim_hd_rp_askpass_main(argc, argv);        /* ssh's askpass: prints, exits */
   skim_log_ring_install();
   Hd *h = g_new0(Hd, 1);
   h->console_s = -1;
@@ -2328,6 +2529,7 @@ int main(int argc, char **argv) {
   gboolean list_switches = FALSE, check_config = FALSE, fetch_model = FALSE;
   gboolean install_service = FALSE, uninstall_service = FALSE, find_radios = FALSE;
   gboolean find_skimmers = FALSE, version = FALSE;
+  char *rp_cmd = NULL;
   GOptionEntry opts[] = {
     { "config", 'c', 0, G_OPTION_ARG_FILENAME, &cfg,
       "Config file (default ~/.config/skimmer-for-linux/headless.ini)", "FILE" },
@@ -2357,6 +2559,12 @@ int main(int argc, char **argv) {
     { "find-skimmers", 0, 0, G_OPTION_ARG_NONE, &find_skimmers,
       "List the skimmer-headless instances on this LAN (address, name, role, call, "
       "ports) and exit", NULL },
+    { "redpitaya", 0, 0, G_OPTION_ARG_STRING, &rp_cmd,
+      "The skimmer's own Red Pitaya over SSH, then exit: connect (the root password "
+      "once, never stored; the skimmer's key goes on the board), probe, status, "
+      "install (the skimmer's agent in place of Pavel's two servers; --take-over "
+      "even while another client streams), uninstall (Pavel's start.sh back). The "
+      "board: HOST after the options, else the first [radio] host", "CMD" },
     { "install-service", 0, 0, G_OPTION_ARG_NONE, &install_service,
       "Write a systemd user service that runs this program (with --config, "
       "that config) and exit — it starts nothing; the next steps are printed", NULL },
@@ -2432,6 +2640,7 @@ int main(int argc, char **argv) {
     g_printerr("config: %s\n", err->message);
     return EXIT_CONFIG;
   }
+  if (rp_cmd) { return redpitaya_cli(rp_cmd, argc > 1 ? argv[1] : NULL, c, h->take_over); }
   if (h->console_s < 0) {
     h->console_s = skim_hd_service_under_systemd() ? 0 : c->console_s >= 0 ? c->console_s : 10;
   }
@@ -3009,6 +3218,11 @@ int main(int argc, char **argv) {
     g_free(dials);
   }
 
+  if (c->source != SKIM_HD_SOURCE_HUB && c->source != SKIM_HD_SOURCE_MOCK) {
+    char *sdir = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", NULL);
+    h->rp = skim_hd_rp_new(sdir, NULL, rp_default_host(c));
+    g_free(sdir);
+  }
   SkimHdWeb *web = NULL;
   if (h->http_port > 0) {
     double centres[SKIM_HD_MAX_BANDS];
@@ -3023,6 +3237,7 @@ int main(int argc, char **argv) {
       .deepcw = web_deepcw,
       .v4bench = web_v4bench,
       .update = web_update, .update_post = web_update_post,
+      .redpitaya = web_redpitaya, .redpitaya_post = web_redpitaya_post,
       .waterfall = web_waterfall,
       .user = h,
     };
@@ -3106,6 +3321,7 @@ int main(int argc, char **argv) {
   /* Teardown: the radio first (stop — only if the stream is still ours),
    * then the engines, then the feed they spot into. */
   g_clear_pointer(&web, skim_hd_web_free);
+  g_clear_pointer(&h->rp, skim_hd_rp_free);     /* a job in flight is cancelled */
   g_clear_pointer(&h->disco, skim_hd_discovery_free);
   g_cancellable_cancel(h->dcw_cancel);         /* a fetch in flight stops      */
   if (h->dcw_thread) { g_thread_join(h->dcw_thread); }

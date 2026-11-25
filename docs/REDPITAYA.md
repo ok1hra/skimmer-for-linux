@@ -76,6 +76,48 @@ One process replaces both stock servers on the same bitstream.
   `rp-agent` gate runs the real agent against the engine's client on the
   build machine.
 
+## Managing the board from the skimmer (`src/headless/rp_manage.c`)
+
+Settings (`/api/redpitaya`, managers) or `skimmer-headless --redpitaya
+connect|probe|status|install|uninstall [HOST]` — the system's `ssh`, no SSH
+library:
+
+- **Connect.** The skimmer's own ed25519 key (`<state>/rp/id_ed25519`), the
+  board's host key accepted on the first connect and checked after
+  (`<state>/rp/known_hosts`; a re-imaged card needs that file removed), one
+  ControlMaster connection kept 10 min (a probe then takes 0.6 s). When
+  the board does not know the key, the root password is asked for once:
+  ssh's askpass is the skimmer itself, fed over a unix socket — never in
+  argv, the environment or a file, never stored — and that one run appends
+  the key to `/root/.ssh/authorized_keys`.
+- **Why no `lbu commit`.** The board runs from RAM; `lbu commit` would save
+  the key, but also every other change pending in its /etc (rp-f08908 had
+  some, `lbu status` 2026-11-25). Instead the install keeps the key on the
+  card (`apps/skimmer_rp/authorized_keys`) and the skimmer's start.sh puts
+  it back at each boot. Until the install, a reboot forgets the key: the
+  password once more.
+- **Probe.** EEPROM `hw_rev`, `uname -m`, Alpine's release, `/dev/xdevcfg`,
+  Pavel's bitstream on the card, whether start.sh is ours, the agent's
+  version, the stock servers, eth0's and mvl0's addresses — and Protocol 1's
+  busy byte from each IP.
+- **Install** (STEMlab 122.88-16 on Pavel's image only): the agent to
+  `apps/skimmer_rp/` (sha256 checked after the copy) with a `stop.sh`, so
+  that starting one of Pavel's apps from his web page stops it like any
+  other; his start.sh kept once as `start.sh.pavel`; a start.sh that loads
+  the same bitstream, makes mvl0 as his does and starts the agent with the
+  inputs (`sel=` line); then that start.sh run. Another client streaming
+  from either IP refuses it unless the manager confirms (`take_over`) —
+  this skimmer's own stream does not count. A reinstall keeps the card's
+  inputs and the first backup.
+- **Uninstall**: start.sh.pavel back, the agent and its directory gone,
+  Pavel's start.sh run. The key stays in RAM until the next boot.
+- **Inputs** (`sel`): live through `ctl sel`, and into start.sh's `sel=`
+  when kept.
+- **Status**: `ctl status` every 10 s while the agent runs the board.
+
+The gate `rp-manage` runs all of it against a fake board (a fake ssh, the
+real agent in `--sim`).
+
 ## F0 — what the stock bitstream can do beyond Protocol 1
 
 `rp/spike/rp-spike` (run from /tmp, refuses any instance whose stock server

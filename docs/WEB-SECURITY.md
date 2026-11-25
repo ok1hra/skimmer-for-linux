@@ -79,8 +79,8 @@ watched); not signed in, 401.
 |---|---|---|
 | Status (map, DX cluster, bands), Statistics, Waterfall with audio | yes | yes |
 | Settings and Log — in the menu and in the page's HTML | no (cut out on the server) | yes |
-| `GET /api/config`, `/api/log`, `/api/skimmers`, `/api/skimsrv` (CW Skimmer's band keys from its SkimSrv.ini on this PC — never its [User]), `/api/update` (the running AppImage's path, the update state) | 403 | yes |
-| every `POST` (config, import, restart, rollback, DeepCW fetch, `/api/update`: check, install, back to the kept version) | 403 | yes |
+| `GET /api/config`, `/api/log`, `/api/skimmers`, `/api/skimsrv` (CW Skimmer's band keys from its SkimSrv.ini on this PC — never its [User]), `/api/update` (the running AppImage's path, the update state), `/api/redpitaya` (the managed board: its addresses, what it runs, the agent's status) | 403 | yes |
+| every `POST` (config, import, restart, rollback, DeepCW fetch, `/api/update`: check, install, back to the kept version; `/api/redpitaya`: connect, install, uninstall, inputs) | 403 | yes |
 | `POST /api/visitor` (sign in with a call, sign out) | yes (same origin) | yes |
 | `/api/visitors` (the visitors' log) | from outside: the last 24 h's calls, start and length only (signed in); from the LAN (free_from): whole | yes |
 | `status.json` | without addresses, file paths and the `SKIM_*` values; from outside also without the CPU load and lost | whole |
@@ -98,6 +98,16 @@ styles, fonts and sockets only; no framing), `X-Frame-Options: DENY`,
 `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
 The waterfall's WebSocket refuses a page from another origin. At most
 8 waterfall viewers and 4 listeners at once.
+
+The Red Pitaya's root password (`POST /api/redpitaya` action=connect) is
+the one secret a form carries: it is typed once, used for one ssh run that
+puts the skimmer's own key on the board, and never stored — the job keeps
+a copy only until that run ends (then wiped), ssh gets it from its askpass
+(this binary, over a 0600 unix socket checked for this user), never in
+argv, the environment or a file. It crosses the LAN in plain HTTP like the
+rest of a manager's form; type it at the machine or through the SSH tunnel
+below when that matters. After that only the key (`<state>/rp/`, 0600)
+reaches the board.
 
 ## Publishing it
 

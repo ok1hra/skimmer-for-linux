@@ -15,3 +15,9 @@ option('ft8', type : 'feature', value : 'auto',
 # Boost's headers (crc, multi_index).
 option('js8', type : 'feature', value : 'auto',
        description : 'build skimmer-js8d (needs C++20 and Boost headers)')
+
+# The Red Pitaya agent (rp/agent/skimmer-rp.c → skimmer-rp-armhf), installed
+# on the board by the skimmer (src/headless/rp_manage.c). auto = only when
+# the armhf cross compiler is there (gcc-arm-linux-gnueabihf).
+option('rp_agent', type : 'feature', value : 'auto',
+       description : 'build skimmer-rp-armhf (needs arm-linux-gnueabihf-gcc)')

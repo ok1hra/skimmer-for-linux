@@ -24,6 +24,10 @@
  *   POST /api/deepcw            fetch the DeepCW model (settings_from)
  *   POST /api/v4bench           CW v4's compute check, measured again (settings_from)
  *   POST /api/update            action=check | install | rollback (settings_from; update.h)
+ *   GET  /api/redpitaya         the Red Pitaya over SSH: key, board, job (settings_from;
+ *                               rp_manage.h)
+ *   POST /api/redpitaya         action=connect | probe | status | install | uninstall | sel
+ *                               (settings_from; the password only on a first connect)
  *   GET  /api/visitor           {"login","need","call","free"}: must this client sign in
  *   POST /api/visitor           call=… signs in (a cookie), logout=1 signs out — open
  *                               to all, same origin only (visitors.h)
@@ -74,8 +78,10 @@ typedef char *(*SkimHdWebGet)(GHashTable *query, SkimHdWebWho who, guint *status
 typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
 typedef struct {
-  SkimHdWebGet  status, stats, log, config, skimmers, spots, skimsrv, wspr, ft8, js8, update;
-  SkimHdWebPost config_post, config_import, restart, rollback, deepcw, update_post, v4bench;
+  SkimHdWebGet  status, stats, log, config, skimmers, spots, skimsrv, wspr, ft8, js8, update,
+                redpitaya;
+  SkimHdWebPost config_post, config_import, restart, rollback, deepcw, update_post, v4bench,
+                redpitaya_post;
   /* a WebSocket viewer of the waterfall (peer: its address, for the log;
    * visitor: its sign-in token, NULL for a free client); the hook takes its
    * own reference */
