@@ -7,7 +7,7 @@
  *              to the address AND PORT the start came from, so one socket
  *              sends everything and receives the stream.
  *   EP2 (to)   EF FE 01 02 seq[4] + 2 × (7F 7F 7F C0 C1 C2 C3 C4 + 504 B)
- *              C0=0x00: C1[1:0] rate 0/1/2 = 48/96/192 kHz, C4[5:3] nrx−1
+ *              C0=0x00: C1[1:0] rate 0/1/2/3 = 48/96/192/384 kHz, C4[5:3] nrx−1
  *              C0=0x04, 0x06 … 0x10, 0x24: RX1 … RX8 frequency, Hz,
  *              big-endian (the server turns it into a phase increment
  *              against its nominal 125 MHz)
@@ -218,13 +218,25 @@ static gboolean parse_discovery(const guint8 *d, gssize n, SkimHpsdrInfo *out) {
   }
   out->name[8] = '\0';
   out->nrx = d[0x13];
+  /* The skimmer's own agent on the board (rp/agent) answers a request
+   * whose padding says SKRP (bytes 4..7 — byte 3 is part of the command,
+   * so Pavel Demin's server answers it as a plain discovery) with its marker
+   * after the standard 20 bytes; anything else leaves them zero. */
+  if (n >= 0x1D && memcmp(d + 0x14, "SKRP", 4) == 0) {
+    out->agent = TRUE;
+    out->agent_major = d[0x18];
+    out->agent_minor = d[0x19];
+    out->agent_mode = d[0x1A];
+    out->agent_sel = d[0x1B];
+    out->agent_inst = d[0x1C];
+  }
   return TRUE;
 }
 
 /* Discovery on an open socket: send, wait for the reply from dst. */
 static gboolean discover_fd(int fd, const struct sockaddr_in *dst,
                             guint timeout_ms, SkimHpsdrInfo *out) {
-  guint8 req[63] = { 0xEF, 0xFE, 0x02 };
+  guint8 req[63] = { 0xEF, 0xFE, 0x02, 0x00, 'S', 'K', 'R', 'P' };   /* SKRP: see parse_discovery */
   sendto(fd, req, sizeof(req), 0, (const struct sockaddr *)dst, sizeof(*dst));
   const gint64 end = g_get_monotonic_time() + (gint64)timeout_ms * 1000;
   for (;;) {
@@ -274,7 +286,7 @@ GArray *skim_hpsdr_discover_all(const char *bcast, guint16 port, guint timeout_m
   int on = 1;
   setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
   GArray *out = g_array_new(FALSE, TRUE, sizeof(SkimHpsdrFound));
-  guint8 req[63] = { 0xEF, 0xFE, 0x02 };
+  guint8 req[63] = { 0xEF, 0xFE, 0x02, 0x00, 'S', 'K', 'R', 'P' };   /* SKRP: see parse_discovery */
   if (sendto(fd, req, sizeof(req), 0, (const struct sockaddr *)&dst, sizeof(dst)) < 0) {
     g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED,
                 "discovery broadcast to %s: %s", bcast ? bcast : "255.255.255.255",
@@ -582,9 +594,10 @@ gboolean skim_hpsdr_client_start_multi(SkimHpsdrClient *c, guint rate,
     case 48000:  c->rate_code = 0; break;
     case 96000:  c->rate_code = 1; break;
     case 192000: c->rate_code = 2; break;
+    case 384000: c->rate_code = 3; break;    /* the 122.88 MHz boards' servers */
     default:
       g_set_error(error, SKIM_HPSDR_ERROR, SKIM_HPSDR_ERROR_FAILED,
-                  "HPSDR P1 sample rate %u not supported (48/96/192 kHz)", rate);
+                  "HPSDR P1 sample rate %u not supported (48/96/192/384 kHz)", rate);
       return FALSE;
   }
   for (guint r = 0; r < nrx; r++) {

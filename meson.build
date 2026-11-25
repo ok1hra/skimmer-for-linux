@@ -144,6 +144,23 @@ skimmer_hpsdr_test = executable('skimmer-hpsdr-test',
 )
 test('hpsdr-client', skimmer_hpsdr_test, timeout : 60)
 
+# Offline gate — the skimmer's Red Pitaya agent (rp/agent/skimmer-rp.c: plain
+# C + pthreads, the board's build is static armhf via rp/build-arm.sh) built
+# for this machine and run in --sim on two loopback addresses, driven by
+# skim_hpsdr_client: Pavel's discovery byte for byte, the SKRP marker, two
+# streams (96 + 384 kHz), inputs switched live, ctl status, the orphan stop.
+skimmer_rp_host = executable('skimmer-rp-host',
+  ['rp/agent/skimmer-rp.c'],
+  dependencies : [threads_dep, m_dep],
+)
+skimmer_rp_agent_test = executable('skimmer-rp-agent-test',
+  ['src/rp_agent_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('rp-agent', skimmer_rp_agent_test, args : [skimmer_rp_host], timeout : 60)
+
 # Live gate — discovery + IQ ingest straight from an HPSDR Protocol 1
 # receiver (Red Pitaya sdr_receiver_hpsdr); records cf32 + .meta for replay.
 executable('skimmer-hpsdr-probe',
