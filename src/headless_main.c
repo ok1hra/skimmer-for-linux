@@ -975,8 +975,8 @@ static void status_build(Hd *h, gboolean print) {
 
   for (guint i = 0; i < h->nb; i++) {
     Band *b = &h->band[i];
-    const double lo = (b->centre_hz - h->cfg.rate / 2.0) / 1000.0;
-    const double hi = (b->centre_hz + h->cfg.rate / 2.0) / 1000.0;
+    const double lo = (b->centre_hz - h->cfg.band[i].rate / 2.0) / 1000.0;
+    const double hi = (b->centre_hz + h->cfg.band[i].rate / 2.0) / 1000.0;
     for (guint k = 0; k < M_N; k++) {
       Dec *d = &b->dec[k];
       if (!d->p) { continue; }
@@ -1266,6 +1266,14 @@ static void stats_minute(Hd *h) {
   m.glob[SKIM_SG_CLIENTS] = h->feed ? (float)skim_rbn_feed_clients(h->feed) : 0;
   m.glob[SKIM_SG_STREAMING] = src->streaming ? 1 : 0;
   m.glob[SKIM_SG_CPU_TEMP] = h->temp_peak;            /* NAN: no sensor        */
+  {                                            /* the Red Pitaya's (NaN: no agent) */
+    SkimHdRpReadings rd = { NAN, NAN, { NAN, NAN } };
+    if (h->rp) { skim_hd_rp_readings(h->rp, &rd); }
+    m.glob[SKIM_SG_RP_TEMP] = (float)rd.fpga_c;
+    m.glob[SKIM_SG_RP_LOAD] = (float)rd.load1;
+    m.glob[SKIM_SG_RP_MBPS_A] = (float)rd.mbps[0];
+    m.glob[SKIM_SG_RP_MBPS_B] = (float)rd.mbps[1];
+  }
   h->temp_peak = NAN;
   m.glob[SKIM_SG_RADIO] = 0;
   for (guint i = 0; src->streaming && h->cfg.hosts[i]; i++) {
@@ -1443,7 +1451,7 @@ static char *web_status(GHashTable *q, SkimHdWebWho who, guint *st, const char *
 static char *stats_public(const char *full) {
   static GRegex *re;
   if (!re) {
-    re = g_regex_new("\"(cpu|cpu_cw|cpu_rtty|lost)\":\\[[^\\]]*\\]", G_REGEX_OPTIMIZE,
+    re = g_regex_new("\"(cpu|cpu_cw|cpu_rtty|lost|rp_load)\":\\[[^\\]]*\\]", G_REGEX_OPTIMIZE,
                      0, NULL);
   }
   char *out = re ? g_regex_replace(re, full, -1, 0, "\"\\1\":null", 0, NULL) : NULL;
@@ -2237,7 +2245,7 @@ static void hub_spot(const char *worker, const char *call, const char *mode, dou
   const guint k = g_strcmp0(mode, "CW") == 0 ? M_CW : M_RTTY;
   for (guint i = 0; i < h->nb; i++) {
     Band *b = &h->band[i];
-    if (b->worker && fabs(freq_hz - b->centre_hz) <= h->cfg.rate / 2.0) {
+    if (b->worker && fabs(freq_hz - b->centre_hz) <= h->cfg.band[i].rate / 2.0) {
       g_atomic_int_inc(&b->remote_spots[k]);
       break;
     }
@@ -2272,7 +2280,7 @@ static void spot_log_add(Hd *h, const char *call, const char *mode, double freq_
   if (h->archive) {                            /* [archive]: on disk, by its day */
     const char *band = "";
     for (guint i = 0; i < h->nb; i++) {
-      if (fabs(freq_hz - h->band[i].centre_hz) <= h->cfg.rate / 2.0) { band = h->band[i].name; break; }
+      if (fabs(freq_hz - h->band[i].centre_hz) <= h->cfg.band[i].rate / 2.0) { band = h->band[i].name; break; }
     }
     skim_hd_archive_add(h->archive, s->t, call, mode, freq_hz, snr_db, speed, band, s->src);
   }
@@ -2297,7 +2305,7 @@ static gboolean spot_json(const SkimHdSpot *s, gpointer user) {
   if (j->now - s->t > j->minutes * 60) { return FALSE; }
   const char *band = "";
   for (guint i = 0; i < h->nb; i++) {
-    if (fabs(s->freq_hz - h->band[i].centre_hz) <= h->cfg.rate / 2.0) { band = h->band[i].name; break; }
+    if (fabs(s->freq_hz - h->band[i].centre_hz) <= h->cfg.band[i].rate / 2.0) { band = h->band[i].name; break; }
   }
   char khz[G_ASCII_DTOSTR_BUF_SIZE];
   g_ascii_formatd(khz, sizeof(khz), "%.1f", s->freq_hz / 1000.0);
@@ -2486,7 +2494,7 @@ static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const c
   SkimPipelineConfig pc = {
     .source = SKIM_PIPELINE_SOURCE_EXTERNAL,
     .host = b->label,
-    .iq_rate = c->rate,
+    .iq_rate = cb->rate,
     .center_hz = b->centre_hz,
     .mode = rtty ? SKIM_PIPELINE_MODE_RTTY : SKIM_PIPELINE_MODE_CW,
     .cw_engine = cb->cw_engine,
@@ -3103,8 +3111,11 @@ int main(int argc, char **argv) {
   }
 
   if (c->wspr) {                               /* [wspr]: before the web page reads it */
-    double centres[SKIM_HD_MAX_BANDS];
-    for (guint i = 0; i < h->nb; i++) { centres[i] = h->band[i].centre_hz; }
+    double centres[SKIM_HD_MAX_BANDS], rates[SKIM_HD_MAX_BANDS];
+    for (guint i = 0; i < h->nb; i++) {
+      centres[i] = h->band[i].centre_hz;
+      rates[i] = c->band[i].rate;
+    }
     char *wdir = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", NULL);
     const SkimHdWsprConfig wc = {
       .call = c->wspr_call ? c->wspr_call : c->feed_call,
@@ -3114,7 +3125,7 @@ int main(int argc, char **argv) {
       .dir = wdir,
       .flags = (c->wspr_deep ? SKIM_WSPR_DEEP : 0) | (c->wspr_subtract ? 0 : SKIM_WSPR_NO_SUBTRACT),
     };
-    h->wspr = skim_hd_wspr_new(&wc, h->nb, names, centres, c->rate);
+    h->wspr = skim_hd_wspr_new(&wc, h->nb, names, centres, rates);
     g_free(wdir);
     char *dials = skim_hd_wspr_dials_text(h->wspr);
     char *wj = skim_hd_wspr_status_json(h->wspr);
@@ -3155,8 +3166,11 @@ int main(int argc, char **argv) {
   if (c->ft8 && c->source == SKIM_HD_SOURCE_HUB) {   /* [ft8]: before the web page reads it */
     g_message("ft8: off on a worker — its hub decodes FT8/FT4 from the same IQ");
   } else if (c->ft8) {
-    double centres[SKIM_HD_MAX_BANDS];
-    for (guint i = 0; i < h->nb; i++) { centres[i] = h->band[i].centre_hz; }
+    double centres[SKIM_HD_MAX_BANDS], rates[SKIM_HD_MAX_BANDS];
+    for (guint i = 0; i < h->nb; i++) {
+      centres[i] = h->band[i].centre_hz;
+      rates[i] = c->band[i].rate;
+    }
     char *fdir = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", NULL);
     const SkimHdFt8Config fc = {
       .ft8 = c->ft8_ft8, .ft4 = c->ft8_ft4, .depth = c->ft8_depth,
@@ -3164,7 +3178,7 @@ int main(int argc, char **argv) {
       .bands = (const char *const *)c->ft8_bands,
       .dir = fdir, .spot = ft8_spot, .user = h,
     };
-    h->ft8 = skim_hd_ft8_new(&fc, h->nb, names, centres, c->rate);
+    h->ft8 = skim_hd_ft8_new(&fc, h->nb, names, centres, rates);
     g_free(fdir);
     char *dials = skim_hd_ft8_dials_text(h->ft8);
     char *fj = skim_hd_ft8_status_json(h->ft8);
@@ -3185,15 +3199,18 @@ int main(int argc, char **argv) {
   if (c->js8 && c->source == SKIM_HD_SOURCE_HUB) {   /* [js8]: before the web page reads it */
     g_message("js8: off on a worker — its hub decodes JS8 from the same IQ");
   } else if (c->js8) {
-    double centres[SKIM_HD_MAX_BANDS];
-    for (guint i = 0; i < h->nb; i++) { centres[i] = h->band[i].centre_hz; }
+    double centres[SKIM_HD_MAX_BANDS], rates[SKIM_HD_MAX_BANDS];
+    for (guint i = 0; i < h->nb; i++) {
+      centres[i] = h->band[i].centre_hz;
+      rates[i] = c->band[i].rate;
+    }
     char *jdir = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", NULL);
     const SkimHdJs8Config jc = {
       .submodes = c->js8_submodes, .lo_hz = c->js8_lo_hz, .hi_hz = c->js8_hi_hz,
       .threads = c->js8_threads, .serve = c->js8_serve, .clean_quality = c->js8_clean,
       .bands = (const char *const *)c->js8_bands, .dir = jdir, .spot = js8_spot, .user = h,
     };
-    h->js8 = skim_hd_js8_new(&jc, h->nb, names, centres, c->rate);
+    h->js8 = skim_hd_js8_new(&jc, h->nb, names, centres, rates);
     g_free(jdir);
     char *dials = skim_hd_js8_dials_text(h->js8);
     char *jj = skim_hd_js8_status_json(h->js8);
@@ -3225,9 +3242,12 @@ int main(int argc, char **argv) {
   }
   SkimHdWeb *web = NULL;
   if (h->http_port > 0) {
-    double centres[SKIM_HD_MAX_BANDS];
-    for (guint i = 0; i < h->nb; i++) { centres[i] = h->band[i].centre_hz; }
-    h->wf = skim_hd_waterfall_new(h->nb, names, centres, c->rate);
+    double centres[SKIM_HD_MAX_BANDS], rates[SKIM_HD_MAX_BANDS];
+    for (guint i = 0; i < h->nb; i++) {
+      centres[i] = h->band[i].centre_hz;
+      rates[i] = c->band[i].rate;
+    }
+    h->wf = skim_hd_waterfall_new(h->nb, names, centres, rates);
     const SkimHdWebHooks hooks = {
       .status = web_status, .stats = web_stats, .log = web_log, .config = web_config,
       .skimmers = web_skimmers, .spots = web_spots, .skimsrv = web_skimsrv, .wspr = web_wspr,

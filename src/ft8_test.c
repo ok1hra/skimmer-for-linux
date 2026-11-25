@@ -159,7 +159,7 @@ static void end_to_end(double rate, const char *dir) {
   const SkimHdFt8Config cfg = { .ft8 = TRUE, .ft4 = TRUE, .depth = 2, .lo_hz = 200,
                                 .hi_hz = 3500, .threads = 2, .dir = dir, .decoder = ft8d,
                                 .spot = spot_cb };
-  SkimHdFt8 *f = skim_hd_ft8_new(&cfg, 1, names, centres, rate);
+  SkimHdFt8 *f = skim_hd_ft8_new(&cfg, 1, names, centres, (const double[]){ rate, rate });
   char *dials = skim_hd_ft8_dials_text(f);
   char *what = g_strdup_printf("%s: the receiver takes 20m FT8 and FT4 (%s)", tag, dials);
   check(what, strcmp(dials, "20m FT8 14074.0, 20m FT4 14080.0") == 0);
@@ -270,7 +270,7 @@ static void slow(const char *dir) {
   const double centres[] = { CENTRE };
   const SkimHdFt8Config cfg = { .ft8 = TRUE, .ft4 = FALSE, .depth = 1, .lo_hz = 200,
                                 .hi_hz = 3500, .threads = 1, .dir = dir, .decoder = fake };
-  SkimHdFt8 *f = skim_hd_ft8_new(&cfg, 1, names, centres, 48000);
+  SkimHdFt8 *f = skim_hd_ft8_new(&cfg, 1, names, centres, (const double[]){ 48000, 48000 });
   const gint64 base_s = (g_get_real_time() / G_USEC_PER_SEC / 60) * 60 - 300;
   air(f, 48000, base_s, 2.0 + 60.5, NULL, 0, 7);   /* four FT8 cycles, faster than 3 s */
   skim_hd_ft8_drain(f);
@@ -369,11 +369,11 @@ int main(int argc, char **argv) {
     const char *only40[] = { "40m", NULL };
     SkimHdFt8Config cfg = { .ft8 = TRUE, .ft4 = TRUE, .depth = 1, .lo_hz = 200, .hi_hz = 3500,
                             .threads = 1, .dir = dir, .decoder = ft8d };
-    SkimHdFt8 *f = skim_hd_ft8_new(&cfg, 2, names, centres, 96000);
+    SkimHdFt8 *f = skim_hd_ft8_new(&cfg, 2, names, centres, (const double[]){ 96000, 96000 });
     char *all = skim_hd_ft8_dials_text(f);
     skim_hd_ft8_free(f);
     cfg.bands = only40;
-    f = skim_hd_ft8_new(&cfg, 2, names, centres, 96000);
+    f = skim_hd_ft8_new(&cfg, 2, names, centres, (const double[]){ 96000, 96000 });
     char *one = skim_hd_ft8_dials_text(f);
     char *w = g_strdup_printf("bands: all = %s; \"40m\" only = %s", all, one);
     check(w, strcmp(all, "20m FT8 14074.0, 20m FT4 14080.0, 40m FT8 7074.0, 40m FT4 7047.5") == 0 &&

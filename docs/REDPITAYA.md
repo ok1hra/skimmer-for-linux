@@ -86,6 +86,27 @@ One process replaces both stock servers on the same bitstream.
   `rp-agent` gate runs the real agent against the engine's client on the
   build machine.
 
+## Both IPs for the skimmer (config, `source_hpsdr_p1.c`)
+
+`[bands]` lines take `ip=b` (the band comes from IP B, mvl0, DDC 8–15) and
+`in=2` (from the ADC input IN2): up to 8 bands an IP, 16 in all. IP A is
+`[radio] host` as always (searched as before); once it streams, IP B starts
+with the ip=b bands — its address from `[rp] b_host`, else from the agent's
+discovery reply (bytes 0x1D–0x20: the other instance's IPv4), at `[rp]
+b_rate` (default the radio's rate), with A's clock correction. B busy
+(another client) or silent is retried every 3 s and never stops A or the
+skimmer; it is taken over only with `--take-over` for that start. Every
+band carries its own IP's rate (`SkimHdBand.rate`): the pipelines, the
+waterfall (`hello.bands[].rate`), FT8/JS8/WSPR's dial coverage. A worker's
+bands share one rate; every band on ip=b is refused (that is a single IP:
+put B's address in `[radio] host`). Gate `rp-two-ip`: skimmer-headless on
+the real agent in `--sim`.
+
+The statistics (version 8) keep 16 bands and four series of the board:
+FPGA °C (peak), its load (managers and the LAN only), Mb/s from each IP
+(every client's, from the agent's tx bytes) — from the agent's status
+every 10 s while it runs the board.
+
 ## Managing the board from the skimmer (`src/headless/rp_manage.c`)
 
 Settings (`/api/redpitaya`, managers) or `skimmer-headless --redpitaya

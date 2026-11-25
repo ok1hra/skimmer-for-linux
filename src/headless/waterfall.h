@@ -56,7 +56,7 @@ typedef struct _SkimHdWaterfall SkimHdWaterfall;
 
 /* names/centres: the bands in receiver order; rate: the IQ rate. */
 SkimHdWaterfall *skim_hd_waterfall_new(guint nb, const char *const *names,
-                                       const double *centres, double rate);
+                                       const double *centres, const double *rates);
 void             skim_hd_waterfall_free(SkimHdWaterfall *w);
 
 /* Source thread: one IQ block (interleaved float I/Q, n frames) of band b.

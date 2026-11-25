@@ -660,6 +660,11 @@ skimmer_headless = executable('skimmer-headless',
 test('headless-mock', find_program('tests/headless-mock.sh'),
   args : [skimmer_headless], timeout : 120)
 
+# Two-IP gate: skimmer-headless on both IPs of a board that runs the agent
+# (skimmer-rp-host --sim): B named by the agent, b_rate, in=2 through P1.
+test('rp-two-ip', find_program('tests/rp-two-ip.sh'),
+  args : [skimmer_headless, skimmer_rp_host], timeout : 60)
+
 # Hub gate: a hub and a worker on this machine (mock source) — a band
 # passed on, decoded there, spotted on the hub's feed; the peer duplicate;
 # a reassignment the worker follows by itself.

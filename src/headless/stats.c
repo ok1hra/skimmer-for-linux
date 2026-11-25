@@ -8,11 +8,12 @@
  * slot of a minute in tier t is (minute / res mod len); a slot whose start
  * is not the current one is cleared first.
  *
- * File (version 7): a header, then the three rings one after the other.
+ * File (version 8): a header, then the three rings one after the other.
  * Native byte order — the file never leaves the machine that wrote it.
  * Versions 1 and 2 (the minutes only) are read, their week merged into the
- * coarser rings; versions 3–6 (the rings: two or three modes, fewer
- * metrics) are read slot by slot; either way the file is written anew.
+ * coarser rings; versions 3–7 (the rings: 8 bands, two to four modes, fewer
+ * metrics) are read slot by slot; either way the file is written anew
+ * (≈ 84 MB: 16 bands since version 8 — a Red Pitaya's two IPs).
  *
  * Saving writes only the slots changed since the last save, in place (pwrite
  * on the file kept open): a few kB every few minutes. The whole file is
@@ -32,7 +33,8 @@
  *     "ft8":  { … } | null              (FT8 + FT4; null while none decoded)
  *     "js8":  { … } | null              (all submodes; null while none decoded)
  *     "global": { "cpu": [ … ], "lost": …, "clients": …, "streaming": …, "radio": …,
- *                 "cpu_cw": …, "cpu_rtty": …, "cpu_temp": …, "cpu_helpers": … } }
+ *                 "cpu_cw": …, "cpu_rtty": …, "cpu_temp": …, "cpu_helpers": …,
+ *                 "rp_temp": …, "rp_load": …, "rp_mbps_a": …, "rp_mbps_b": … } }
  *   A bucket sums the counts (spots, stations, folded, gate_below), averages
  *   the levels (active, cpu, clients, snr, streaming = the share of minutes
  *   streamed) over the minutes that had them, takes the worst lost, the
@@ -51,11 +53,14 @@
 #include "json.h"
 
 #define MAGIC   "SKIMSTAT"
-#define VERSION 7                    /* 3: the 15-minute and hour rings;
+#define VERSION 8                    /* 3: the 15-minute and hour rings;
                                       * 4: the CPU temperature;
                                       * 5: the thermal guard's pauses;
                                       * 6: FT8, the helpers' CPU;
-                                      * 7: JS8                               */
+                                      * 7: JS8;
+                                      * 8: 16 bands, the Red Pitaya's series */
+#define OLD_BANDS 8                  /* versions 1–7                         */
+#define V7_SG_N 9                    /* versions 6 and 7's global metrics    */
 #define OLD_MODES 2                  /* versions 1–5: CW, RTTY               */
 #define V6_MODES 3                   /* version 6: CW, RTTY, FT8             */
 #define V4_SM_N 6                    /* versions 1–4's band metrics          */
@@ -86,18 +91,28 @@ static const struct { const char *name; Agg agg; } GLOB_M[SKIM_SG_N] = {
   [SKIM_SG_RADIO] = { "radio", AGG_LAST },
   [SKIM_SG_CPU_CW] = { "cpu_cw", AGG_MEAN },    [SKIM_SG_CPU_RTTY] = { "cpu_rtty", AGG_MEAN },
   [SKIM_SG_CPU_TEMP] = { "cpu_temp", AGG_MAX },  [SKIM_SG_CPU_HELPERS] = { "cpu_helpers", AGG_MEAN },
+  [SKIM_SG_RP_TEMP] = { "rp_temp", AGG_MAX },    [SKIM_SG_RP_LOAD] = { "rp_load", AGG_MEAN },
+  [SKIM_SG_RP_MBPS_A] = { "rp_mbps_a", AGG_MEAN }, [SKIM_SG_RP_MBPS_B] = { "rp_mbps_b", AGG_MEAN },
 };
 
 typedef struct {
   char    magic[8];
   guint32 version, minutes, bands, modes, sm_n, sg_n;
-  char    names[SKIM_STATS_BANDS][16];
+  char    names[OLD_BANDS][16];
 } Header;                                      /* versions 1 and 2           */
 
 typedef struct {
-  Header  h;                                   /* versions 3–5, minutes = 0  */
+  Header  h;                                   /* versions 3–7, minutes = 0  */
   guint32 ntier, tier_res[NTIER], tier_len[NTIER], pad;
 } Header3;
+
+/* Version 8: the same, with 16 band names. */
+typedef struct {
+  char    magic[8];
+  guint32 version, minutes, bands, modes, sm_n, sg_n;
+  char    names[SKIM_STATS_BANDS][16];
+  guint32 ntier, tier_res[NTIER], tier_len[NTIER], pad;
+} Header8;
 
 /* A slot of any ring: the minute its span starts at (0 = empty), the values
  * (as a minute record) and how many minutes each value merges. */
@@ -109,24 +124,24 @@ typedef struct {
 
 /* A minute record of versions 2 and 3 (7 global metrics). */
 typedef struct {
-  float band[SKIM_STATS_BANDS][OLD_MODES][V4_SM_N];
+  float band[OLD_BANDS][OLD_MODES][V4_SM_N];
   float glob[V3_SG_N];
 } MinuteV3;
-#define NV3 (SKIM_STATS_BANDS * OLD_MODES * V4_SM_N + V3_SG_N)
+#define NV3 (OLD_BANDS * OLD_MODES * V4_SM_N + V3_SG_N)
 
 /* Version 4: a ring slot (8 global metrics, no thermal pauses). */
 typedef struct {
-  float band[SKIM_STATS_BANDS][OLD_MODES][V4_SM_N];
+  float band[OLD_BANDS][OLD_MODES][V4_SM_N];
   float glob[V4_SG_N];
 } MinuteV4;
-#define NV4 (SKIM_STATS_BANDS * OLD_MODES * V4_SM_N + V4_SG_N)
+#define NV4 (OLD_BANDS * OLD_MODES * V4_SM_N + V4_SG_N)
 
 /* Version 5: CW and RTTY with this version's band metrics, 8 global ones. */
 typedef struct {
-  float band[SKIM_STATS_BANDS][OLD_MODES][SKIM_SM_N];
+  float band[OLD_BANDS][OLD_MODES][SKIM_SM_N];
   float glob[V5_SG_N];
 } MinuteV5;
-#define NV5 (SKIM_STATS_BANDS * OLD_MODES * SKIM_SM_N + V5_SG_N)
+#define NV5 (OLD_BANDS * OLD_MODES * SKIM_SM_N + V5_SG_N)
 typedef struct {
   gint64   start;
   MinuteV5 m;
@@ -140,15 +155,27 @@ typedef struct {
 
 /* Version 6: CW, RTTY, FT8 with this version's metrics. */
 typedef struct {
-  float band[SKIM_STATS_BANDS][V6_MODES][SKIM_SM_N];
-  float glob[SKIM_SG_N];
+  float band[OLD_BANDS][V6_MODES][SKIM_SM_N];
+  float glob[V7_SG_N];
 } MinuteV6;
-#define NV6 (SKIM_STATS_BANDS * V6_MODES * SKIM_SM_N + SKIM_SG_N)
+#define NV6 (OLD_BANDS * V6_MODES * SKIM_SM_N + V7_SG_N)
 typedef struct {
   gint64   start;
   MinuteV6 m;
   guint8   n[NV6];
 } SlotV6;
+
+/* Version 7: 8 bands, CW, RTTY, FT8, JS8, 9 global metrics. */
+typedef struct {
+  float band[OLD_BANDS][SKIM_STATS_MODES][SKIM_SM_N];
+  float glob[V7_SG_N];
+} MinuteV7;
+#define NV7 (OLD_BANDS * SKIM_STATS_MODES * SKIM_SM_N + V7_SG_N)
+typedef struct {
+  gint64   start;
+  MinuteV7 m;
+  guint8   n[NV7];
+} SlotV7;
 
 /* Version 3: a ring slot of those. */
 typedef struct {
@@ -164,7 +191,7 @@ typedef struct {
 } SlotV2;
 typedef struct {
   gint64 minute;
-  float  band[SKIM_STATS_BANDS][OLD_MODES][V4_SM_N];
+  float  band[OLD_BANDS][OLD_MODES][V4_SM_N];
   float  glob[V1_SG_N];
 } SlotV1;
 
@@ -229,28 +256,37 @@ static void merge(SkimStats *s, guint t, gint64 minute, const SkimStatsMinute *m
 
 /* ---- the file -------------------------------------------------------------------- */
 
+/* A ringed file of version 3–7 (slot: its size) — or this version's. */
 static gsize file_len_of(gsize slot) {
   gsize n = sizeof(Header3);
   for (guint t = 0; t < NTIER; t++) { n += (gsize)TIER[t].len * slot; }
   return n;
 }
-static gsize file_len(void) { return file_len_of(sizeof(Slot)); }
+static gsize file_len(void) {
+  gsize n = sizeof(Header8);
+  for (guint t = 0; t < NTIER; t++) { n += (gsize)TIER[t].len * sizeof(Slot); }
+  return n;
+}
 
 static gsize ring_offset_of(guint t, gsize slot) {
   gsize n = sizeof(Header3);
   for (guint u = 0; u < t; u++) { n += (gsize)TIER[u].len * slot; }
   return n;
 }
-static gsize ring_offset(guint t) { return ring_offset_of(t, sizeof(Slot)); }
+static gsize ring_offset(guint t) {
+  gsize n = sizeof(Header8);
+  for (guint u = 0; u < t; u++) { n += (gsize)TIER[u].len * sizeof(Slot); }
+  return n;
+}
 
-/* A version 1–6 record (and its merge counts, NULL: none) as this
+/* A version 1–7 record (8 bands; and its merge counts, NULL: none) as this
  * version's: its `modes` modes' sm_n band metrics and sg_n globals in
- * place, the newer modes and metrics empty. */
+ * place, the newer bands, modes and metrics empty. */
 static void from_old(SkimStatsMinute *o, guint8 *on, const float *band, guint sm_n,
                      const float *glob, guint sg_n, const guint8 *in_n, guint modes) {
   empty_minute(o);
   if (on) { memset(on, 0, NV); }
-  for (guint b = 0; b < SKIM_STATS_BANDS; b++) {
+  for (guint b = 0; b < OLD_BANDS; b++) {
     for (guint k = 0; k < modes; k++) {
       const guint c = b * modes + k, d = b * SKIM_STATS_MODES + k;
       memcpy(o->band[b][k], band + c * sm_n, sm_n * sizeof(float));
@@ -260,15 +296,15 @@ static void from_old(SkimStatsMinute *o, guint8 *on, const float *band, guint sm
   memcpy(o->glob, glob, sg_n * sizeof(float));
   if (on) {
     memcpy(on + SKIM_STATS_BANDS * SKIM_STATS_MODES * SKIM_SM_N,
-           in_n + SKIM_STATS_BANDS * modes * sm_n, sg_n);
+           in_n + OLD_BANDS * modes * sm_n, sg_n);
   }
 }
 
-/* The file's band column for each of ours (by name), -1 = none. */
-static void columns(const char names[][16], const SkimStats *s, int *from) {
+/* The file's band column (of its nfile) for each of ours (by name), -1 = none. */
+static void columns(const char names[][16], guint nfile, const SkimStats *s, int *from) {
   for (guint b = 0; b < SKIM_STATS_BANDS; b++) {
     from[b] = -1;
-    for (guint f = 0; b < s->nb && f < SKIM_STATS_BANDS; f++) {
+    for (guint f = 0; b < s->nb && f < nfile; f++) {
       if (names[f][0] && strncmp(names[f], s->names[b], 16) == 0) { from[b] = (int)f; }
     }
   }
@@ -297,7 +333,7 @@ static void remap(SkimStatsMinute *o, const SkimStatsMinute *in, const int *from
 /* Version 1 or 2: the week of minutes, merged into every ring. */
 static void load_old(SkimStats *s, const char *data, const Header *h, gboolean v1) {
   int from[SKIM_STATS_BANDS];
-  columns(h->names, s, from);
+  columns(h->names, OLD_BANDS, s, from);
   const SlotV2 *in = (const SlotV2 *)(data + sizeof(Header));
   const SlotV1 *in1 = (const SlotV1 *)(data + sizeof(Header));
   /* oldest first, so the coarse slots fill in time order */
@@ -345,7 +381,7 @@ static gboolean load(SkimStats *s) {
   if (!g_file_get_contents(s->path, &data, &len, NULL)) { return FALSE; }
   const Header *h = (const Header *)data;
   const gboolean head_ok = len >= sizeof(Header) && memcmp(h->magic, MAGIC, 8) == 0 &&
-                           h->bands == SKIM_STATS_BANDS &&
+                           h->bands == (h->version >= 8 ? SKIM_STATS_BANDS : OLD_BANDS) &&
                            h->modes == (h->version >= 7 ? SKIM_STATS_MODES
                                         : h->version == 6 ? V6_MODES : OLD_MODES) &&
                            h->sm_n == (h->version >= 5 ? SKIM_SM_N : V4_SM_N);
@@ -356,9 +392,14 @@ static gboolean load(SkimStats *s) {
                       h->minutes == SKIM_STATS_MINUTES &&
                       len == sizeof(Header) + SKIM_STATS_MINUTES * sizeof(SlotV2);
   const Header3 *h3 = (const Header3 *)data;
+  const Header8 *h8 = (const Header8 *)data;
   gboolean rings_ok = len >= sizeof(Header3) && h3->ntier == NTIER;
   for (guint t = 0; rings_ok && t < NTIER; t++) {
     rings_ok = h3->tier_res[t] == TIER[t].res && h3->tier_len[t] == TIER[t].len;
+  }
+  gboolean rings8_ok = len >= sizeof(Header8) && h8->ntier == NTIER;
+  for (guint t = 0; rings8_ok && t < NTIER; t++) {
+    rings8_ok = h8->tier_res[t] == TIER[t].res && h8->tier_len[t] == TIER[t].len;
   }
   const gboolean v3 = head_ok && rings_ok && h->version == 3 && h->sg_n == V3_SG_N &&
                       len == file_len_of(sizeof(SlotV3));
@@ -366,24 +407,28 @@ static gboolean load(SkimStats *s) {
                       len == file_len_of(sizeof(SlotV4));
   const gboolean v5 = head_ok && rings_ok && h->version == 5 && h->sg_n == V5_SG_N &&
                       len == file_len_of(sizeof(SlotV5));
-  const gboolean v6 = head_ok && rings_ok && h->version == 6 && h->sg_n == SKIM_SG_N &&
+  const gboolean v6 = head_ok && rings_ok && h->version == 6 && h->sg_n == V7_SG_N &&
                       len == file_len_of(sizeof(SlotV6));
-  const gboolean v7 = head_ok && rings_ok && h->version == VERSION && h->sg_n == SKIM_SG_N &&
+  const gboolean v7 = head_ok && rings_ok && h->version == 7 && h->sg_n == V7_SG_N &&
+                      len == file_len_of(sizeof(SlotV7));
+  const gboolean v8 = head_ok && rings8_ok && h->version == VERSION && h->sg_n == SKIM_SG_N &&
                       len == file_len();
   gboolean same = FALSE;
   if (v1 || v2) {
     load_old(s, data, h, v1);
     s->dirty = TRUE;                           /* written as this version   */
-  } else if (v3 || v4 || v5 || v6) {                 /* slot by slot, the new empty */
+  } else if (v3 || v4 || v5 || v6 || v7) {           /* slot by slot, the new empty */
     int from[SKIM_STATS_BANDS];
-    columns(h->names, s, from);
+    columns(h->names, OLD_BANDS, s, from);
     for (guint t = 0; t < NTIER; t++) {
       const gsize at = ring_offset_of(t, v3 ? sizeof(SlotV3) : v4 ? sizeof(SlotV4)
-                                          : v5 ? sizeof(SlotV5) : sizeof(SlotV6));
+                                          : v5 ? sizeof(SlotV5) : v6 ? sizeof(SlotV6)
+                                                                     : sizeof(SlotV7));
       const SlotV3 *in3 = (const SlotV3 *)(data + at);
       const SlotV4 *in4 = (const SlotV4 *)(data + at);
       const SlotV5 *in5 = (const SlotV5 *)(data + at);
       const SlotV6 *in6 = (const SlotV6 *)(data + at);
+      const SlotV7 *in7 = (const SlotV7 *)(data + at);
       for (guint i = 0; i < TIER[t].len; i++) {
         SkimStatsMinute m;
         guint8 n[NV];
@@ -393,11 +438,15 @@ static gboolean load(SkimStats *s) {
           from_old(&m, n, &in4[i].m.band[0][0][0], V4_SM_N, in4[i].m.glob, V4_SG_N, in4[i].n, OLD_MODES);
         } else if (v5) {
           from_old(&m, n, &in5[i].m.band[0][0][0], SKIM_SM_N, in5[i].m.glob, V5_SG_N, in5[i].n, OLD_MODES);
+        } else if (v6) {
+          from_old(&m, n, &in6[i].m.band[0][0][0], SKIM_SM_N, in6[i].m.glob, V7_SG_N, in6[i].n, V6_MODES);
         } else {
-          from_old(&m, n, &in6[i].m.band[0][0][0], SKIM_SM_N, in6[i].m.glob, SKIM_SG_N, in6[i].n, V6_MODES);
+          from_old(&m, n, &in7[i].m.band[0][0][0], SKIM_SM_N, in7[i].m.glob, V7_SG_N, in7[i].n,
+                   SKIM_STATS_MODES);
         }
         Slot *o = &s->ring[t][i];
-        o->start = v3 ? in3[i].start : v4 ? in4[i].start : v5 ? in5[i].start : in6[i].start;
+        o->start = v3 ? in3[i].start : v4 ? in4[i].start : v5 ? in5[i].start
+                 : v6 ? in6[i].start : in7[i].start;
         remap(&o->m, &m, from, s->nb, o->n, n);
       }
     }
@@ -408,12 +457,13 @@ static gboolean load(SkimStats *s) {
               "file kept as %s, for an older build)", s->path, h->version,
               v3 ? "the CPU temperature, the thermal pauses, FT8 and JS8 start"
               : v4 ? "the thermal pauses, FT8 and JS8 start"
-              : v5 ? "FT8, JS8 and the helpers' CPU start" : "JS8 starts",
+              : v5 ? "FT8, JS8 and the helpers' CPU start"
+              : v6 ? "JS8 starts" : "16 bands and the Red Pitaya's series start",
               kept);
     g_free(kept);
-  } else if (v7) {
+  } else if (v8) {
     int from[SKIM_STATS_BANDS];
-    columns(h->names, s, from);
+    columns(h8->names, SKIM_STATS_BANDS, s, from);
     for (guint t = 0; t < NTIER; t++) {
       const Slot *in = (const Slot *)(data + ring_offset(t));
       for (guint i = 0; i < TIER[t].len; i++) {
@@ -422,7 +472,7 @@ static gboolean load(SkimStats *s) {
         remap(&o->m, &in[i].m, from, s->nb, o->n, in[i].n);
       }
     }
-    same = memcmp(h->names, s->names, sizeof(s->names)) == 0;
+    same = memcmp(h8->names, s->names, sizeof(s->names)) == 0;
     if (!same) { s->dirty = TRUE; }            /* re-ordered: written whole */
   } else {
     g_warning("stats: %s is not this version's history — starting a fresh one", s->path);
@@ -507,14 +557,14 @@ gboolean skim_stats_save(SkimStats *s, GError **error) {
   }
   const gsize len = file_len();
   char *buf = g_malloc0(len);
-  Header3 *h = (Header3 *)buf;
-  memcpy(h->h.magic, MAGIC, 8);
-  h->h.version = VERSION;
-  h->h.bands = SKIM_STATS_BANDS;
-  h->h.modes = SKIM_STATS_MODES;
-  h->h.sm_n = SKIM_SM_N;
-  h->h.sg_n = SKIM_SG_N;
-  memcpy(h->h.names, s->names, sizeof(h->h.names));
+  Header8 *h = (Header8 *)buf;
+  memcpy(h->magic, MAGIC, 8);
+  h->version = VERSION;
+  h->bands = SKIM_STATS_BANDS;
+  h->modes = SKIM_STATS_MODES;
+  h->sm_n = SKIM_SM_N;
+  h->sg_n = SKIM_SG_N;
+  memcpy(h->names, s->names, sizeof(h->names));
   h->ntier = NTIER;
   for (guint t = 0; t < NTIER; t++) {
     h->tier_res[t] = TIER[t].res;

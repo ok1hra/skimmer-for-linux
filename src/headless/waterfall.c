@@ -265,7 +265,7 @@ struct _SkimHdWaterfall {
   guint      nb;
   char     **names;
   double    *centres;
-  double     rate;
+  double    *rates;                    /* each band's IQ rate (its IP's)     */
   WfBand    *band;
   GPtrArray *viewers;                  /* Viewer*                            */
   SkimWfViewCb view_cb;                /* what a signed-in visitor watches   */
@@ -328,7 +328,7 @@ static void attach(Viewer *v, int bi) {
   WfBand *b = &v->w->band[bi];
   g_mutex_lock(&b->lock);
   if (!b->an) {
-    b->n = skim_hd_wf_fft_size(v->w->rate);
+    b->n = skim_hd_wf_fft_size(v->w->rates[bi]);
     b->an = skim_wf_analyser_new(b->n);
     b->ring = g_new0(float, (gsize)RING * b->n);
     b->seq = 0;
@@ -339,7 +339,7 @@ static void attach(Viewer *v, int bi) {
     b->hacc = g_new0(float, b->n);
     b->hacc_n = 0;
     /* frames come every n/2 samples */
-    b->hacc_need = MAX(1u, (guint)lround(HIST_S * v->w->rate / (b->n / 2)));
+    b->hacc_need = MAX(1u, (guint)lround(HIST_S * v->w->rates[bi] / (b->n / 2)));
   }
   v->frame_seq = b->seq;
   g_atomic_int_inc(&b->nsubs);
@@ -402,7 +402,7 @@ static void audio_start(Viewer *v) {
     return;
   }
   WfBand *b = &v->w->band[v->band];
-  v->au = audio_new(v->w->rate, v->af - v->w->centres[v->band], v->bw);
+  v->au = audio_new(v->w->rates[v->band], v->af - v->w->centres[v->band], v->bw);
   g_mutex_lock(&b->lock);
   if (!b->audio) { b->audio = g_ptr_array_new(); }
   g_ptr_array_add(b->audio, v->au);
@@ -458,7 +458,7 @@ static gboolean viewer_tick(gpointer user) {
 
   const gsize len = 32 + v->width;
   guint8 *msg = v->row;
-  skim_hd_wf_render(v->avg, n, v->w->rate, centre, v->lo, v->hi, v->width, msg + 32);
+  skim_hd_wf_render(v->avg, n, v->w->rates[v->band], centre, v->lo, v->hi, v->width, msg + 32);
   const guint16 wl = GUINT16_TO_LE((guint16)v->width);
   const guint32 sq = GUINT32_TO_LE(++v->row_seq);
   const double t = g_get_real_time() / 1e6;
@@ -507,7 +507,7 @@ static void send_history(Viewer *v, guint rows) {
   for (guint i = 0; i < count; i++) {
     guint8 *r = msg + 24 + (gsize)i * (8 + v->width);
     memcpy(r, &ts[i], 8);
-    skim_hd_wf_render_bytes(copy + (gsize)i * n, n, v->w->rate, centre, v->lo, v->hi, v->width, r + 8);
+    skim_hd_wf_render_bytes(copy + (gsize)i * n, n, v->w->rates[v->band], centre, v->lo, v->hi, v->width, r + 8);
   }
   soup_websocket_connection_send_binary(v->c, msg, len);
   g_free(msg);
@@ -565,7 +565,7 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *message, g
   const char *sa = g_hash_table_lookup(f, "audio");
   if (sa && v->band >= 0) {
     const char *saf = g_hash_table_lookup(f, "af"), *sbw = g_hash_table_lookup(f, "bw");
-    const double c = v->w->centres[v->band], half = v->w->rate / 2;
+    const double c = v->w->centres[v->band], half = v->w->rates[v->band] / 2;
     const double af = saf ? g_ascii_strtod(saf, NULL) : v->af;
     const double bw = sbw ? CLAMP(g_ascii_strtod(sbw, NULL), 50, 500) : (v->bw ? v->bw : 250);
     if (strcmp(sa, "1") == 0 && af > c - half && af < c + half) {
@@ -579,8 +579,8 @@ static void on_message(SoupWebsocketConnection *c, gint type, GBytes *message, g
     }
   }
   if (v->band >= 0 && v->hi <= v->lo) {               /* the whole band     */
-    v->lo = v->w->centres[v->band] - v->w->rate / 2;
-    v->hi = v->w->centres[v->band] + v->w->rate / 2;
+    v->lo = v->w->centres[v->band] - v->w->rates[v->band] / 2;
+    v->hi = v->w->centres[v->band] + v->w->rates[v->band] / 2;
   }
   v->acked = v->row_seq;                              /* a fresh start      */
   if (v->visitor && v->w->view_cb && v->band >= 0) {   /* for the visitors' log */
@@ -637,11 +637,13 @@ void skim_hd_waterfall_add(SkimHdWaterfall *w, SoupWebsocketConnection *c, const
   viewer_set_rate(v, 5);
   GString *o = g_string_new(NULL);
   g_string_append_printf(o, "{\"type\":\"hello\",\"rate\":%.0f,\"fft\":%u,\"max_w\":%u,\"bands\":[",
-                         w->rate, skim_hd_wf_fft_size(w->rate), SKIM_WF_MAX_W);
+                         w->nb ? w->rates[0] : 0, skim_hd_wf_fft_size(w->nb ? w->rates[0] : 0),
+                         SKIM_WF_MAX_W);
   for (guint i = 0; i < w->nb; i++) {
     g_string_append_printf(o, "%s{\"name\":\"", i ? "," : "");
     skim_json_append(o, w->names[i]);
-    g_string_append_printf(o, "\",\"centre_hz\":%.0f}", w->centres[i]);
+    g_string_append_printf(o, "\",\"centre_hz\":%.0f,\"rate\":%.0f,\"fft\":%u}", w->centres[i],
+                           w->rates[i], skim_hd_wf_fft_size(w->rates[i]));
   }
   g_string_append(o, "]}");
   soup_websocket_connection_send_text(c, o->str);
@@ -659,18 +661,19 @@ static guint listeners(SkimHdWaterfall *w) {
 guint skim_hd_waterfall_listeners(SkimHdWaterfall *w) { return w ? listeners(w) : 0; }
 
 SkimHdWaterfall *skim_hd_waterfall_new(guint nb, const char *const *names,
-                                       const double *centres, double rate) {
+                                       const double *centres, const double *rates) {
   SkimHdWaterfall *w = g_new0(SkimHdWaterfall, 1);
   w->nb = nb;
   w->names = g_new0(char *, nb + 1);
   w->centres = g_new(double, nb);
+  w->rates = g_new(double, nb);
   w->band = g_new0(WfBand, nb);
   for (guint i = 0; i < nb; i++) {
     w->names[i] = g_strdup(names[i]);
     w->centres[i] = centres[i];
+    w->rates[i] = rates[i];
     g_mutex_init(&w->band[i].lock);
   }
-  w->rate = rate;
   w->viewers = g_ptr_array_new_with_free_func((GDestroyNotify)viewer_free);
   return w;
 }
@@ -687,6 +690,7 @@ void skim_hd_waterfall_free(SkimHdWaterfall *w) {
     if (w->band[i].audio) { g_ptr_array_unref(w->band[i].audio); }
     g_mutex_clear(&w->band[i].lock);
   }
+  g_free(w->rates);
   g_strfreev(w->names);
   g_free(w->centres);
   g_free(w->band);

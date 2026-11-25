@@ -44,6 +44,13 @@ and still has its TCI client.
   stream it stops by itself is its own orphan — still coming to the port of
   a run of ours that died, or of a stream this run lost (a stall), which
   nothing on this machine holds any more (`docs/HPSDR-P1.md`).
+  Since 2026-11-25 (Dan) the skimmer may also run that board's software: a
+  manager's explicit action in Settings (or `--redpitaya`) connects with the
+  root password typed once and never stored, installs the skimmer's agent in
+  place of Pavel Demin's servers, sets each receiver's input, and uninstalls
+  it again (Pavel's start.sh back) — never on its own, and never while
+  another client streams from the board unless the manager confirms it
+  (`docs/REDPITAYA.md`).
 - **RBN feed must never emit unvalidated callsigns** — M4 (validation) gates M6
   (RBN).
 - **Every commit and tag is GPG-signed** (`commit.gpgsign=true`, key

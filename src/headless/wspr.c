@@ -626,7 +626,7 @@ static gpointer decoder_thread(gpointer user) {
 /* ---- life ------------------------------------------------------------------------ */
 
 SkimHdWspr *skim_hd_wspr_new(const SkimHdWsprConfig *cfg, guint nb, const char *const *names,
-                             const double *centres, double rate) {
+                             const double *centres, const double *rates) {
   SkimHdWspr *w = g_new0(SkimHdWspr, 1);
   g_mutex_init(&w->lock);
   w->call = g_strdup(cfg->call ? cfg->call : "");
@@ -650,7 +650,7 @@ SkimHdWspr *skim_hd_wspr_new(const SkimHdWsprConfig *cfg, guint nb, const char *
   for (guint b = 0; b < nb && b < G_N_ELEMENTS(w->by_band); b++) {
     w->by_band[b] = g_ptr_array_new();
     for (const SkimWsprDial *d = SKIM_WSPR_DIALS; d->band; d++) {
-      if (!skim_wspr_covers(centres[b], rate, d->dial_hz) || w->nslots >= SKIM_WSPR_MAX_SLOTS) {
+      if (!skim_wspr_covers(centres[b], rates[b], d->dial_hz) || w->nslots >= SKIM_WSPR_MAX_SLOTS) {
         continue;
       }
       gboolean dup = FALSE;                            /* another receiver has it */
@@ -662,7 +662,7 @@ SkimHdWspr *skim_hd_wspr_new(const SkimHdWsprConfig *cfg, guint nb, const char *
       s->name = d->band;
       g_strlcpy(s->rx_name, names && names[b] ? names[b] : d->band, sizeof s->rx_name);
       s->dial_hz = d->dial_hz;
-      s->rx = skim_wspr_rx_new(rate, centres[b], d->dial_hz, cycle_cb, s);
+      s->rx = skim_wspr_rx_new(rates[b], centres[b], d->dial_hz, cycle_cb, s);
       g_ptr_array_add(w->by_band[b], s);
     }
   }

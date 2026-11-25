@@ -225,7 +225,7 @@ static void whole(const char *dir) {
   const double centres[] = { CENTRE, 7045500 };
   const SkimHdWsprConfig cfg = { .call = "OK1XYZ", .locator = "JO60AA", .upload = TRUE,
                                  .upload_url = url, .dir = dir, .decoder = decoder };
-  SkimHdWspr *w = skim_hd_wspr_new(&cfg, 2, names, centres, 48000);
+  SkimHdWspr *w = skim_hd_wspr_new(&cfg, 2, names, centres, (const double[]){ 48000, 48000 });
   char *dials = skim_hd_wspr_dials_text(w);
   check("the dials taken: 20m 14095.6 (RX1), 40m 7038.6 (RX2)",
         strcmp(dials, "20m 14095.6, 40m 7038.6") == 0);
@@ -281,7 +281,7 @@ static void whole(const char *dir) {
   skim_hd_wspr_free(w);
 
   /* wspr.tsv keeps them: a new start sees the station again */
-  w = skim_hd_wspr_new(&(SkimHdWsprConfig){ .dir = dir, .decoder = decoder }, 2, names, centres, 48000);
+  w = skim_hd_wspr_new(&(SkimHdWsprConfig){ .dir = dir, .decoder = decoder }, 2, names, centres, (const double[]){ 48000, 48000 });
   js = skim_hd_wspr_stations_json(w, 24, cycle + 600);
   check("wspr.tsv: after a restart OK1HRA is still there", strstr(js, "\"call\":\"OK1HRA\"") != NULL);
   g_free(js);

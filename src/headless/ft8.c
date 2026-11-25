@@ -489,7 +489,7 @@ static void decode_job(gpointer data, gpointer user) {
 /* ---- life ------------------------------------------------------------------------ */
 
 SkimHdFt8 *skim_hd_ft8_new(const SkimHdFt8Config *cfg, guint nb, const char *const *names,
-                           const double *centres, double rate) {
+                           const double *centres, const double *rates) {
   SkimHdFt8 *f = g_new0(SkimHdFt8, 1);
   g_mutex_init(&f->lock);
   g_cond_init(&f->idle);
@@ -520,7 +520,7 @@ SkimHdFt8 *skim_hd_ft8_new(const SkimHdFt8Config *cfg, guint nb, const char *con
     }
     for (const SkimFt8Dial *d = SKIM_FT8_DIALS; want && d->band; d++) {
       if ((d->mode == SKIM_FT8_MODE_FT8 && !f->ft8) || (d->mode == SKIM_FT8_MODE_FT4 && !f->ft4) ||
-          !skim_ft8_covers(centres[b], rate, d->dial_hz, f->lo_hz, f->hi_hz) ||
+          !skim_ft8_covers(centres[b], rates[b], d->dial_hz, f->lo_hz, f->hi_hz) ||
           f->nslots >= SKIM_FT8_MAX_SLOTS) {
         continue;
       }
@@ -546,7 +546,7 @@ SkimHdFt8 *skim_hd_ft8_new(const SkimHdFt8Config *cfg, guint nb, const char *con
         g_free(kd);
         g_mkdir_with_parents(s->keep, 0755);
       }
-      s->rx = skim_ft8_rx_new(rate, centres[b], d->dial_hz, d->mode, f->lo_hz, f->hi_hz,
+      s->rx = skim_ft8_rx_new(rates[b], centres[b], d->dial_hz, d->mode, f->lo_hz, f->hi_hz,
                               cycle_cb, s);
       g_ptr_array_add(f->by_band[b], s);
       f->nslots++;

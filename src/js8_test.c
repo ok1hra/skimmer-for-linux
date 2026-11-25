@@ -306,7 +306,7 @@ static void end_to_end(double rate, gboolean serve, const char *dir) {
   const SkimHdJs8Config cfg = { .submodes = SKIM_JS8_M_ALL, .lo_hz = 200, .hi_hz = 3500,
                                 .threads = 2, .serve = serve, .clean_quality = 0.75, .dir = dir,
                                 .decoder = js8d, .no_known = TRUE, .spot = spot_cb };
-  SkimHdJs8 *j = skim_hd_js8_new(&cfg, 1, names, centres, rate);
+  SkimHdJs8 *j = skim_hd_js8_new(&cfg, 1, names, centres, (const double[]){ rate, rate });
   char *dials = skim_hd_js8_dials_text(j);
   char *what = g_strdup_printf("%s: the receiver takes 20m JS8 (%s)", tag, dials);
   check(what, strcmp(dials, "20m 14078.0") == 0);
@@ -391,7 +391,7 @@ static void deep(const char *dir) {
   SkimHdJs8Config cfg = { .submodes = SKIM_JS8_M_ALL, .lo_hz = 200, .hi_hz = 3500, .threads = 2,
                           .serve = TRUE, .clean_quality = 1.01, .dir = state, .decoder = js8d,
                           .spot = spot_cb };
-  SkimHdJs8 *j = skim_hd_js8_new(&cfg, 1, names, centres, 96000);
+  SkimHdJs8 *j = skim_hd_js8_new(&cfg, 1, names, centres, (const double[]){ 96000, 96000 });
   guint nsig;
   Sig *sig = stations(&nsig);
   const gint64 base_s = (g_get_real_time() / G_USEC_PER_SEC / 60) * 60 - 180;
@@ -425,7 +425,7 @@ static void deep(const char *dir) {
   g_string_truncate(spots, 0);
   g_mutex_unlock(&spot_lock);
   skim_callsign_dict_load("/nonexistent", NULL);
-  j = skim_hd_js8_new(&cfg, 1, names, centres, 96000);
+  j = skim_hd_js8_new(&cfg, 1, names, centres, (const double[]){ 96000, 96000 });
   st = skim_hd_js8_status_json(j);
   check("deep: a new run knows the 2 calls", strstr(st, "\"known\":2,") != NULL);
   g_free(st);
@@ -455,7 +455,7 @@ static void slow(const char *dir) {
   const SkimHdJs8Config cfg = { .submodes = SKIM_JS8_M_NORMAL, .lo_hz = 200, .hi_hz = 3500,
                                 .threads = 1, .serve = FALSE, .clean_quality = 0.75, .dir = dir,
                                 .decoder = fake, .no_known = TRUE };
-  SkimHdJs8 *j = skim_hd_js8_new(&cfg, 1, names, centres, 48000);
+  SkimHdJs8 *j = skim_hd_js8_new(&cfg, 1, names, centres, (const double[]){ 48000, 48000 });
   const gint64 base_s = (g_get_real_time() / G_USEC_PER_SEC / 60) * 60 - 300;
   air(j, 48000, base_s, 2.0 + 60.5, NULL, 0, 7, FALSE);   /* four normal periods, faster than 3 s */
   skim_hd_js8_drain(j);

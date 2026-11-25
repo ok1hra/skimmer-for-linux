@@ -77,6 +77,14 @@ gboolean  skim_hd_rp_start(SkimHdRp *rp, SkimHdRpJob job, const SkimHdRpArgs *ar
  * "status_age_s"}. */
 char     *skim_hd_rp_json(SkimHdRp *rp);
 
+/* The board's readings from the agent's last status (NaN where it has
+ * none): FPGA °C, the 1-minute load, Mb/s each IP sent (from two statuses'
+ * tx bytes). FALSE when no status came in the last 30 s. */
+typedef struct {
+  double fpga_c, load1, mbps[2];
+} SkimHdRpReadings;
+gboolean  skim_hd_rp_readings(SkimHdRp *rp, SkimHdRpReadings *out);
+
 /* TRUE once a probe found the agent installed and running. */
 gboolean  skim_hd_rp_managed(SkimHdRp *rp);
 

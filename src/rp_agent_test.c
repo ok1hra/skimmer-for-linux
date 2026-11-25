@@ -164,9 +164,10 @@ int main(int argc, char **argv) {
         "an SKRP discovery: the agent's marker, instance 1 on " ADDR_B);
   SkimHpsdrInfo info;
   ok = skim_hpsdr_discover(ADDR_A, port, 500, &info, &err);
-  CHECK(ok && info.agent && info.agent_inst == 0 && info.agent_mode == 0 && !info.busy,
-        "the engine's discovery sees the agent (v%u.%u, instance %u)", info.agent_major,
-        info.agent_minor, info.agent_inst);
+  CHECK(ok && info.agent && info.agent_inst == 0 && info.agent_mode == 0 && !info.busy &&
+            strcmp(info.agent_peer, ADDR_B) == 0,
+        "the engine's discovery sees the agent (v%u.%u, instance %u, the other IP %s)",
+        info.agent_major, info.agent_minor, info.agent_inst, info.agent_peer);
   g_clear_error(&err);
 
   printf("two streams at once:\n");

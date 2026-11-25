@@ -110,7 +110,7 @@ typedef struct _SkimHdWspr SkimHdWspr;
 /* The bands in receiver order (names, centres) at rate. Never NULL: with no
  * dial covered or no decoder it idles and says why (skim_hd_wspr_status_json). */
 SkimHdWspr *skim_hd_wspr_new(const SkimHdWsprConfig *cfg, guint nb, const char *const *names,
-                             const double *centres, double rate);
+                             const double *centres, const double *rates);
 void        skim_hd_wspr_free(SkimHdWspr *w);
 
 /* Source thread: one IQ block of band b (returns at once without a dial). */

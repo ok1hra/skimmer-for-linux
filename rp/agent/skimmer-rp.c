@@ -333,6 +333,21 @@ static void adc_word(Inst *in, const uint8_t *f, const struct sockaddr_in *from)
   }
 }
 
+/* An instance's IPv4 now (network order; 0 = none): its interface's (DHCP
+ * may change it), or the address it is bound to (--sim). */
+static uint32_t inst_ipv4(const Inst *in) {
+  if (!in->ifname[0]) { return in->bind_addr.sin_addr.s_addr; }
+  int s = socket(AF_INET, SOCK_DGRAM, 0);
+  if (s < 0) { return 0; }
+  struct ifreq ifr;
+  memset(&ifr, 0, sizeof(ifr));
+  snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", in->ifname);
+  uint32_t a = 0;
+  if (ioctl(s, SIOCGIFADDR, &ifr) == 0) { a = ((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr.s_addr; }
+  close(s);
+  return a;
+}
+
 /* One EP2 control frame (C0 at frame[0]), as Pavel's process_ep2. */
 static void ep2_frame(Inst *in, const uint8_t *f, const struct sockaddr_in *from) {
   if (f[0] == 0x1C || f[0] == 0x1D) {
@@ -469,6 +484,10 @@ static void *server_thread(void *arg) {
         out[0x1A] = MODE_P1;
         out[0x1B] = *in->sel;
         out[0x1C] = (uint8_t)in->k;
+        if (ninst > 1) {                         /* the other instance's IPv4 */
+          const uint32_t peer = inst_ipv4(&inst[1 - in->k]);
+          memcpy(out + 0x1D, &peer, 4);
+        }
       }
       sendto(in->sock, out, sizeof(out), 0, (struct sockaddr *)&from, fl);
       break;

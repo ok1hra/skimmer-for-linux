@@ -22,8 +22,8 @@
  * Bands are matched by name: a band added later starts empty, a band
  * dropped from the config loses its history at the next save. Older files
  * are read and carried over: version 1 (no CPU split), 3 (no CPU
- * temperature), 4 (no thermal pauses), 5 (no FT8, no helpers' CPU) and 6
- * (no JS8) with those empty.
+ * temperature), 4 (no thermal pauses), 5 (no FT8, no helpers' CPU), 6
+ * (no JS8) and 7 (8 bands, no Red Pitaya series) with those empty.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -34,7 +34,7 @@
 G_BEGIN_DECLS
 
 #define SKIM_STATS_MINUTES (7 * 24 * 60)
-#define SKIM_STATS_BANDS   8
+#define SKIM_STATS_BANDS   16             /* both IPs of a Red Pitaya (v8; 8 before) */
 #define SKIM_STATS_MODES   4              /* 0 = CW, 1 = RTTY, 2 = FT8 (+FT4), 3 = JS8 */
 #define SKIM_STATS_FT8     2
 #define SKIM_STATS_JS8     3
@@ -62,6 +62,11 @@ typedef enum {
   SKIM_SG_CPU_TEMP,        /* °C: the hottest CPU sensor, the minute's peak  */
   SKIM_SG_CPU_HELPERS,     /* % of one core: the helper programs run (the FT8,
                             * JS8 and WSPR decoders), outside SKIM_SG_CPU    */
+  SKIM_SG_RP_TEMP,         /* °C: the Red Pitaya's FPGA, the minute's peak
+                            * (the agent's status; NaN without it)           */
+  SKIM_SG_RP_LOAD,         /* the board's 1-minute load average              */
+  SKIM_SG_RP_MBPS_A,       /* Mb/s the board sent from IP A (eth0) …         */
+  SKIM_SG_RP_MBPS_B,       /* … and from IP B (mvl0): every client's         */
   SKIM_SG_N,
 } SkimStatsGlobalMetric;
 

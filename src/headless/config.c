@@ -208,6 +208,7 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_strfreev(cfg->hosts);
   g_free(cfg->host_ppm);
   g_free(cfg->hosts_text);
+  g_free(cfg->rp_b_host);
   g_free(cfg->feed_call);
   g_free(cfg->feed_gate);
   g_free(cfg->feed_gate_mode);
@@ -392,6 +393,8 @@ char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt) {
   if (b->rtty) { g_string_append_printf(s, "%srtty", s->len ? "," : ""); }
   if (b->off) { g_string_append_printf(s, "%soff", s->len ? "," : ""); }
   if (b->worker[0]) { g_string_append_printf(s, " @%s", b->worker); }
+  if (b->ip) { g_string_append(s, " ip=b"); }
+  if (b->input) { g_string_append(s, " in=2"); }
   return g_string_free(s, FALSE);
 }
 
@@ -437,13 +440,17 @@ static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
         b->rtty = TRUE;
       } else if (g_strcmp0(t, "off") == 0) {
         b->off = TRUE;
+      } else if (g_strcmp0(t, "ip=a") == 0 || g_strcmp0(t, "ip=b") == 0) {
+        b->ip = t[3] == 'b';
+      } else if (g_strcmp0(t, "in=1") == 0 || g_strcmp0(t, "in=2") == 0) {
+        b->input = t[3] == '2';
       } else {
         ok = bad(error, path, "band %s: mode \"%s\" (cw, cw:v3, cw:v4, cw:v2, cw:deepcw, rtty, off, "
-                 "@worker)", name, t);
+                 "@worker, ip=a|b, in=1|2)", name, t);
       }
     }
     g_strfreev(m);
-    if (ok && !b->cw && !b->rtty) {           /* "off" / "@x" alone: CW, as no modes */
+    if (ok && !b->cw && !b->rtty) {           /* "off" / "@x" / ip= alone: CW, as no modes */
       b->cw = TRUE;
       b->cw_engine = dflt;
     }
@@ -528,6 +535,25 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   }
   if (h->rate != 48000 && h->rate != 96000 && h->rate != 192000) {
     return bad(error, path, "rate %u (48000, 96000 or 192000)", h->rate);
+  }
+  char *bh = g_key_file_get_string(kf, "rp", "b_host", NULL);
+  if (bh) { g_strstrip(bh); }
+  if (bh && bh[0]) {
+    if (bh[0] == '-' || strpbrk(bh, " \t,@")) {
+      bad(error, path, "[rp] b_host \"%s\": one address", bh);
+      g_free(bh);
+      return FALSE;
+    }
+    h->rp_b_host = bh;
+  } else {
+    g_free(bh);
+  }
+  h->rp_b_rate = h->rate;
+  if (given(kf, "rp", "b_rate", NULL)) {
+    h->rp_b_rate = (guint)g_key_file_get_integer(kf, "rp", "b_rate", NULL);
+  }
+  if (h->rp_b_rate != 48000 && h->rp_b_rate != 96000 && h->rp_b_rate != 192000) {
+    return bad(error, path, "[rp] b_rate %u (48000, 96000 or 192000)", h->rp_b_rate);
   }
 
   char *eng = g_key_file_get_string(kf, "decode", "engine", NULL);
@@ -1173,13 +1199,21 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
       }
     }
     if (!ok) { break; }
+    b->rate = b->ip ? h->rp_b_rate : h->rate;
     h->nlisted++;
     if (b->off) { continue; }
-    if (h->nb == SKIM_HD_MAX_BANDS) {
-      ok = bad(error, path, "band %s: %d receivers at most — put off on another band",
-               keys[i], SKIM_HD_MAX_BANDS);
+    if (h->nb_ip[b->ip] == SKIM_HD_IP_RX) {
+      ok = bad(error, path, "band %s: %d receivers an IP at most (IP %c) — put off on another "
+               "band%s", keys[i], SKIM_HD_IP_RX, b->ip ? 'B' : 'A',
+               b->ip ? "" : ", or ip=b to take it from the board's second IP");
       break;
     }
+    if (b->ip && h->source != SKIM_HD_SOURCE_HPSDR_P1) {
+      ok = bad(error, path, "band %s: ip=b is a Red Pitaya's second IP (type=hpsdr-p1 only)",
+               keys[i]);
+      break;
+    }
+    h->nb_ip[b->ip]++;
     h->band[h->nb++] = *b;
   }
   g_strfreev(keys);
@@ -1188,6 +1222,20 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     ok = bad(error, path, "no [bands] entries");
   }
   if (ok && h->nlisted && h->nb == 0) { ok = bad(error, path, "every band is off"); }
+  for (guint i = 0; ok && i < h->nb; i++) {
+    for (guint k = 0; ok && k < i; k++) {
+      if (h->band[i].worker[0] && strcmp(h->band[i].worker, h->band[k].worker) == 0 &&
+          h->band[i].rate != h->band[k].rate) {
+        ok = bad(error, path, "bands %s and %s: one worker (@%s) takes one rate — they come "
+                 "at %u and %u Hz", h->band[k].name, h->band[i].name, h->band[i].worker,
+                 h->band[k].rate, h->band[i].rate);
+      }
+    }
+  }
+  if (ok && h->nb_ip[1] && !h->nb_ip[0]) {
+    ok = bad(error, path, "every band is ip=b — then IP B is the only one: put its address in "
+             "[radio] host and drop ip=b");
+  }
   /* [js8] bands: each a band received */
   for (char **x = h->js8_bands; ok && x && *x; x++) {
     gboolean found = FALSE;
@@ -1389,12 +1437,17 @@ char *skim_hd_config_worker_fragment(const char *hub_text, gsize len, const char
   g_key_file_load_from_data(in, hub_text, len, G_KEY_FILE_NONE, NULL);
   GString *o = g_string_new(NULL);
   guint n = 0;
+  guint wrate = c.rate;                         /* its bands' one rate (parse checks) */
+  for (guint i = 0; i < c.nb; i++) {
+    if (g_strcmp0(c.band[i].worker, worker) == 0) { wrate = c.band[i].rate; break; }
+  }
   g_string_append_printf(o, "# from the hub %s for the worker %s\n[radio]\nrate=%u\n[bands]\n",
-                         c.hub_name, worker, c.rate);
+                         c.hub_name, worker, wrate);
   for (guint i = 0; i < c.nb; i++) {
     SkimHdBand b = c.band[i];
     if (g_strcmp0(b.worker, worker) != 0) { continue; }
     b.worker[0] = '\0';
+    b.ip = b.input = 0;                       /* the board's layout stays at the hub */
     char *m = skim_hd_band_modes(&b, c.engine);
     g_string_append_printf(o, "%s=%.0f %s\n", b.name, b.centre_hz, m);
     g_free(m);

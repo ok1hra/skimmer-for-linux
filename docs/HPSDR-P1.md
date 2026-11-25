@@ -52,18 +52,26 @@ receivers, see below.
   client sends nothing: no refresh, and no stop on free (gated by
   `hpsdr-client`).
 - EP2 fields used (C0 with the MOX bit clear):
-  - `C0=0x00`: `C1[1:0]` sets the rate, 0/1/2 = **48/96/192 kHz**. The server
-    has no 384 kHz. `C4[5:3]` sets the number of receivers minus one.
+  - `C0=0x00`: `C1[1:0]` sets the rate, 0/1/2/3 = **48/96/192/384 kHz**. The
+    122.88 MHz board's server (this one) has 384 kHz; the 125 MHz build this
+    file was first written from had not. `C4[5:3]` sets the number of
+    receivers minus one. (The skimmer's config stays at ≤ 192 kHz until the
+    engine is measured at 384 k; `docs/REDPITAYA.md` has what the board's ARM
+    carries.)
   - `C0=0x04`: the RX1 frequency, **in Hz, big-endian**. RX2…RX7 are
     `0x06…0x10` and RX8 is `0x24`. The server itself turns Hz into a phase
-    increment against its **nominal 125 MHz** clock, so the clock error ends
-    up in every frequency (see below).
+    increment against its **nominal ADC clock** (122.88 MHz on the STEMlab
+    122.88-16, 125 MHz on the others), so the clock error ends up in every
+    frequency (see below).
 - EP6: 1032-byte packets, `EF FE 01 06 seq[4]` + 2 × (`7F 7F 7F C0..C4` +
   504 bytes). Each sample carries `I[3] Q[3]` per receiver (24-bit big-endian,
   signed) plus a 16-bit mic word. With one receiver that is 63 samples per
   frame and 126 per packet, so 192 kHz means ~1524 packets/s (~12.6 Mb/s).
-- ADC input selection per receiver (IN1/IN2) is a command-line argument of the
-  server on the RP. It cannot be set over the wire.
+- ADC input selection per receiver (IN1/IN2) is a command-line argument of
+  Pavel's server: it writes the register once. The register itself takes a
+  write any time; the skimmer's agent (`rp/agent`, `docs/REDPITAYA.md`) sets
+  it live — from its control socket, or over the wire from the skimmer's
+  own client through the Hermes ADC word (`C0=0x1C`).
 
 ## Spectrum orientation — the wire is RF-inverted, ingest conjugates
 
@@ -79,7 +87,7 @@ the one place this lives, and the `hpsdr-client` gate fails if it is flipped.
 
 ## Clock correction (ppm)
 
-The server computes the DDC phase from a nominal 125 MHz, so a sampling clock
+The server computes the DDC phase from its nominal ADC clock, so a sampling clock
 that runs `ppm` fast puts every signal `f·ppm·1e-6` Hz **low**. The client
 sends `center / (1 + ppm·1e-6)` as the frequency word. The residual scaling of
 the sample rate is ~0.02 Hz at ±6 kHz and is ignored.

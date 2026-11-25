@@ -10,6 +10,7 @@
 #include "rp_manage.h"
 
 #include <errno.h>
+#include <math.h>
 #include <gio/gio.h>
 #include <glib/gstdio.h>
 #include <poll.h>
@@ -49,6 +50,9 @@ struct _SkimHdRp {
   struct { char host[16]; int state; gboolean agent; } ip[2]; /* see IP_* */
   char   *status;     /* the agent's last `ctl status`                     */
   gint64  status_t;   /* g_get_monotonic_time() of it                      */
+  SkimHdRpReadings rd;
+  double  tx_prev[2]; /* the status before: each IP's tx bytes, when       */
+  gint64  tx_prev_t;
   GThread *thread;
 };
 
@@ -809,12 +813,44 @@ static gboolean job_status(Job *j, GError **error) {
     g_free(out);
     return FALSE;
   }
+  /* the readings: "fpga_c":X|null, "load":[1m,…], each inst's "tx_bytes" */
+  SkimHdRpReadings rd = { NAN, NAN, { NAN, NAN } };
+  const char *p = strstr(out, "\"fpga_c\":");
+  if (p && p[9] != 'n') { rd.fpga_c = g_ascii_strtod(p + 9, NULL); }
+  p = strstr(out, "\"load\":[");
+  if (p) { rd.load1 = g_ascii_strtod(p + 8, NULL); }
+  double tx[2] = { NAN, NAN };
+  p = out;
+  for (int k = 0; k < 2 && (p = strstr(p, "\"tx_bytes\":")); k++) {
+    p += 11;
+    if (*p != 'n' && *p != '-') { tx[k] = g_ascii_strtod(p, NULL); }
+  }
+  const gint64 now = g_get_monotonic_time();
   g_mutex_lock(&rp->mu);
+  const double dt = (now - rp->tx_prev_t) / 1e6;
+  for (int k = 0; k < 2; k++) {
+    if (rp->tx_prev_t && dt > 1 && dt < 120 && !isnan(tx[k]) && !isnan(rp->tx_prev[k]) &&
+        tx[k] >= rp->tx_prev[k]) {
+      rd.mbps[k] = (tx[k] - rp->tx_prev[k]) * 8 / dt / 1e6;
+    }
+    rp->tx_prev[k] = tx[k];
+  }
+  rp->tx_prev_t = now;
+  rp->rd = rd;
   g_free(rp->status);
   rp->status = out;
-  rp->status_t = g_get_monotonic_time();
+  rp->status_t = now;
   g_mutex_unlock(&rp->mu);
   return TRUE;
+}
+
+gboolean skim_hd_rp_readings(SkimHdRp *rp, SkimHdRpReadings *out) {
+  g_mutex_lock(&rp->mu);
+  const gboolean fresh = rp->status && g_get_monotonic_time() - rp->status_t < 30 * G_USEC_PER_SEC;
+  *out = rp->rd;
+  g_mutex_unlock(&rp->mu);
+  if (!fresh) { *out = (SkimHdRpReadings){ NAN, NAN, { NAN, NAN } }; }
+  return fresh;
 }
 
 static gboolean job_done_idle(gpointer data) {

@@ -100,7 +100,7 @@ int main(int argc, char **argv) {
   const SkimHdFt8Config cfg = { .ft8 = TRUE, .ft4 = ft4, .depth = depth, .lo_hz = 200,
                                 .hi_hz = 3500, .threads = threads, .dir = dir,
                                 .decoder = decoder, .keep_wav = keep, .spot = spot_cb };
-  SkimHdFt8 *f = skim_hd_ft8_new(&cfg, 1, names, &centre, rate);
+  SkimHdFt8 *f = skim_hd_ft8_new(&cfg, 1, names, &centre, (const double[]){ rate, rate });
   char *dials = skim_hd_ft8_dials_text(f);
   printf("# %s: centre %.1f kHz, %.0f kHz, start %.3f; dials %s; depth %u, %u threads\n", file,
          centre / 1e3, rate / 1e3, start, dials, depth, threads);

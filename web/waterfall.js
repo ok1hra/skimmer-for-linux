@@ -58,11 +58,13 @@ const Wf = (() => {
 
   // ---- the window ----------------------------------------------------------------
   function bandInfo() { return hello && band >= 0 ? hello.bands[band] : null; }
+  // each band its IQ rate (the board's two IPs may run two); an older server: one
+  function rateOf(b) { return (b && b.rate) || hello.rate; }
   function wanted() {
     const b = bandInfo();
     if (!b) return { lo: 0, hi: 0 };
-    const half = hello.rate / 2;
-    if (!opt.span || opt.span >= hello.rate) return { lo: b.centre_hz - half, hi: b.centre_hz + half };
+    const half = rateOf(b) / 2;
+    if (!opt.span || opt.span >= rateOf(b)) return { lo: b.centre_hz - half, hi: b.centre_hz + half };
     let c = opt.centre || b.centre_hz;
     c = Math.min(b.centre_hz + half - opt.span / 2, Math.max(b.centre_hz - half + opt.span / 2, c));
     opt.centre = c;
@@ -352,7 +354,7 @@ const Wf = (() => {
   function retune(f) {
     const b = bandInfo();
     if (!b || !f) return;
-    const half = hello.rate / 2;
+    const half = rateOf(b) / 2;
     au.f = Math.max(b.centre_hz - half + 100, Math.min(b.centre_hz + half - 100, f));
     if (au.on) audioSend();
     if (mini()) { send(); awayUi(); }                  // the cut-out follows it
@@ -819,7 +821,7 @@ const Wf = (() => {
   function freqEntered(fi) {
     const hz = Math.round(parseFreq(fi.value));
     if (!hello || !hz) { fi.classList.add('bad'); return; }
-    const inBand = (b) => Math.abs(hz - b.centre_hz) < hello.rate / 2;
+    const inBand = (b) => Math.abs(hz - b.centre_hz) < rateOf(b) / 2;
     const i = bandInfo() && inBand(bandInfo()) ? band : hello.bands.findIndex(inBand);
     if (i < 0) { fi.classList.add('bad'); netStatus(`${fmtKhz(hz / 1000, 2)} kHz is in no band here`, true); return; }
     fi.classList.remove('bad');
@@ -859,9 +861,9 @@ const Wf = (() => {
       const b = bandInfo();
       if (!b) return;
       // smoothly: a notch of the wheel is a quarter in or out, 1 kHz at the least
-      const f = hzOf(x), cur = opt.span || hello.rate;
-      const span = Math.max(1000, Math.min(hello.rate, Math.round(cur * (dir > 0 ? 0.8 : 1.25))));
-      opt.span = span >= hello.rate ? 0 : span;
+      const f = hzOf(x), cur = opt.span || rateOf(b);
+      const span = Math.max(1000, Math.min(rateOf(b), Math.round(cur * (dir > 0 ? 0.8 : 1.25))));
+      opt.span = span >= rateOf(b) ? 0 : span;
       opt.centre = f - (x / W - 0.5) * span;          // the cursor's frequency stays put
       bar();
       reframe(false);
@@ -887,7 +889,7 @@ const Wf = (() => {
       const step = e.shiftKey ? 10 : [10, 20, 50, 100].find((s) => s >= hzPx * 2) || 100;
       const x = ((e.clientX - sp.getBoundingClientRect().left) / sp.clientWidth) * W;
       const f = au.f ? Math.round((au.f + dir * step) / step) * step : Math.round(hzOf(x) / step) * step;
-      const half = hello.rate / 2;
+      const half = rateOf(b) / 2;
       audioMove(Math.max(b.centre_hz - half + 100, Math.min(b.centre_hz + half - 100, f)));
     }, { passive: false });
     const fi = $('#wf-freq');

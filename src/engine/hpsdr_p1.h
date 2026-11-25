@@ -48,6 +48,7 @@ typedef struct {
   guint8   agent_mode;           /* 0 = Protocol 1                            */
   guint8   agent_sel;            /* bit r = receiver r on IN2                 */
   guint8   agent_inst;           /* 0 = eth0 (DDC 0–7), 1 = mvl0 (DDC 8–15)   */
+  char     agent_peer[16];       /* the other instance's IPv4 ("" = none)     */
 } SkimHpsdrInfo;
 
 /* Unicast discovery to host:port; blocks up to timeout_ms. */

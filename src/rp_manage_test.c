@@ -13,6 +13,7 @@
  */
 #include <gio/gio.h>
 #include <glib/gstdio.h>
+#include <math.h>
 #include <arpa/inet.h>
 #include <signal.h>
 #include <stdio.h>
@@ -351,6 +352,9 @@ int main(int argc, char **argv) {
   check("… the agent's JSON, inst B on IN2 for RX2",
         has(j, "\"status\":{\"agent\":\"0.2\"") && has(j, "\"status_age_s\":") && has(j, "\"sel\":2"));
   g_free(j);
+  SkimHdRpReadings rd;
+  check("… its readings: the load (the sim has no FPGA sensor: NaN)",
+        skim_hd_rp_readings(rp, &rd) && !isnan(rd.load1) && isnan(rd.fpga_c));
 
   SkimHdRpArgs sel = { .sel_a = 0x05, .sel_b = 0x00, .persist = TRUE };
   check("inputs set live and kept", run_job(rp, SKIM_HD_RP_SEL, &sel));
