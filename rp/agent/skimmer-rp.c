@@ -216,20 +216,23 @@ static uint64_t fifo_read(Inst *in, int rx) {
   return sim_word(in, rx);
 }
 
-/* How the FIFOs are read (--read; measured with rp-spike's burst/rdcost
- * before one is made the default): 0 = one 64-bit load a sample (Pavel's
- * server), 1 = NEON 128 bits at the window's base (2 samples) — only if the
- * bitstream pops a sample per beat whatever the address. */
-static int read_mode;
+/* How the FIFOs are read (--read): 0 = one 64-bit load a sample (Pavel's
+ * server), 2 = NEON 256 bits at the window's base (4 samples a load: the
+ * bitstream pops a sample per 64-bit beat whatever the address). Measured on
+ * rp-f08908 2026-11-25 (rp-spike burst/rdcost): NEON 128/256 bits give the
+ * same spectrum as 64-bit loads, no repeated word; 8 RX × 384 kHz cost 81 %
+ * of a core with mode 0, 54 % with 256-bit loads. LDM (32-bit beats) reads
+ * garbage — never. */
+static int read_mode = 2;
 static int use_gso = 1;             /* --gso 0: sendmmsg as Pavel's server */
 
 static void fifo_read_n(Inst *in, int rx, uint64_t *out, int n) {
 #if defined(__arm__)
-  if (read_mode == 1 && !hw.sim) {
+  if (read_mode == 2 && !hw.sim) {
     int k = 0;
-    for (; k + 2 <= n; k += 2) {
-      __asm__ volatile("vld1.64 {d0-d1}, [%0]\n vst1.64 {d0-d1}, [%1]"
-                       : : "r"(in->data[rx]), "r"(out + k) : "d0", "d1", "memory");
+    for (; k + 4 <= n; k += 4) {
+      __asm__ volatile("vld1.64 {d0-d3}, [%0]\n vst1.64 {d0-d3}, [%1]"
+                       : : "r"(in->data[rx]), "r"(out + k) : "d0", "d1", "d2", "d3", "memory");
     }
     for (; k < n; k++) { out[k] = *in->data[rx]; }
     return;
@@ -790,8 +793,8 @@ static void parse_bind(Inst *in, const char *spec) {
 static void usage(void) {
   fprintf(stderr,
           "skimmer-rp serve [--sim] [--bind A[,B]] [--sel A,B] [--ctl PATH] [--orphan-s N]\n"
-          "                 [--read 0|1] [--gso 0|1]\n"
-          "   --read 1: NEON reads of 2 samples (once measured on the bitstream); --gso 0: no UDP GSO\n"
+          "                 [--read 0|2] [--gso 0|1]\n"
+          "   --read 0: one 64-bit load a sample (default 2: NEON, 4 a load); --gso 0: no UDP GSO\n"
           "   A, B: an interface (eth0, mvl0 — port 1024) or addr:port (--sim)\n"
           "   --sel: each instance's input mask (bit r set = receiver r on IN2)\n"
           "skimmer-rp ctl [--ctl PATH] status | version | sel a|b MASK\n");
@@ -815,7 +818,7 @@ int main(int argc, char **argv) {
   for (int i = 2; i < argc; i++) {
     if (strcmp(argv[i], "--sim") == 0) { hw.sim = 1; }
     else if (strcmp(argv[i], "--bind") == 0 && i + 1 < argc) { binds = argv[++i]; }
-    else if (strcmp(argv[i], "--read") == 0 && i + 1 < argc) { read_mode = atoi(argv[++i]) == 1; }
+    else if (strcmp(argv[i], "--read") == 0 && i + 1 < argc) { read_mode = atoi(argv[++i]) == 2 ? 2 : 0; }
     else if (strcmp(argv[i], "--gso") == 0 && i + 1 < argc) { use_gso = atoi(argv[++i]) != 0; }
     else if (strcmp(argv[i], "--sel") == 0 && i + 1 < argc) {
       if (sscanf(argv[++i], "%i,%i", &sel[0], &sel[1]) < 1) { usage(); }

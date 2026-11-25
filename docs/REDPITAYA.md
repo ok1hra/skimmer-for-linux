@@ -232,6 +232,24 @@ So both IPs together: up to 16 × 192 kHz (≈ 165 Mb/s, both cores ≈ 80 %),
 to more, untried: UDP GSO (`UDP_SEGMENT`, kernel 5.4 has it) for the send
 side; for the FIFO side only our own FPGA (DMA instead of word reads).
 
+**Agent 0.3 (measured 2026-11-25 21:19–21:20 UTC, rp-spike `burst`,
+`rdcost`, `blast … gso`):**
+
+- **FIFO reads.** A NEON load of 128 or 256 bits at a FIFO's base pops 2
+  or 4 samples: the same spectrum as 64-bit loads, no repeated word. LDM
+  (32-bit beats) reads garbage. 8 RX × 384 kHz cost 81 % of a core with
+  64-bit loads and 54 % with 256-bit ones. 8 × 96 kHz: 27 % polling every
+  200 µs, 20 % sleeping until a 256-sample batch is due, 14 % with 256-bit
+  loads on top.
+- **Only the active FIFOs.** 5 RX instead of 8 at 96 kHz: 13 %.
+- **UDP GSO** (one send a batch, cut into 1032-byte datagrams by the
+  kernel). 200 Mb/s cost 39 % of a core instead of 86 % with sendmmsg. The
+  ceiling rises from 240 to 580 Mb/s a core, 0 lost.
+- **Live, both clients** (the skimmer's 5 RX + SkimSrv's 8 RX at 96 kHz):
+  the board ~22 % busy (two cores) with 0.3, against ~43 % with 0.2.
+  So both IPs at 8 × 384 kHz (≈ 330 Mb/s) now fit in the ARM's budget on
+  paper; not yet run live.
+
 What this means for the modes: the **extended mode on the stock bitstream**
 is P1 with the input chosen per IP (IN1 → IP A, IN2 → IP B), 8 × ≤ 384 kHz
 each — the agent already does that (`ctl sel`). Wider channels

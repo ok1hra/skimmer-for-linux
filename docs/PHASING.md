@@ -233,6 +233,46 @@ A / B / combined selectors.
    channels' estimates), and the share of spots each antenna "carried"
    (which component of w dominated).
 
+## An FPGA of our own: what changes, what does not
+
+The design runs on the stock bitstream, and nothing in it waits for an
+FPGA of our own. It is built so that one can come in later behind the same
+interfaces:
+
+- **The sample index is an interface, not an implementation.** The
+  skimmer aligns the two streams by (epoch, sample index) from the stream.
+  Today the agent counts samples since the paired FIFO reset. A future
+  bitstream would latch a hardware counter at the common reset. The client
+  and the combiner do not change.
+- **Adaptive weights make the NCO phase irrelevant.** On stock, the phase
+  offset between the instances after a retune is unknown, and the weights
+  absorb it in a second or two. An FPGA that resets both NCOs together
+  would make the offset reproducible. That serves **Fixed** mode and
+  memories (a manual null stays put across retunes) and saves the
+  re-convergence after a retune. It is not needed for MVDR/MRC.
+- **More phased bands, wider bands.** A phased band takes two DDCs, one on
+  each IP. On stock, with agent 0.3, that means 8 phased bands at up to
+  192–384 kHz. DMA in our own FPGA would make 16 × 384 kHz cheap for the
+  ARM. Wider DDCs (768 kHz – 3 MHz) would phase a whole band in one go
+  (10 m, 80 m). The skimmer side already works per band and per rate, so
+  it only sees more or wider streams.
+- **ADC overload per input.** It does not change the combining, but it
+  tells when one antenna overdrives the ADC: an overdriven input ruins
+  every null. Show it beside the coherence.
+- **Combining in the FPGA (a hybrid, considered and not chosen as the
+  base).** The skimmer would estimate a band-wide weight W (or a short
+  FIR, for the frequency-dependent phase) and the FPGA would apply it
+  before the DDC output. That sends one stream per band instead of two,
+  halving the link load, the ARM load and the channelizers. But it gives
+  up per-channel MVDR/MRC: one weight for the band can null one
+  interferer, not lift every station. It is worth having **as an option**
+  for bands that only need an interference null when the board runs out
+  of DDCs or the PC out of CPU. The weights come from the same R_n
+  estimate, through the agent (a register write), so it is an
+  "apply here or apply there" switch, not another design.
+- **What the FPGA cannot do** is the per-station part. It sees no signal,
+  and that is why the base design combines in the skimmer.
+
 ## Phases, each with its gate
 
 | | what | gate (offline) |
