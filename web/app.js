@@ -1465,6 +1465,7 @@ on('#settings', 'input', (e) => {
   try { t.setSelectionRange(a, b); } catch (err) { /* not a text field */ }
 });
 const MAX_BANDS = 8;          // receivers an IP: the bands on it (a Red Pitaya's IP A, IP B)
+const maxOn = (ip) => (ipRate(ip) === 384000 ? 4 : MAX_BANDS);   // 384 kHz: 4 (the board's ARM)
 const MAX_LISTED = 32;        // [bands] lines, the ones off included
 
 // Read-only settings (an address outside [web] settings_from) stay readable:
@@ -1501,11 +1502,12 @@ for (const ev of ['input', 'change']) {
 // edge), the first from the band's low edge, the next right above it. The
 // rate is one for every receiver (the Red Pitaya's), so it sets the list;
 // up to 8 of them are on (its receivers).
-const SEG_BANDS = [['160m', 1800000, 1, 1, 1], ['80m', 3500000, 2, 1, 1], ['40m', 7000000, 1, 1, 1],
-  ['30m', 10100000, 1, 1, 1], ['20m', 14000000, 2, 1, 1], ['17m', 18068000, 1, 1, 1], ['15m', 21000000, 2, 1, 1],
-  ['12m', 24890000, 1, 1, 1], ['10m', 28000000, 2, 2, 1], ['6m', 50000000, 4, 2, 1]];
+// (the last column, 384 kHz: not CW Skimmer's — a segment of 364 kHz each)
+const SEG_BANDS = [['160m', 1800000, 1, 1, 1, 1], ['80m', 3500000, 2, 1, 1, 1], ['40m', 7000000, 1, 1, 1, 1],
+  ['30m', 10100000, 1, 1, 1, 1], ['20m', 14000000, 2, 1, 1, 1], ['17m', 18068000, 1, 1, 1, 1], ['15m', 21000000, 2, 1, 1, 1],
+  ['12m', 24890000, 1, 1, 1, 1], ['10m', 28000000, 2, 2, 1, 1], ['6m', 50000000, 4, 2, 1, 1]];
 function segments(rate) {
-  const col = rate === 48000 ? 2 : rate === 192000 ? 4 : 3, step = (rate * 91) / 96;
+  const col = rate === 48000 ? 2 : rate === 192000 ? 4 : rate === 384000 ? 5 : 3, step = (rate * 91) / 96;
   const out = [];
   for (const b of SEG_BANDS) {
     for (let k = 0; k < b[col]; k++) out.push({ name: k ? `${b[0]}-${k + 1}` : b[0], hz: Math.round(b[1] + step / 2 + k * step) });
@@ -1763,12 +1765,12 @@ function drawBands(list, note) {
   for (const n of cfg.lanWorkers || []) names.add(n);
   $('#worker-names').innerHTML = [...names].map((n) => `<option value="${esc(n)}">`).join('');
   const ma = wireMbps(n.a, rate), mb = wireMbps(n.b, ipRate('b'));
-  const ipText = (k, cnt, r, m) => `${rpOn() ? `IP ${k} ` : ''}${cnt} of ${MAX_BANDS} receivers · ${r / 1000} kHz` +
+  const ipText = (k, cnt, r, m) => `${rpOn() ? `IP ${k} ` : ''}${cnt} of ${maxOn(k.toLowerCase())} receivers · ${r / 1000} kHz` +
     `${cnt ? ` · ≈ ${Math.round(m)} Mb/s` : ''}`;
   $('#band-count').textContent = ipText('A', n.a, rate, ma) +
     (n.b ? ` | ${ipText('B', n.b, ipRate('b'), mb)} | together ≈ ${Math.round(ma + mb)} Mb/s of a 1 Gb/s link` : '') +
     `${note ? ` · ${note}` : ''}`;
-  $('#band-count').classList.toggle('bad', n.a > MAX_BANDS || n.b > MAX_BANDS || !!note);
+  $('#band-count').classList.toggle('bad', n.a > maxOn('a') || n.b > maxOn('b') || !!note);
   rpDiagram();
   $('#band-add').disabled = !may || list.filter((b) => b.on || setUp(b)).length >= MAX_LISTED;
   wsprShow();
@@ -1779,10 +1781,10 @@ on('#band-rows', 'change', (e) => {
   if (k === 'on' || k === 'ip') {
     const list = readBands(), tr = e.target.closest('tr');
     const ip = tr.querySelector('[data-k=ip]').value;
-    if ((k === 'ip' || e.target.checked) && list.filter((b) => b.on && b.ip === ip).length > MAX_BANDS) {
+    if ((k === 'ip' || e.target.checked) && list.filter((b) => b.on && b.ip === ip).length > maxOn(ip)) {
       if (k === 'on') e.target.checked = false;
       else e.target.value = ip === 'a' ? 'b' : 'a';
-      drawBands(readBands(), `an IP has ${MAX_BANDS} receivers: turn one off first`);
+      drawBands(readBands(), `IP ${ip.toUpperCase()} takes ${maxOn(ip)} receivers at ${ipRate(ip) / 1000} kHz: turn one off first`);
       return;
     }
     drawBands(list);

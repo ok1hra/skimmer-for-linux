@@ -71,6 +71,24 @@ check "SIGTERM stopped both streams; B's inputs back to the manager's" $?
 [[ ! -s $T/state/skimmer-for-linux/hpsdr-streams ]]
 check "no stream left noted" $?
 
+# 384 kHz on IP B: the stream, the channelizer at that rate
+sed -e 's/^b_rate=96000/b_rate=384000/' -e 's/^40m=7025000 ip=b in=2/40m=7100000 ip=b\n15m=21100000 ip=b/' "$T/headless.ini" > "$T/h384.ini"
+"$HL" --config "$T/h384.ini" > "$T/log384" 2>&1 &
+PID=$!
+for _ in $(seq 100); do grep -q "IP B streaming" "$T/log384" && break; sleep 0.1; done
+sleep 1.5
+grep -Eq "radio: IP B streaming .{1,3} Red Pitaya 127.0.0.7 \(HPSDR P1\), 2 RX .{1,3} 384 kHz" "$T/log384" &&
+  grep -q "40m cw: 3072 channels" "$T/log384"
+check "IP B at 384 kHz: 2 RX streaming, 3072 CW channels a band" $?
+s=$(st)
+[[ $(py '[(i["streaming"], i["rate"], i["receivers"]) for i in d["inst"]]' "$s") == "[(True, 48000, 1), (True, 384000, 2)]" ]]
+check "the agent: B at 384 kHz with 2 receivers" $?
+kill "$PID"; wait "$PID" 2>/dev/null; PID=
+{ printf '[radio]\nhost=127.0.0.6\nrate=384000\n[bands]\n'; for i in 1 2 3 4 5; do printf 'b%d=%d000000\n' $i $((i + 2)); done; } > "$T/five384.ini"
+out=$("$HL" --config "$T/five384.ini" --check-config 2>&1); rc=$?
+[[ $rc == 2 && $out == *"IP A at 384 kHz: 4 receivers at most"* ]]
+check "five receivers at 384 kHz on one IP refused (exit 2)" $?
+
 printf '[radio]\nhost=127.0.0.6\n[bands]\n40m=7025000 ip=b\n' > "$T/bonly.ini"
 out=$("$HL" --config "$T/bonly.ini" --check-config 2>&1); rc=$?
 [[ $rc == 2 && $out == *"every band is ip=b"* ]]

@@ -533,8 +533,8 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   if (given(kf, "radio", "rate", NULL)) {
     h->rate = (guint)g_key_file_get_integer(kf, "radio", "rate", NULL);
   }
-  if (h->rate != 48000 && h->rate != 96000 && h->rate != 192000) {
-    return bad(error, path, "rate %u (48000, 96000 or 192000)", h->rate);
+  if (h->rate != 48000 && h->rate != 96000 && h->rate != 192000 && h->rate != 384000) {
+    return bad(error, path, "rate %u (48000, 96000, 192000 or 384000)", h->rate);
   }
   char *rpm = g_key_file_get_string(kf, "rp", "mode", NULL);
   if (rpm) { g_strstrip(rpm); }
@@ -561,8 +561,9 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   if (given(kf, "rp", "b_rate", NULL)) {
     h->rp_b_rate = (guint)g_key_file_get_integer(kf, "rp", "b_rate", NULL);
   }
-  if (h->rp_b_rate != 48000 && h->rp_b_rate != 96000 && h->rp_b_rate != 192000) {
-    return bad(error, path, "[rp] b_rate %u (48000, 96000 or 192000)", h->rp_b_rate);
+  if (h->rp_b_rate != 48000 && h->rp_b_rate != 96000 && h->rp_b_rate != 192000 &&
+      h->rp_b_rate != 384000) {
+    return bad(error, path, "[rp] b_rate %u (48000, 96000, 192000 or 384000)", h->rp_b_rate);
   }
 
   char *eng = g_key_file_get_string(kf, "decode", "engine", NULL);
@@ -1240,6 +1241,15 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
                  "at %u and %u Hz", h->band[k].name, h->band[i].name, h->band[i].worker,
                  h->band[k].rate, h->band[i].rate);
       }
+    }
+  }
+  /* 384 kHz: the board's ARM reads and sends 4 receivers an IP with room
+   * to spare (docs/REDPITAYA.md, F0 and agent 0.3) — more is not measured */
+  for (guint ip = 0; ok && ip < 2 && h->source == SKIM_HD_SOURCE_HPSDR_P1; ip++) {
+    const guint r = ip ? h->rp_b_rate : h->rate;
+    if (r == 384000 && h->nb_ip[ip] > SKIM_HD_IP_RX_384) {
+      ok = bad(error, path, "IP %c at 384 kHz: %u receivers at most (%u asked) — the Red Pitaya's "
+               "ARM; 192 kHz takes %u", ip ? 'B' : 'A', SKIM_HD_IP_RX_384, h->nb_ip[ip], SKIM_HD_IP_RX);
     }
   }
   if (ok && h->nb_ip[1] && !h->nb_ip[0]) {

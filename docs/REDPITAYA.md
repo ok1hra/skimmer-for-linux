@@ -107,6 +107,17 @@ FPGA °C (peak), its load (managers and the LAN only), Mb/s from each IP
 (every client's, from the agent's tx bytes) — from the agent's status
 every 10 s while it runs the board.
 
+## 384 kHz
+
+Since 2026-11-25 the config takes 384 kHz (`[radio] rate`, `[rp] b_rate`)
+with 4 receivers an IP at that rate (`SKIM_HD_IP_RX_384`: F0's safe
+figure; agent 0.3 may carry more, not measured live). The engine already
+ran 384 kHz from TCI: 3072 CW channels a band. The cost is on the PC:
+one band with CW and RTTY took **54 % of a core at 384 kHz against 8 % at
+96 kHz** (hra2, the agent's sim tone, 20 s) — about 7×, more than the 4× of
+the rate. Settings says so beside the option. Worth a profile before
+anyone runs several bands at 384 kHz.
+
 ## The page
 
 - **Settings → Radio**: Layout (`[rp] mode`: P1 = both inputs into one set

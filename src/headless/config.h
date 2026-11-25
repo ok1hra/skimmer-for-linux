@@ -10,7 +10,8 @@
  *            host    one radio or a list (comma separated, tried in order),
  *                    each optionally host@ppm: that radio's own clock error;
  *                    auto (or none) = the radios a broadcast discovery finds
- *            rate    48000 / 96000 / 192000 — one rate for all receivers
+ *            rate    48000 / 96000 / 192000 / 384000 (4 receivers an IP at
+ *                    384 kHz) — IP A's receivers; IP B's is [rp] b_rate
  *            clock_ppm  for the radios without @ppm
  *   [bands]  <name>=<centre Hz> [modes], in receiver order (RX1 first);
  *            modes a comma list of cw, cw:v3, cw:v4, cw:v2, cw:deepcw, rtty — none = cw
@@ -138,6 +139,7 @@ G_BEGIN_DECLS
 
 #define SKIM_HD_MAX_BANDS 16          /* both IPs of a Red Pitaya, 8 each     */
 #define SKIM_HD_IP_RX     8           /* sdr_receiver_hpsdr's receivers an IP */
+#define SKIM_HD_IP_RX_384 4           /* … of them at 384 kHz (the board's ARM) */
 #define SKIM_HD_MAX_LISTED 32         /* [bands] lines, the ones off included */
 #define SKIM_HD_HOST_AUTO "auto"      /* [radio] host: what a broadcast finds */
 

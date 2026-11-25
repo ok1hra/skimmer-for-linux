@@ -220,7 +220,7 @@
             names it, or the hub's address[:port]</small></label>
           <label>Rate <select name="radio.rate" data-default="96000">
             <option value="48000">48 kHz</option><option value="96000">96 kHz</option>
-            <option value="192000">192 kHz</option></select></label>
+            <option value="192000">192 kHz</option><option value="384000" title="4 receivers an IP; each band costs ~7× the CPU of 96 kHz on this PC (measured: 54 % of a core for CW+RTTY)">384 kHz (4 receivers)</option></select></label>
           <label>Clock ppm <input name="radio.clock_ppm" inputmode="decimal" placeholder="0">
             <small>for the hosts without @ppm</small></label>
           <label class="rp-only">Layout <select name="rp.mode" data-default="p1">
@@ -230,7 +230,7 @@
             the input of a band needs the skimmer's agent on the board (Red Pitaya below)</small></label>
           <label class="rp-only">Rate IP B <select name="rp.b_rate" data-default="">
             <option value="">as IP A</option><option value="48000">48 kHz</option><option value="96000">96 kHz</option>
-            <option value="192000">192 kHz</option></select></label>
+            <option value="192000">192 kHz</option><option value="384000" title="4 receivers an IP; each band costs ~7× the CPU of 96 kHz on this PC (measured: 54 % of a core for CW+RTTY)">384 kHz (4 receivers)</option></select></label>
           <label class="rp-only">Address IP B <input name="rp.b_host" placeholder="the agent names it">
             <small>empty = the address the skimmer's agent reports</small></label>
         </fieldset>
