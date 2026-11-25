@@ -79,12 +79,45 @@ One process replaces both stock servers on the same bitstream.
 ## F0 — what the stock bitstream can do beyond Protocol 1
 
 `rp/spike/rp-spike` (run from /tmp, refuses any instance whose stock server
-still runs) answers, before the extended mode is designed:
+still runs) measured on 2026-11-25 19:06–19:09 UTC, both stock servers
+stopped for it (antenna on IN1, centre 7.300 MHz / 7.030 MHz):
 
-1. rate register 80 / 40 (768 kHz / 1.536 MS/s): valid IQ? can the ARM
-   drain the FIFOs?
-2. the two instances on one frequency after a back-to-back reset: a constant
-   phase and a known sample offset? (the future phasing of two antennas)
-3. the board's UDP ceiling (`blast` + `sink.py`).
+1. **Nothing above 384 kHz.** Rate register 80, 40 and 20 still give
+   384 000 S/s (the FIFO fills at the reg-160 pace) and the samples are
+   garbage: −3.4 dBFS rms, peaks over full scale, a flat spectrum without
+   the broadcast carriers reg 160 shows 60–70 dB over the floor. 160 is the
+   decimator's minimum. A channel wider than 384 kHz needs our own FPGA
+   build — there is no "extended-lite" on the stock bitstream.
+2. **The two instances are coherent.** RX1 of both on IN1, one frequency,
+   FIFOs reset back to back, three resets in a row: sample lag 0, phase
+   A·conj(B) 39.9° / 39.7° / 40.3° (std ≤ 0.27° over 2 s, drift < 1°),
+   levels equal to 0.01 dB. A constant, calibratable offset — enough for the
+   future phasing of two antennas at ≤ 384 kHz. Not yet known: whether the
+   40° survives a retune (the NCO phase accumulators are not reset; a
+   calibration after each tune is the safe assumption).
+3. **The ARM is the limit, not the link.** One core reads ≈ 3.1 M FIFO
+   words/s (8 RX × 384 kHz = 100 %; 8 × 192 k = 44 %, 8 × 96 k = 27 %,
+   8 × 48 k = 18 %, the polling loop alone ≈ 18 %) — the same at reg 80/40,
+   since the FIFO runs at 384 k. The UDP ceiling of 1032-byte datagrams
+   (sendmmsg, 25 a call) is ≈ 28 000 pkt/s = 240 Mb/s a core, ≈ 470 Mb/s
+   with two senders on the two cores (to hra2 at 1 Gb/s, 0 lost).
 
-Results: not measured yet — they need both instances idle.
+What an instance (one thread, one core, as in Pavel's server) can carry —
+P1 puts 2 × ⌊504 / (6·n + 2)⌋ samples of n receivers in a datagram:
+
+| receivers × rate | datagrams/s | Mb/s | FIFO + send ≈ core |
+|---|---|---|---|
+| 8 × 96 kHz | 4 800 | 41 | 27 + 17 = 45 % |
+| 8 × 192 kHz | 9 600 | 83 | 44 + 34 = 80 % |
+| 4 × 384 kHz | 10 100 | 87 | 47 + 36 = 85 % |
+| 8 × 384 kHz | 19 200 | 165 | 100 + 69 — does not fit |
+
+So both IPs together: up to 16 × 192 kHz (≈ 165 Mb/s, both cores ≈ 80 %),
+384 kHz only with ≤ 4 receivers on that IP. Settings must enforce it. Ways
+to more, untried: UDP GSO (`UDP_SEGMENT`, kernel 5.4 has it) for the send
+side; for the FIFO side only our own FPGA (DMA instead of word reads).
+
+What this means for the modes: the **extended mode on the stock bitstream**
+is P1 with the input chosen per IP (IN1 → IP A, IN2 → IP B), 8 × ≤ 384 kHz
+each — the agent already does that (`ctl sel`). Wider channels
+(768 k–3 M a slot) wait for our own FPGA (F6b, Vivado).
