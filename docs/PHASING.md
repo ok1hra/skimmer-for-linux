@@ -129,6 +129,65 @@ Other modes, as Linrad has them:
 - **Adapt then fix** (Linrad's semi-automatic way): take the band-wide
   weight MVDR found on the interferer and hold it.
 
+### Who decides between "enhance" and "null"? Nobody: one objective, two layers
+
+There is no switch to choose between "enhance the signal" and "null the
+interference". A decoder needs the highest **signal to interference plus
+noise ratio** (SINR) at its input, and the max-SINR weight w ∝ R_n⁻¹ v
+does both at once, in the proportion that pays:
+
+- no interferer: R_n ∝ I, and the weight is MRC (enhancement);
+- one interferer above the noise: R_n⁻¹ turns the weight towards its
+  null, as far as the signal can afford;
+- a weak signal next to an interferer: still the same formula. It may
+  even lower the signal's power when it lowers the interference more,
+  because the SINR is what decodes. Normalising the output noise keeps the
+  levels the decoders and the gates expect.
+
+What differs between signals is not the goal but **how well v and R_n can
+be estimated**. A strong station gives v at once. A weak one does not:
+from power alone, its marks cannot be told from the noise. Hence two
+layers.
+
+**Layer 1: the group's interference canceller, for everything.** Per group
+of channels (a few kHz), R_n comes from the quiet channels, and the
+weights null what dominates there. With no station known, the steering is
+"no preference": antenna A, or the whitened sum. This layer runs on every
+channel and on the band-level output. It lowers the floor everywhere, so
+that weak stations rise out of it and get **detected** in the first
+place. Detection, the waterfall and FT8/JS8/WSPR live on this layer.
+
+**Layer 2: per decoder, decision-directed: we know what we decode.** Once
+a decoder (CW v3/v4 on its channel, an RTTY pair) locks on a station, its
+own decisions steer that channel's weights:
+
+- The decoder's mark probability p(n) (CW: the keyed envelope / Viterbi
+  path; RTTY: the tone decisions) gates the covariances in that very
+  channel: R_s += α·p·x xᴴ during marks, R_n += α·(1 − p)·x xᴴ during
+  spaces. R_n then holds exactly what disturbs this station at its
+  frequency (in-channel QRM included). R_s − R_n is the station alone.
+- Integrating over many marks (seconds; tens of seconds for a deep-weak
+  station) gives v even where a power gate never could. That is where a
+  weak station gains most.
+- w = R_n⁻¹ v (max SINR), with the phase reference on antenna A and the
+  output noise normalised as below.
+- **Safety**: decision-directed loops can chase their own errors. Adapt
+  slowly, weight by the decoder's confidence, fall back to layer 1 when
+  the decoder loses lock or when the combined SINR estimate is not above
+  layer 1's, and never let layer 2's weight leave the channel (each
+  decoder steers only its own input).
+
+So the channel in a group where a strong station, a weak one and an
+interferer sit side by side gets: layer 1 for the whole group (the
+interferer nulled), and each locked decoder's own refinement in its own
+channel. The other channels keep layer 1. "One phaser per decoder input"
+is exactly layer 2. Its cost is the same few MACs per channel sample, plus
+a probability stream from the decoder to the combiner, which needs a small
+hook in `decode.h` (an optional `mark_prob` output per sample block).
+Implement layer 1 first (P3), then layer 2 (a new P3b with its gate: a
+synthetic weak CW station 6 dB under a common interferer, decoded with
+layer 2 and not with layer 1).
+
 ### What two antennas can and cannot do
 
 Two antennas give two degrees of freedom **at each frequency**. Per
