@@ -10,7 +10,11 @@
  *              C0=0x00: C1[1:0] rate 0/1/2/3 = 48/96/192/384 kHz, C4[5:3] nrx−1
  *              C0=0x04, 0x06 … 0x10, 0x24: RX1 … RX8 frequency, Hz,
  *              big-endian (the server turns it into a phase increment
- *              against its nominal 125 MHz)
+ *              against its nominal ADC clock: 122.88 or 125 MHz)
+ *              C0=0x1C (only to the skimmer's agent, rp/agent): the ADC of
+ *              each receiver, 2 bits each — C1 RX1..RX4, C2 RX5..RX8 (RX8
+ *              beyond Protocol 1's seven); the start then carries "SKRP"
+ *              in bytes 4–7, and only such a client's word is taken
  *   EP6 (from) EF FE 01 06 seq[4] + 2 × (7F 7F 7F C0..C4 + 504 B); per
  *              sample and receiver I[3] Q[3] (24-bit BE, signed), then a
  *              16-bit mic word: 504 / (6·nrx + 2) samples per frame.
@@ -106,6 +110,8 @@ struct _SkimHpsdrClient {
   guint    rate;
   guint8   rate_code;
   guint    nrx;
+  guint8   adc_mask;             /* bit r = receiver r on IN2 (agent only)   */
+  gboolean agent;                /* the board runs the skimmer's agent       */
 
   /* Receive thread only. */
   guint32  ep2_seq;
@@ -198,6 +204,13 @@ static gssize recv_stamped(int fd, guint8 *buf, gsize len, int flags,
 
 static void send_cmd(int fd, const struct sockaddr_in *dst, guint8 b2, guint8 b3) {
   guint8 pkt[64] = { 0xEF, 0xFE, b2, b3 };
+  sendto(fd, pkt, sizeof(pkt), 0, (const struct sockaddr *)dst, sizeof(*dst));
+}
+
+/* The start to the skimmer's agent: "SKRP" in the padding marks the client
+ * whose ADC word (C0=0x1C) the agent takes. */
+static void send_start_marked(int fd, const struct sockaddr_in *dst) {
+  guint8 pkt[64] = { 0xEF, 0xFE, 0x04, 0x01, 'S', 'K', 'R', 'P' };
   sendto(fd, pkt, sizeof(pkt), 0, (const struct sockaddr *)dst, sizeof(*dst));
 }
 
@@ -327,13 +340,18 @@ GArray *skim_hpsdr_discover_all(const char *bcast, guint16 port, guint timeout_m
 static guint8 rx_freq_c0(guint rx) { return rx < 7 ? (guint8)(0x04 + 2 * rx) : 0x24; }
 
 /* Control word k of the session: 0 = rate + receiver count, 1..nrx = the
- * receivers' frequencies. */
+ * receivers' frequencies, nrx + 1 = the receivers' ADCs (the agent only). */
 static void put_ctrl(const SkimHpsdrClient *c, guint k, guint8 *fr) {
   fr[0] = fr[1] = fr[2] = 0x7F;
   if (k == 0) {
     fr[3] = 0x00;
     fr[4] = c->rate_code;
     fr[7] = (guint8)(((c->nrx - 1) & 7) << 3);
+  } else if (k == c->nrx + 1) {
+    fr[3] = 0x1C;
+    for (guint r = 0; r < 8; r++) {
+      if (c->adc_mask >> r & 1) { fr[4 + r / 4] |= (guint8)(1u << (2 * (r % 4))); }
+    }
   } else {
     fr[3] = rx_freq_c0(k - 1);
     const guint32 hz = htonl(c->rx[k - 1].freq_word);
@@ -344,7 +362,7 @@ static void put_ctrl(const SkimHpsdrClient *c, guint k, guint8 *fr) {
 /* All nrx + 1 control words, two per packet (an odd count repeats the
  * rate word). */
 static void send_ep2(SkimHpsdrClient *c) {
-  const guint words = c->nrx + 1;
+  const guint words = c->nrx + 1 + (c->agent ? 1 : 0);
   for (guint k = 0; k < words; k += 2) {
     guint8 pkt[PKT_BYTES] = { 0xEF, 0xFE, 0x01, 0x02 };
     const guint32 seq = htonl(c->ep2_seq++);
@@ -654,9 +672,14 @@ gboolean skim_hpsdr_client_start_multi(SkimHpsdrClient *c, guint rate,
   g_mutex_unlock(&c->lock);
 
   /* Configure first, so the first EP6 packet already has our layout. */
+  c->agent = info.agent;
   send_ep2(c);
   send_ep2(c);
-  send_cmd(c->fd, &c->dst, 0x04, 0x01);
+  if (c->agent) {
+    send_start_marked(c->fd, &c->dst);
+  } else {
+    send_cmd(c->fd, &c->dst, 0x04, 0x01);
+  }
   c->last_refresh_us = c->started_us = g_get_monotonic_time();
 
   g_atomic_int_set(&c->run, 1);
@@ -737,6 +760,10 @@ guint64 skim_hpsdr_client_lost_frames(SkimHpsdrClient *c) {
   g_mutex_unlock(&c->lock);
   return v;
 }
+
+void skim_hpsdr_client_set_inputs(SkimHpsdrClient *c, guint8 mask) { c->adc_mask = mask; }
+
+gboolean skim_hpsdr_client_agent(SkimHpsdrClient *c) { return c->agent; }
 
 guint16 skim_hpsdr_client_local_port(SkimHpsdrClient *c) {
   if (c->fd < 0) { return 0; }

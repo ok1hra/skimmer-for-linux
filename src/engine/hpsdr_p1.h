@@ -124,6 +124,12 @@ guint64     skim_hpsdr_client_packets(SkimHpsdrClient *c);
 guint64     skim_hpsdr_client_lost_frames(SkimHpsdrClient *c);
 /* The UDP port of this machine the stream comes to (0 = not started). */
 guint16     skim_hpsdr_client_local_port(SkimHpsdrClient *c);
+/* The receivers' ADC inputs for the next start: bit r = receiver r on IN2.
+ * Only the skimmer's agent takes them (Pavel's server has its inputs on its
+ * command line and ignores the word — it is not even sent to it). */
+void        skim_hpsdr_client_set_inputs(SkimHpsdrClient *c, guint8 mask);
+/* TRUE once started on a board that runs the skimmer's agent. */
+gboolean    skim_hpsdr_client_agent(SkimHpsdrClient *c);
 
 /* An orphan stream: a client of THIS machine died without its stop (a
  * crash), and host:port streams on to its local_port, which nothing here

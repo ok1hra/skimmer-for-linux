@@ -53,7 +53,7 @@
 #include <unistd.h>
 
 #define AGENT_MAJOR 0
-#define AGENT_MINOR 1
+#define AGENT_MINOR 2
 #define ADC_HZ      122.88e6
 #define NRX         8
 #define MODE_P1     0
@@ -100,6 +100,12 @@ struct Inst {
   uint32_t           seq;
   int64_t            fifo_reset_ns;        /* CLOCK_MONOTONIC of the last reset */
   uint64_t           overflows;
+  /* the skimmer's client (its start carried "SKRP"): its ADC word counts */
+  int                marked;
+  uint8_t            base_sel;             /* the manager's inputs (--sel, ctl) */
+  struct sockaddr_in adc_from;             /* the last ADC word: who, what     */
+  int                adc_have;
+  uint8_t            adc_sel;
   /* orphan detection */
   int64_t            unreach_first_ns, unreach_last_ns;
   uint64_t           unreach_count, orphan_stops;
@@ -285,6 +291,10 @@ static void stream_stop(Inst *in) {
   in->enable = 0;
   pthread_join(in->thread, NULL);
   in->active = 0;
+  if (in->marked) {                 /* the skimmer's inputs end with its stream */
+    in->marked = 0;
+    *in->sel = in->base_sel;
+  }
 }
 
 static void stream_start(Inst *in, const struct sockaddr_in *from) {
@@ -304,8 +314,31 @@ static void stream_start(Inst *in, const struct sockaddr_in *from) {
   }
 }
 
+/* The ADC word (C0 = 0x1C: C1 RX1..RX4, C2 RX5..RX8, 2 bits each, 1 = IN2)
+ * from from: taken when from is the marked client streaming now; kept for
+ * a marked start from that address that follows (the client configures
+ * before it starts). Another client's word changes nothing — its inputs
+ * are the manager's (ctl sel), not its own. */
+static void adc_word(Inst *in, const uint8_t *f, const struct sockaddr_in *from) {
+  uint8_t sel = 0;
+  for (int r = 0; r < 8; r++) {
+    if (((f[1 + r / 4] >> (2 * (r % 4))) & 3) == 1) { sel |= (uint8_t)(1u << r); }
+  }
+  in->adc_from = *from;
+  in->adc_sel = sel;
+  in->adc_have = 1;
+  if (in->active && in->marked && from->sin_addr.s_addr == in->client.sin_addr.s_addr &&
+      from->sin_port == in->client.sin_port) {
+    *in->sel = sel;
+  }
+}
+
 /* One EP2 control frame (C0 at frame[0]), as Pavel's process_ep2. */
-static void ep2_frame(Inst *in, const uint8_t *f) {
+static void ep2_frame(Inst *in, const uint8_t *f, const struct sockaddr_in *from) {
+  if (f[0] == 0x1C || f[0] == 0x1D) {
+    adc_word(in, f, from);
+    return;
+  }
   static const int rx_of[38] = {
     [4] = 1, [5] = 1, [6] = 2, [7] = 2, [8] = 3, [9] = 3, [10] = 4, [11] = 4,
     [12] = 5, [13] = 5, [14] = 6, [15] = 6, [16] = 7, [17] = 7, [36] = 8, [37] = 8,
@@ -420,8 +453,8 @@ static void *server_thread(void *arg) {
     switch (code) {
     case 0x0201feef:
       if (n >= 1032) {
-        ep2_frame(in, buf + 11);
-        ep2_frame(in, buf + 523);
+        ep2_frame(in, buf + 11, &from);
+        ep2_frame(in, buf + 523, &from);
       }
       break;
     case 0x0002feef: {
@@ -447,6 +480,11 @@ static void *server_thread(void *arg) {
     case 0x0204feef:
     case 0x0304feef:
       stream_start(in, &from);
+      in->marked = n >= 8 && memcmp(buf + 4, "SKRP", 4) == 0;
+      if (in->marked && in->adc_have && in->adc_from.sin_addr.s_addr == from.sin_addr.s_addr &&
+          in->adc_from.sin_port == from.sin_port) {
+        *in->sel = in->adc_sel;
+      }
       break;
     default:
       break;
@@ -591,7 +629,8 @@ static void ctl_handle(int c) {
   } else if (sscanf(line, "sel %c %i", &which, &mask) == 2 && (which == 'a' || which == 'b') &&
              mask <= 0xff && (which == 'a' || ninst > 1)) {
     Inst *in = &inst[which == 'b'];
-    *in->sel = (uint8_t)mask;
+    *in->sel = (uint8_t)mask;          /* the manager's word: live, and the base */
+    in->base_sel = (uint8_t)mask;
     logf_("%s: inputs 0x%02x (bit = receiver on IN2)", in->name, mask);
     fprintf(f, "ok\n");
   } else {
@@ -721,6 +760,7 @@ int main(int argc, char **argv) {
     }
     *inst[k].rate = 1280;
     *inst[k].sel = (uint8_t)sel[k];
+    inst[k].base_sel = (uint8_t)sel[k];
   }
   for (int k = 0; k < ninst; k++) {
     inst[k].sock = open_socket(&inst[k]);

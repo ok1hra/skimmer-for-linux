@@ -343,13 +343,13 @@ int main(int argc, char **argv) {
   check("both IPs answer as the agent, idle",
         has(j, "{\"host\":\"127.0.0.4\",\"state\":\"idle\",\"agent\":true}") &&
             has(j, "{\"host\":\"127.0.0.5\",\"state\":\"idle\",\"agent\":true}") &&
-            has(j, "\"agent\":\"skimmer-rp 0.1\"") && has(j, "\"stock\":false"));
+            has(j, "\"agent\":\"skimmer-rp 0.2\"") && has(j, "\"stock\":false"));
   g_free(j);
 
   check("status read", run_job(rp, SKIM_HD_RP_STATUS, NULL));
   j = skim_hd_rp_json(rp);
   check("… the agent's JSON, inst B on IN2 for RX2",
-        has(j, "\"status\":{\"agent\":\"0.1\"") && has(j, "\"status_age_s\":") && has(j, "\"sel\":2"));
+        has(j, "\"status\":{\"agent\":\"0.2\"") && has(j, "\"status_age_s\":") && has(j, "\"sel\":2"));
   g_free(j);
 
   SkimHdRpArgs sel = { .sel_a = 0x05, .sel_b = 0x00, .persist = TRUE };

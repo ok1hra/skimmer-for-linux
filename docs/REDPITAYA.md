@@ -59,7 +59,17 @@ One process replaces both stock servers on the same bitstream.
   is part of the command word, and Pavel's server answers only `EF FE 02 00`.
   A plain discovery gets the stock reply byte for byte. The engine's client
   always asks with the marker (`SkimHpsdrInfo.agent`).
-- **Inputs live**: `skimmer-rp ctl sel a|b MASK`.
+- **Inputs live**, two ways. The manager's: `skimmer-rp ctl sel a|b MASK`
+  (rp_manage's `sel`, kept in start.sh — what an external client such as
+  SkimSrv gets). The skimmer's own, per stream, inside Protocol 1: the ADC
+  assignment word of the multi-ADC Hermes boards (C0 = 0x1C, 2 bits a
+  receiver, C1 RX1–4, C2 RX5–8 — RX8 beyond the standard's seven), sent
+  only when the discovery showed the agent, with a start that carries
+  `SKRP` in bytes 4–7. Only such a marked client's word counts (one that
+  arrives before its start is kept for it); when its stream ends the
+  manager's inputs come back. Another client's word is ignored: an
+  external client's inputs are the manager's choice. Pavel's server never
+  sees the word (`hpsdr_p1.c` sends it to the agent only).
 - **Its own orphan stop**: Protocol 1 has no watchdog and SkimSrv sends its
   EP2 once, so "no control for N s" cannot mean "dead". A dead client's port
   answers each datagram with ICMP port unreachable; the socket has

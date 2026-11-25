@@ -175,6 +175,7 @@ int main(int argc, char **argv) {
   const double ca[3] = { 7030000, 14030000, 21030000 }, cb[2] = { 3530000, 28030000 };
   for (guint r = 0; r < 3; r++) { skim_hpsdr_client_set_rx_iq_cb(a, r, iq_cb, &ra[r]); }
   for (guint r = 0; r < 2; r++) { skim_hpsdr_client_set_rx_iq_cb(b, r, iq_cb, &rb[r]); }
+  skim_hpsdr_client_set_inputs(a, 0x04);   /* RX3 on IN2, through Protocol 1 */
   ok = skim_hpsdr_client_start_multi(a, 96000, ca, 3, 0, FALSE, &err);
   CHECK(ok, "A: 3 RX × 96 kHz started%s%s", err ? ": " : "", err ? err->message : "");
   g_clear_error(&err);
@@ -183,11 +184,14 @@ int main(int argc, char **argv) {
   g_clear_error(&err);
   for (guint r = 0; r < 3; r++) { wait_frames(&ra[r], 3 * NBUF); }
   for (guint r = 0; r < 2; r++) { wait_frames(&rb[r], 3 * NBUF); }
+  CHECK(skim_hpsdr_client_agent(a) && skim_hpsdr_client_agent(b), "the client knows it talks to the agent");
   for (guint r = 0; r < 3; r++) {
     const double on = tone_amp(&ra[r], 1000.0 * (r + 1)), mirror = tone_amp(&ra[r], -1000.0 * (r + 1));
-    CHECK(fabs(on - 0.25) < 0.03 && mirror < 0.01 && ra[r].rate == 96000 && ra[r].centre == ca[r],
-          "A RX%u: tone at +%u kHz %.3f (−12 dBFS = 0.25), mirror %.4f, %.0f Hz at %.0f", r + 1,
-          r + 1, on, mirror, ra[r].rate, ra[r].centre);
+    const double want = r == 2 ? 0.05 : 0.25;     /* RX3: IN2, set by the client's ADC word */
+    CHECK(fabs(on - want) < 0.03 * want / 0.25 && mirror < 0.01 && ra[r].rate == 96000 && ra[r].centre == ca[r],
+          "A RX%u: tone at +%u kHz %.3f (%s), mirror %.4f, %.0f Hz at %.0f", r + 1,
+          r + 1, on, r == 2 ? "IN2 by the client's ADC word: 0.05" : "IN1: 0.25", mirror, ra[r].rate,
+          ra[r].centre);
   }
   for (guint r = 0; r < 2; r++) {
     const double on = tone_amp(&rb[r], 1000.0 * (r + 1));
@@ -226,15 +230,24 @@ int main(int argc, char **argv) {
   skim_hpsdr_client_stop(a);
   ok = skim_hpsdr_discover(ADDR_A, port, 500, &info, NULL);
   CHECK(ok && !info.busy, "A idle after the client's stop");
+  ok = raw_discovery(ADDR_A, TRUE, marked);
+  CHECK(ok && marked[0x1B] == 0, "… its inputs back to the manager's (0x%02x)", marked[0x1B]);
   /* a client that starts A and dies without a stop */
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons(port) };
   inet_pton(AF_INET, ADDR_A, &to.sin_addr);
+  guint8 ep2[1032] = { 0xEF, 0xFE, 0x01, 0x02 };
+  ep2[8] = ep2[9] = ep2[10] = 0x7F;
+  ep2[11] = 0x1C;                               /* every receiver on IN2 … */
+  ep2[12] = ep2[13] = 0x55;
+  sendto(s, ep2, sizeof(ep2), 0, (struct sockaddr *)&to, sizeof(to));
   guint8 start[64] = { 0xEF, 0xFE, 0x04, 0x01 };
   sendto(s, start, sizeof(start), 0, (struct sockaddr *)&to, sizeof(to));
   g_usleep(300000);
   ok = skim_hpsdr_discover(ADDR_A, port, 500, &info, NULL);
   CHECK(ok && info.busy, "A busy: a client streams");
+  ok = raw_discovery(ADDR_A, TRUE, marked);
+  CHECK(ok && marked[0x1B] == 0, "… an unmarked client's ADC word changes nothing (0x%02x)", marked[0x1B]);
   close(s);
   gint64 t0 = g_get_monotonic_time();
   gboolean idle = FALSE;
