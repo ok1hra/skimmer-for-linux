@@ -506,6 +506,7 @@ static gboolean probe(Job *j, GError **error) {
   g_mutex_lock(&rp->mu);
   if (rp->board) { g_hash_table_unref(rp->board); }
   rp->board = b;
+  rp->connected = TRUE;                        /* the key works: it just ran */
   g_mutex_unlock(&rp->mu);
   for (int k = 0; k < 2; k++) {
     int state = IP_UNKNOWN;
@@ -842,6 +843,107 @@ static gboolean job_status(Job *j, GError **error) {
   rp->status_t = now;
   g_mutex_unlock(&rp->mu);
   return TRUE;
+}
+
+static void kv_bool(GString *o, const char *k, gboolean v, gboolean comma);
+static void kv_str(GString *o, const char *k, const char *v, gboolean comma);
+
+/* The raw value of "key" inside [p, end): a string's contents, a number,
+ * true/false/null — "" when absent. */
+static void jraw(const char *p, const char *end, const char *key, char *out, gsize room) {
+  out[0] = 0;
+  char pat[48];
+  g_snprintf(pat, sizeof(pat), "\"%s\":", key);
+  const char *k = g_strstr_len(p, end - p, pat);
+  if (!k) { return; }
+  const char *v = k + strlen(pat), *e = v;
+  if (*v == '"') {
+    v++;
+    e = v;
+    while (e < end && *e != '"') { e++; }
+  } else {
+    while (e < end && *e != ',' && *e != '}' && *e != ']') { e++; }
+  }
+  g_strlcpy(out, v, MIN(room, (gsize)(e - v) + 1));
+}
+
+static void out_num(GString *o, const char *k, const char *raw, gboolean comma) {
+  g_string_append_printf(o, "%s\"%s\":%s", comma ? "," : "", k, raw[0] ? raw : "null");
+}
+
+static void out_dbl(GString *o, const char *k, double v) {
+  if (isnan(v)) { g_string_append_printf(o, ",\"%s\":null", k); return; }
+  char num[G_ASCII_DTOSTR_BUF_SIZE];
+  g_ascii_formatd(num, sizeof(num), "%.1f", v);
+  g_string_append_printf(o, ",\"%s\":%s", k, num);
+}
+
+char *skim_hd_rp_status_block(SkimHdRp *rp) {
+  g_mutex_lock(&rp->mu);
+  if (!rp->board || !g_hash_table_size(rp->board)) {
+    g_mutex_unlock(&rp->mu);
+    return NULL;
+  }
+  GString *o = g_string_new("{");
+  kv_str(o, "board", board(rp, "hw"), FALSE);
+  const char *ag = board(rp, "agent");
+  const gboolean agent = board(rp, "installed") && ag && g_str_has_prefix(ag, "skimmer-rp ");
+  kv_str(o, "firmware", agent ? ag : board(rp, "stock") ? "Pavel Demin's servers" : "none running", TRUE);
+  kv_bool(o, "managed", agent, TRUE);
+  const gboolean fresh = rp->status && g_get_monotonic_time() - rp->status_t < 30 * G_USEC_PER_SEC;
+  char v[64];
+  if (fresh) {
+    const char *st = rp->status, *end = st + strlen(st);
+    const char *inst = strstr(st, "\"inst\":[");
+    const char *top_end = inst ? inst : end;
+    jraw(st, top_end, "mode", v, sizeof(v));
+    kv_str(o, "mode", v, TRUE);
+    out_dbl(o, "fpga_c", rp->rd.fpga_c);
+    jraw(st, top_end, "uptime_s", v, sizeof(v));
+    out_num(o, "uptime_s", v, TRUE);
+    out_dbl(o, "rp_load", rp->rd.load1);
+    jraw(st, top_end, "mem_avail_kb", v, sizeof(v));
+    if (v[0]) { g_string_append_printf(o, ",\"rp_mem_mb\":%.0f", g_ascii_strtod(v, NULL) / 1024); }
+    g_string_append_printf(o, ",\"age_s\":%.0f", (g_get_monotonic_time() - rp->status_t) / 1e6);
+    g_string_append(o, ",\"ips\":[");
+    const char *q = inst ? inst + 8 : end;
+    for (int k = 0; k < 2 && q < end; k++) {
+      const char *ob = strchr(q, '{');
+      if (!ob) { break; }
+      int depth = 0;
+      const char *oe = ob;
+      for (; oe < end; oe++) {
+        if (*oe == '{' || *oe == '[') { depth++; }
+        else if ((*oe == '}' || *oe == ']') && --depth == 0) { break; }
+      }
+      g_string_append_printf(o, "%s{", k ? "," : "");
+      kv_str(o, "host", rp->ip[k].host[0] ? rp->ip[k].host : NULL, FALSE);
+      jraw(ob, oe, "streaming", v, sizeof(v));
+      out_num(o, "streaming", v, TRUE);
+      char cl[48], cp[16];
+      jraw(ob, oe, "client", cl, sizeof(cl));
+      jraw(ob, oe, "client_port", cp, sizeof(cp));
+      if (cl[0]) {
+        char *c = g_strdup_printf("%s:%s", cl, cp);
+        kv_str(o, "client", c, TRUE);
+        g_free(c);
+      } else {
+        kv_str(o, "client", NULL, TRUE);
+      }
+      static const char *nums[] = { "rate", "receivers", "sel", "overflows", "orphan_stops", "link_mbps" };
+      for (guint i = 0; i < G_N_ELEMENTS(nums); i++) {
+        jraw(ob, oe, nums[i], v, sizeof(v));
+        out_num(o, nums[i], v, TRUE);
+      }
+      out_dbl(o, "mbps", rp->rd.mbps[k]);
+      g_string_append_c(o, '}');
+      q = oe + 1;
+    }
+    g_string_append_c(o, ']');
+  }
+  g_mutex_unlock(&rp->mu);
+  g_string_append_c(o, '}');
+  return g_string_free(o, FALSE);
 }
 
 gboolean skim_hd_rp_readings(SkimHdRp *rp, SkimHdRpReadings *out) {

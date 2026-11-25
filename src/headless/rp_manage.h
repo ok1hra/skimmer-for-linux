@@ -85,6 +85,13 @@ typedef struct {
 } SkimHdRpReadings;
 gboolean  skim_hd_rp_readings(SkimHdRp *rp, SkimHdRpReadings *out);
 
+/* The board for status.json ("redpitaya"), NULL before any probe: the
+ * model, the agent's version (or Pavel's servers), the mode, FPGA °C,
+ * uptime, rp_load and rp_mem_mb, and each IP: host, streaming, client,
+ * rate, receivers, inputs, overflows, orphan stops, Mb/s, link speed. The
+ * caller's status_public scrubs the addresses and the readings for others. */
+char     *skim_hd_rp_status_block(SkimHdRp *rp);
+
 /* TRUE once a probe found the agent installed and running. */
 gboolean  skim_hd_rp_managed(SkimHdRp *rp);
 

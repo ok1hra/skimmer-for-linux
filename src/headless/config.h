@@ -20,8 +20,11 @@
  *            ip=a, [radio] host); in=2 = from the ADC input IN2 (the
  *            skimmer's agent on the board only, docs/REDPITAYA.md) — 8
  *            bands an IP, 16 in all
- *   [rp]     b_host — the second IP (default: the agent on [radio] host
- *            names it), b_rate — its rate (default [radio] rate)
+ *   [rp]     mode — p1 (default: one set of 16 DDCs, each band its input,
+ *            in=) or extended (two antennas: every ip=a band on IN1, every
+ *            ip=b band on IN2 — in= is then implied), b_host — the second IP
+ *            (default: the agent on [radio] host names it), b_rate — its
+ *            rate (default [radio] rate)
  *   [decode] engine=v3|v4|v2|deepcw (the bands that name none), log=true|false,
  *            v4_workers (0 = half the CPUs): CW v4's inference threads,
  *            v4_guard (default true): the governor's v4 load guard,
@@ -172,6 +175,7 @@ typedef struct {
   guint            rate;
   double           ppm;               /* clock_ppm for the radios w/o @ppm   */
   /* [rp] — the board's second IP (bands with ip=b) */
+  gboolean         rp_split;          /* mode=extended: IN1 → IP A, IN2 → IP B */
   char            *rp_b_host;         /* NULL = the agent's discovery names it */
   guint            rp_b_rate;         /* its rate (default [radio] rate)      */
   guint            nb_ip[2];          /* bands received on each IP            */

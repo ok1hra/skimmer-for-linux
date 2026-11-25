@@ -107,6 +107,27 @@ FPGA °C (peak), its load (managers and the LAN only), Mb/s from each IP
 (every client's, from the agent's tx bytes) — from the agent's status
 every 10 s while it runs the board.
 
+## The page
+
+- **Settings → Radio**: Layout (`[rp] mode`: P1 = both inputs into one set
+  of 16 receivers, each band its input; two antennas = IN1 → IP A, IN2 → IP
+  B, the input then follows the IP), Rate IP B, Address IP B (empty = the
+  agent names it).
+- **Settings → Red Pitaya**: a diagram drawn from the form as edited (the
+  inputs, the two receiver sets with their bands and rate, the IPs and who
+  takes them — this skimmer, another client streaming, free), the board's
+  state, Connect (the password field appears only when the board does not
+  know the key), Install/Reinstall, Uninstall, "even while another client
+  streams", and on an IP this skimmer takes no band from the inputs another
+  client gets (`sel`, kept on the board).
+- **Settings → Bands**: IP and input columns; receivers numbered per IP
+  (A·RX1…, B·RX1…), 8 an IP; the Mb/s each IP and both together.
+- **Statistics → Red Pitaya** (only with the agent, or its history): FPGA
+  °C, uptime, load (not public), each IP streaming and its Mb/s (the
+  client's address for managers only); FPGA °C and Mb/s A/B over time.
+  status.json `redpitaya` carries it; `status_public` scrubs addresses and
+  the load and memory.
+
 ## Managing the board from the skimmer (`src/headless/rp_manage.c`)
 
 Settings (`/api/redpitaya`, managers) or `skimmer-headless --redpitaya

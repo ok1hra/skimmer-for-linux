@@ -536,6 +536,15 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   if (h->rate != 48000 && h->rate != 96000 && h->rate != 192000) {
     return bad(error, path, "rate %u (48000, 96000 or 192000)", h->rate);
   }
+  char *rpm = g_key_file_get_string(kf, "rp", "mode", NULL);
+  if (rpm) { g_strstrip(rpm); }
+  if (rpm && rpm[0] && strcmp(rpm, "p1") != 0 && strcmp(rpm, "extended") != 0) {
+    bad(error, path, "[rp] mode \"%s\" (p1 or extended)", rpm);
+    g_free(rpm);
+    return FALSE;
+  }
+  h->rp_split = rpm && strcmp(rpm, "extended") == 0;
+  g_free(rpm);
   char *bh = g_key_file_get_string(kf, "rp", "b_host", NULL);
   if (bh) { g_strstrip(bh); }
   if (bh && bh[0]) {
@@ -1200,6 +1209,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     }
     if (!ok) { break; }
     b->rate = b->ip ? h->rp_b_rate : h->rate;
+    if (h->rp_split) { b->input = b->ip; }     /* two antennas: the IP names the input */
     h->nlisted++;
     if (b->off) { continue; }
     if (h->nb_ip[b->ip] == SKIM_HD_IP_RX) {
@@ -1295,7 +1305,7 @@ gboolean skim_hd_config_load(SkimHdConfig *cfg, const char *path, GError **error
 /* ---- editing ------------------------------------------------------------------- */
 
 const char *const SKIM_HD_EDITABLE[] = {
-  "radio.type", "radio.host", "radio.rate", "radio.clock_ppm",
+  "radio.type", "radio.host", "radio.rate", "radio.clock_ppm", "rp.mode", "rp.b_host", "rp.b_rate",
   "bands",
   "decode.engine", "decode.log", "decode.suppress_cw_on_rtty", "decode.rtty_adaptive",
   "decode.rtty_adaptive_spots", "decode.rtty_adaptive_minutes", "decode.v4_workers", "decode.v4_guard",

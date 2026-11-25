@@ -965,6 +965,11 @@ static void status_build(Hd *h, gboolean print) {
       h->feed ? h->cfg.feed_port : 0, h->cfg.feed_rtty ? "true" : "false", fclients, flines,
       (guint)skim_callsign_dict_size(), up_s);
   if (h->gov) { skim_hd_governor_json(h->gov, json); }   /* "rtty_adaptive" */
+  {                                            /* the managed Red Pitaya (rp_manage.h) */
+    char *rpj = h->rp ? skim_hd_rp_status_block(h->rp) : NULL;
+    g_string_append_printf(json, ",\"redpitaya\":%s", rpj ? rpj : "null");
+    g_free(rpj);
+  }
   g_string_append(json, ",\"bands\":[");
   g_free(jstate);
   g_free(jcall);
@@ -1393,7 +1398,7 @@ static char *status_public(const char *full, gboolean outside) {
      * IQ lost — here and in the workers' status the hub passes on. The
      * temperature (the thermal guard's too) goes to everyone: Dan,
      * 2026-11-21 — the visitors see why bands go OFF */
-    { "\"(cpu_pct|cpu_cw_pct|cpu_rtty_pct|lost_pct|packets_per_s)\":-?[0-9.eE+-]+",
+    { "\"(cpu_pct|cpu_cw_pct|cpu_rtty_pct|lost_pct|packets_per_s|rp_load|rp_mem_mb)\":-?[0-9.eE+-]+",
       "\"\\1\":null" },
     /* CW v4's load and the compute check: machine readings too */
     { "\"v4\":\\{[^{}]*\\}", "\"v4\":null" },
@@ -1616,7 +1621,7 @@ static char *web_config(GHashTable *q, SkimHdWebWho who, guint *st, const char *
                              b->centre_hz, b->cw ? "true" : "false", engine_key(b->cw_engine),
                              b->rtty ? "true" : "false", b->off ? "false" : "true");
       json_kv(o, "worker", b->worker, FALSE);
-      g_string_append_c(o, '}');
+      g_string_append_printf(o, ",\"ip\":\"%s\",\"input\":%u}", b->ip ? "b" : "a", b->input + 1u);
     }
     g_string_append_c(o, ']');
     skim_hd_config_clear(&c);
@@ -1863,9 +1868,17 @@ static void rp_tick(Hd *h) {
     g_free(key);
     return;
   }
-  if (++h->rp_tick >= 10 && skim_hd_rp_managed(h->rp)) {
-    h->rp_tick = 0;
+  ++h->rp_tick;
+  if (h->rp_tick % 10 == 0 && skim_hd_rp_managed(h->rp)) {
     skim_hd_rp_start(h->rp, SKIM_HD_RP_STATUS, NULL, NULL, NULL, NULL);   /* busy: next time */
+  } else if (h->rp_tick % 60 == 0 && !skim_hd_rp_managed(h->rp)) {
+    /* not (yet) the agent's: a probe a minute while the key is there (an
+     * install from elsewhere, a board that was rebooting) */
+    char *key = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", "rp", "id_ed25519", NULL);
+    if (g_file_test(key, G_FILE_TEST_EXISTS)) {
+      skim_hd_rp_start(h->rp, SKIM_HD_RP_PROBE, NULL, NULL, NULL, NULL);
+    }
+    g_free(key);
   }
 }
 
