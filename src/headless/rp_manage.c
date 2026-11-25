@@ -870,12 +870,24 @@ static gboolean job_status(Job *j, GError **error) {
   const gint64 now = g_get_monotonic_time();
   g_mutex_lock(&rp->mu);
   const double dt = (now - rp->tx_prev_t) / 1e6;
+  double d[2] = { NAN, NAN };
   for (int k = 0; k < 2; k++) {
-    if (rp->tx_prev_t && dt > 1 && dt < 120 && !isnan(tx[k]) && !isnan(rp->tx_prev[k]) &&
-        tx[k] >= rp->tx_prev[k]) {
-      rd.mbps[k] = (tx[k] - rp->tx_prev[k]) * 8 / dt / 1e6;
+    if (rp->tx_prev_t && dt > 1 && dt < 120 && !isnan(tx[k]) && !isnan(rp->tx_prev[k])) {
+      double x = tx[k] - rp->tx_prev[k];
+      /* eth0's counter is 32 bits on the 32-bit ARM (net_device_stats is an
+       * unsigned long): it wraps every ~8 min at 68 Mb/s; mvl0's is 64 */
+      if (x < 0 && rp->tx_prev[k] < 4294967296.0) { x += 4294967296.0; }
+      if (x >= 0) { d[k] = x; }
     }
     rp->tx_prev[k] = tx[k];
+  }
+  /* mvl0 is a passthru macvlan on eth0: its datagrams go out through eth0
+   * and count there too (rp-f08908, 2026-11-25: eth0 68.7 Mb/s = A 27.5 +
+   * B 41.2) — IP A's own is the difference */
+  if (!isnan(d[0]) && !isnan(d[1]) && d[0] >= d[1]) { d[0] -= d[1]; }
+  for (int k = 0; k < 2; k++) {
+    if (!isnan(d[k])) { rd.mbps[k] = d[k] * 8 / dt / 1e6; }
+    if (rd.mbps[k] > 1000) { rd.mbps[k] = NAN; }   /* a counter made anew (mvl0) */
   }
   rp->tx_prev_t = now;
   rp->rd = rd;

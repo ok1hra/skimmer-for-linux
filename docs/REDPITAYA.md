@@ -118,6 +118,22 @@ one band with CW and RTTY took **54 % of a core at 384 kHz against 8 % at
 the rate. Settings says so beside the option. Worth a profile before
 anyone runs several bands at 384 kHz.
 
+## Live run of the skimmer on the agent (2026-11-25 22:16–22:28 UTC)
+
+The development build replaced the hra2 service on its live config (5
+bands on IP A, SkimSrv on IP B), with its own copy of the state.
+- 10 min: 0 FIFO overflows, IQ lost 0 % (one minute 0.003 %, as on
+  Pavel's server). The feed and skimmer-compare ran on. Stats v7 became
+  v8 and the board's series filled (FPGA ~80 °C, load 0.4).
+- `in=2` on 17 m: the agent showed RX5 on IN2 (`sel` 0x10), set by the
+  skimmer's ADC word, and back to IN1 at the next start without it.
+- **Counters**: eth0's `tx_bytes` is **32 bits** on the 32-bit ARM (it
+  wraps every ~8 min at 68 Mb/s), mvl0's is 64. mvl0 (passthru macvlan)
+  counts on eth0 too. So IP A's Mb/s = Δeth0 (mod 2³²) − Δmvl0: 27.5 and
+  41.2 Mb/s, as 3200 and 4800 datagrams/s predict.
+- Not run: both IPs for the skimmer (SkimSrv holds B), and CPU load on
+  hra2 (the skimmer will run on a stronger PC — Dan).
+
 ## The page
 
 - **Settings → Radio**: Layout (`[rp] mode`: P1 = both inputs into one set
