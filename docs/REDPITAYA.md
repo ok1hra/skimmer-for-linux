@@ -70,6 +70,22 @@ One process replaces both stock servers on the same bitstream.
   manager's inputs come back. Another client's word is ignored: an
   external client's inputs are the manager's choice. Pavel's server never
   sees the word (`hpsdr_p1.c` sends it to the agent only).
+- **Paired streams and the sample index** (agent 0.4, for two-antenna
+  phasing, `docs/PHASING.md`): a marked start with bit 0 of byte 8 set is
+  paired. While the same client address streams paired from both IPs,
+  every FIFO reset (the second start, an overflow on either side, a new
+  receiver count) resets both FIFO sets back to back and starts one new
+  epoch on both; a reset waits for no batch read to be running (a read
+  lock around each batch, a write lock around the reset), so no sample of
+  the new epoch is ever consumed by a batch that gets dropped. A marked
+  stream carries the epoch and the index of the packet's first sample in
+  its EP6 C&C bytes — frame 1 `7F 7F 7F 78 epoch idx[47:40] idx[39:32]
+  flags`, frame 2 `7F 7F 7F 80 idx[31:0]` — which the engine's client
+  ignores until it pairs. An unmarked stream keeps Pavel's C&C; a paired
+  start never resets a FIFO another client reads. `--sim` runs its tones on
+  a common sample grid, so two instances reset together give the same
+  sample at the same index, and `ctl sim-overflow a|b` forces an overflow
+  (gate `rp-agent`: phase between A and B at one index 0.000°).
 - **Its own orphan stop**: Protocol 1 has no watchdog and SkimSrv sends its
   EP2 once, so "no control for N s" cannot mean "dead". A dead client's port
   answers each datagram with ICMP port unreachable; the socket has

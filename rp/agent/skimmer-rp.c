@@ -20,6 +20,18 @@
  *     ICMP, so a quiet client (SkimSrv sends its EP2 only once) is safe.
  *   - `ctl status`: a JSON line (board, temperature, load, link, both
  *     streams) for the skimmer's Statistics page, read over SSH.
+ *   - for two-antenna phasing (docs/PHASING.md): a marked start whose byte 8
+ *     has bit 0 set is PAIRED. When the same client (address) streams paired
+ *     from both instances, every FIFO reset — the second start, an overflow
+ *     on either side, a new receiver count — resets BOTH FIFO sets back to
+ *     back (as rp-spike pair did: lag 0) and starts a new epoch on both.
+ *     A marked stream carries, in the C&C bytes of its EP6 frames, the
+ *     epoch and the index of the packet's first sample since that reset:
+ *       frame 1: 7F 7F 7F 78 epoch idx[47:40] idx[39:32] flags (bit 0 paired)
+ *       frame 2: 7F 7F 7F 80 idx[31:24] idx[23:16] idx[15:8] idx[7:0]
+ *     so the client aligns A and B by (epoch, index) whatever the packet loss
+ *     or the start skew. An unmarked stream keeps Pavel's C&C byte for byte;
+ *     a reset of a paired stream never touches a FIFO another client reads.
  *
  * --sim replaces /dev/mem with synthetic FIFOs (a tone a receiver, louder on
  * IN1 than on IN2) so the rp-agent gate runs it on the build machine.
@@ -60,7 +72,7 @@
 #include <unistd.h>
 
 #define AGENT_MAJOR 0
-#define AGENT_MINOR 3
+#define AGENT_MINOR 4
 #define ADC_HZ      122.88e6
 #define NRX         8
 #define MODE_P1     0
@@ -74,7 +86,9 @@ typedef struct {
   /* sim: one stream clock per instance */
   double t0[2];
   uint64_t taken[2];
-  double phase[2][NRX];
+  uint64_t base[2];        /* the first sample's index on a common grid    */
+  uint64_t n[2][NRX];      /* samples a receiver gave since the reset      */
+  volatile int force_overflow[2];   /* ctl sim-overflow                    */
 } Hw;
 
 static Hw hw;
@@ -113,6 +127,14 @@ struct Inst {
   struct sockaddr_in adc_from;             /* the last ADC word: who, what     */
   int                adc_have;
   uint8_t            adc_sel;
+  /* phasing: a paired stream, its epoch and sample index (marked only) */
+  int                paired;
+  volatile uint32_t  resets;              /* FIFO resets (under pair_lock)    */
+  uint8_t            reset_epoch;         /* the epoch the last reset began   */
+  uint32_t           seen_resets;         /* the EP6 thread's view            */
+  uint8_t            epoch;
+  uint64_t           idx;
+  uint64_t           pair_resets;
   /* orphan detection */
   int64_t            unreach_first_ns, unreach_last_ns;
   uint64_t           unreach_count, orphan_stops;
@@ -175,14 +197,66 @@ static void hw_map(void) {
 
 static double rate_hz(const Inst *in) { return ADC_HZ / *in->rate / 2.0; }
 
-static void fifo_reset(Inst *in) {
+/* sim: the sample a stream would give next. */
+static uint64_t sim_next(const Inst *in) { return hw.base[in->k] + hw.n[in->k][0]; }
+
+/* One FIFO set's reset at now_ns (sim: its stream clock restarts there and
+ * its samples go on from sim_base — a solo reset where it stopped, so a
+ * tone stays continuous; a paired one where the further of the two is, so
+ * both give the same sample at the same index). */
+static void fifo_reset_at(Inst *in, int64_t now_ns, uint64_t sim_base) {
   *in->rst |= 1;
   *in->rst &= ~1;
-  in->fifo_reset_ns = mono_ns();
+  in->fifo_reset_ns = now_ns;
   if (hw.sim) {
-    hw.t0[in->k] = in->fifo_reset_ns * 1e-9;
+    hw.t0[in->k] = now_ns * 1e-9;
     hw.taken[in->k] = 0;
+    hw.base[in->k] = sim_base;
+    memset(hw.n[in->k], 0, sizeof(hw.n[in->k]));
   }
+}
+
+/* The resets, and the epochs they begin. An EP6 thread reads a batch under
+ * fifo_rw's read lock (both instances at once); a reset takes it for
+ * writing, so it never lands inside a batch: a batch that popped samples
+ * after a reset would leave the next one's index off by that many. */
+static pthread_mutex_t pair_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_rwlock_t fifo_rw = PTHREAD_RWLOCK_INITIALIZER;
+static uint8_t pair_gen;
+
+/* The other instance when it streams paired to the same client address. */
+static Inst *partner_of(Inst *in) {
+  if (ninst < 2 || !in->marked || !in->paired) { return NULL; }
+  Inst *o = &inst[1 - in->k];
+  pthread_mutex_lock(&o->lock);
+  const int same = o->active && o->marked && o->paired &&
+                   o->client.sin_addr.s_addr == in->client.sin_addr.s_addr;
+  pthread_mutex_unlock(&o->lock);
+  return same ? o : NULL;
+}
+
+/* A reset of in's FIFOs (a start, an overflow, a new receiver count) — and
+ * its partner's in the same breath when paired: one new epoch for both. */
+static void stream_reset(Inst *in) {
+  pthread_mutex_lock(&pair_lock);
+  Inst *o = partner_of(in);
+  pthread_rwlock_wrlock(&fifo_rw);                        /* no batch runs */
+  const uint8_t e = ++pair_gen;
+  const int64_t now = mono_ns();
+  uint64_t base = sim_next(in);
+  if (o && sim_next(o) > base) { base = sim_next(o); }
+  fifo_reset_at(in, now, base);
+  if (o) { fifo_reset_at(o, now, base); }                 /* back to back */
+  in->reset_epoch = e;
+  __atomic_add_fetch(&in->resets, 1, __ATOMIC_SEQ_CST);
+  if (o) {
+    o->reset_epoch = e;
+    __atomic_add_fetch(&o->resets, 1, __ATOMIC_SEQ_CST);
+    in->pair_resets++;
+    o->pair_resets++;
+  }
+  pthread_rwlock_unlock(&fifo_rw);
+  pthread_mutex_unlock(&pair_lock);
 }
 
 /* RX1's FIFO fill, in 32-bit halves as the bitstream counts it. */
@@ -197,13 +271,16 @@ static unsigned fifo_count(Inst *in) {
  * order), as the bitstream's FIFO hands them and the server copies them. */
 static uint64_t sim_word(Inst *in, int rx) {
   /* receiver rx: a tone (rx+1) kHz above its centre at true RF, so the wire
-   * (RF-inverted) carries its conjugate; IN1 −12 dBFS, IN2 −26 dBFS */
+   * (RF-inverted) carries its conjugate; IN1 −12 dBFS, IN2 −26 dBFS. Its
+   * phase is a function of the sample number (fifo_reset_at): two
+   * instances reset together give the same sample at the same index */
   const double amp = ((*in->sel >> rx) & 1) ? 0.05 : 0.25;
-  double *ph = &hw.phase[in->k][rx];
-  *ph += 2 * M_PI * 1000.0 * (rx + 1) / rate_hz(in);
-  if (*ph > M_PI) { *ph -= 2 * M_PI; }
-  const int32_t vi = (int32_t)lrint(amp * cos(*ph) * 8388607.0);
-  const int32_t vq = (int32_t)lrint(-amp * sin(*ph) * 8388607.0);
+  const double rate = rate_hz(in), f = 1000.0 * (rx + 1);
+  const uint64_t t = hw.base[in->k] + hw.n[in->k][rx]++;
+  const uint64_t per = (uint64_t)llround(rate);          /* whole seconds */
+  const double ph = 2 * M_PI * f * (double)(t % per) / rate;
+  const int32_t vi = (int32_t)lrint(amp * cos(ph) * 8388607.0);
+  const int32_t vq = (int32_t)lrint(-amp * sin(ph) * 8388607.0);
   uint64_t w = 0;
   uint8_t *b = (uint8_t *)&w;
   b[0] = (uint8_t)(vi >> 16); b[1] = (uint8_t)(vi >> 8); b[2] = (uint8_t)vi;
@@ -288,32 +365,48 @@ static void *ep6_thread(void *arg) {
   memcpy(CMSG_DATA(cm), &seg, sizeof(seg));
   int header_offset = 0;
   in->seq = 0;
-  fifo_reset(in);
+  stream_reset(in);
   int was = in->receivers;
+  const int marked = in->marked;
   while (in->enable) {
     const int receivers = in->receivers;
     const int size = receivers * 6 + 2, n = 504 / size, m = 256 / n;
+    const uint32_t r0 = __atomic_load_n(&in->resets, __ATOMIC_SEQ_CST);
+    if (r0 != in->seen_resets) {                 /* a reset began an epoch */
+      in->seen_resets = r0;
+      in->epoch = in->reset_epoch;
+      in->idx = 0;
+    }
     /* only the receivers asked for are read (the rest overflow on their
      * own — F0: that stalls nobody); a new count realigns them all */
     if (receivers != was) {
       was = receivers;
-      fifo_reset(in);
+      stream_reset(in);
+      continue;
+    }
+    pthread_rwlock_rdlock(&fifo_rw);
+    if (__atomic_load_n(&in->resets, __ATOMIC_SEQ_CST) != in->seen_resets) {
+      pthread_rwlock_unlock(&fifo_rw);           /* reset meanwhile: adopt it */
       continue;
     }
     unsigned c = fifo_count(in);
-    if (c >= 2048) {
+    if (c >= 2048 || (hw.sim && hw.force_overflow[in->k])) {
+      pthread_rwlock_unlock(&fifo_rw);
+      hw.force_overflow[in->k] = 0;
       in->overflows++;
-      fifo_reset(in);
+      stream_reset(in);
       continue;
     }
     const unsigned need = (unsigned)(m * n * 4);
     if (c < need) {                    /* sleep until the batch is due, not 1 ms polls */
+      pthread_rwlock_unlock(&fifo_rw);
       long us = (long)((need - c) / 2 * 1e6 / rate_hz(in));
       usleep((useconds_t)(us < 200 ? 200 : us > 20000 ? 20000 : us));
       continue;
     }
     for (int r = 0; r < receivers; r++) { fifo_read_n(in, r, data[r], m * n * 2); }
     if (hw.sim) { hw.taken[in->k] += (uint64_t)(m * n * 2); }
+    pthread_rwlock_unlock(&fifo_rw);
     for (int i = 0; i < m; i++) {
       const uint32_t be = htonl(in->seq++);
       memcpy(buffer + i * 1032 + 4, &be, 4);
@@ -321,8 +414,20 @@ static void *ep6_thread(void *arg) {
     int data_offset = 0;
     for (int i = 0; i < m * 2; i++) {
       uint8_t *p = buffer + i * 516 - i % 2 * 4 + 8;
-      memcpy(p, header + header_offset, 8);
-      header_offset = header_offset >= 32 ? 0 : header_offset + 8;
+      if (marked) {
+        /* the epoch and the packet's first sample (docs/PHASING.md) */
+        const uint64_t ix = in->idx + (uint64_t)(i / 2) * 2 * n;
+        const uint8_t h[8] = { 127, 127, 127,
+                               i % 2 ? 0x80 : 0x78,
+                               i % 2 ? (uint8_t)(ix >> 24) : in->epoch,
+                               i % 2 ? (uint8_t)(ix >> 16) : (uint8_t)(ix >> 40),
+                               i % 2 ? (uint8_t)(ix >> 8) : (uint8_t)(ix >> 32),
+                               i % 2 ? (uint8_t)ix : (uint8_t)(in->paired ? 1 : 0) };
+        memcpy(p, h, 8);
+      } else {
+        memcpy(p, header + header_offset, 8);
+        header_offset = header_offset >= 32 ? 0 : header_offset + 8;
+      }
       p += 8;
       memset(p, 0, 504);
       for (int j = 0; j < n; j++) {
@@ -344,6 +449,7 @@ static void *ep6_thread(void *arg) {
       sent = sendmmsg(in->sock, dgram, m, 0);
     }
     if (sent > 0) { in->packets += (uint64_t)sent; }
+    in->idx += (uint64_t)m * 2 * n;
   }
   in->active = 0;
   return NULL;
@@ -356,13 +462,16 @@ static void stream_stop(Inst *in) {
   in->active = 0;
   if (in->marked) {                 /* the skimmer's inputs end with its stream */
     in->marked = 0;
+    in->paired = 0;
     *in->sel = in->base_sel;
   }
 }
 
-static void stream_start(Inst *in, const struct sockaddr_in *from) {
+static void stream_start(Inst *in, const struct sockaddr_in *from, int marked, int paired) {
   stream_stop(in);
   pthread_mutex_lock(&in->lock);
+  in->marked = marked;
+  in->paired = marked && paired;
   in->client = *from;
   in->since = time(NULL);
   in->packets = 0;
@@ -560,14 +669,16 @@ static void *server_thread(void *arg) {
       break;
     case 0x0104feef:
     case 0x0204feef:
-    case 0x0304feef:
-      stream_start(in, &from);
-      in->marked = n >= 8 && memcmp(buf + 4, "SKRP", 4) == 0;
+    case 0x0304feef: {
+      /* marked: "SKRP" in bytes 4–7; paired: byte 8 bit 0 (docs/PHASING.md) */
+      const int mk = n >= 8 && memcmp(buf + 4, "SKRP", 4) == 0;
+      stream_start(in, &from, mk, mk && n >= 9 && (buf[8] & 1));
       if (in->marked && in->adc_have && in->adc_from.sin_addr.s_addr == from.sin_addr.s_addr &&
           in->adc_from.sin_port == from.sin_port) {
         *in->sel = in->adc_sel;
       }
       break;
+    }
     default:
       break;
     }
@@ -671,11 +782,14 @@ static void status_json(FILE *f) {
             in->active ? "true" : "false");
     json_str(f, a);
     fprintf(f, ",\"client_port\":%u,\"since\":%ld,\"rate\":%.0f,\"receivers\":%d,\"sel\":%u,"
-               "\"packets\":%llu,\"overflows\":%llu,\"orphan_stops\":%llu,\"fifo_reset_ns\":%lld,\"freq\":[",
+               "\"packets\":%llu,\"overflows\":%llu,\"orphan_stops\":%llu,\"fifo_reset_ns\":%lld,"
+               "\"marked\":%s,\"paired\":%s,\"epoch\":%u,\"pair_resets\":%llu,\"freq\":[",
             in->active ? ntohs(in->client.sin_port) : 0, in->active ? (long)in->since : 0L,
             rate_hz(in), in->receivers, *in->sel, (unsigned long long)in->packets,
             (unsigned long long)in->overflows, (unsigned long long)in->orphan_stops,
-            (long long)in->fifo_reset_ns);
+            (long long)in->fifo_reset_ns, in->active && in->marked ? "true" : "false",
+            in->active && in->paired ? "true" : "false", in->epoch,
+            (unsigned long long)in->pair_resets);
     for (int i = 0; i < NRX; i++) { fprintf(f, "%s%u", i ? "," : "", in->freq_hz[i]); }
     fprintf(f, "]");
     pthread_mutex_unlock(&in->lock);
@@ -715,6 +829,10 @@ static void ctl_handle(int c) {
     *in->sel = (uint8_t)mask;          /* the manager's word: live, and the base */
     in->base_sel = (uint8_t)mask;
     logf_("%s: inputs 0x%02x (bit = receiver on IN2)", in->name, mask);
+    fprintf(f, "ok\n");
+  } else if (hw.sim && sscanf(line, "sim-overflow %c", &which) == 1 &&
+             (which == 'a' || (which == 'b' && ninst > 1))) {
+    hw.force_overflow[which == 'b'] = 1;   /* --sim: as if its FIFO ran over */
     fprintf(f, "ok\n");
   } else {
     fprintf(f, "error: unknown command (status | version | sel a|b MASK)\n");

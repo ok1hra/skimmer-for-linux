@@ -173,8 +173,10 @@ here; what was done and why is in git.
   gate `phase`, P0's tool `skimmer-phase-bench A.cf32 B.cf32` with gate
   `phase-bench`; the pipeline phases a band with `cfg.phased` and
   `skim_pipeline_feed2/push2` (B NULL = decode A; `SKIM_REPLAY_B` replays a
-  pair) — unphased it is byte for byte as before; skimmer-headless does
-  not feed a pair yet (agent pairing, `ip=ab`).
+  pair) — unphased it is byte for byte as before; agent 0.4 pairs two
+  streams (one FIFO reset for both, epoch + sample index in a marked
+  stream's C&C — REDPITAYA.md; not on the board yet); skimmer-headless
+  does not feed a pair yet (`ip=ab`, the client's alignment).
 - **`meson test` = 44 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
   only with gfortran, `js8` only with C++20 + Boost headers). `headless-mock` runs

@@ -5,8 +5,9 @@ Status: a design for work still ahead (Dan, 2026-11-25). Built so far
 (`src/engine/combiner.c`, `phase_meter.c`, gate `phase`) and P0's tool
 (`skimmer-phase-bench`, gate `phase-bench`); the pipeline phases a band
 when its config says so and is fed both antennas (`skim_pipeline_feed2`,
-`skimmer-replay` with `SKIM_REPLAY_B`). skimmer-headless does not feed it a
-pair yet (P1, P2). It is written so that another agent can implement it
+`skimmer-replay` with `SKIM_REPLAY_B`). The agent pairs two streams and
+stamps them with an epoch and a sample index (P1, agent 0.4, not on the
+board yet). skimmer-headless does not feed a pair yet (P2). It is written so that another agent can implement it
 phase by phase. Each phase ends with an offline gate, as the rest of the engine
 does (CLAUDE.md). Sources: Linrad's phasing window (SM5BSZ, "Linrad phasing
 window v6", sm5bsz.com/linuxdsp/run/phasing/), the F0 measurements in
@@ -369,7 +370,8 @@ side by side, the groups, the stations, the measured lag and the CPU.
    frequencies on both instances (A on IN1, B on IN2), the agent resets
    both FIFO sets in one register sequence (as `rp-spike pair` did, lag 0)
    and starts both EP6 threads at once.
-2. **A sample index in the stream**, for marked clients only. Pavel's EP6
+2. **A sample index in the stream**, for marked clients only (built in
+   agent 0.4: the wire format is in `docs/REDPITAYA.md`). Pavel's EP6
    C&C bytes are constant, and CW Skimmer reads some of them, so the
    index must not appear for anyone else. Put a 48–64-bit "samples since
    the paired reset" counter, plus an epoch number, in the C&C bytes of a
@@ -457,7 +459,7 @@ interfaces:
 | | what | gate (offline) |
 |---|---|---|
 | P0 | **Measure first.** Record pairs on real air with `rp-spike pair` (longer, 96 kHz, two real antennas, or the antenna and its interference); `skimmer-phase-bench` (built) computes MRC and MVDR per channel, the groups' coherence and the measured lag | numbers: the SNR gain and null depth on real air (if both are small for the station's antennas, stop here) |
-| P1 | agent: paired start, sample index, epoch | `rp-agent`: two sim streams carry identical indices; an overflow bumps the epoch on both |
+| P1 | agent: paired start, sample index, epoch — **built** (agent 0.4, `docs/REDPITAYA.md`; not on the board yet) | `rp-agent`: both sim streams carry one epoch and a contiguous index, the same index is the same instant (phase 0.000°, a sample off = 3.75°); an overflow on A starts a new epoch on both, aligned again; an unmarked stream keeps Pavel's C&C; a paired start beside it resets nothing |
 | P2 | config `ip=ab`, source pairing and alignment, `[record]` pairs | `rp-two-ip`: a paired band gets aligned blocks (sim tone, same phase difference each run) |
 | P3 | `SkimCombiner` (MVDR/MRC/fixed, gating, phase reference, noise normalisation), `SkimPhaseMeter`, and the pipeline (`SkimPipelineConfig.phased`: B's channelizer, the combiner in the drain, the Y meter as the band's shadow SNR, B missing → A, `push2`/`feed2`, a snapshot for the page, the spots' SNR_A/SNR_B/gain) — **built** | gate `phase`: MRC ≥ 2.5 dB, one interferer nulled ≥ 20 dB, two in two halves each where it is, B a copy of A, empty IN2, mode A bit for bit, Fixed, the meters against the truth; the whole pipeline spots a CW station 8 dB under a common interferer on each antenna (neither alone does), B missing decodes A, mode A shows the estimates. **Golden byte-identical** |
 | P4 | band-level W(f): waterfall, digi_rx, WSPR | the FT8/WSPR gates on a synthetic pair (decodes ≥ the better antenna) |
