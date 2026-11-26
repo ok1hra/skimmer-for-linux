@@ -167,8 +167,12 @@ here; what was done and why is in git.
   takes 4 receivers an IP and ~7× the PC's CPU a band. Settings → Red
   Pitaya (diagram, buttons), Statistics → Red Pitaya. After any change on
   the board, re-run the new-user install check (REDPITAYA.md). Two-antenna
-  phasing is a design only: `docs/PHASING.md`.
-- **`meson test` = 42 gates** (DeepCW skips without the model, golden skips
+  phasing (`docs/PHASING.md`): the engine's combiner (`combiner.c`: per
+  channel MVDR/MRC/Fixed/A/B) and its meters (`phase_meter.c`: gain over
+  the better antenna, floor drop, coherence, estimates) are built with
+  gate `phase`, P0's tool `skimmer-phase-bench A.cf32 B.cf32` with gate
+  `phase-bench`; nothing is wired into the skimmer yet.
+- **`meson test` = 44 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
   only with gfortran, `js8` only with C++20 + Boost headers). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).

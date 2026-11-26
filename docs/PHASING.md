@@ -1,8 +1,11 @@
 # Two-antenna phasing for the skimmer: the design
 
-Status: a design for work still ahead (Dan, 2026-11-25). Nothing of it is
-built. It is written so that another agent can implement it phase by
-phase. Each phase ends with an offline gate, as the rest of the engine
+Status: a design for work still ahead (Dan, 2026-11-25). Built so far
+(2026-11-25): the combiner and its meters in the engine
+(`src/engine/combiner.c`, `phase_meter.c`, gate `phase`) and P0's tool
+(`skimmer-phase-bench`, gate `phase-bench`); nothing of it is wired into
+the skimmer yet. It is written so that another agent can implement it
+phase by phase. Each phase ends with an offline gate, as the rest of the engine
 does (CLAUDE.md). Sources: Linrad's phasing window (SM5BSZ, "Linrad phasing
 window v6", sm5bsz.com/linuxdsp/run/phasing/), the F0 measurements in
 `docs/REDPITAYA.md`, and the standard results for two-element arrays
@@ -106,8 +109,11 @@ Closed form for 2×2 Hermitian R = [[r11, r12], [r12*, r22]]: the largest
 eigenvalue is λ = (r11 + r22)/2 + √(((r11 − r22)/2)² + |r12|²), and
 v = [r12, λ − r11]ᵀ (or [λ − r22, r12*]ᵀ when that is better
 conditioned), normalised. R_n⁻¹ for a 2×2 needs one division. Regularise
-it (diagonal loading of 1 % of the trace) so that a near-singular R_n (one
-overwhelming interferer) does not blow the weights up.
+it (diagonal loading) so that a near-singular R_n (one overwhelming
+interferer, or B a copy of A) does not blow the weights up. The loading is
+0.1 % of the trace, not 1 %: at 30 dB INR the trace is the interferer's,
+and 1 % of it costs ~4 dB of null depth, 0.1 % ~1 dB (gate `phase`: B a
+copy of A stays finite with no gain).
 
 What this does in each case:
 
@@ -235,10 +241,11 @@ The decoders see one stream, and the weights must not modulate it:
 
 Per channel and sample: 2 complex MACs for y, about 3 complex
 accumulations for R_s and R_n (gated), and a 2×2 eigen solve plus inverse
-a few times a second, not every sample. Over 768 channels this is well
-below 1 % of one core. The real cost is the **second channelizer** for the
-band, roughly the same as the first. Measure it before deciding how many
-bands to phase: `skimmer-replay` on a pair recording.
+a few times a second, not every sample. Measured on hra2 with
+`skimmer-phase-bench` (a 48 kHz synthetic pair, 30 s): the second
+channelizer costs 0.3 % of one core, the combiner with its three SNR
+meters 0.8 %. Both scale with the rate (×4 at 192 kHz). The channelizer
+is not what limits the number of phased bands; the board's DDCs are (8).
 
 ## Band-level output
 
@@ -263,6 +270,94 @@ Diagnostics: the **coherence spectrum |γ(f)|²** across the band is the
 picture of the common interference (near 1 = one source both antennas
 hear alike: nullable). Show it in the waterfall as an extra trace, beside
 A / B / combined selectors.
+
+## Measuring what it gives
+
+The combiner has both antennas' channels and its output at the same
+instants, so A alone, B alone and the combination are compared on the same
+stations at the same time — no second decoder (Dan, 2026-11-25: no shadow
+decoder). `src/engine/phase_meter.c` runs three shadow SNR meters
+(SNR_2500, each against its own band floor) on A, B and Y.
+
+Locally (a station, a channel):
+
+- **G = SNR_Y − max(SNR_A, SNR_B)**, the gain over the better antenna,
+  where the channel carries a station; **G_A = SNR_Y − SNR_A**, the gain
+  over today's skimmer (IN1 only).
+- **share_B**: B's part of the output noise (which antenna "carried" it).
+- **align = |vᴴ·u_n|²**: the station's signature against the noise's
+  principal direction. Near 1, nothing can separate the two.
+- Estimates from the combiner's own covariances, of the adaptive weight
+  whatever the mode applies (**gain_est**, **drop_est**): in modes A, B
+  and Fixed they show what phasing *would* give while the operator compares
+  by ear.
+
+Broadly (a noise group of 32 channels, the band):
+
+- **|γ|²**, the coherence of the quiet channels, and **D_max =
+  −10·log10(1 − |γ|²)**: the deepest null the interference allows.
+- **drop**: the floor the weight takes off antenna A's, A's own signals
+  kept at their gain — the interference suppression actually reached.
+  drop / D_max is how much of the possible the estimate gets.
+- A band summary a minute: medians of G, G_A, drop (and p90), the share of
+  groups whose drop is ≥ 3 dB, |γ|², D_max, share_B, same_dir (the share of
+  stations with align > 0.99).
+
+What the numbers tell (gate `phase`, all against the synthetic truth within
+1 dB): no interferer → G ≈ +3 dB on equal antennas, drop 0, |γ|² 0; a
+coherent interferer → drop ≈ D_max; IN2 empty → |γ|² ≈ 0 and G ≈ 0 (the
+page can say so); B a copy of A (a splitter) → |γ|² ≈ 1, same_dir ≈ 1 and
+G ≈ 0 — drop then reads huge but means nothing, since every signal comes as
+the noise does. The per-channel "stations" include a band-limited
+interferer's edges (they look like signals against the quiet neighbours;
+same_dir tells them); the statistics of stations therefore count the spots,
+each with its channel's numbers.
+
+Where they show:
+
+- **A second line in the waterfall's spectrum** for a phased band: per
+  channel, Gain (G where a station is) / Interference (drop) / Coherence,
+  one byte a channel (0.25 dB) once a second over the waterfall socket.
+- **A coarse waterfall in Statistics**: channel = pixel, row = minute, two
+  planes (G, drop), 7 days by the minute and 90 days by the quarter hour,
+  `<state>/phase-<band>.bin`, only for phased bands (≈ 29 MB a band at
+  96 kHz).
+- **stats v9**: the band summary as series (8 phased bands at most).
+- The spots: SNR_A, SNR_B and G with each spot (the station table, the
+  archive's extra columns, a tooltip in the DX cluster).
+
+`skimmer-phase-bench A.cf32 B.cf32` prints the same numbers for a recorded
+pair (rp-spike pair or `[record]`): summary lines in time for MVDR and MRC
+side by side, the groups, the stations, the measured lag and the CPU.
+
+## Settings and coexistence
+
+- **Off by default.** A band without `ip=ab` is byte for byte as before:
+  no second channelizer, no meters, no history file, nothing extra on the
+  waterfall socket (the golden gate).
+- `[bands] 20m=14045500 cw ip=ab [phase=mvdr|mrc|fixed|a|b]`: one receiver
+  on IP A (IN1) and one on IP B (IN2) at one centre; `in=` not allowed on
+  that line. `[phase]`: mode, layer2, tc_s, gate_db, history, wf_line.
+  `[phase.<band>]`: the Fixed weight and its memories (the panel writes
+  them).
+- Refused by the config check (exit 2; greyed out in the form with the
+  reason): no skimmer agent on the board, different rates on the two IPs,
+  no free receiver on either IP (a phased band takes one on each: 8 at
+  most), `ip=ab` with `@worker` (v1 phases locally only).
+- Adding or removing `ip=ab` is a settings change (a restart). The mode and
+  the Fixed weight change live from the panel (POST `/api/phase`,
+  managers), saved to the config only on Save; the meters keep running in
+  mode A, so the line and the history show what phasing would give.
+- **The band never fails because of B**: IP B taken by another client, its
+  stream lost, or the alignment lost (a new epoch) → the band decodes A,
+  the weights reset, and phasing resumes when B is back and aligned. The
+  status says which ("Φ → A (IP B busy)"). An empty IN2 needs no rule:
+  MVDR degrades to A by itself.
+- Thermal guard / v4_guard: a new first step — a phased band drops to A
+  (stops its second channelizer) before any band is paused.
+- Downstream: decoders, feed and statistics count the band once (spots
+  from Y). Until the band-level W(f) (P4), FT8/JS8/WSPR and the waterfall
+  take A; `[record]` writes the pair.
 
 ## What changes where
 
@@ -313,11 +408,7 @@ A / B / combined selectors.
    dB, phase °, slow and fast arrows, O / T / − / I, three memories, and
    Adapt / Fixed per band. The waterfall gets A / B / combined and the
    coherence trace.
-7. **Statistics** (stats v9): per phased band, the null depth (the noise
-   floor with the combiner against the better single antenna, in dB), the
-   SNR gain of the spots (combined against the better single, from the
-   channels' estimates), and the share of spots each antenna "carried"
-   (which component of w dominated).
+7. **Statistics**: see "Measuring what it gives" below.
 
 ## An FPGA of our own: what changes, what does not
 
@@ -363,10 +454,10 @@ interfaces:
 
 | | what | gate (offline) |
 |---|---|---|
-| P0 | **Measure first.** Record pairs on real air with `rp-spike pair` (longer, 96 kHz, two real antennas, or the antenna and its interference); a Python notebook computes MRC and MVDR per channel and band coherence | numbers: the SNR gain and null depth on real air (if both are small for the station's antennas, stop here) |
+| P0 | **Measure first.** Record pairs on real air with `rp-spike pair` (longer, 96 kHz, two real antennas, or the antenna and its interference); `skimmer-phase-bench` (built) computes MRC and MVDR per channel, the groups' coherence and the measured lag | numbers: the SNR gain and null depth on real air (if both are small for the station's antennas, stop here) |
 | P1 | agent: paired start, sample index, epoch | `rp-agent`: two sim streams carry identical indices; an overflow bumps the epoch on both |
 | P2 | config `ip=ab`, source pairing and alignment, `[record]` pairs | `rp-two-ip`: a paired band gets aligned blocks (sim tone, same phase difference each run) |
-| P3 | `SkimCombiner` (MVDR/MRC/fixed, gating, phase reference, noise normalisation) | synthetic: two antennas with independent Rayleigh fading plus one common broadband interferer with a fixed signature. MRC gains ≥ 2.5 dB with no interferer, MVDR nulls the interferer ≥ 20 dB, CW decodes not worse than the better antenna. **Golden byte-identical** for unphased bands |
+| P3 | `SkimCombiner` (MVDR/MRC/fixed, gating, phase reference, noise normalisation) and `SkimPhaseMeter` — **built** with gate `phase` (MRC ≥ 2.5 dB, one interferer nulled ≥ 20 dB, two in two halves each where it is, B a copy of A, empty IN2, mode A bit for bit, Fixed; the meters against the truth). Still to do: the pipeline (two channelizers + combiner) | the pipeline on a synthetic pair: CW decodes not worse than the better antenna. **Golden byte-identical** for unphased bands |
 | P4 | band-level W(f): waterfall, digi_rx, WSPR | the FT8/WSPR gates on a synthetic pair (decodes ≥ the better antenna) |
 | P5 | web panel, coherence trace, stats v9 | headless Chrome screenshots; stats migration test |
 | P6 | live: one band phased against the same band single (skimmer-compare: spots, calls, SNR) | Dan's verdict on air |

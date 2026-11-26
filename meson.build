@@ -79,6 +79,8 @@ engine_sources = [
   'src/engine/feed_gate.c',    # the learned feed gate (shadow mode)
   'src/engine/feed_fold.c',    # RBN feed: busted twins of a sent call
   'src/engine/oracle.c',       # measurement only: R's stations → v2 (SKIM_ORACLE)
+  'src/engine/combiner.c',     # two antennas per channel (docs/PHASING.md)
+  'src/engine/phase_meter.c',  # … and what the combination gives
 ]
 engine_deps = [glib_dep, gio_dep, lws_dep, wdsp_dep, fftw3f_dep, m_dep, dl_dep]
 
@@ -321,6 +323,30 @@ skimmer_snr_test = executable('skimmer-snr-test',
   link_with : engine_lib,
 )
 test('snr-meter', skimmer_snr_test, timeout : 120)
+
+# Two-antenna phasing (docs/PHASING.md): the combiner and its meters on a
+# synthetic pair whose truth is known per channel — MRC gain, one and two
+# interferers nulled, B a copy of A, an empty IN2, mode A bit for bit,
+# Fixed; the per-channel gain, floor drop and D_max against the truth.
+skimmer_phase_test = executable('skimmer-phase-test',
+  ['src/phase_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('phase', skimmer_phase_test, timeout : 300)
+
+# P0's tool: what phasing gives on a recorded pair (rp-spike pair or
+# [record]), the same code as the skimmer; gated on a synthetic pair.
+skimmer_phase_bench = executable('skimmer-phase-bench',
+  ['src/phase_bench_main.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('phase-bench', find_program('tests/phase-bench.sh'),
+  args : [meson.current_build_dir()],
+  depends : [skimmer_phase_test, skimmer_phase_bench], timeout : 300)
 
 # M4: offline gate — callsign validity (ITU allocation), labelled-corpus
 # precision/recall, fragment feeds, dictionary boost, noise fuzz.

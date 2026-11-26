@@ -1,0 +1,671 @@
+/*
+ * skimmer-phase-test — the two-antenna combiner (engine/combiner.h) and its
+ * meters (engine/phase_meter.h) against the truth (docs/PHASING.md, P3).
+ *
+ * A synthetic pair: stations with their own amplitude and phase on each
+ * antenna, independent receiver noise on A and B, and interferers that both
+ * antennas hear with a fixed signature. Every component goes through a
+ * channelizer of its own, and the antennas' channels are their sums
+ * (the channelizer is linear), so once the combiner's weights are held
+ * the truth of every channel is known exactly: the signal, the noise and
+ * the interference each antenna and the output carry. The gate checks
+ *   the combiner: MRC gains ≥ 2.5 dB with no interferer; one interferer
+ *     30 dB over the noise is nulled ≥ 20 dB; two interferers in two halves
+ *     of the band are each nulled where they are; B a copy of A gives no
+ *     gain and no blow-up; an empty IN2 costs nothing; mode A is antenna A
+ *     bit for bit; a Fixed weight set against a known signature nulls it;
+ *   the meters: the per-channel gain G = SNR_Y − max(SNR_A, SNR_B), the
+ *     floor drop and the coherence's D_max read what the truth says.
+ *
+ * Part of skimmer-for-linux. GPL-3.0-or-later.
+ */
+#include <glib.h>
+#include <complex.h>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "engine/channelizer.h"
+#include "engine/combiner.h"
+#include "engine/phase_meter.h"
+
+#define FS       48000.0
+#define SPACING  125.0
+#define BLK      4800                    /* 0.1 s                          */
+#define SECS     20
+#define HOLD_AT  10                      /* s: the weights held from here  */
+#define TRUTH_AT 12                      /* s: the truth summed from here  */
+#define FIR_TAPS 255
+#define RAMP_S   0.005
+
+static int fails, checks;
+static void check(const char *what, int ok) {
+  checks++;
+  if (!ok) { fails++; }
+  printf("  %s %s\n", ok ? "ok  " : "FAIL", what);
+}
+
+typedef struct {
+  double off_hz;           /* from the band centre                          */
+  double snr_a;            /* SNR_2500 on antenna A, dB (against its noise)  */
+  double b_rel_db;         /* B's amplitude against A's                      */
+  double b_ph_deg;         /* B's phase against A's                          */
+  gboolean keyed;
+} Station;
+
+typedef struct {
+  double inr_db;           /* over the receiver noise, same bandwidth        */
+  double h_mag, h_ph_deg;  /* B = h · A                                      */
+  double lo_hz, hi_hz;     /* band-limited when lo < hi                      */
+} Interf;
+
+typedef struct {
+  const char *name;
+  Station st[8];
+  guint   nst;
+  Interf  in[2];
+  guint   nin;
+  double  nb_db;           /* B's receiver noise against A's (0 = equal)     */
+  gboolean b_copy;         /* B = A, every component                         */
+  gboolean b_dead;         /* no station or interferer reaches B             */
+  SkimPhaseMode mode;
+  double  fixed_gain_db, fixed_phase_deg;
+} Scenario;
+
+/* What a run leaves for the checks. */
+typedef struct {
+  guint   nchan;
+  double *g_true, *g_meter;      /* per station                             */
+  double *g_est;                 /* the combiner's estimate, per station    */
+  guint  *st_chan;
+  double *drop_true, *drop_meter;/* per channel (NAN: not a quiet channel)  */
+  double  dmax_true;             /* analytic, one wideband interferer       */
+  double  dmax_meter;            /* the meter's median                      */
+  SkimPhaseSummary sum;
+  gboolean a_exact;              /* mode A: y == a bit for bit, all along   */
+  guint   group_of[16384];
+} Result;
+
+/* --- signal sources ------------------------------------------------------ */
+
+typedef struct { GRand *r; guint left; gboolean down; guint nel; double lin; } Keyer;
+
+static double keyer_step(Keyer *k, guint dot) {
+  if (k->left == 0) {
+    if (k->down) {
+      k->down = FALSE;
+      k->left = (++k->nel % 4 == 0) ? 3 * dot : dot;
+    } else {
+      k->down = TRUE;
+      k->left = g_rand_boolean(k->r) ? dot : 3 * dot;
+    }
+  }
+  k->left--;
+  const double step = 1.0 / (RAMP_S * FS);
+  k->lin = k->down ? MIN(1.0, k->lin + step) : MAX(0.0, k->lin - step);
+  const double e = sin(G_PI / 2 * k->lin);
+  return e * e;
+}
+
+static double complex gauss(GRand *r, double power) {
+  const double u1 = g_rand_double(r) + 1e-300, u2 = g_rand_double(r);
+  const double g = sqrt(-log(u1) * power);   /* E|x|² = power */
+  return g * cexp(I * 2 * G_PI * u2);
+}
+
+/* A band-limited noise: white through a complex band-pass FIR (unit gain
+ * in its passband), so its density in band is the white input's. */
+typedef struct {
+  double complex taps[FIR_TAPS];
+  double complex hist[FIR_TAPS];
+  guint pos;
+  gboolean on;
+} Fir;
+
+static void fir_init(Fir *f, double lo, double hi) {
+  memset(f, 0, sizeof(*f));
+  if (!(lo < hi))
+    return;
+  f->on = TRUE;
+  const double fc = 0.5 * (hi - lo) / FS, f0 = 0.5 * (hi + lo) / FS;
+  const int mid = FIR_TAPS / 2;
+  for (int n = 0; n < FIR_TAPS; n++) {
+    const int m = n - mid;
+    const double s = m == 0 ? 2 * fc : sin(2 * G_PI * fc * m) / (G_PI * m);
+    const double w = 0.42 - 0.5 * cos(2 * G_PI * n / (FIR_TAPS - 1)) +
+                     0.08 * cos(4 * G_PI * n / (FIR_TAPS - 1));
+    f->taps[n] = s * w * cexp(I * 2 * G_PI * f0 * m);
+  }
+}
+
+static double complex fir_step(Fir *f, double complex x) {
+  if (!f->on)
+    return x;
+  f->hist[f->pos] = x;
+  double complex y = 0;
+  guint j = f->pos;
+  for (int n = 0; n < FIR_TAPS; n++) {
+    y += f->taps[n] * f->hist[j];
+    j = j == 0 ? FIR_TAPS - 1 : j - 1;
+  }
+  f->pos = (f->pos + 1) % FIR_TAPS;
+  return y;
+}
+
+/* --- one run -------------------------------------------------------------- */
+
+enum { C_SA, C_SB, C_NA, C_NB, C_IA, C_IB, C_N };
+
+/* The pair's components, sample by sample: v = { S_A, S_B, N_A, N_B, I_A,
+ * I_B } (stations, receiver noise, interference on each antenna). */
+typedef struct {
+  const Scenario *sc;
+  GRand  *r;
+  double  nb_pow;
+  guint   dot;
+  Keyer   key[8];
+  double  amp[8], ph[8];
+  double complex bsig[8];
+  Fir     fir[2];
+  double  ipow[2];
+  double complex ih[2];
+} Gen;
+
+static void gen_init(Gen *g, const Scenario *sc) {
+  memset(g, 0, sizeof(*g));
+  g->sc = sc;
+  g->r = g_rand_new_with_seed(11);
+  const double n0 = 1.0 / FS;                  /* A's noise: unit power     */
+  g->nb_pow = pow(10.0, sc->nb_db / 10.0);
+  g->dot = (guint)(1.2 / 22 * FS);
+  for (guint s = 0; s < sc->nst; s++) {
+    g->key[s] = (Keyer){ .r = g_rand_new_with_seed(200 + s) };
+    g->amp[s] = sqrt(pow(10.0, sc->st[s].snr_a / 10.0) * n0 * 2500.0);
+    g->bsig[s] = pow(10.0, sc->st[s].b_rel_db / 20.0) *
+                 cexp(I * sc->st[s].b_ph_deg * G_PI / 180.0);
+  }
+  for (guint j = 0; j < sc->nin; j++) {
+    fir_init(&g->fir[j], sc->in[j].lo_hz, sc->in[j].hi_hz);
+    g->ipow[j] = pow(10.0, sc->in[j].inr_db / 10.0);
+    g->ih[j] = sc->in[j].h_mag * cexp(I * sc->in[j].h_ph_deg * G_PI / 180.0);
+  }
+}
+
+static void gen_step(Gen *g, double complex v[C_N]) {
+  const Scenario *sc = g->sc;
+  double complex sa = 0, sb = 0, ia = 0, ib = 0;
+  for (guint s = 0; s < sc->nst; s++) {
+    const double e = (sc->st[s].keyed ? keyer_step(&g->key[s], g->dot) : 1.0) * g->amp[s];
+    const double complex x = e * cexp(I * g->ph[s]);
+    g->ph[s] = remainder(g->ph[s] + 2 * G_PI * sc->st[s].off_hz / FS, 2 * G_PI);
+    sa += x;
+    sb += x * g->bsig[s];
+  }
+  for (guint j = 0; j < sc->nin; j++) {
+    const double complex x = fir_step(&g->fir[j], gauss(g->r, g->ipow[j]));
+    ia += x;
+    ib += x * g->ih[j];
+  }
+  const double complex na = gauss(g->r, 1.0);
+  double complex nb = gauss(g->r, g->nb_pow);
+  if (sc->b_copy) {
+    sb = sa;
+    ib = ia;
+    nb = na;
+  }
+  if (sc->b_dead) {
+    sb = 0;
+    ib = 0;
+  }
+  v[C_SA] = sa;
+  v[C_SB] = sb;
+  v[C_NA] = na;
+  v[C_NB] = nb;
+  v[C_IA] = ia;
+  v[C_IB] = ib;
+}
+
+static void gen_clear(Gen *g) {
+  for (guint s = 0; s < g->sc->nst; s++) { g_rand_free(g->key[s].r); }
+  g_rand_free(g->r);
+}
+
+static guint chan_of(guint nchan, double off_hz) {
+  const long k = lround(off_hz / SPACING);
+  return (guint)((k % (long)nchan + (long)nchan) % (long)nchan);
+}
+
+static double pw(const float *x, guint n) {
+  double s = 0;
+  for (guint i = 0; i < 2 * n; i++) { s += (double)x[i] * x[i]; }
+  return s;
+}
+
+static void mix(const float c[2][2], const float *a, const float *b, float *y, guint n) {
+  const double complex ca = c[0][0] + I * c[0][1], cb = c[1][0] + I * c[1][1];
+  for (guint i = 0; i < n; i++) {
+    const double complex o = ca * (a[2 * i] + I * a[2 * i + 1]) +
+                             cb * (b[2 * i] + I * b[2 * i + 1]);
+    y[2 * i] = (float)creal(o);
+    y[2 * i + 1] = (float)cimag(o);
+  }
+}
+
+static void run(const Scenario *sc, Result *res) {
+  SkimChannelizer *bank[C_N];
+  for (guint i = 0; i < C_N; i++) { bank[i] = skim_channelizer_new(FS, SPACING); }
+  const guint nchan = skim_channelizer_count(bank[0]);
+  const double rate = skim_channelizer_out_rate(bank[0]);
+  SkimCombinerConfig cfg;
+  skim_combiner_config_default(&cfg);
+  cfg.mode = sc->mode;
+  cfg.fixed_gain_db = sc->fixed_gain_db;
+  cfg.fixed_phase_deg = sc->fixed_phase_deg;
+  SkimCombiner *comb = skim_combiner_new(nchan, rate, &cfg);
+  SkimPhaseMeter *met = skim_phase_meter_new(nchan, rate, SKIM_SNR_CW_ENBW * SPACING);
+
+  Gen gen;
+  gen_init(&gen, sc);
+
+  float *iq[C_N];
+  for (guint i = 0; i < C_N; i++) { iq[i] = g_new(float, 2 * BLK); }
+  float ch[C_N][2 * 64], a[2 * 64], b[2 * 64], y[2 * 64], t[2 * 64];
+  /* truth: per channel the powers of each component on A, B and Y */
+  enum { T_SA, T_SB, T_SY, T_NA, T_NB, T_NY, T_N };
+  typedef double Truth[T_N];
+  Truth *tr = g_new0(Truth, nchan);
+  res->a_exact = TRUE;
+  const guint nblk = (guint)(SECS * FS / BLK);
+  const guint upd_every = (guint)(FS / BLK);   /* once a second */
+  for (guint blk = 0; blk < nblk; blk++) {
+    const double tsec = (double)blk * BLK / FS;
+    for (guint n = 0; n < BLK; n++) {
+      double complex v[C_N];
+      gen_step(&gen, v);
+      for (guint i = 0; i < C_N; i++) {
+        iq[i][2 * n] = (float)creal(v[i]);
+        iq[i][2 * n + 1] = (float)cimag(v[i]);
+      }
+    }
+    for (guint i = 0; i < C_N; i++) { skim_channelizer_push(bank[i], iq[i], BLK); }
+
+    for (guint k = 0; k < nchan; k++) {
+      for (;;) {
+        guint got = skim_channelizer_read(bank[0], k, ch[0], 64);
+        for (guint i = 1; i < C_N; i++) {
+          const guint g2 = skim_channelizer_read(bank[i], k, ch[i], 64);
+          g_assert(g2 == got);
+        }
+        if (got == 0)
+          break;
+        for (guint j = 0; j < 2 * got; j++) {
+          a[j] = ch[C_SA][j] + ch[C_NA][j] + ch[C_IA][j];
+          b[j] = ch[C_SB][j] + ch[C_NB][j] + ch[C_IB][j];
+        }
+        skim_combiner_process(comb, k, a, b, y, got);
+        if (sc->mode == SKIM_PHASE_A && memcmp(a, y, 2 * got * sizeof(float)) != 0) {
+          res->a_exact = FALSE;
+        }
+        skim_phase_meter_push(met, k, a, b, y, got);
+        if (tsec >= TRUTH_AT) {
+          SkimCombinerChanInfo info;
+          skim_combiner_chan_info(comb, k, &info);
+          const float c[2][2] = { { info.ca[0], info.ca[1] }, { info.cb[0], info.cb[1] } };
+          tr[k][T_SA] += pw(ch[C_SA], got);
+          tr[k][T_SB] += pw(ch[C_SB], got);
+          mix(c, ch[C_SA], ch[C_SB], t, got);
+          tr[k][T_SY] += pw(t, got);
+          /* noise + interference together */
+          float na_[2 * 64], nb_[2 * 64];
+          for (guint j = 0; j < 2 * got; j++) {
+            na_[j] = ch[C_NA][j] + ch[C_IA][j];
+            nb_[j] = ch[C_NB][j] + ch[C_IB][j];
+          }
+          tr[k][T_NA] += pw(na_, got);
+          tr[k][T_NB] += pw(nb_, got);
+          mix(c, na_, nb_, t, got);
+          tr[k][T_NY] += pw(t, got);
+        }
+      }
+    }
+    if ((blk + 1) % upd_every == 0) {
+      skim_combiner_update(comb);
+      skim_phase_meter_refresh(met, comb);
+      if ((blk + 1) / upd_every == HOLD_AT) { skim_combiner_hold(comb, TRUE); }
+    }
+  }
+
+  res->nchan = nchan;
+  res->g_true = g_new(double, sc->nst);
+  res->g_meter = g_new(double, sc->nst);
+  res->g_est = g_new(double, sc->nst);
+  res->st_chan = g_new(guint, sc->nst);
+  for (guint s = 0; s < sc->nst; s++) {
+    const guint k = chan_of(nchan, sc->st[s].off_hz);
+    res->st_chan[s] = k;
+    const double snr_a = tr[k][T_SA] / tr[k][T_NA];
+    const double snr_b = tr[k][T_NB] > 0 ? tr[k][T_SB] / tr[k][T_NB] : 0;
+    const double snr_y = tr[k][T_SY] / tr[k][T_NY];
+    res->g_true[s] = 10.0 * log10(snr_y / MAX(snr_a, snr_b));
+    res->g_meter[s] = skim_phase_meter_gain(met, k);
+    res->g_est[s] = skim_phase_meter_gain_est(met, k);
+  }
+  res->drop_true = g_new(double, nchan);
+  res->drop_meter = g_new(double, nchan);
+  for (guint k = 0; k < nchan; k++) {
+    SkimCombinerChanInfo info;
+    skim_combiner_chan_info(comb, k, &info);
+    res->group_of[k] = skim_combiner_group_of(comb, k);
+    res->drop_meter[k] = skim_phase_meter_drop(met, k);
+    const double ca2 = (double)info.ca[0] * info.ca[0] + (double)info.ca[1] * info.ca[1];
+    res->drop_true[k] = isnan(res->drop_meter[k]) || ca2 <= 0
+                            ? NAN : 10.0 * log10(tr[k][T_NA] * ca2 / tr[k][T_NY]);
+  }
+  skim_phase_meter_summary(met, &res->sum);
+  res->dmax_meter = res->sum.dmax_db;
+  res->dmax_true = NAN;
+  if (sc->nin == 1 && !(sc->in[0].lo_hz < sc->in[0].hi_hz)) {
+    const double I0 = gen.ipow[0], h2 = sc->in[0].h_mag * sc->in[0].h_mag;
+    const double g2 = h2 * I0 * I0 / ((I0 + 1.0) * (h2 * I0 + gen.nb_pow));
+    res->dmax_true = -10.0 * log10(1.0 - g2);
+  }
+
+  gen_clear(&gen);
+  for (guint i = 0; i < C_N; i++) {
+    g_free(iq[i]);
+    skim_channelizer_free(bank[i]);
+  }
+  g_free(tr);
+  skim_phase_meter_free(met);
+  skim_combiner_free(comb);
+}
+
+static void result_free(Result *r) {
+  g_free(r->g_true);
+  g_free(r->g_meter);
+  g_free(r->g_est);
+  g_free(r->st_chan);
+  g_free(r->drop_true);
+  g_free(r->drop_meter);
+}
+
+/* --- checks ---------------------------------------------------------------- */
+
+static void print_stations(const Scenario *sc, const Result *r) {
+  for (guint s = 0; s < sc->nst; s++) {
+    printf("    station %+7.0f Hz  A %+5.1f dB  B %+4.0f dB %+5.0f°  G true %+6.2f  meter %+6.2f  est %+6.2f\n",
+           sc->st[s].off_hz, sc->st[s].snr_a, sc->st[s].b_rel_db, sc->st[s].b_ph_deg,
+           r->g_true[s], r->g_meter[s], r->g_est[s]);
+  }
+  printf("    summary: G median %+.2f (A %+.2f), drop median %+.2f p90 %+.2f, "
+         "groups ≥3 dB %.2f, |γ|² %.3f, D_max %.1f, share B %.2f, %u stations, %u quiet\n"
+         "             est: G %+.2f, drop %+.2f; same direction %.2f\n",
+         r->sum.gain_db, r->sum.gain_a_db, r->sum.drop_db, r->sum.drop_p90_db,
+         r->sum.drop_share, r->sum.coherence, r->sum.dmax_db, r->sum.share_b,
+         r->sum.stations, r->sum.quiet, r->sum.gain_est_db, r->sum.drop_est_db,
+         r->sum.same_dir);
+}
+
+/* The meter's gain against the truth, every station. */
+static void check_gain_meter(const Scenario *sc, const Result *r, double tol) {
+  double worst = 0;
+  gboolean all = TRUE;
+  for (guint s = 0; s < sc->nst; s++) {
+    if (isnan(r->g_meter[s])) { all = FALSE; continue; }
+    worst = MAX(worst, fabs(r->g_meter[s] - r->g_true[s]));
+  }
+  char what[160];
+  g_snprintf(what, sizeof(what), "the meter reads every station's gain within %.1f dB "
+             "of the truth (worst %.2f)", tol, worst);
+  check(what, all && worst <= tol);
+}
+
+/* The combiner's own estimate of the gain against the truth. */
+static void check_gain_est(const Scenario *sc, const Result *r, double tol) {
+  double worst = 0;
+  gboolean all = TRUE;
+  for (guint s = 0; s < sc->nst; s++) {
+    if (isnan(r->g_est[s])) { all = FALSE; continue; }
+    worst = MAX(worst, fabs(r->g_est[s] - r->g_true[s]));
+  }
+  char what[160];
+  g_snprintf(what, sizeof(what), "the estimate of every station's gain within %.1f dB "
+             "of the truth (worst %.2f)", tol, worst);
+  check(what, all && worst <= tol);
+}
+
+/* The meter's floor drop against the truth over the quiet channels of the
+ * groups [g0, g1]: their median error, and the true median drop there. */
+static double check_drop_meter(const Result *r, guint g0, guint g1, double tol,
+                               const char *where) {
+  double *err = g_new(double, r->nchan), *tru = g_new(double, r->nchan);
+  guint n = 0;
+  for (guint k = 0; k < r->nchan; k++) {
+    if (r->group_of[k] < g0 || r->group_of[k] > g1)
+      continue;
+    if (isnan(r->drop_meter[k]) || isnan(r->drop_true[k]))
+      continue;
+    err[n] = fabs(r->drop_meter[k] - r->drop_true[k]);
+    tru[n] = r->drop_true[k];
+    n++;
+  }
+  double med_err = NAN, med_true = NAN;
+  if (n) {
+    for (guint i = 1; i < n; i++)          /* insertion sorts: n ≤ 16384 */
+      for (guint j = i; j > 0 && err[j - 1] > err[j]; j--) {
+        const double x = err[j]; err[j] = err[j - 1]; err[j - 1] = x;
+      }
+    for (guint i = 1; i < n; i++)
+      for (guint j = i; j > 0 && tru[j - 1] > tru[j]; j--) {
+        const double x = tru[j]; tru[j] = tru[j - 1]; tru[j - 1] = x;
+      }
+    med_err = err[n / 2];
+    med_true = tru[n / 2];
+  }
+  char what[200];
+  g_snprintf(what, sizeof(what), "%s: the meter's floor drop within %.1f dB of the truth "
+             "(median error %.2f over %u quiet channels, true drop %.1f dB)",
+             where, tol, med_err, n, med_true);
+  check(what, n > 0 && med_err <= tol);
+  g_free(err);
+  g_free(tru);
+  return med_true;
+}
+
+/* The bench's pair (tests/phase-bench.sh): a wideband interferer 30 dB over
+ * the noise, four stations, as two cf32 files with a [record] .meta. */
+static const Scenario BENCH = { "bench", {
+    { -17000 + 5, 35, 0, -60, TRUE }, { -5000 + 5, 35, -3, 100, FALSE },
+    { 7000 + 5, 35, 0, 170, TRUE },   { 15000 + 5, 38, 0, 20, FALSE }, }, 4,
+    { { 30, 0.8, 57, 0, 0 } }, 1, 0.0, FALSE, FALSE, SKIM_PHASE_MVDR, 0, 0 };
+
+static int write_pair(const char *pa, const char *pb, double secs) {
+  FILE *f[2] = { fopen(pa, "wb"), fopen(pb, "wb") };
+  if (!f[0] || !f[1]) {
+    perror(!f[0] ? pa : pb);
+    return 2;
+  }
+  Gen gen;
+  gen_init(&gen, &BENCH);
+  const guint64 total = (guint64)(secs * FS);
+  float buf[2][2 * 1024];
+  for (guint64 done = 0; done < total;) {
+    const guint n = (guint)MIN((guint64)1024, total - done);
+    for (guint i = 0; i < n; i++) {
+      double complex v[C_N];
+      gen_step(&gen, v);
+      const double complex a = v[C_SA] + v[C_NA] + v[C_IA];
+      const double complex b = v[C_SB] + v[C_NB] + v[C_IB];
+      buf[0][2 * i] = (float)creal(a);
+      buf[0][2 * i + 1] = (float)cimag(a);
+      buf[1][2 * i] = (float)creal(b);
+      buf[1][2 * i + 1] = (float)cimag(b);
+    }
+    for (guint k = 0; k < 2; k++) { fwrite(buf[k], 2 * sizeof(float), n, f[k]); }
+    done += n;
+  }
+  gen_clear(&gen);
+  for (guint k = 0; k < 2; k++) {
+    fclose(f[k]);
+    char *mp = g_strdup_printf("%s.meta", k ? pb : pa);
+    char *meta = g_strdup_printf("source: skimmer-phase-test --write-pair (%s)\n"
+                                 "format: cf32 interleaved I,Q — TRUE spectrum orientation\n"
+                                 "center_hz: 14000000\nrate_hz: %.0f\nduration_s: %.1f\n---\n",
+                                 k ? "antenna B" : "antenna A", FS, secs);
+    g_file_set_contents(mp, meta, -1, NULL);
+    g_free(meta);
+    g_free(mp);
+  }
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  char what[200];
+  if (argc >= 4 && strcmp(argv[1], "--write-pair") == 0) {
+    return write_pair(argv[2], argv[3], argc > 4 ? g_ascii_strtod(argv[4], NULL) : 30.0);
+  }
+
+  printf("== MRC: no interferer, equal noise on A and B\n");
+  {
+    const Scenario sc = { "mrc", {
+        { -17000 + 5, 15, 0, 40, TRUE },  { -9000 + 5, 15, 0, -120, FALSE },
+        { 3000 + 5, 15, 0, 170, TRUE },   { 11000 + 5, 12, -6, 75, FALSE },
+        { 19000 + 5, 10, +6, -30, TRUE }, }, 5, { { .inr_db = 0 } }, 0, 0.0, FALSE, FALSE,
+        SKIM_PHASE_MVDR, 0, 0 };
+    Result r = { 0 };
+    run(&sc, &r);
+    print_stations(&sc, &r);
+    gboolean eq = TRUE;
+    for (guint s = 0; s < 3; s++) { eq = eq && r.g_true[s] >= 2.5; }
+    check("equal antennas: the combiner gains ≥ 2.5 dB on every station", eq);
+    check("B 6 dB weaker: still ≥ 0.6 dB over A (MRC: +1.0)", r.g_true[3] >= 0.6);
+    check("B 6 dB stronger: ≥ 0.6 dB over B, the better one", r.g_true[4] >= 0.6);
+    check_gain_meter(&sc, &r, 1.0);
+    check_gain_est(&sc, &r, 1.0);
+    g_snprintf(what, sizeof(what), "no interferer: the floor drop is ~0 (median %+.2f)",
+               r.sum.drop_db);
+    check(what, fabs(r.sum.drop_db) <= 0.5);
+    g_snprintf(what, sizeof(what), "no interferer: |γ|² ~0 (median %.3f)", r.sum.coherence);
+    check(what, r.sum.coherence < 0.05);
+    result_free(&r);
+  }
+
+  printf("== one wideband interferer 30 dB over the noise, B = 0.8∠57° · A\n");
+  {
+    const Scenario sc = { "null", {
+        { -17000 + 5, 35, 0, -60, TRUE }, { -5000 + 5, 35, -3, 100, FALSE },
+        { 7000 + 5, 35, 0, 170, TRUE },   { 15000 + 5, 38, 0, 20, FALSE }, }, 4,
+        { { 30, 0.8, 57, 0, 0 } }, 1, 0.0, FALSE, FALSE, SKIM_PHASE_MVDR, 0, 0 };
+    Result r = { 0 };
+    run(&sc, &r);
+    print_stations(&sc, &r);
+    const double drop = check_drop_meter(&r, 0, 1000, 1.0, "whole band");
+    g_snprintf(what, sizeof(what), "the interferer is nulled ≥ 20 dB (true drop %.1f dB)", drop);
+    check(what, drop >= 20.0);
+    g_snprintf(what, sizeof(what), "D_max from the coherence %.1f dB, analytic %.1f (±1)",
+               r.dmax_meter, r.dmax_true);
+    check(what, fabs(r.dmax_meter - r.dmax_true) <= 1.0);
+    gboolean big = TRUE;
+    for (guint s = 0; s < sc.nst; s++) { big = big && r.g_true[s] >= 15.0; }
+    check("every station gains ≥ 15 dB over the better antenna", big);
+    check_gain_meter(&sc, &r, 1.5);
+    /* the estimate sees R_n through the quiet channels of a group and the
+     * station through gated samples: at +20..30 dB of gain it reads up to
+     * ~2 dB low — the metered gain is the number that counts on air */
+    check_gain_est(&sc, &r, 2.0);
+    result_free(&r);
+  }
+
+  printf("== two interferers in two halves of the band, different signatures\n");
+  {
+    const Scenario sc = { "two", {
+        { -13000 + 5, 30, 0, 30, TRUE }, { 13000 + 5, 30, 0, -150, TRUE }, }, 2,
+        { { 25, 0.8, 57, -23000, -1000 }, { 25, 1.2, -100, 1000, 23000 } }, 2,
+        0.0, FALSE, FALSE, SKIM_PHASE_MVDR, 0, 0 };
+    Result r = { 0 };
+    run(&sc, &r);
+    print_stations(&sc, &r);
+    /* 48 kHz: 12 groups of 4 kHz from -24 kHz; groups 1-4 lie inside the
+     * lower interferer, 7-10 inside the upper */
+    const double lo = check_drop_meter(&r, 1, 4, 1.0, "lower half");
+    const double hi = check_drop_meter(&r, 7, 10, 1.0, "upper half");
+    g_snprintf(what, sizeof(what), "both nulled where they are: ≥ 15 dB (%.1f / %.1f dB)", lo, hi);
+    check(what, lo >= 15.0 && hi >= 15.0);
+    check_gain_meter(&sc, &r, 1.5);
+    result_free(&r);
+  }
+
+  printf("== B a copy of A\n");
+  {
+    const Scenario sc = { "copy", {
+        { -9000 + 5, 15, 0, 0, TRUE }, { 9000 + 5, 20, 0, 0, FALSE }, }, 2, { { .inr_db = 0 } }, 0,
+        0.0, TRUE, FALSE, SKIM_PHASE_MVDR, 0, 0 };
+    Result r = { 0 };
+    run(&sc, &r);
+    print_stations(&sc, &r);
+    gboolean ok = TRUE;
+    for (guint s = 0; s < sc.nst; s++) {
+      ok = ok && isfinite(r.g_true[s]) && fabs(r.g_true[s]) <= 0.5 &&
+           isfinite(r.g_meter[s]) && fabs(r.g_meter[s]) <= 0.5;
+    }
+    check("no gain, no blow-up: |G| ≤ 0.5 dB, true and metered", ok);
+    g_snprintf(what, sizeof(what), "every station comes as the noise does (same direction %.2f): "
+               "the page can say B hears what A hears", r.sum.same_dir);
+    check(what, r.sum.same_dir >= 0.99);
+    result_free(&r);
+  }
+
+  printf("== IN2 empty: B hears only its own noise, 20 dB lower\n");
+  {
+    const Scenario sc = { "empty", {
+        { -9000 + 5, 15, 0, 0, TRUE }, { 5000 + 5, 5, 0, 0, FALSE }, { 17000 + 5, 25, 0, 0, TRUE }, },
+        3, { { .inr_db = 0 } }, 0, -20.0, FALSE, TRUE, SKIM_PHASE_MVDR, 0, 0 };
+    Result r = { 0 };
+    run(&sc, &r);
+    print_stations(&sc, &r);
+    gboolean ok = TRUE;
+    for (guint s = 0; s < sc.nst; s++) {
+      ok = ok && r.g_true[s] >= -0.5 && (isnan(r.g_meter[s]) || r.g_meter[s] >= -0.5);
+    }
+    check("it costs nothing: G ≥ -0.5 dB, true and metered", ok);
+    g_snprintf(what, sizeof(what), "|γ|² ~0 (median %.3f): the page can say IN2 is empty",
+               r.sum.coherence);
+    check(what, r.sum.coherence < 0.05);
+    result_free(&r);
+  }
+
+  printf("== mode A\n");
+  {
+    const Scenario sc = { "a", { { 3000 + 5, 35, 0, 90, TRUE }, }, 1,
+        { { 30, 0.8, 57, 0, 0 } }, 1, 0.0, FALSE, FALSE, SKIM_PHASE_A, 0, 0 };
+    Result r = { 0 };
+    run(&sc, &r);
+    check("the output is antenna A bit for bit, from the first sample", r.a_exact);
+    g_snprintf(what, sizeof(what), "and its floor drop is 0 (median %+.2f)", r.sum.drop_db);
+    check(what, fabs(r.sum.drop_db) < 0.05);
+    print_stations(&sc, &r);
+    g_snprintf(what, sizeof(what), "what phasing would give shows meanwhile: est. gain %+.1f dB "
+               "(≥ 15), est. drop %+.1f dB (≥ 20)", r.g_est[0], r.sum.drop_est_db);
+    check(what, r.g_est[0] >= 15.0 && r.sum.drop_est_db >= 20.0);
+    result_free(&r);
+  }
+
+  printf("== Fixed: a manual weight against the known signature\n");
+  {
+    /* y = a + g·e^{jφ}·b nulls B = h·A when g·e^{jφ} = −1/h */
+    const double hm = 0.8, hp = 57;
+    const Scenario sc = { "fixed", { { 7000 + 5, 35, 0, 170, TRUE }, }, 1,
+        { { 30, hm, hp, 0, 0 } }, 1, 0.0, FALSE, FALSE, SKIM_PHASE_FIXED,
+        -20.0 * log10(hm), 180.0 - hp };
+    Result r = { 0 };
+    run(&sc, &r);
+    print_stations(&sc, &r);
+    const double drop = check_drop_meter(&r, 0, 1000, 1.0, "whole band");
+    g_snprintf(what, sizeof(what), "the Fixed weight nulls it ≥ 20 dB (true drop %.1f dB)", drop);
+    check(what, drop >= 20.0);
+    result_free(&r);
+  }
+
+  printf("\n%d/%d checks passed\n", checks - fails, checks);
+  return fails ? 1 : 0;
+}
