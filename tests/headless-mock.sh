@@ -207,7 +207,7 @@ wait_ptt_log() {
   done
   return 1
 }
-wait_ptt_log 'TX hold — decode frozen'
+wait_ptt_log 'decode frozen (own transmission)'
 check "ptt: both CW bands and RTTY enter hold" $?
 [[ $(curl -s --json '{"tx":false}' "$ptt") == '{"tx":false}' ]]
 check "ptt: accepts key-up" $?
