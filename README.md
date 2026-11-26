@@ -532,6 +532,22 @@ are decoded, so they make no spot on the telnet feed or to the RBN, no dot on
 the map and no count in the statistics; peers' and workers' spots are held to
 it too. Empty = every call passes.
 
+A station controller can pause CW (including DeepCW) and RTTY on every band
+decoded by this instance. Send TX just before keying the transmitter and RX
+when it unkeys:
+
+```sh
+curl --fail-with-body --json '{"tx":true}' http://127.0.0.1:8073/api/ptt
+curl --fail-with-body --json '{"tx":false}' http://127.0.0.1:8073/api/ptt
+```
+
+The server echoes the accepted state. Decoding resumes about 300 ms after RX,
+or after 30 seconds of continuous TX input as a failsafe. Repeating TX does
+not extend the hold. DeepCW can finish buffered pre-TX text during the hold.
+For a LAN controller, use the skimmer's IP and include the controller's IP in
+`[web] settings_from` (this grants settings access too). In a hub/worker
+setup send the events to each instance that decodes bands.
+
 Only the addresses in `[web] settings_from` (default `127.0.0.1,::1`) get
 **Settings** and **Log** — everyone else sees Status, Statistics and the
 Waterfall only, so the page can be published on a public address

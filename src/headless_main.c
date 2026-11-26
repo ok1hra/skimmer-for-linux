@@ -1419,6 +1419,16 @@ static char *status_public(const char *full, gboolean outside) {
   return out;
 }
 
+static void web_ptt(gboolean tx, gpointer user) {
+  Hd *h = user;
+  for (guint i = 0; i < h->nb; i++) {
+    for (guint k = 0; k < M_N; k++) {
+      SkimPipeline *p = h->band[i].dec[k].p;
+      if (p) { skim_pipeline_set_tx_hold(p, tx); }
+    }
+  }
+}
+
 static char *web_status(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
                         gpointer user) {
   (void)q; (void)st; (void)type;
@@ -3267,7 +3277,7 @@ int main(int argc, char **argv) {
       .ft8 = web_ft8, .js8 = web_js8,
       .config_post = web_config_post, .config_import = web_config_import,
       .restart = web_restart, .rollback = web_rollback,
-      .deepcw = web_deepcw,
+      .deepcw = web_deepcw, .ptt = web_ptt,
       .v4bench = web_v4bench,
       .update = web_update, .update_post = web_update_post,
       .redpitaya = web_redpitaya, .redpitaya_post = web_redpitaya_post,
