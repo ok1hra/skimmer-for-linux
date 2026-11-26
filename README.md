@@ -120,11 +120,10 @@ callsigns go through a station table and a feed policy. The CQ spots of all band
 **one** telnet feed in the cluster dialect, the CW Skimmer Server model.
 Status comes as a table on the console and as a web page with `/status.json`.
 
-<p align="center"><a href="docs/signal-flow.svg"><img src="docs/signal-flow.svg"
-alt="The signal's way: Red Pitaya → IQ in → bands → channelizer → decoders → callsigns → callsign filter → station table → feed policy → the feed → telnet and RBN" width="760"></a></p>
+<p align="center"><a href="docs/block-diagram.svg"><img src="docs/block-diagram.svg"
+alt="Block diagram: two antennas into the Red Pitaya (IN1 → IP A, IN2 → IP B), one Ethernet cable into skimmer-headless: the clients and the pairer, phasing (channelizers, the combiner per channel, band combine), the decoders, callsigns, the station table, the spot policy and the feeds; the waterfall and the digital modes on the band's own IQ; the product layer" width="100%"></a></p>
 
-The way of the signal, step by step, and where each step is in the code (the
-picture opened on its own has the same links):
+The way of the signal, step by step, and where each step is in the code:
 
 1. **IQ in** — UDP from the Red Pitaya, conjugated (the wire is RF-inverted),
    clock correction: [`src/engine/hpsdr_p1.c`](https://github.com/ok1hra/skimmer-for-linux/blob/main/src/engine/hpsdr_p1.c),
