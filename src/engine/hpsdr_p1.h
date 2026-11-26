@@ -92,6 +92,26 @@ void skim_hpsdr_client_set_rx_iq_cb(SkimHpsdrClient *c, guint rx, SkimHpsdrIqCb 
                                     gpointer user_data);
 void skim_hpsdr_client_set_closed_cb(SkimHpsdrClient *c, SkimHpsdrClosedCb cb, gpointer user_data);
 
+/* Two-antenna phasing (docs/PHASING.md). A stream from the skimmer's agent
+ * (0.4 on) carries an epoch and the index of each packet's first sample
+ * since the FIFO reset that began the epoch. An indexed receiver gets its
+ * blocks with them: epoch (0–255; -1 = the stream carries none — Pavel's
+ * server, an older agent) and idx, the index of the block's first frame.
+ * Within an epoch the frames are contiguous (lost packets zero-filled by
+ * the index); a new epoch flushes the block in hand (a short one) and the
+ * next block starts at its first index. Replaces set_rx_iq_cb for rx. */
+typedef void (*SkimHpsdrIqIxCb)(const float *iq, guint nframes, double sample_rate,
+                                double center_hz, gint epoch, guint64 idx,
+                                gpointer user_data);
+void skim_hpsdr_client_set_rx_iq_ix_cb(SkimHpsdrClient *c, guint rx, SkimHpsdrIqIxCb cb,
+                                       gpointer user_data);
+/* The next start asks the agent for a PAIRED stream: while the same client
+ * streams paired from the board's other IP too, a FIFO reset on either
+ * resets both and begins one epoch on both (rp/agent, docs/REDPITAYA.md). */
+void skim_hpsdr_client_set_paired(SkimHpsdrClient *c, gboolean paired);
+/* TRUE once a packet carried the agent's epoch and index. */
+gboolean skim_hpsdr_client_stamped(SkimHpsdrClient *c);
+
 /* Discover, configure (rate, one receiver, DDC centre) and start the stream;
  * returns once the first IQ packet is in (≤ 2 s). rate ∈ {48000, 96000,
  * 192000, 384000} (0 = 192000; 384 kHz only on a 122.88 MHz board's server —

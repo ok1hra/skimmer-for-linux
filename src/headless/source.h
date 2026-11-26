@@ -29,10 +29,17 @@ typedef struct _SkimIqSource SkimIqSource;
 typedef void (*SkimIqSourceIqCb)(guint band, const float *iq, guint nframes,
                                  double rate, double centre_hz, gpointer user);
 
+/* One block of a phased band (ip=ab, docs/PHASING.md): antenna A's and
+ * antenna B's IQ, the same instants (aligned by the agent's epoch and
+ * sample index). b = NULL: B is missing for this block (not streaming,
+ * busy, no stamps, realigning) — a, the band's own input, goes on alone. */
+typedef void (*SkimIqSourceIq2Cb)(guint band, const float *a, const float *b, guint nframes,
+                                  double rate, double centre_hz, gpointer user);
+
 typedef struct {
   gboolean streaming;
   gboolean gave_up;              /* no radio: the owner should stop          */
-  char     state[160];           /* one line for the console and the web    */
+  char     state[320];           /* one line for the console and the web    */
   char     host[64];             /* the radio streaming now (or the first)  */
   double   ppm;                  /* … its clock correction                  */
   guint64  packets;              /* since start (rate: the owner's delta)   */
@@ -53,6 +60,8 @@ struct _SkimIqSource {
   const SkimHdConfig       *cfg;           /* borrowed, outlives the source  */
   SkimIqSourceIqCb          iq_cb;
   gpointer                  iq_user;
+  SkimIqSourceIq2Cb         iq2_cb;        /* phased bands (NULL: their A
+                                            * goes to iq_cb)                 */
 };
 
 /* The source [radio] type names; take_over: take the first busy radio when

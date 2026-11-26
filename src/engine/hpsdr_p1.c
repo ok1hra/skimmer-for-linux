@@ -86,10 +86,15 @@
 typedef struct {
   SkimHpsdrIqCb cb;
   gpointer      user;
+  SkimHpsdrIqIxCb ix_cb;                   /* indexed instead (phasing)     */
+  gpointer      ix_user;
   double        center_hz;
   guint32       freq_word;
   float         blk[BLOCK_FRAMES * 2];     /* receive thread only           */
   guint         fill;
+  guint64       next_idx;                  /* the next frame's index        */
+  guint64       blk_idx;                   /* the block's first frame's     */
+  gint          blk_epoch;
 } Rx;
 
 struct _SkimHpsdrClient {
@@ -112,6 +117,9 @@ struct _SkimHpsdrClient {
   guint    nrx;
   guint8   adc_mask;             /* bit r = receiver r on IN2 (agent only)   */
   gboolean agent;                /* the board runs the skimmer's agent       */
+  gboolean paired;               /* the start asks for a paired stream       */
+  gint     ix_epoch;             /* receive thread: -1 = no stamp seen yet   */
+  volatile gint stamped;
 
   /* Receive thread only. */
   guint32  ep2_seq;
@@ -209,8 +217,8 @@ static void send_cmd(int fd, const struct sockaddr_in *dst, guint8 b2, guint8 b3
 
 /* The start to the skimmer's agent: "SKRP" in the padding marks the client
  * whose ADC word (C0=0x1C) the agent takes. */
-static void send_start_marked(int fd, const struct sockaddr_in *dst) {
-  guint8 pkt[64] = { 0xEF, 0xFE, 0x04, 0x01, 'S', 'K', 'R', 'P' };
+static void send_start_marked(int fd, const struct sockaddr_in *dst, gboolean paired) {
+  guint8 pkt[64] = { 0xEF, 0xFE, 0x04, 0x01, 'S', 'K', 'R', 'P', paired ? 0x01 : 0x00 };
   sendto(fd, pkt, sizeof(pkt), 0, (const struct sockaddr *)dst, sizeof(*dst));
 }
 
@@ -380,13 +388,40 @@ static void send_ep2(SkimHpsdrClient *c) {
 
 /* ---- EP6 ingest ------------------------------------------------------------- */
 
+static void deliver(SkimHpsdrClient *c, Rx *r, guint n) {
+  if (r->ix_cb) {
+    r->ix_cb(r->blk, n, c->rate, r->center_hz, r->blk_epoch, r->blk_idx, r->ix_user);
+  } else if (r->cb) {
+    r->cb(r->blk, n, c->rate, r->center_hz, r->user);
+  }
+}
+
 static void push_frame(SkimHpsdrClient *c, Rx *r, float re, float im) {
+  if (r->fill == 0) {
+    r->blk_idx = r->next_idx;
+    r->blk_epoch = c->ix_epoch;
+  }
+  r->next_idx++;
   r->blk[2 * r->fill]     = re;
   r->blk[2 * r->fill + 1] = im;
   if (++r->fill == BLOCK_FRAMES) {
+    deliver(c, r, BLOCK_FRAMES);
     r->fill = 0;
-    if (r->cb) { r->cb(r->blk, BLOCK_FRAMES, c->rate, r->center_hz, r->user); }
   }
+}
+
+/* A new epoch at idx: an indexed receiver's block in hand goes out short,
+ * and every receiver counts from idx. */
+static void new_epoch(SkimHpsdrClient *c, gint epoch, guint64 idx) {
+  for (guint k = 0; k < c->nrx; k++) {
+    Rx *r = &c->rx[k];
+    if (r->ix_cb && r->fill) {
+      deliver(c, r, r->fill);
+      r->fill = 0;
+    }
+    r->next_idx = idx;
+  }
+  c->ix_epoch = epoch;
 }
 
 static inline gint32 be24(const guint8 *p) {
@@ -402,7 +437,35 @@ static void handle_ep6(SkimHpsdrClient *c, const guint8 *pkt) {
   const guint per_frame = FRAME_PAYLOAD / slot;
   guint64 filled = 0;
 
-  if (c->have_seq && seq != c->next_seq) {
+  /* The agent's stamp (docs/REDPITAYA.md): the epoch and the index of the
+   * packet's first sample. With it, loss is filled by the index, not the
+   * sequence number, and a new epoch restarts the count. */
+  const gboolean st = pkt[8] == 0x7F && pkt[11] == 0x78 && pkt[520] == 0x7F && pkt[523] == 0x80;
+  if (st) {
+    const gint ep = pkt[12];
+    const guint64 idx = ((guint64)pkt[13] << 40) | ((guint64)pkt[14] << 32) |
+                        ((guint64)pkt[524] << 24) | ((guint64)pkt[525] << 16) |
+                        ((guint64)pkt[526] << 8) | pkt[527];
+    const guint64 expect = c->rx[0].next_idx;
+    if (!g_atomic_int_get(&c->stamped) || ep != c->ix_epoch) {
+      new_epoch(c, ep, idx);
+      g_atomic_int_set(&c->stamped, 1);
+    } else if (idx < expect) {
+      return;                                /* late/duplicate packet: drop   */
+    } else if (idx > expect) {
+      const guint64 gap = idx - expect;
+      if (gap <= (guint64)MAX_FILL_PKTS * 2 * per_frame) {
+        filled = gap;
+        for (guint k = 0; k < c->nrx; k++) {
+          for (guint64 i = 0; i < filled; i++) { push_frame(c, &c->rx[k], 0.0f, 0.0f); }
+        }
+      } else {
+        new_epoch(c, ep, idx);               /* too far: count afresh there   */
+      }
+    }
+    c->have_seq = TRUE;
+    c->next_seq = seq + 1;
+  } else if (c->have_seq && seq != c->next_seq) {
     const guint32 gap = seq - c->next_seq;   /* mod 2^32                       */
     if (gap > 0x80000000u) {
       return;                                /* late/duplicate packet: drop   */
@@ -414,8 +477,10 @@ static void handle_ep6(SkimHpsdrClient *c, const guint8 *pkt) {
       }
     }
   }
-  c->have_seq = TRUE;
-  c->next_seq = seq + 1;
+  if (!st) {
+    c->have_seq = TRUE;
+    c->next_seq = seq + 1;
+  }
 
   for (int f = 0; f < 2; f++) {
     const guint8 *fr = pkt + 8 + f * FRAME_BYTES;
@@ -588,6 +653,17 @@ void skim_hpsdr_client_set_rx_iq_cb(SkimHpsdrClient *c, guint rx, SkimHpsdrIqCb 
   c->rx[rx].user = user_data;
 }
 
+void skim_hpsdr_client_set_rx_iq_ix_cb(SkimHpsdrClient *c, guint rx, SkimHpsdrIqIxCb cb,
+                                       gpointer user_data) {
+  g_return_if_fail(rx < SKIM_HPSDR_MAX_RX);
+  c->rx[rx].ix_cb = cb;
+  c->rx[rx].ix_user = user_data;
+}
+
+void skim_hpsdr_client_set_paired(SkimHpsdrClient *c, gboolean paired) { c->paired = paired; }
+
+gboolean skim_hpsdr_client_stamped(SkimHpsdrClient *c) { return g_atomic_int_get(&c->stamped) != 0; }
+
 void skim_hpsdr_client_set_closed_cb(SkimHpsdrClient *c, SkimHpsdrClosedCb cb,
                                      gpointer user_data) {
   c->closed_cb = cb;
@@ -632,6 +708,7 @@ gboolean skim_hpsdr_client_start_multi(SkimHpsdrClient *c, guint rate,
     c->rx[r].center_hz = centers_hz[r];
     c->rx[r].freq_word = (guint32)llround(word);
     c->rx[r].fill = 0;
+    c->rx[r].next_idx = 0;
   }
   c->rate = rate;
   c->nrx = nrx;
@@ -662,6 +739,8 @@ gboolean skim_hpsdr_client_start_multi(SkimHpsdrClient *c, guint rate,
 
   c->ep2_seq = 0;
   c->have_seq = FALSE;
+  c->ix_epoch = -1;
+  g_atomic_int_set(&c->stamped, 0);
   c->lost_since_log = 0;
   c->last_lost_log_us = 0;
   c->arrival_us = 0;
@@ -680,7 +759,7 @@ gboolean skim_hpsdr_client_start_multi(SkimHpsdrClient *c, guint rate,
   send_ep2(c);
   send_ep2(c);
   if (c->agent) {
-    send_start_marked(c->fd, &c->dst);
+    send_start_marked(c->fd, &c->dst, c->paired);
   } else {
     send_cmd(c->fd, &c->dst, 0x04, 0x01);
   }

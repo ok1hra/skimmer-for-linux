@@ -34,7 +34,8 @@
  *     a reset of a paired stream never touches a FIFO another client reads.
  *
  * --sim replaces /dev/mem with synthetic FIFOs (a tone a receiver, louder on
- * IN1 than on IN2) so the rp-agent gate runs it on the build machine.
+ * IN1 than on IN2, and a noise both inputs hear, a function of the sample
+ * number) so the rp-agent and rp-two-ip gates run it on the build machine.
  *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
@@ -279,8 +280,18 @@ static uint64_t sim_word(Inst *in, int rx) {
   const uint64_t t = hw.base[in->k] + hw.n[in->k][rx]++;
   const uint64_t per = (uint64_t)llround(rate);          /* whole seconds */
   const double ph = 2 * M_PI * f * (double)(t % per) / rate;
-  const int32_t vi = (int32_t)lrint(amp * cos(ph) * 8388607.0);
-  const int32_t vq = (int32_t)lrint(-amp * sin(ph) * 8388607.0);
+  /* and a noise both inputs hear, a function of the sample number too
+   * (-40 dBFS on IN1, half of it on IN2): a common interferer — two streams
+   * paired off by a block lose its coherence, aligned ones can null it */
+  uint64_t hsh = t * 0x9E3779B97F4A7C15ull;
+  hsh ^= hsh >> 31;
+  hsh *= 0xBF58476D1CE4E5B9ull;
+  hsh ^= hsh >> 29;
+  const double nr = ((double)(hsh & 0xFFFFFF) / 8388608.0 - 1.0);
+  const double ni = ((double)((hsh >> 24) & 0xFFFFFF) / 8388608.0 - 1.0);
+  const double na = ((*in->sel >> rx) & 1) ? 0.005 : 0.01;
+  const int32_t vi = (int32_t)lrint((amp * cos(ph) + na * nr) * 8388607.0);
+  const int32_t vq = (int32_t)lrint((-amp * sin(ph) + na * ni) * 8388607.0);
   uint64_t w = 0;
   uint8_t *b = (uint8_t *)&w;
   b[0] = (uint8_t)(vi >> 16); b[1] = (uint8_t)(vi >> 8); b[2] = (uint8_t)vi;

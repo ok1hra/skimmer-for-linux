@@ -175,8 +175,12 @@ here; what was done and why is in git.
   `skim_pipeline_feed2/push2` (B NULL = decode A; `SKIM_REPLAY_B` replays a
   pair) — unphased it is byte for byte as before; agent 0.4 pairs two
   streams (one FIFO reset for both, epoch + sample index in a marked
-  stream's C&C — REDPITAYA.md; not on the board yet); skimmer-headless
-  does not feed a pair yet (`ip=ab`, the client's alignment).
+  stream's C&C — REDPITAYA.md; not on the board yet); a `[bands]` line
+  with `ip=ab` (`[phase]`, `phase=`) takes a receiver on each IP, paired;
+  the client's indexed blocks go to a pairer per band
+  (`source_hpsdr_p1.c`) that hands A+B to `iq2_cb` → `push2`, A alone
+  while B is missing; status.json bands carry `phase` (null when not
+  phased). Waterfall, FT8/JS8/WSPR, `[record]` take A so far.
 - **`meson test` = 44 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
   only with gfortran, `js8` only with C++20 + Boost headers). `headless-mock` runs

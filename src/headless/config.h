@@ -20,12 +20,22 @@
  *            ip=b = from the board's second IP (mvl0, DDC 8–15; default
  *            ip=a, [radio] host); in=2 = from the ADC input IN2 (the
  *            skimmer's agent on the board only, docs/REDPITAYA.md) — 8
- *            bands an IP, 16 in all
+ *            bands an IP, 16 in all; ip=ab = from both inputs, phased
+ *            (docs/PHASING.md): a receiver on IP A (IN1) and one on IP B
+ *            (IN2) at the centre, combined per channel before decoding —
+ *            counts on both IPs, needs the agent (0.4: paired streams), one
+ *            rate on both IPs, no in=, no @worker; phase=mvdr|mrc|fixed|a|b
+ *            overrides [phase] mode for the band
  *   [rp]     mode — p1 (default: one set of 16 DDCs, each band its input,
  *            in=) or extended (two antennas: every ip=a band on IN1, every
  *            ip=b band on IN2 — in= is then implied), b_host — the second IP
  *            (default: the agent on [radio] host names it), b_rate — its
  *            rate (default [radio] rate)
+ *   [phase]  the phased bands' defaults (docs/PHASING.md): mode
+ *            (mvdr | mrc | fixed | a | b, default mvdr), tc_s (1: the
+ *            estimates' time constant), gate_db (6: a station sample stands
+ *            this far over the noise), fixed_gain_db / fixed_phase_deg (B
+ *            against A in mode fixed)
  *   [decode] engine=v3|v4|v2|deepcw (the bands that name none), log=true|false,
  *            v4_workers (0 = half the CPUs): CW v4's inference threads,
  *            v4_guard (default true): the governor's v4 load guard,
@@ -164,6 +174,9 @@ typedef struct {
   guint8       input;                 /* 0 = IN1, 1 = IN2 (the agent only)   */
   guint        rate;                  /* its IQ rate: its IP's ([radio] rate,
                                        * [rp] b_rate)                        */
+  gboolean     phased;                /* ip=ab: IP A (IN1) + IP B (IN2), ip
+                                       * stays 0 (A is the band's own)       */
+  gint         phase_mode;            /* phase=: a SkimPhaseMode, -1 = [phase] */
 } SkimHdBand;
 
 typedef struct {
@@ -180,7 +193,15 @@ typedef struct {
   gboolean         rp_split;          /* mode=extended: IN1 → IP A, IN2 → IP B */
   char            *rp_b_host;         /* NULL = the agent's discovery names it */
   guint            rp_b_rate;         /* its rate (default [radio] rate)      */
-  guint            nb_ip[2];          /* bands received on each IP            */
+  guint            nb_ip[2];          /* receivers on each IP (a phased band
+                                       * counts on both)                     */
+  /* [phase] — the phased bands' combiner (docs/PHASING.md) */
+  gint             phase_mode;        /* SkimPhaseMode (0 = mvdr)             */
+  double           phase_tc_s;
+  double           phase_gate_db;
+  double           phase_fixed_gain_db;
+  double           phase_fixed_phase_deg;
+  guint            nb_phased;
   /* [bands] — band[]: the ones received, in receiver order; listed[]:
    * every line in file order, the ones off included (the settings page) */
   SkimHdBand       band[SKIM_HD_MAX_BANDS];

@@ -378,9 +378,11 @@ static void state_cb(gboolean connected, const char *detail, gpointer user) {
   }
 }
 
-/* Source thread: one block of band i to its pipeline (and its recording). */
-static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double centre,
-                     gpointer user) {
+/* Source thread: one block of band i to its pipeline (and its recording);
+ * iq_b: a phased band's antenna B (docs/PHASING.md; NULL = none or missing)
+ * — only the pipelines take it, the rest of the band runs on A for now. */
+static void rx_iq2_cb(guint i, const float *iq, const float *iq_b, guint n, double rate,
+                      double centre, gpointer user) {
   Hd *h = user;
   Band *b = &h->band[i];
   b->frames += n;
@@ -397,11 +399,50 @@ static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double cent
     if (h->hub) { skim_hd_hub_push(h->hub, i, iq, n, rate, centre); }
     return;
   }
+  const gboolean phased = h->cfg.band[i].phased;
   for (guint k = 0; k < M_N; k++) {
     if (b->dec[k].p && !g_atomic_int_get(&b->dec[k].paused)) {
-      skim_pipeline_push(b->dec[k].p, iq, n, rate, centre);
+      if (phased) {
+        skim_pipeline_push2(b->dec[k].p, iq, iq_b, n, rate, centre);
+      } else {
+        skim_pipeline_push(b->dec[k].p, iq, n, rate, centre);
+      }
     }
   }
+}
+
+static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double centre,
+                     gpointer user) {
+  rx_iq2_cb(i, iq, NULL, n, rate, centre, user);
+}
+
+/* A phased band's state for status.json: "phase":{…} or null. */
+static void phase_json(GString *json, Band *b) {
+  SkimPipeline *p = b->dec[M_CW].p ? b->dec[M_CW].p : b->dec[M_RTTY].p;
+  SkimPipelinePhase ph;
+  if (!p || !skim_pipeline_phase_snapshot(p, &ph, NULL, NULL, NULL, 0)) {
+    g_string_append(json, "null");
+    return;
+  }
+  const SkimPhaseSummary *u = &ph.sum;
+  const double v[] = { u->gain_db, u->gain_a_db, u->drop_db, u->drop_p90_db, u->drop_share,
+                       u->coherence, u->dmax_db, u->share_b, u->same_dir, u->gain_est_db,
+                       u->drop_est_db };
+  static const char *const k[] = { "gain_db", "gain_a_db", "drop_db", "drop_p90_db", "drop_share",
+                                   "coherence", "dmax_db", "share_b", "same_dir", "gain_est_db",
+                                   "drop_est_db" };
+  g_string_append_printf(json, "{\"mode\":\"%s\",\"b_missing\":%s,\"est\":%s,"
+                         "\"updates\":%" G_GUINT64_FORMAT ",\"stations\":%u",
+                         skim_phase_mode_name(ph.mode), ph.b_missing ? "true" : "false",
+                         ph.est ? "true" : "false", ph.updates, u->stations);
+  for (guint i = 0; i < G_N_ELEMENTS(v); i++) {
+    if (isnan(v[i])) {
+      g_string_append_printf(json, ",\"%s\":null", k[i]);
+    } else {
+      g_string_append_printf(json, ",\"%s\":%.2f", k[i], v[i]);
+    }
+  }
+  g_string_append_c(json, '}');
 }
 
 /* Why the governor pauses mode k of band i now (NULL: it runs). */
@@ -1021,11 +1062,13 @@ static void status_build(Hd *h, gboolean print) {
     g_free(jw);
     g_string_append_printf(json, "%s\"band\":\"%s\",\"centre_hz\":%.0f,\"ksps\":%.1f,"
                            "\"cw\":%s,\"engine_wanted\":\"%s\","
-                           "\"rtty_suppressed\":%" G_GUINT64_FORMAT ",",
+                           "\"rtty_suppressed\":%" G_GUINT64_FORMAT ",\"phase\":",
                            b->worker ? "" : i ? ",{" : "{", jname, b->centre_hz, b->ksps,
                            b->dec[M_CW].p ? "true" : "false",
                            b->dec[M_CW].p ? engine_key(h->cfg.band[i].cw_engine) : "",
                            b->dec[M_CW].p ? skim_pipeline_rtty_suppressed(b->dec[M_CW].p) : 0);
+    phase_json(json, b);
+    g_string_append_c(json, ',');
     g_free(jname);
     dec_json(json, &b->dec[M_CW], b->dec[M_CW].p ? paused_why(h, i, M_CW) : NULL, now);
     g_string_append(json, ",\"rtty\":");
@@ -2529,6 +2572,16 @@ static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const c
     .call_pass = skim_hd_config_filter_on(c) ? call_pass : NULL,
     .call_pass_user = h,
   };
+  /* a phased band (ip=ab): the combiner's settings, [phase] and the band's phase= */
+  SkimCombinerConfig phase;
+  skim_combiner_config_default(&phase);
+  phase.mode = (SkimPhaseMode)(cb->phase_mode >= 0 ? cb->phase_mode : c->phase_mode);
+  phase.tc_s = c->phase_tc_s;
+  phase.gate_db = c->phase_gate_db;
+  phase.fixed_gain_db = c->phase_fixed_gain_db;
+  phase.fixed_phase_deg = c->phase_fixed_phase_deg;
+  pc.phased = cb->phased;
+  pc.phase = cb->phased ? &phase : NULL;
   d->p = skim_pipeline_new(&pc);
   g_free(dlog);
   g_free(tap);
@@ -3343,6 +3396,7 @@ int main(int argc, char **argv) {
   } else {
     h->src = skim_iq_source_new(c, h->take_over, rx_iq_cb, h);
   }
+  h->src->iq2_cb = rx_iq2_cb;                  /* phased bands (ip=ab)        */
   g_free(hub_frag);
   skim_iq_source_start(h->src);                /* first start attempt now     */
   tick(h);

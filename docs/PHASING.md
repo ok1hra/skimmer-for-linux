@@ -7,8 +7,10 @@ Status: a design for work still ahead (Dan, 2026-11-25). Built so far
 when its config says so and is fed both antennas (`skim_pipeline_feed2`,
 `skimmer-replay` with `SKIM_REPLAY_B`). The agent pairs two streams and
 stamps them with an epoch and a sample index (P1, agent 0.4, not on the
-board yet). skimmer-headless does not feed a pair yet (P2). It is written so that another agent can implement it
-phase by phase. Each phase ends with an offline gate, as the rest of the engine
+board yet). skimmer-headless runs a band from both inputs with `ip=ab`
+(P2): `[phase]`, the client's stamps, a pairer per band, status.json's
+`phase` — the waterfall, FT8/JS8/WSPR and `[record]` still take A. It is
+written so that another agent can implement it phase by phase. Each phase ends with an offline gate, as the rest of the engine
 does (CLAUDE.md). Sources: Linrad's phasing window (SM5BSZ, "Linrad phasing
 window v6", sm5bsz.com/linuxdsp/run/phasing/), the F0 measurements in
 `docs/REDPITAYA.md`, and the standard results for two-element arrays
@@ -460,7 +462,7 @@ interfaces:
 |---|---|---|
 | P0 | **Measure first.** Record pairs on real air with `rp-spike pair` (longer, 96 kHz, two real antennas, or the antenna and its interference); `skimmer-phase-bench` (built) computes MRC and MVDR per channel, the groups' coherence and the measured lag | numbers: the SNR gain and null depth on real air (if both are small for the station's antennas, stop here) |
 | P1 | agent: paired start, sample index, epoch — **built** (agent 0.4, `docs/REDPITAYA.md`; not on the board yet) | `rp-agent`: both sim streams carry one epoch and a contiguous index, the same index is the same instant (phase 0.000°, a sample off = 3.75°); an overflow on A starts a new epoch on both, aligned again; an unmarked stream keeps Pavel's C&C; a paired start beside it resets nothing |
-| P2 | config `ip=ab`, source pairing and alignment, `[record]` pairs | `rp-two-ip`: a paired band gets aligned blocks (sim tone, same phase difference each run) |
+| P2 | config `ip=ab`, `[phase]`, `phase=`; the client's paired start and stamps (`set_rx_iq_ix_cb`: blocks with epoch + index, loss filled by the index); a pairer per band in `source_hpsdr_p1.c` (same epoch, same index → `iq2_cb`; A's unmatched front and A while B is missing, late past 0.25 s or unstamped go alone); status.json `phase` — **built**. Still to do: `[record]` pairs | `rp-two-ip`: a phased band streams paired from both IPs (one epoch, IN1 at A, IN2 at B); the agent sim's noise (a function of the sample number, on both inputs) stays coherent end to end (\|γ\|² 0.99, nulled 47 dB — a pairer off by 4096 samples reads 0.00); IP B taken → IN1 alone, said so; B back → phased again; two rates refused. `config`: ip=ab and its refusals |
 | P3 | `SkimCombiner` (MVDR/MRC/fixed, gating, phase reference, noise normalisation), `SkimPhaseMeter`, and the pipeline (`SkimPipelineConfig.phased`: B's channelizer, the combiner in the drain, the Y meter as the band's shadow SNR, B missing → A, `push2`/`feed2`, a snapshot for the page, the spots' SNR_A/SNR_B/gain) — **built** | gate `phase`: MRC ≥ 2.5 dB, one interferer nulled ≥ 20 dB, two in two halves each where it is, B a copy of A, empty IN2, mode A bit for bit, Fixed, the meters against the truth; the whole pipeline spots a CW station 8 dB under a common interferer on each antenna (neither alone does), B missing decodes A, mode A shows the estimates. **Golden byte-identical** |
 | P4 | band-level W(f): waterfall, digi_rx, WSPR | the FT8/WSPR gates on a synthetic pair (decodes ≥ the better antenna) |
 | P5 | web panel, coherence trace, stats v9 | headless Chrome screenshots; stats migration test |

@@ -4,7 +4,10 @@
 # 127.0.0.7. IP A is [radio] host; IP B's address comes from the agent's
 # discovery; the ip=b band streams from B at [rp] b_rate, its in=2 puts it
 # on IN2 through Protocol 1; SIGTERM stops both streams. A config with every
-# band on ip=b is refused, and so are nine bands on one IP.
+# band on ip=b is refused, and so are nine bands on one IP. A phased band
+# (ip=ab, docs/PHASING.md) streams paired from both IPs (one epoch, A on
+# IN1, B on IN2) into a phased pipeline; when another client takes IP B the
+# band goes on from A alone and says so, and phasing comes back with B.
 #
 #   rp-two-ip.sh <skimmer-headless> <skimmer-rp-host>
 set -uo pipefail
@@ -70,6 +73,64 @@ s=$(st)
 check "SIGTERM stopped both streams; B's inputs back to the manager's" $?
 [[ ! -s $T/state/skimmer-for-linux/hpsdr-streams ]]
 check "no stream left noted" $?
+
+# a phased band: 20m from both inputs, 40m from IP A alone
+cat > "$T/phased.ini" <<INI
+[radio]
+type=hpsdr-p1
+host=127.0.0.6
+rate=48000
+[bands]
+20m=14045500 ip=ab
+40m=7025000
+[feed]
+port=0
+[status]
+console_s=0
+http_port=$HTTP
+[web]
+settings_from=127.0.0.1
+INI
+"$HL" --config "$T/phased.ini" > "$T/logp" 2>&1 &
+PID=$!
+for _ in $(seq 100); do grep -q "IP B streaming" "$T/logp" && break; sleep 0.1; done
+sleep 4
+s=$(st)
+[[ $(py '[(i["streaming"], i["receivers"], i["sel"], i["paired"]) for i in d["inst"]]' "$s") == "[(True, 2, 0, True), (True, 1, 1, True)]" ]] &&
+  [[ $(py 'd["inst"][0]["epoch"] == d["inst"][1]["epoch"]' "$s") == True ]]
+check "phased: both IPs stream paired, one epoch; 20m on IN1 at A and on IN2 at B" $?
+ph() { curl -s "http://127.0.0.1:$HTTP/status.json" | python3 -c "import json,sys; d=json.load(sys.stdin); b=[x for x in d['bands'] if x['band']=='20m'][0]['phase']; print($1)"; }
+[[ $(ph 'b is not None and b["mode"] == "mvdr" and not b["b_missing"] and b["updates"] >= 2') == True ]] &&
+  [[ $(curl -s "http://127.0.0.1:$HTTP/status.json" | python3 -c "import json,sys; d=json.load(sys.stdin); print([x['phase'] for x in d['bands'] if x['band']=='40m'][0])") == None ]]
+check "status.json: 20m phased (mvdr, B there, the combiner updating), 40m not" $?
+# the sim's noise is the same function of the sample number on both inputs:
+# only blocks paired at the same instants keep it coherent, and can null it
+v=$(ph '"%.3f %.1f" % (b["coherence"] or 0, b["drop_db"] or 0)')
+read -r coh drop <<< "$v"
+python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) > 0.9 and float(sys.argv[2]) > 15 else 1)" "$coh" "$drop"
+check "A and B paired at the same instants: the common noise coherent (|γ|² $coh), nulled ($drop dB)" $?
+# another client takes IP B: its start from a socket that closes (the agent stops it as an orphan)
+python3 -c "import socket,sys; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.sendto(bytes([0xef,0xfe,4,1])+bytes(60),('127.0.0.7',int(sys.argv[1])))" $P
+lost=1
+for _ in $(seq 60); do
+  [[ $(ph 'b["b_missing"]') == True ]] && { lost=0; break; }
+  sleep 0.1
+done
+sj=$(curl -s "http://127.0.0.1:$HTTP/status.json")
+[[ $lost == 0 && $sj == *"20m phased: IN1 alone (IP B missing)"* ]]
+check "IP B taken: 20m goes on from IN1 alone, and the radio's state says so" $?
+back=1
+for _ in $(seq 200); do
+  [[ $(ph 'not b["b_missing"]') == True ]] && { back=0; break; }
+  sleep 0.1
+done
+[[ $back == 0 ]] && grep -q "IP B streaming" "$T/logp"
+check "IP B free again: phasing comes back by itself" $?
+kill "$PID"; wait "$PID" 2>/dev/null; PID=
+printf '[radio]\nhost=127.0.0.6\nrate=48000\n[rp]\nb_rate=96000\n[bands]\n20m=14045500 ip=ab\n' > "$T/prate.ini"
+out=$("$HL" --config "$T/prate.ini" --check-config 2>&1); rc=$?
+[[ $rc == 2 && $out == *"ip=ab needs one rate on both IPs"* ]]
+check "ip=ab with two rates refused (exit 2)" $?
 
 # 384 kHz on IP B: the stream, the channelizer at that rate
 sed -e 's/^b_rate=96000/b_rate=384000/' -e 's/^40m=7025000 ip=b in=2/40m=7100000 ip=b\n15m=21100000 ip=b/' "$T/headless.ini" > "$T/h384.ini"
