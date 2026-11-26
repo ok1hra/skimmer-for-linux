@@ -190,6 +190,30 @@ check "log: the switch with its kind" $?
 grep -q "decode: DeepCW asked for, not available (no model at" "$T/log"
 check "log: DeepCW asked for, not available, why" $?
 
+# ---- external PTT on two CW pipelines and one RTTY pipeline -----------------------
+ptt=http://127.0.0.1:$HTTP/api/ptt
+ptt_code() { curl -s -o /dev/null -w '%{http_code}' "$@" "$ptt"; }
+[[ $(ptt_code --json '{"tx":"true"}') == 400 && $(ptt_code --json '{"tx":true}x') == 400 ]]
+check "ptt: refuses a non-boolean or trailing data" $?
+[[ $(ptt_code -d 'tx=true') == 415 ]]; check "ptt: requires JSON" $?
+[[ $(ptt_code -H 'Origin: http://other.example' --json '{"tx":true}') == 403 ]]
+check "ptt: refuses a cross-origin request" $?
+[[ $(curl -s --json '{ "tx" : true }' "$ptt") == '{"tx":true}' ]]
+check "ptt: accepts key-down" $?
+wait_ptt_log() {
+  for _ in $(seq 30); do
+    [[ $(grep -cF "$1" "$T/log") == 3 ]] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+wait_ptt_log 'decode frozen (own transmission)'
+check "ptt: both CW bands and RTTY enter hold" $?
+[[ $(curl -s --json '{"tx":false}' "$ptt") == '{"tx":false}' ]]
+check "ptt: accepts key-up" $?
+wait_ptt_log 'TX hold released'
+check "ptt: all three pipelines resume" $?
+
 # ---- the DeepCW model from the web page: the bad mirror is refused -------------------
 code=$(curl -s -o "$T/r.json" -w '%{http_code}' -H "Origin: http://evil.example" -X POST "http://127.0.0.1:$HTTP/api/deepcw")
 [[ $code == 403 ]]; check "web: a page from another origin may not fetch the model (403)" $?

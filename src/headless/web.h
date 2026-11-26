@@ -19,6 +19,7 @@
  *   GET  /api/update            the updates: running, latest, staged, kept (settings_from)
  *   POST /api/config            a new config (settings_from only)
  *   POST /api/config/import    an exported ini (ini=…) as the config (settings_from)
+ *   POST /api/ptt               {"tx":true|false} for local CW/RTTY pipelines (settings_from)
  *   POST /api/restart           restart with the config on disk (settings_from)
  *   POST /api/rollback          the previous config back, restart (settings_from)
  *   POST /api/deepcw            fetch the DeepCW model (settings_from)
@@ -82,6 +83,7 @@ typedef struct {
                 redpitaya;
   SkimHdWebPost config_post, config_import, restart, rollback, deepcw, update_post, v4bench,
                 redpitaya_post;
+  void        (*ptt)(gboolean tx, gpointer user);
   /* a WebSocket viewer of the waterfall (peer: its address, for the log;
    * visitor: its sign-in token, NULL for a free client); the hook takes its
    * own reference */

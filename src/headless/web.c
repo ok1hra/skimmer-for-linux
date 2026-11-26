@@ -1,5 +1,6 @@
 /* web.c — see web.h. Part of skimmer-for-linux. GPL-3.0-or-later. */
 #include "web.h"
+#include "json.h"
 
 #include <libsoup/soup.h>
 #include <string.h>
@@ -344,6 +345,44 @@ static const char *post_refused(SkimHdWeb *w, SoupServerMessage *msg) {
   return origin_refused(msg);
 }
 
+/* Match the fixed PTT message grammar against the full, length-delimited body. */
+static gboolean ptt_token(SkimJsonR *j, const char *token) {
+  skim_json_ws(j);
+  gsize n = strlen(token);
+  if ((gsize)(j->end - j->p) < n || memcmp(j->p, token, n) != 0) { return FALSE; }
+  j->p += n;
+  return TRUE;
+}
+
+static void ptt_post(SkimHdWeb *w, SoupServerMessage *msg) {
+  SoupMessageHeaders *headers = soup_server_message_get_request_headers(msg);
+  const char *type = soup_message_headers_get_content_type(headers, NULL);
+  if (!type || g_ascii_strcasecmp(type, "application/json") != 0) {
+    reply_error(msg, SOUP_STATUS_UNSUPPORTED_MEDIA_TYPE, "expected application/json");
+    return;
+  }
+  GBytes *bytes = soup_message_body_flatten(soup_server_message_get_request_body(msg));
+  gsize size;
+  const char *data = g_bytes_get_data(bytes, &size);
+  if (!data) { data = ""; }
+  SkimJsonR j = { data, data + size };
+  gboolean tx = FALSE;
+  gboolean valid = ptt_token(&j, "{") && ptt_token(&j, "\"tx\"") && ptt_token(&j, ":");
+  if (valid) {
+    tx = ptt_token(&j, "true");
+    valid = (tx || ptt_token(&j, "false")) && ptt_token(&j, "}");
+    skim_json_ws(&j);
+  }
+  valid = valid && j.p == j.end;
+  g_bytes_unref(bytes);
+  if (!valid) {
+    reply_error(msg, SOUP_STATUS_BAD_REQUEST, "expected an object with one boolean tx field");
+    return;
+  }
+  w->hooks.ptt(tx, w->hooks.user);
+  reply(msg, SOUP_STATUS_OK, "application/json", g_strdup(tx ? "{\"tx\":true}" : "{\"tx\":false}"));
+}
+
 static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                     GHashTable *query, gpointer user) {
   (void)srv;
@@ -441,13 +480,18 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                        : strcmp(path, "/api/update") == 0   ? k->update_post
                        : strcmp(path, "/api/redpitaya") == 0 ? k->redpitaya_post
                                                             : NULL;
-    if (!hook) {
+    gboolean ptt = strcmp(path, "/api/ptt") == 0 && k->ptt;
+    if (!hook && !ptt) {
       reply_error(msg, SOUP_STATUS_NOT_FOUND, "not found");
       return;
     }
     const char *why = post_refused(w, msg);
     if (why) {
       reply_error(msg, SOUP_STATUS_FORBIDDEN, why);
+      return;
+    }
+    if (ptt) {
+      ptt_post(w, msg);
       return;
     }
     SoupMessageBody *b = soup_server_message_get_request_body(msg);

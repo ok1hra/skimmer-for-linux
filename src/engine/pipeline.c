@@ -125,6 +125,7 @@ typedef struct {
   guint   nframes;
   double  rate;
   double  center_hz;
+  gboolean tx;   /* PTT at ingress, before the decoder thread can lag behind */
 } IqBlock;
 
 /* One slot's decode collected in pass 1 of a block (dispatch happens in
@@ -1012,8 +1013,7 @@ static void closed_cb(gpointer user) {
   if (p->state_cb) { p->state_cb(FALSE, "connection lost", p->state_user); }
 }
 
-/* trx/tune broadcast → the TX hold (LWS thread; an atomic flag the engine
- * thread reads per block). */
+/* Each incoming IQ block captures the latest trx/tune broadcast. */
 static void tx_fwd_cb(gboolean tx, gpointer user) {
   SkimPipeline *p = user;
   g_atomic_int_set(&p->tx_now, tx ? 1 : 0);
@@ -1029,6 +1029,7 @@ static void iq_cb(const float *iq, guint nframes, double rate, double center,
     return;
   }
   IqBlock *b = g_new(IqBlock, 1);
+  b->tx = g_atomic_int_get(&p->tx_now) != 0;
   b->iq = g_memdup2(iq, (gsize)nframes * 2 * sizeof(float));
   b->nframes   = nframes;
   b->rate      = rate;
@@ -1555,7 +1556,7 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
    * ANSWERING station is re-acquired seconds late (Richard, live
    * 2026-08-15). Swallow the blocks instead: unfed decoders freeze all
    * their time constants for free. Stream time keeps ticking (TTLs). */
-  const gboolean tx = g_atomic_int_get(&p->tx_now) != 0;
+  const gboolean tx = b->tx;
   if (tx || p->holding) {
     if (tx) {
       if (!p->holding) {
@@ -1880,6 +1881,7 @@ void skim_pipeline_feed(SkimPipeline *p, const float *iq, guint nframes,
                         double rate, double center_hz) {
   g_return_if_fail(p->offline);
   IqBlock b = {
+    .tx = g_atomic_int_get(&p->tx_now) != 0,
     .iq = (float *)iq,                 /* process_block never writes into it */
     .nframes   = nframes,
     .rate      = rate,
