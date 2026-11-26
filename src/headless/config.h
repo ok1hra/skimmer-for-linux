@@ -20,12 +20,29 @@
  *            ip=b = from the board's second IP (mvl0, DDC 8–15; default
  *            ip=a, [radio] host); in=2 = from the ADC input IN2 (the
  *            skimmer's agent on the board only, docs/REDPITAYA.md) — 8
- *            bands an IP, 16 in all
+ *            bands an IP, 16 in all; ip=ab = from both inputs, phased
+ *            (docs/PHASING.md): a receiver on IP A (IN1) and one on IP B
+ *            (IN2) at the centre, combined per channel before decoding —
+ *            counts on both IPs, needs the agent (0.4: paired streams), one
+ *            rate on both IPs, no in=, no @worker; in=12 = phased on ONE IP:
+ *            two of its receivers at the centre, IN1 and IN2 (the same
+ *            stream: aligned by itself, the other IP left free; [rp] mode
+ *            p1 only); phase=mvdr|mrc|fixed|a|b overrides [phase] mode for
+ *            the band
  *   [rp]     mode — p1 (default: one set of 16 DDCs, each band its input,
  *            in=) or extended (two antennas: every ip=a band on IN1, every
  *            ip=b band on IN2 — in= is then implied), b_host — the second IP
  *            (default: the agent on [radio] host names it), b_rate — its
  *            rate (default [radio] rate)
+ *   [phase]  the phased bands' defaults (docs/PHASING.md): mode
+ *            (mvdr | mrc | fixed | a | b, default mvdr), tc_s (1: the
+ *            estimates' time constant), gate_db (6: a station sample stands
+ *            this far over the noise), fixed_gain_db / fixed_phase_deg (B
+ *            against A in mode fixed), layer2 (true: the decoders' marks
+ *            steer their own channels — layer 2)
+ *   [phase.<band>]  a phased band's own: fixed_gain_db, fixed_phase_deg, and
+ *            the phasing panel's memories m1..m3 = "gain_db,phase_deg" (the
+ *            panel's Save writes them, with the band's phase=)
  *   [decode] engine=v3|v4|v2|deepcw (the bands that name none), log=true|false,
  *            v4_workers (0 = half the CPUs): CW v4's inference threads,
  *            v4_guard (default true): the governor's v4 load guard,
@@ -164,6 +181,15 @@ typedef struct {
   guint8       input;                 /* 0 = IN1, 1 = IN2 (the agent only)   */
   guint        rate;                  /* its IQ rate: its IP's ([radio] rate,
                                        * [rp] b_rate)                        */
+  gboolean     phased;                /* ip=ab: IP A (IN1) + IP B (IN2), ip
+                                       * stays 0 (A is the band's own); or
+                                       * in=12: two receivers of its own IP,
+                                       * IN1 and IN2 (same_ip)               */
+  gboolean     same_ip;
+  gint         phase_mode;            /* phase=: a SkimPhaseMode, -1 = [phase] */
+  double       fixed_gain_db;         /* [phase.<band>]: mode fixed's weight  */
+  double       fixed_phase_deg;       /* (NAN = [phase]'s)                     */
+  double       mem[3][2];             /* m1..m3: gain dB, phase ° (NAN none)   */
 } SkimHdBand;
 
 typedef struct {
@@ -180,7 +206,16 @@ typedef struct {
   gboolean         rp_split;          /* mode=extended: IN1 → IP A, IN2 → IP B */
   char            *rp_b_host;         /* NULL = the agent's discovery names it */
   guint            rp_b_rate;         /* its rate (default [radio] rate)      */
-  guint            nb_ip[2];          /* bands received on each IP            */
+  guint            nb_ip[2];          /* receivers on each IP (a phased band
+                                       * counts on both)                     */
+  /* [phase] — the phased bands' combiner (docs/PHASING.md) */
+  gint             phase_mode;        /* SkimPhaseMode (0 = mvdr)             */
+  double           phase_tc_s;
+  double           phase_gate_db;
+  double           phase_fixed_gain_db;
+  double           phase_fixed_phase_deg;
+  gboolean         phase_layer2;      /* the decoders' marks steer (layer 2) */
+  guint            nb_phased;
   /* [bands] — band[]: the ones received, in receiver order; listed[]:
    * every line in file order, the ones off included (the settings page) */
   SkimHdBand       band[SKIM_HD_MAX_BANDS];
@@ -368,6 +403,14 @@ char *skim_hd_config_worker_merge(const char *own, gsize own_len, const char *fr
 
 /* "cw", "cw:deepcw,rtty", "cw,off" … — the band's modes as the ini writes them. */
 char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt);
+
+/* The phasing panel's Save (docs/PHASING.md): text (an ini) with band's
+ * phase= set to mode (a SkimPhaseMode) in its [bands] line, and
+ * [phase.<band>] fixed_gain_db, fixed_phase_deg and m1..m3 (mem[k][0] NAN
+ * = none) — comments kept. NULL + error when the band has no line. */
+char *skim_hd_config_set_phase(const char *text, gsize len, const char *band, gint mode,
+                               double gain_db, double phase_deg, const double mem[3][2],
+                               GError **error);
 
 /* [filter] in force at all (a pattern, or the own call's filter on with a
  * call to compare with). */

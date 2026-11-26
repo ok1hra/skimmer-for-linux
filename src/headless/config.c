@@ -1,9 +1,12 @@
 /* config.c — see config.h. Part of skimmer-for-linux. GPL-3.0-or-later. */
 #include "config.h"
+
+#include "engine/combiner.h"
 #include "headless/dxcc.h"
 
 #include <gio/gio.h>
 #include <glib/gstdio.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -379,6 +382,26 @@ static gboolean engine_of(const char *s, SkimCwEngine *out) {
   return FALSE;
 }
 
+/* The phased bands' modes (combiner.h's SkimPhaseMode, its names) — here,
+ * so that config.c needs only the header: several gates build it alone. */
+static const char *const PHASE_MODES[] = { "mvdr", "mrc", "fixed", "a", "b" };
+G_STATIC_ASSERT(SKIM_PHASE_MVDR == 0 && SKIM_PHASE_MRC == 1 && SKIM_PHASE_FIXED == 2 &&
+                SKIM_PHASE_A == 3 && SKIM_PHASE_B == 4);
+
+static gboolean phase_mode_parse(const char *t, SkimPhaseMode *out) {
+  for (guint i = 0; t && i < G_N_ELEMENTS(PHASE_MODES); i++) {
+    if (g_ascii_strcasecmp(t, PHASE_MODES[i]) == 0) {
+      *out = (SkimPhaseMode)i;
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+static const char *phase_mode_name(SkimPhaseMode m) {
+  return (guint)m < G_N_ELEMENTS(PHASE_MODES) ? PHASE_MODES[m] : "?";
+}
+
 static const char *engine_name(SkimCwEngine e) {
   return e == SKIM_CW_ENGINE_DEEPCW ? "deepcw" : e == SKIM_CW_ENGINE_V1 ? "v1"
          : e == SKIM_CW_ENGINE_V3 ? "v3" : e == SKIM_CW_ENGINE_V4 ? "v4" : "v2";
@@ -393,15 +416,85 @@ char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt) {
   if (b->rtty) { g_string_append_printf(s, "%srtty", s->len ? "," : ""); }
   if (b->off) { g_string_append_printf(s, "%soff", s->len ? "," : ""); }
   if (b->worker[0]) { g_string_append_printf(s, " @%s", b->worker); }
-  if (b->ip) { g_string_append(s, " ip=b"); }
-  if (b->input) { g_string_append(s, " in=2"); }
+  if (b->phased && b->same_ip) {
+    if (b->ip) { g_string_append(s, " ip=b"); }
+    g_string_append(s, " in=12");
+  } else if (b->phased) {
+    g_string_append(s, " ip=ab");
+  } else {
+    if (b->ip) { g_string_append(s, " ip=b"); }
+    if (b->input) { g_string_append(s, " in=2"); }
+  }
+  if (b->phase_mode >= 0) {
+    g_string_append_printf(s, " phase=%s", phase_mode_name((SkimPhaseMode)b->phase_mode));
+  }
   return g_string_free(s, FALSE);
+}
+
+char *skim_hd_config_set_phase(const char *text, gsize len, const char *band, gint mode,
+                               double gain_db, double phase_deg, const double mem[3][2],
+                               GError **error) {
+  GKeyFile *kf = g_key_file_new();
+  if (!g_key_file_load_from_data(kf, text, len, G_KEY_FILE_KEEP_COMMENTS, error)) {
+    g_key_file_free(kf);
+    return NULL;
+  }
+  char *line = g_key_file_get_value(kf, "bands", band, NULL);
+  if (!line) {
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "no [bands] line %s", band);
+    g_key_file_free(kf);
+    return NULL;
+  }
+  /* the line again without its phase=, then the new one */
+  GString *nl = g_string_new(NULL);
+  char **tok = g_strsplit_set(line, " \t", -1);
+  for (char **t = tok; *t; t++) {
+    if (!**t) { continue; }
+    char **sub = g_strsplit(*t, ",", -1);   /* "cw,ip=ab,phase=x" too */
+    GString *keep = g_string_new(NULL);
+    for (char **u = sub; *u; u++) {
+      if (!g_str_has_prefix(*u, "phase=") && **u) {
+        g_string_append_printf(keep, "%s%s", keep->len ? "," : "", *u);
+      }
+    }
+    if (keep->len) { g_string_append_printf(nl, "%s%s", nl->len ? " " : "", keep->str); }
+    g_string_free(keep, TRUE);
+    g_strfreev(sub);
+  }
+  g_strfreev(tok);
+  g_string_append_printf(nl, " phase=%s", phase_mode_name((SkimPhaseMode)mode));
+  g_key_file_set_value(kf, "bands", band, nl->str);
+  g_string_free(nl, TRUE);
+  g_free(line);
+  char *grp = g_strdup_printf("phase.%s", band);
+  char num[G_ASCII_DTOSTR_BUF_SIZE];
+  g_key_file_set_value(kf, grp, "fixed_gain_db", g_ascii_formatd(num, sizeof(num), "%.2f", gain_db));
+  g_key_file_set_value(kf, grp, "fixed_phase_deg", g_ascii_formatd(num, sizeof(num), "%.1f", phase_deg));
+  for (guint k = 0; k < 3; k++) {
+    char key[4] = { 'm', (char)('1' + k), 0 };
+    if (mem && !isnan(mem[k][0]) && !isnan(mem[k][1])) {
+      char a[G_ASCII_DTOSTR_BUF_SIZE], b[G_ASCII_DTOSTR_BUF_SIZE];
+      char *v = g_strdup_printf("%s,%s", g_ascii_formatd(a, sizeof(a), "%.2f", mem[k][0]),
+                                g_ascii_formatd(b, sizeof(b), "%.1f", mem[k][1]));
+      g_key_file_set_value(kf, grp, key, v);
+      g_free(v);
+    } else {
+      g_key_file_remove_key(kf, grp, key, NULL);
+    }
+  }
+  g_free(grp);
+  char *out = g_key_file_to_data(kf, NULL, NULL);
+  g_key_file_free(kf);
+  return out;
 }
 
 /* "<centre Hz> [mode,mode…]" */
 static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
                            SkimCwEngine dflt, const char *path, GError **error) {
   g_strlcpy(b->name, name, sizeof(b->name));
+  b->phase_mode = -1;
+  b->fixed_gain_db = b->fixed_phase_deg = NAN;
+  for (guint k = 0; k < 3; k++) { b->mem[k][0] = b->mem[k][1] = NAN; }
   char *v = g_strstrip(g_strdup(value));
   char *end = NULL;
   b->centre_hz = g_ascii_strtod(v, &end);
@@ -442,11 +535,32 @@ static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
         b->off = TRUE;
       } else if (g_strcmp0(t, "ip=a") == 0 || g_strcmp0(t, "ip=b") == 0) {
         b->ip = t[3] == 'b';
+        if (!b->same_ip) { b->phased = FALSE; }
+      } else if (g_strcmp0(t, "ip=ab") == 0) {
+        if (b->same_ip) {
+          ok = bad(error, path, "band %s: ip=ab or in=12, not both", name);
+        }
+        b->ip = 0;
+        b->phased = TRUE;
+      } else if (g_strcmp0(t, "in=12") == 0) {
+        if (b->phased && !b->same_ip) {
+          ok = bad(error, path, "band %s: ip=ab or in=12, not both", name);
+        }
+        b->phased = TRUE;
+        b->same_ip = TRUE;
+        b->input = 0;
       } else if (g_strcmp0(t, "in=1") == 0 || g_strcmp0(t, "in=2") == 0) {
         b->input = t[3] == '2';
+      } else if (g_str_has_prefix(t, "phase=")) {
+        SkimPhaseMode pm;
+        if (!phase_mode_parse(t + 6, &pm)) {
+          ok = bad(error, path, "band %s: %s (phase=mvdr, mrc, fixed, a or b)", name, t);
+        } else {
+          b->phase_mode = (gint)pm;
+        }
       } else {
         ok = bad(error, path, "band %s: mode \"%s\" (cw, cw:v3, cw:v4, cw:v2, cw:deepcw, rtty, off, "
-                 "@worker, ip=a|b, in=1|2)", name, t);
+                 "@worker, ip=a|b|ab, in=1|2, phase=…)", name, t);
       }
     }
     g_strfreev(m);
@@ -556,6 +670,29 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->rp_b_host = bh;
   } else {
     g_free(bh);
+  }
+  /* [phase] */
+  {
+    char *pm = g_key_file_get_string(kf, "phase", "mode", NULL);
+    g_strstrip(pm ? pm : (pm = g_strdup("")));
+    SkimPhaseMode m = SKIM_PHASE_MVDR;
+    if (*pm && !phase_mode_parse(pm, &m)) {
+      bad(error, path, "[phase] mode \"%s\": mvdr, mrc, fixed, a or b", pm);
+      g_free(pm);
+      return FALSE;
+    }
+    g_free(pm);
+    h->phase_mode = (gint)m;
+    h->phase_layer2 = given(kf, "phase", "layer2", NULL)
+                          ? g_key_file_get_boolean(kf, "phase", "layer2", NULL) : TRUE;
+    if (!opt_num(kf, "phase", "tc_s", 1.0, 0.1, 30, FALSE, &h->phase_tc_s, path, error) ||
+        !opt_num(kf, "phase", "gate_db", 6.0, 1, 30, FALSE, &h->phase_gate_db, path, error) ||
+        !opt_num(kf, "phase", "fixed_gain_db", 0.0, -40, 40, FALSE, &h->phase_fixed_gain_db, path,
+                 error) ||
+        !opt_num(kf, "phase", "fixed_phase_deg", 0.0, -360, 360, FALSE, &h->phase_fixed_phase_deg,
+                 path, error)) {
+      return FALSE;
+    }
   }
   h->rp_b_rate = h->rate;
   if (given(kf, "rp", "b_rate", NULL)) {
@@ -1211,8 +1348,69 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     if (!ok) { break; }
     b->rate = b->ip ? h->rp_b_rate : h->rate;
     if (h->rp_split) { b->input = b->ip; }     /* two antennas: the IP names the input */
+    {                                          /* [phase.<band>]: its own weight, memories */
+      char *grp = g_strdup_printf("phase.%s", keys[i]);
+      double v;
+      if (given(kf, grp, "fixed_gain_db", NULL)) {
+        if (!opt_num(kf, grp, "fixed_gain_db", 0, -40, 40, FALSE, &v, path, error)) { ok = FALSE; }
+        b->fixed_gain_db = v;
+      }
+      if (ok && given(kf, grp, "fixed_phase_deg", NULL)) {
+        if (!opt_num(kf, grp, "fixed_phase_deg", 0, -360, 360, FALSE, &v, path, error)) { ok = FALSE; }
+        b->fixed_phase_deg = v;
+      }
+      for (guint k = 0; ok && k < 3; k++) {
+        char key[4] = { 'm', (char)('1' + k), 0 };
+        char *m = g_key_file_get_string(kf, grp, key, NULL);
+        if (m && *g_strstrip(m)) {
+          char *e1 = NULL, *e2 = NULL;
+          const double g = g_ascii_strtod(m, &e1);
+          const double ph = e1 && *e1 == ',' ? g_ascii_strtod(e1 + 1, &e2) : NAN;
+          if (isnan(ph) || !e2 || *g_strstrip(e2) || fabs(g) > 40 || fabs(ph) > 360) {
+            ok = bad(error, path, "[%s] %s = \"%s\": gain_db,phase_deg", grp, key, m);
+          } else {
+            b->mem[k][0] = g;
+            b->mem[k][1] = ph;
+          }
+        }
+        g_free(m);
+      }
+      g_free(grp);
+      if (!ok) { break; }
+    }
+    if (b->phased && b->same_ip && h->rp_split) {
+      ok = bad(error, path, "band %s: in=12 takes both inputs on one IP — [rp] mode=extended "
+               "gives each IP one input (ip=ab phases there)", keys[i]);
+      break;
+    }
+    if (b->phased && b->same_ip) { b->input = 0; }
+    if (b->phased) {
+      if (b->input) {
+        ok = bad(error, path, "band %s: ip=ab takes IN1 on IP A and IN2 on IP B — no in=", keys[i]);
+      } else if (b->worker[0]) {
+        ok = bad(error, path, "band %s: ip=ab is phased here, not on a worker (@%s)", keys[i],
+                 b->worker);
+      } else if (h->source != SKIM_HD_SOURCE_HPSDR_P1) {
+        ok = bad(error, path, "band %s: ip=ab is a Red Pitaya's two inputs (type=hpsdr-p1 only)",
+                 keys[i]);
+      } else if (!b->same_ip && h->rate != h->rp_b_rate) {
+        ok = bad(error, path, "band %s: ip=ab needs one rate on both IPs — [radio] rate %u, "
+                 "[rp] b_rate %u", keys[i], h->rate, h->rp_b_rate);
+      }
+      if (!ok) { break; }
+    }
     h->nlisted++;
     if (b->off) { continue; }
+    if (b->phased && b->same_ip && h->nb_ip[b->ip] + 2 > SKIM_HD_IP_RX) {
+      ok = bad(error, path, "band %s: in=12 takes two receivers of IP %c, and %u of its %d are "
+               "taken", keys[i], b->ip ? 'B' : 'A', h->nb_ip[b->ip], SKIM_HD_IP_RX);
+      break;
+    }
+    if (b->phased && !b->same_ip && h->nb_ip[1] == SKIM_HD_IP_RX) {
+      ok = bad(error, path, "band %s: ip=ab takes a receiver on IP B too, and its %d are taken",
+               keys[i], SKIM_HD_IP_RX);
+      break;
+    }
     if (h->nb_ip[b->ip] == SKIM_HD_IP_RX) {
       ok = bad(error, path, "band %s: %d receivers an IP at most (IP %c) — put off on another "
                "band%s", keys[i], SKIM_HD_IP_RX, b->ip ? 'B' : 'A',
@@ -1225,6 +1423,10 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
       break;
     }
     h->nb_ip[b->ip]++;
+    if (b->phased) {
+      h->nb_ip[b->same_ip ? b->ip : 1]++;      /* the IN2 receiver */
+      h->nb_phased++;
+    }
     h->band[h->nb++] = *b;
   }
   g_strfreev(keys);
@@ -1468,6 +1670,7 @@ char *skim_hd_config_worker_fragment(const char *hub_text, gsize len, const char
     if (g_strcmp0(b.worker, worker) != 0) { continue; }
     b.worker[0] = '\0';
     b.ip = b.input = 0;                       /* the board's layout stays at the hub */
+    b.phased = FALSE;
     char *m = skim_hd_band_modes(&b, c.engine);
     g_string_append_printf(o, "%s=%.0f %s\n", b.name, b.centre_hz, m);
     g_free(m);

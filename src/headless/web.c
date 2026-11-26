@@ -393,7 +393,9 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
     /* the data: for a visitor from outside only once signed in */
     if ((strcmp(path, "/status.json") == 0 || strcmp(path, "/stats.json") == 0 ||
          strcmp(path, "/api/spots") == 0 || strcmp(path, "/api/wspr") == 0 ||
-         strcmp(path, "/api/ft8") == 0 || strcmp(path, "/api/js8") == 0) && !may_see(w, msg, admin)) {
+         strcmp(path, "/api/ft8") == 0 || strcmp(path, "/api/js8") == 0 ||
+         strcmp(path, "/api/phase") == 0 || strcmp(path, "/api/phase_hist") == 0) &&
+        !may_see(w, msg, admin)) {
       reply_error(msg, SOUP_STATUS_UNAUTHORIZED, "login");
       return;
     }
@@ -409,6 +411,8 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                       : strcmp(path, "/api/wspr") == 0     ? k->wspr
                       : strcmp(path, "/api/ft8") == 0      ? k->ft8
                       : strcmp(path, "/api/js8") == 0      ? k->js8
+                      : strcmp(path, "/api/phase") == 0    ? k->phase
+                      : strcmp(path, "/api/phase_hist") == 0 ? k->phase_hist
                                                           : NULL;
     if (hook) {
       guint status = SOUP_STATUS_OK;
@@ -440,6 +444,7 @@ static void handler(SoupServer *srv, SoupServerMessage *msg, const char *path,
                        : strcmp(path, "/api/v4bench") == 0  ? k->v4bench
                        : strcmp(path, "/api/update") == 0   ? k->update_post
                        : strcmp(path, "/api/redpitaya") == 0 ? k->redpitaya_post
+                       : strcmp(path, "/api/phase") == 0    ? k->phase_post
                                                             : NULL;
     if (!hook) {
       reply_error(msg, SOUP_STATUS_NOT_FOUND, "not found");

@@ -33,6 +33,15 @@
  * silent. Losing it never stops IP A, nor the skimmer. Each receiver's
  * input (in=2) goes in its stream's start (hpsdr_p1.h; the agent only).
  *
+ * A phased band (ip=ab, docs/PHASING.md) takes a receiver on IP A (IN1) and
+ * one on IP B (IN2), both streams started paired: the agent then resets
+ * both FIFOs together and stamps each packet with an epoch and a sample
+ * index. A pairer per band lines the two up by (epoch, index) and hands
+ * them to iq2_cb as one block of A and one of B. While B is missing — not
+ * streaming, no stamps (Pavel's server, an older agent), another epoch, or
+ * late by more than PAIR_HOLD_S — A goes on alone (b = NULL): the band
+ * never stops because of B.
+ *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include "source.h"
@@ -59,6 +68,30 @@ typedef struct {
   guint         band;
 } Rx;
 
+/* A phased band's pairer (one per band, both clients' threads feed it). */
+#define PAIR_HOLD_S  0.25       /* A waits this long for B's same samples   */
+#define PAIR_LIVE_US (1 * G_USEC_PER_SEC)   /* B's last block: B is there   */
+
+typedef struct {
+  SkimIqSource *s;
+  guint         band;
+  GMutex        lock;              /* the queues                            */
+  GMutex        emit;              /* the order blocks go out in            */
+  float        *q[2];              /* A's and B's frames not yet sent       */
+  guint         len[2], cap;
+  gint          ep[2];             /* each side's current epoch (-1 none)   */
+  guint64       i0[2];             /* the index of q[s][0]                   */
+  gint64        b_last_us;         /* B's last block (monotonic)            */
+  double        rate, centre;
+  guint64       paired, alone;     /* frames sent with B / without it       */
+  gint64        alone_us;          /* the last time A went alone            */
+} Pair;
+
+typedef struct {
+  Pair *pair;
+  guint side;                      /* 0 = A (IN1), 1 = B (IN2)              */
+} PairSide;
+
 /* IP B: the board's second stream (ip=b bands). */
 typedef struct {
   SkimHpsdrClient *cl;
@@ -78,6 +111,10 @@ typedef struct {
   guint            nrx_ip[2];          /* bands on each IP                   */
   guint            band_of[2][SKIM_HD_IP_RX];  /* receiver → band            */
   guint8           inputs[2];          /* bit r = receiver r on IN2          */
+  Pair            *pair[SKIM_HD_MAX_BANDS];   /* phased bands (ip=ab)        */
+  PairSide         side[2][SKIM_HD_IP_RX];    /* receiver → its band's side  */
+  gboolean         phased_rx[2][SKIM_HD_IP_RX];
+  guint            nphased;
   gboolean         streaming, gave_up;
   gint64           search_since_us;    /* 0 = not searching                  */
   volatile gint    closed;             /* set by the client's thread         */
@@ -196,6 +233,125 @@ static gboolean stop_orphan(P1 *p, const char *host) {
   return FALSE;
 }
 
+/* ---- phased bands: A and B lined up by the agent's (epoch, index) -------------- */
+
+static Pair *pair_new(SkimIqSource *s, guint band, guint rate) {
+  Pair *a = g_new0(Pair, 1);
+  a->s = s;
+  a->band = band;
+  g_mutex_init(&a->lock);
+  g_mutex_init(&a->emit);
+  a->cap = MAX(rate, 48000u);                  /* a second each side          */
+  for (guint k = 0; k < 2; k++) {
+    a->q[k] = g_new(float, 2 * (gsize)a->cap);
+    a->ep[k] = -1;
+  }
+  return a;
+}
+
+static void pair_free(Pair *a) {
+  if (!a) { return; }
+  g_free(a->q[0]);
+  g_free(a->q[1]);
+  g_mutex_clear(&a->lock);
+  g_mutex_clear(&a->emit);
+  g_free(a);
+}
+
+static void q_drop(Pair *a, guint k, guint n) {
+  n = MIN(n, a->len[k]);
+  memmove(a->q[k], a->q[k] + 2 * (gsize)n, 2 * (gsize)(a->len[k] - n) * sizeof(float));
+  a->len[k] -= n;
+  a->i0[k] += n;
+}
+
+/* Called with a->lock held: what can go out now — n frames of A, and of B
+ * too when with_b — copied out; FALSE when nothing. */
+static gboolean pair_take(Pair *a, float **oa, float **ob, guint *n) {
+  const gboolean b_live = a->ep[1] >= 0 && a->ep[0] >= 0 &&
+                          g_get_monotonic_time() - a->b_last_us < PAIR_LIVE_US;
+  *ob = NULL;
+  if (b_live && a->ep[0] == a->ep[1] && a->len[0] && a->len[1]) {
+    /* the same epoch: what only A has at the front goes out alone (A, the
+     * band's own input, never skips), what only B has is dropped */
+    if (a->i0[0] < a->i0[1]) {
+      const guint m = (guint)MIN(a->i0[1] - a->i0[0], (guint64)a->len[0]);
+      *oa = g_memdup2(a->q[0], 2 * (gsize)m * sizeof(float));
+      q_drop(a, 0, m);
+      *n = m;
+      a->alone += m;
+      a->alone_us = g_get_monotonic_time();
+      return TRUE;
+    }
+    if (a->i0[1] < a->i0[0]) { q_drop(a, 1, (guint)MIN(a->i0[0] - a->i0[1], (guint64)a->len[1])); }
+    const guint m = MIN(a->len[0], a->len[1]);
+    if (m && a->i0[0] == a->i0[1]) {
+      *oa = g_memdup2(a->q[0], 2 * (gsize)m * sizeof(float));
+      *ob = g_memdup2(a->q[1], 2 * (gsize)m * sizeof(float));
+      q_drop(a, 0, m);
+      q_drop(a, 1, m);
+      *n = m;
+      a->paired += m;
+      return TRUE;
+    }
+  }
+  /* B not there, or late past the hold: the front of A goes alone */
+  const guint hold = b_live ? (guint)(PAIR_HOLD_S * a->rate) : 0;
+  if (a->len[0] > hold) {
+    const guint m = a->len[0] - hold;
+    *oa = g_memdup2(a->q[0], 2 * (gsize)m * sizeof(float));
+    q_drop(a, 0, m);
+    *n = m;
+    a->alone += m;
+    a->alone_us = g_get_monotonic_time();
+    return TRUE;
+  }
+  return FALSE;
+}
+
+/* A block of one side (any client's thread). */
+static void pair_iq_cb(const float *iq, guint n, double rate, double centre, gint epoch,
+                       guint64 idx, gpointer user) {
+  PairSide *ps = user;
+  Pair *a = ps->pair;
+  const guint k = ps->side;
+  g_mutex_lock(&a->lock);
+  if (k == 0) {
+    a->rate = rate;
+    a->centre = centre;
+  } else {
+    a->b_last_us = g_get_monotonic_time();
+  }
+  /* a new epoch, or a gap the client could not fill: this side starts over */
+  if (epoch != a->ep[k] || (a->len[k] && a->i0[k] + a->len[k] != idx)) {
+    a->len[k] = 0;
+    a->ep[k] = epoch;
+  }
+  if (a->len[k] == 0) { a->i0[k] = idx; }
+  if (a->len[k] + n > a->cap) { q_drop(a, k, a->len[k] + n - a->cap); }   /* never more */
+  n = MIN(n, a->cap);
+  memcpy(a->q[k] + 2 * (gsize)a->len[k], iq, 2 * (gsize)n * sizeof(float));
+  a->len[k] += n;
+  for (;;) {
+    float *oa = NULL, *ob = NULL;
+    guint m = 0;
+    if (!pair_take(a, &oa, &ob, &m)) { break; }
+    g_mutex_lock(&a->emit);                    /* in order, outside the queues */
+    g_mutex_unlock(&a->lock);
+    SkimIqSource *s = a->s;
+    if (s->iq2_cb) {
+      s->iq2_cb(a->band, oa, ob, m, a->rate, a->centre, s->iq_user);
+    } else {
+      s->iq_cb(a->band, oa, m, a->rate, a->centre, s->iq_user);
+    }
+    g_mutex_unlock(&a->emit);
+    g_free(oa);
+    g_free(ob);
+    g_mutex_lock(&a->lock);
+  }
+  g_mutex_unlock(&a->lock);
+}
+
 static void rx_iq_cb(const float *iq, guint n, double rate, double centre, gpointer user) {
   Rx *rx = user;
   rx->s->iq_cb(rx->band, iq, n, rate, centre, rx->s->iq_user);
@@ -211,9 +367,14 @@ static SkimHpsdrClient *client_for(P1 *p, guint ip, const char *host, double *ce
   for (guint r = 0; r < p->nrx_ip[ip]; r++) {
     const guint b = p->band_of[ip][r];
     centres[r] = c->band[b].centre_hz;
-    skim_hpsdr_client_set_rx_iq_cb(cl, r, rx_iq_cb, &p->rx[b]);
+    if (p->phased_rx[ip][r]) {
+      skim_hpsdr_client_set_rx_iq_ix_cb(cl, r, pair_iq_cb, &p->side[ip][r]);
+    } else {
+      skim_hpsdr_client_set_rx_iq_cb(cl, r, rx_iq_cb, &p->rx[b]);
+    }
   }
   skim_hpsdr_client_set_inputs(cl, p->inputs[ip]);
+  skim_hpsdr_client_set_paired(cl, p->nphased > 0);
   return cl;
 }
 
@@ -482,6 +643,23 @@ static void p1_status(SkimIqSource *s, SkimIqSourceStatus *o) {
   } else {
     g_strlcpy(o->state, p->state, sizeof(o->state));
   }
+  /* a phased band whose B went missing in the last seconds */
+  for (guint b = 0; b < SKIM_HD_MAX_BANDS; b++) {
+    Pair *a = p->pair[b];
+    if (!a) { continue; }
+    g_mutex_lock(&a->lock);
+    const gboolean alone = a->alone_us && g_get_monotonic_time() - a->alone_us < 3 * G_USEC_PER_SEC;
+    const gboolean stamps = a->ep[0] >= 0;
+    g_mutex_unlock(&a->lock);
+    if (alone && strlen(o->state) + 64 < sizeof(o->state)) {
+      g_strlcat(o->state, "; ", sizeof(o->state));
+      g_strlcat(o->state, p->base.cfg->band[b].name, sizeof(o->state));
+      g_strlcat(o->state, !stamps ? " phased: IN1 alone (no agent 0.4 stamps)"
+                          : p->base.cfg->band[b].same_ip ? " phased: IN1 alone (IN2 missing)"
+                                                         : " phased: IN1 alone (IP B missing)",
+                sizeof(o->state));
+    }
+  }
   g_strlcpy(o->host, p->host, sizeof(o->host));
   o->ppm = p->ppm_now;
   o->packets = p->rp ? skim_hpsdr_client_packets(p->rp) : 0;
@@ -496,6 +674,7 @@ static void p1_free(SkimIqSource *s) {
   P1 *p = (P1 *)s;
   b_free(p);                                          /* stops — if still ours */
   free_client(p);
+  for (guint b = 0; b < SKIM_HD_MAX_BANDS; b++) { pair_free(p->pair[b]); }
   g_free(p);
 }
 
@@ -517,6 +696,26 @@ SkimIqSource *skim_iq_source_hpsdr_p1_new(const SkimHdConfig *cfg, gboolean take
     const guint r = p->nrx_ip[ip]++;
     p->band_of[ip][r] = b;
     if (cfg->band[b].input) { p->inputs[ip] |= (guint8)(1u << r); }
+  }
+  for (guint b = 0; b < cfg->nb; b++) {        /* phased: the IN2 receivers after the IPs' own */
+    if (!cfg->band[b].phased) { continue; }
+    p->pair[b] = pair_new(&p->base, b, cfg->band[b].rate);
+    p->nphased++;
+    const guint ipa = cfg->band[b].same_ip && cfg->band[b].ip ? 1 : 0;
+    for (guint r = 0; r < p->nrx_ip[ipa]; r++) {
+      if (p->band_of[ipa][r] == b) {
+        p->phased_rx[ipa][r] = TRUE;
+        p->side[ipa][r] = (PairSide){ p->pair[b], 0 };
+      }
+    }
+    /* in=12: the IN2 receiver on the same IP (one stream: aligned by
+     * itself); ip=ab: on IP B */
+    const guint ipb = cfg->band[b].same_ip ? ipa : 1;
+    const guint rb = p->nrx_ip[ipb]++;
+    p->band_of[ipb][rb] = b;
+    p->inputs[ipb] |= (guint8)(1u << rb);        /* IN2 */
+    p->phased_rx[ipb][rb] = TRUE;
+    p->side[ipb][rb] = (PairSide){ p->pair[b], 1 };
   }
   return &p->base;
 }

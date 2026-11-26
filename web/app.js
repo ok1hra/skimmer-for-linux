@@ -1232,6 +1232,121 @@ async function wsprFetch(force) {
   wspr.at = Date.now();
   try { wspr.data = await getJSON('api/wspr'); } catch (e) { /* the last one stays */ }
 }
+// ---- Statistics → Phasing (docs/PHASING.md) ----------------------------------------
+// A phased band's coarse waterfall: /api/phase_hist, one byte a channel a
+// row (0.25 dB, -128 none), the rows of the stats window (a minute each up
+// to 7 days, a quarter hour beyond; merged to ≤ 720), and the band's medians.
+const phaseH = { band: '', plane: 'drop', at: 0, key: '', data: null };
+function phaseBands() {
+  return status && status.bands ? status.bands.filter((b) => b.phase) : [];
+}
+function phaseColour(db, plane) {
+  // interference: 0 grey, red where it got worse, yellow → green up to 30 dB;
+  // gain the same way, its scale 15 dB
+  const top = plane === 'gain' ? 15 : 30;
+  if (db < -1) { const t = Math.min(1, (-db - 1) / 6); return [120 + 135 * t, 40, 40]; }
+  if (db < 1) return [52, 60, 72];
+  const t = Math.min(1, (db - 1) / (top - 1));
+  return t < 0.5 ? [80 + 350 * t, 80 + 260 * t, 40] : [255 - 300 * (t - 0.5), 210 + 30 * (t - 0.5), 40 + 120 * (t - 0.5)];
+}
+async function renderPhase(force) {
+  const card = $('#card-phase'), list = phaseBands();
+  card.hidden = !list.length;
+  if (!list.length) return;
+  const sel = $('#phase-band');
+  if (!list.some((b) => b.band === phaseH.band)) phaseH.band = list[0].band;
+  sel.innerHTML = list.map((b) => `<option${b.band === phaseH.band ? ' selected' : ''}>${esc(b.band)}</option>`).join('');
+  const key = `${phaseH.band}|${stats.hours}|${stats.end || 0}`;
+  if (force || key !== phaseH.key || Date.now() - phaseH.at > 60000) {
+    try {
+      phaseH.data = await getJSON(`api/phase_hist?band=${encodeURIComponent(phaseH.band)}&hours=${stats.hours}${stats.end ? `&end=${stats.end}` : ''}`);
+      phaseH.key = key;
+      phaseH.at = Date.now();
+    } catch (e) { phaseH.data = null; }
+  }
+  drawPhase();
+}
+function drawPhase() {
+  const d = phaseH.data, cv = $('#phase-cv');
+  const band = phaseBands().find((b) => b.band === phaseH.band);
+  const now = band && band.phase;
+  $('#phase-card-sub').textContent = now
+    ? `${phaseH.band}: now ${now.mode.toUpperCase()}${now.b_missing ? ', IP B missing' : ''} — interference ${now.drop_db == null ? '—' : `${now.drop_db.toFixed(1)} dB`} off the floor, stations ${now.gain_db == null ? '—' : `${now.gain_db > 0 ? '+' : ''}${now.gain_db.toFixed(1)} dB`}, coherence ${now.coherence == null ? '—' : now.coherence.toFixed(2)}`
+    : '';
+  if (!d || !d.rows) {
+    cv.height = 0;
+    $('#phase-note').textContent = 'nothing kept yet — a row a minute from the first one on';
+    return;
+  }
+  const plane = phaseH.plane, n = d.nchan, rows = d.rows;
+  const bytes = Uint8Array.from(atob(d[plane]), (c) => c.charCodeAt(0));
+  const v = new Int8Array(bytes.buffer);
+  const dpr = devicePixelRatio || 1, W = cv.clientWidth || 800, strip = 90, H = Math.max(140, Math.min(380, rows * 2));
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = `${H}px`;
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = '#05090e'; g.fillRect(0, 0, W, H);
+  // the picture: n × rows pixels, the newest row on top, scaled to fit
+  const img = new ImageData(n, rows);
+  for (let r = 0; r < rows; r++) {
+    const y = rows - 1 - r, est = d.est[r];
+    for (let c = 0; c < n; c++) {
+      const q = v[r * n + c], o = (y * n + c) * 4;
+      let rgb = q === -128 ? [5, 9, 14] : phaseColour(q / 4, plane);
+      if (est && q !== -128) rgb = rgb.map((x) => 0.45 * x + 0.55 * 70);
+      img.data[o] = rgb[0]; img.data[o + 1] = rgb[1]; img.data[o + 2] = rgb[2]; img.data[o + 3] = 255;
+    }
+  }
+  const tmp = document.createElement('canvas'); tmp.width = n; tmp.height = rows;
+  tmp.getContext('2d').putImageData(img, 0, 0);
+  const left = 44, bottom = 16, pw = W - left - strip - 8, ph = H - bottom;
+  g.imageSmoothingEnabled = false;
+  g.drawImage(tmp, left, 0, pw, ph);
+  // time on the left, frequency below
+  g.fillStyle = '#6a7d96'; g.font = '10px RC, sans-serif'; g.textBaseline = 'middle'; g.textAlign = 'right';
+  const tOf = (r) => new Date((d.t0 + r * d.step_min * 60) * 1000);
+  for (let k = 0; k <= 4; k++) {
+    const r = Math.round((rows - 1) * k / 4), y = Math.max(6, Math.min(ph - 6, ph - ((r + 0.5) / rows) * ph));
+    const t = tOf(r);
+    g.fillText(stats.hours > 48 ? `${t.getUTCDate()}.${t.getUTCMonth() + 1}.` : `${String(t.getUTCHours()).padStart(2, '0')}:${String(t.getUTCMinutes()).padStart(2, '0')}`, left - 4, y);
+  }
+  g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+  const centre = band ? band.centre_hz : 0;
+  for (let k = 0; k <= 4; k++) {
+    const i = (n - 1) * k / 4, f = centre + d.first_hz + i * d.spacing_hz;
+    g.textAlign = k === 0 ? 'left' : k === 4 ? 'right' : 'center';
+    g.fillText(fmtKhz(f / 1000), left + ((i + 0.5) / n) * pw, H - 3);
+  }
+  // the medians on the right: interference (yellow) and gain (cyan), 0 … 30 dB
+  const sx = W - strip, sw = strip - 6;
+  g.strokeStyle = '#1a283a'; g.strokeRect(sx + 0.5, 0.5, sw, ph - 1);
+  const line = (arr, colour, top) => {
+    g.strokeStyle = colour; g.lineWidth = 1.5; g.beginPath();
+    let on = false;
+    for (let r = 0; r < rows; r++) {
+      const val = arr[r];
+      if (val == null) { on = false; continue; }
+      const x = sx + Math.max(0, Math.min(1, val / top)) * sw, y = ph - ((r + 0.5) / rows) * ph;
+      if (on) g.lineTo(x, y); else g.moveTo(x, y);
+      on = true;
+    }
+    g.stroke();
+  };
+  line(d.sum.drop_db, '#ffd24a', 30);
+  line(d.sum.gain_db, '#58d6ff', 15);
+  g.fillStyle = '#6a7d96'; g.textAlign = 'left'; g.fillText('0', sx + 2, H - 3); g.textAlign = 'right'; g.fillText('dB', W - 8, H - 3);
+  const med = (a) => { const x = a.filter((y) => y != null).sort((p, q) => p - q); return x.length ? x[x.length >> 1] : null; };
+  const md = med(d.sum.drop_db), mg = med(d.sum.gain_db), mc = med(d.sum.coherence);
+  $('#phase-legend').innerHTML = `<span style="color:#ffd24a">━ interference off the floor (0–30 dB)</span> · <span style="color:#58d6ff">━ gain (0–15 dB)</span>`;
+  $('#phase-note').textContent = `over the window: interference ${md == null ? '—' : `${md.toFixed(1)} dB`} off the floor, `
+    + `stations ${mg == null ? '—' : `${mg > 0 ? '+' : ''}${mg.toFixed(1)} dB`} over the better antenna, coherence ${mc == null ? '—' : mc.toFixed(2)} (medians); `
+    + `a row ${d.step_min} min, ${rows} rows, ${n} channels of ${d.spacing_hz} Hz`;
+}
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'phase-band') { phaseH.band = e.target.value; renderPhase(true); }
+  if (e.target.id === 'phase-plane') { phaseH.plane = e.target.value; drawPhase(); }
+});
+
 async function renderStatsWspr(force) {
   await wsprFetch(force);
   const d = wspr.data, box = $('#stats-wspr');
@@ -1311,6 +1426,7 @@ tabs.stats = {
     renderStats();
     renderStatsVisitors(force);
     renderStatsWspr(force);
+    renderPhase(force);
   },
 };
 // The time slider: shown while the range is shorter than the history kept;
@@ -1548,7 +1664,7 @@ function withSegments(list, rate) {
 }
 // a band off that is still saved: its own, or a segment set up beyond a plain CW one
 function setUp(b) {
-  return !b.seg || !b.cw || b.rtty || !!b.worker || !!b.khz || !!b.engine || b.ip === 'b' || b.input === 2;
+  return !b.seg || !b.cw || b.rtty || !!b.worker || !!b.khz || !!b.engine || b.ip === 'b' || b.ip === 'ab' || b.input === 2 || b.input === 12;
 }
 // the board's two IPs: a Red Pitaya source only; extended = IN1 → A, IN2 → B
 const rpOn = () => $('[name="radio.type"]').value === 'hpsdr-p1';
@@ -1565,8 +1681,10 @@ function defaultEngineText() {
 }
 
 function bandRow(b, may, rx, rate) {
-  const ip = b.ip === 'b' ? 'b' : 'a', input = rpSplit() ? (ip === 'b' ? 2 : 1) : b.input === 2 ? 2 : 1;
+  const ip = b.ip === 'b' || b.ip === 'ab' ? b.ip : 'a';
+  const input = ip === 'ab' ? 1 : rpSplit() ? (ip === 'b' ? 2 : 1) : b.input === 12 ? 12 : b.input === 2 ? 2 : 1;
   const tr = document.createElement('tr');
+  tr.dataset.phase = b.phase || '';
   const dis = may ? '' : ' disabled';
   tr.classList.toggle('off', !b.on);
   tr.dataset.seg = b.seg ? b.name : '';
@@ -1575,14 +1693,14 @@ function bandRow(b, may, rx, rate) {
   const span = Number.isFinite(hz) && hz > 0
     ? `${fmtKhz((hz - rate / 2) / 1000, 0, ' ')} – ${fmtKhz((hz + rate / 2) / 1000, 0, ' ')}` : '–';
   tr.innerHTML =
-    `<td class="rxl">${b.on ? `${rpOn() ? `${ip.toUpperCase()}·` : ''}RX${rx}` : '<span class="mut">off</span>'}</td>` +
+    `<td class="rxl">${b.on ? `${rpOn() ? `${ip === 'ab' ? 'A+B' : ip.toUpperCase()}·` : ''}RX${rx}` : '<span class="mut">off</span>'}</td>` +
     `<td><input type="checkbox" data-k="on"${b.on ? ' checked' : ''}${dis} title="received"></td>` +
     (b.seg ? `<td class="segname" title="a segment of the rate">${esc(b.name)}</td>`
       : `<td><input data-k="name" value="${esc(b.name)}" size="6"${dis} title="a band of your own"></td>`) +
     `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${b.seg ? ` placeholder="${esc(fmtKhz(b.def / 1000, null, ' '))}" title="empty = the segment's centre; a number moves it"` : ''}${dis}></td>` +
     `<td class="mut span">${span}</td>` +
-    `<td class="rp-only"><select data-k="ip"${dis}><option value="a">A</option><option value="b">B</option></select></td>` +
-    `<td class="rp-only"><select data-k="input"${dis}${rpSplit() ? ' disabled title="two antennas: the IP names the input"' : ''}><option value="1">IN1</option><option value="2">IN2</option></select></td>` +
+    `<td class="rp-only"><select data-k="ip"${dis}><option value="a">A</option><option value="b">B</option><option value="ab" title="phased: IN1 on IP A and IN2 on IP B at this centre, combined channel by channel before decoding — a receiver on each IP, one rate on both, the skimmer's agent on the board">A+B Φ</option></select></td>` +
+    `<td class="rp-only"><select data-k="input"${dis}${rpSplit() || ip === 'ab' ? ` disabled title="${ip === 'ab' ? 'phased: IN1 at A, IN2 at B' : 'two antennas: the IP names the input'}"` : ''}><option value="1">IN1</option><option value="2">IN2</option><option value="12" title="phased on this IP: two of its receivers at this centre, IN1 and IN2, combined channel by channel before decoding — one stream, so aligned by itself; the other IP stays free">IN1+IN2 Φ</option></select></td>` +
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
     `<td><select data-k="engine"${dis}><option value="">${esc(defaultEngineText())}</option><option value="v3">v3.1</option><option value="v4">v4.0 DeepCW</option><option value="v2">v2</option><option value="deepcw" title="not tested with this skimmer">DeepCW v1 (not tested)</option></select></td>` +
     `<td><input type="checkbox" data-k="rtty"${b.rtty ? ' checked' : ''}${dis}></td>` +
@@ -1748,6 +1866,7 @@ function readBands() {
     worker: tr.querySelector('[data-k=worker]').value.trim(),
     ip: tr.querySelector('[data-k=ip]').value,
     input: Number(tr.querySelector('[data-k=input]').value),
+    phase: tr.dataset.phase || '',
   }));
 }
 function drawBands(list, note) {
@@ -1755,8 +1874,14 @@ function drawBands(list, note) {
   const n = { a: 0, b: 0 };
   if (!rpOn()) for (const b of list) b.ip = 'a';
   $('#band-rows').replaceChildren(...list.map((b) => {
+    if (b.ip === 'ab') {                       /* phased: a receiver on each IP */
+      if (b.on) n.b++;
+      return bandRow(b, may, b.on ? ++n.a : 0, ipRate('a'));
+    }
     const ip = b.ip === 'b' ? 'b' : 'a';
-    return bandRow(b, may, b.on ? ++n[ip] : 0, ipRate(ip));
+    const row = bandRow(b, may, b.on ? ++n[ip] : 0, ipRate(ip));
+    if (b.on && b.input === 12 && !rpSplit()) n[ip]++;   /* in=12: its IN2 receiver too */
+    return row;
   }));
   const rx = n.a + n.b;
   // the workers this hub knows: named in a band, connected, or found on the LAN
@@ -1778,13 +1903,22 @@ function drawBands(list, note) {
 // ticking a band on or off renumbers the receivers; a ninth stays off
 on('#band-rows', 'change', (e) => {
   const k = e.target.dataset && e.target.dataset.k;
-  if (k === 'on' || k === 'ip') {
+  if (k === 'on' || k === 'ip' || k === 'input') {
     const list = readBands(), tr = e.target.closest('tr');
     const ip = tr.querySelector('[data-k=ip]').value;
-    if ((k === 'ip' || e.target.checked) && list.filter((b) => b.on && b.ip === ip).length > maxOn(ip)) {
+    const uses = (b, x) => (b.on ? ((b.ip === x || b.ip === 'ab') ? 1 : 0) + (b.ip === x && b.input === 12 ? 1 : 0) : 0);
+    if (ip === 'ab' && ipRate('a') !== ipRate('b')) {
+      e.target.value = 'a';
+      drawBands(readBands(), `A+B (phased) needs one rate on both IPs: ${ipRate('a') / 1000} and ${ipRate('b') / 1000} kHz now`);
+      return;
+    }
+    const full = ip === 'ab' ? ['a', 'b'].find((x) => list.reduce((t, b) => t + uses(b, x), 0) > maxOn(x))
+      : list.reduce((t, b) => t + uses(b, ip), 0) > maxOn(ip) ? ip : null;
+    if ((k !== 'on' || e.target.checked) && full) {
       if (k === 'on') e.target.checked = false;
-      else e.target.value = ip === 'a' ? 'b' : 'a';
-      drawBands(readBands(), `IP ${ip.toUpperCase()} takes ${maxOn(ip)} receivers at ${ipRate(ip) / 1000} kHz: turn one off first`);
+      else if (k === 'input') e.target.value = '1';
+      else e.target.value = ip === 'b' ? 'a' : ip === 'ab' ? 'a' : 'b';
+      drawBands(readBands(), `IP ${full.toUpperCase()} takes ${maxOn(full)} receivers at ${ipRate(full) / 1000} kHz: turn one off first`);
       return;
     }
     drawBands(list);
@@ -1963,7 +2097,8 @@ function fillSettings(d) {
   const fileEngine = d.values['decode.engine'] || 'v3';
   drawBands(withSegments(d.bands.map((b) => ({ name: b.name, khz: fmtKhz(b.centre_hz / 1000, null, ' '), cw: b.cw,
                                   engine: b.engine === fileEngine ? '' : b.engine, rtty: b.rtty, on: b.on !== false,
-                                  worker: b.worker || '', ip: b.ip || 'a', input: b.input || 1 })), bandRate()));
+                                  worker: b.worker || '', ip: b.ip || 'a', input: b.input || 1,
+                                  phase: b.phase || '' })), bandRate()));
   rpLayout();
   $('#band-from').textContent = '';
   const lock = $('#set-lock');
@@ -2011,7 +2146,10 @@ function formBody() {
     if (!b.on) modes.push('off');
     if (b.worker) modes.push(`@${b.worker}`);
     if (rpOn() && b.ip === 'b') modes.push('ip=b');
-    if (rpOn() && !rpSplit() && b.input === 2) modes.push('in=2');
+    if (rpOn() && b.ip === 'ab') modes.push('ip=ab');
+    if (rpOn() && !rpSplit() && b.ip !== 'ab' && b.input === 12) modes.push('in=12');
+    if (rpOn() && (b.ip === 'ab' || b.input === 12) && b.phase) modes.push(`phase=${b.phase}`);
+    if (rpOn() && !rpSplit() && b.ip !== 'ab' && b.input === 2) modes.push('in=2');
     lines.push(`${b.name}=${Number.isFinite(hz) ? hz : b.khz}${modes.length ? ` ${modes.join(',')}` : ''}`);
   }
   p.set('bands', lines.join('\n'));

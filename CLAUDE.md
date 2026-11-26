@@ -167,8 +167,38 @@ here; what was done and why is in git.
   takes 4 receivers an IP and ~7× the PC's CPU a band. Settings → Red
   Pitaya (diagram, buttons), Statistics → Red Pitaya. After any change on
   the board, re-run the new-user install check (REDPITAYA.md). Two-antenna
-  phasing is a design only: `docs/PHASING.md`.
-- **`meson test` = 42 gates** (DeepCW skips without the model, golden skips
+  phasing (`docs/PHASING.md`): the engine's combiner (`combiner.c`: per
+  channel MVDR/MRC/Fixed/A/B) and its meters (`phase_meter.c`: gain over
+  the better antenna, floor drop, coherence, estimates) are built with
+  gate `phase`, P0's tool `skimmer-phase-bench A.cf32 B.cf32` with gate
+  `phase-bench`; the pipeline phases a band with `cfg.phased` and
+  `skim_pipeline_feed2/push2` (B NULL = decode A; `SKIM_REPLAY_B` replays a
+  pair) — unphased it is byte for byte as before; agent 0.4 pairs two
+  streams (one FIFO reset for both, epoch + sample index in a marked
+  stream's C&C — REDPITAYA.md; not on the board yet); a `[bands]` line
+  with `ip=ab` (`[phase]`, `phase=`) takes a receiver on each IP, paired;
+  the client's indexed blocks go to a pairer per band
+  (`source_hpsdr_p1.c`) that hands A+B to `iq2_cb` → `push2`, A alone
+  while B is missing; status.json bands carry `phase` (null when not
+  phased). The band's own IQ (waterfall, FT8/JS8/WSPR) is the band-level
+  combination (`band_combine.c`, the combiner's group canceller, w_A = 1);
+  the waterfall's Φ (managers: `POST /api/phase`, live, not saved) switches
+  the band between its mode and A (`in=12` phases on ONE IP — two of its
+  receivers, IN1 and IN2, the other IP left free), its line shows gain / interference /
+  coherence per channel (`GET /api/phase`). Statistics → Phasing: a coarse
+  waterfall of what it gave (`phase_hist.c`, `<state>/phase-<band>.bin`,
+  a minute × 7 d + a quarter hour × 90 d, `GET /api/phase_hist`). Settings
+  → Bands: IP "A+B Φ". The waterfall's ⚙ beside Φ opens the phasing
+  panel (mode, Fixed gain/phase, "from MVDR", M1–M3, Save → phase= and
+  `[phase.<band>]` in the config, no restart). `[record]` of a phased band
+  writes the pair (`hd-<band>-<UTC>-b.cf32`, each .meta names the other).
+  Layer 2: CW v2/v3/v4 give `mark_prob` (decode.h), the combiner steers a
+  locked station's channel from its marks/spaces (`skim_combiner_mark`,
+  `[phase] layer2`, default on).
+  rp-f08908 runs agent 0.5 since 2026-11-26 (both FIFO resets released
+  together); IN2 has a wideband RX antenna since then — P0 on the air:
+  +1.5 dB over IN1 on most bands, +3 dB on 160 m (PHASING.md).
+- **`meson test` = 45 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
   only with gfortran, `js8` only with C++20 + Boost headers). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).

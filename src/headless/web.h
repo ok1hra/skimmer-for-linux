@@ -24,6 +24,13 @@
  *   POST /api/deepcw            fetch the DeepCW model (settings_from)
  *   POST /api/v4bench           CW v4's compute check, measured again (settings_from)
  *   POST /api/update            action=check | install | rollback (settings_from; update.h)
+ *   GET  /api/phase?band=       a phased band's line: one value a channel (gain where a
+ *                               station is, the floor drop, D_max; 0.25 dB steps, -128 none)
+ *   GET  /api/phase_hist?band=&hours=&end=  a phased band's coarse waterfall of what
+ *                               phasing gave (phase_hist.h), for Statistics
+ *   POST /api/phase             band=, mode=mvdr|mrc|fixed|a|b [, gain_db=, phase_deg=]: a
+ *                               phased band's combiner, live, not saved (settings_from;
+ *                               docs/PHASING.md)
  *   GET  /api/redpitaya         the Red Pitaya over SSH: key, board, job (settings_from;
  *                               rp_manage.h)
  *   POST /api/redpitaya         action=connect | probe | status | install | uninstall | sel
@@ -79,9 +86,9 @@ typedef char *(*SkimHdWebPost)(GHashTable *form, guint *status, gpointer user);
 
 typedef struct {
   SkimHdWebGet  status, stats, log, config, skimmers, spots, skimsrv, wspr, ft8, js8, update,
-                redpitaya;
+                redpitaya, phase, phase_hist;
   SkimHdWebPost config_post, config_import, restart, rollback, deepcw, update_post, v4bench,
-                redpitaya_post;
+                redpitaya_post, phase_post;
   /* a WebSocket viewer of the waterfall (peer: its address, for the log;
    * visitor: its sign-in token, NULL for a free client); the hook takes its
    * own reference */

@@ -12,7 +12,9 @@
 #define SKIMMER_PIPELINE_H
 
 #include <glib.h>
+#include "combiner.h"
 #include "decode.h"
+#include "phase_meter.h"
 #include "feed_gate.h"
 #include "rbn_feed.h"
 #include "rtty_pairs.h"
@@ -160,6 +162,14 @@ typedef struct {
    * NULL = no filter: the pipeline is byte-for-byte what it was. */
   gboolean   (*call_pass)(const char *call, gpointer user);
   gpointer     call_pass_user;
+
+  /* Two antennas (docs/PHASING.md): the band comes from both inputs, fed
+   * with skim_pipeline_push2()/feed2(), and every channel is combined
+   * (combiner.h) before its decoder; phase_meter.h measures what that
+   * gives. phase = the combiner's settings (NULL = its defaults; copied).
+   * FALSE: the pipeline is byte for byte what it was. */
+  gboolean     phased;
+  const SkimCombinerConfig *phase;
 } SkimPipelineConfig;
 
 typedef struct _SkimPipeline SkimPipeline;
@@ -241,6 +251,58 @@ void     skim_pipeline_push(SkimPipeline *p, const float *iq, guint nframes,
                             double rate, double center_hz);
 void     skim_pipeline_feed(SkimPipeline *p, const float *iq, guint nframes,
                             double rate, double center_hz);
+
+/* A phased band's block: antenna A's and antenna B's IQ, the same instants
+ * (aligned by the source). b = NULL: B is missing for this block (taken by
+ * another client, lost, realigning) — the band decodes A alone, B's
+ * channelizer is fed silence to stay aligned, and the combiner starts
+ * learning afresh once B is back. On a pipeline that is not phased, b is
+ * ignored. */
+void     skim_pipeline_push2(SkimPipeline *p, const float *a, const float *b,
+                             guint nframes, double rate, double center_hz);
+void     skim_pipeline_feed2(SkimPipeline *p, const float *a, const float *b,
+                             guint nframes, double rate, double center_hz);
+
+/* Any thread: the combiner's mode and Fixed weight, live (the phasing
+ * panel); taken at the next update (about a second). */
+void     skim_pipeline_phase_set(SkimPipeline *p, SkimPhaseMode mode,
+                                 double fixed_gain_db, double fixed_phase_deg);
+
+/* Any thread: what phasing gives, as of the last update (once a second).
+ * The rows are one byte a channel (skim_phase_q8: 0.25 dB a step,
+ * SKIM_PHASE_NONE = none), in frequency order from the lowest channel
+ * (centre_hz + first_hz + i·spacing_hz):
+ *   gain  the gain over the better antenna where a station is;
+ *   drop  the floor drop (the interference taken out) where none is;
+ *   dmax  the deepest null the channel's group allows (its coherence).
+ * In modes MVDR and MRC gain and drop are measured on the output; in
+ * modes A and B they are the adaptive weight's estimates — what
+ * phasing WOULD give (est = TRUE). */
+typedef struct {
+  gboolean         phased;     /* FALSE: the band is not phased            */
+  gboolean         b_missing;  /* the last block had no B: decoding A      */
+  gboolean         est;        /* gain/drop are estimates (see above)      */
+  SkimPhaseMode    mode;
+  double           fixed_gain_db, fixed_phase_deg;
+  double           centre_hz, first_hz, spacing_hz;
+  guint            nchan;
+  guint64          updates;
+  SkimPhaseSummary sum;
+} SkimPipelinePhase;
+
+/* Fills out (and, when rows are given, up to max bytes of each row; NULL =
+ * not wanted). FALSE when the band is not phased or nothing was measured
+ * yet. */
+gboolean skim_pipeline_phase_snapshot(SkimPipeline *p, SkimPipelinePhase *out,
+                                      gint8 *gain, gint8 *drop, gint8 *dmax,
+                                      guint max);
+
+/* Any thread: the band-level coefficients of the last update, one {re, im}
+ * pair of ca and of cb a channel in frequency order (band_combine.h; A
+ * alone while B is missing): the count copied (0 = none yet); the first
+ * channel's offset and the spacing out. */
+guint    skim_pipeline_phase_band_coef(SkimPipeline *p, float *ca, float *cb, guint max,
+                                       double *first_hz, double *spacing_hz);
 
 /* TX hold: TRUE while the operator's own radio
  * transmits. Live it is driven automatically from the TCI trx/tune

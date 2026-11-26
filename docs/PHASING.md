@@ -1,8 +1,20 @@
 # Two-antenna phasing for the skimmer: the design
 
-Status: a design for work still ahead (Dan, 2026-11-25). Nothing of it is
-built. It is written so that another agent can implement it phase by
-phase. Each phase ends with an offline gate, as the rest of the engine
+Status: a design for work still ahead (Dan, 2026-11-25). Built so far
+(2026-11-25): the combiner and its meters in the engine
+(`src/engine/combiner.c`, `phase_meter.c`, gate `phase`) and P0's tool
+(`skimmer-phase-bench`, gate `phase-bench`); the pipeline phases a band
+when its config says so and is fed both antennas (`skim_pipeline_feed2`,
+`skimmer-replay` with `SKIM_REPLAY_B`). The agent pairs two streams and
+stamps them with an epoch and a sample index (P1, agent 0.4, not on the
+board yet). skimmer-headless runs a band from both inputs with `ip=ab`
+(P2): `[phase]`, the client's stamps, a pairer per band, status.json's
+`phase`; the band's own IQ (waterfall, FT8/JS8/WSPR) is the band-level
+combination (P4), and the waterfall's Φ switches phasing on and off live
+(`POST /api/phase`). Tried on rp-f08908 (agent 0.4) 2026-11-26 with IN2
+empty: both IPs paired, one epoch, coherence 0.00, gain 0 — MVDR gives A,
+as it should. `[record]` still takes A. It is written so that another
+agent can implement it phase by phase. Each phase ends with an offline gate, as the rest of the engine
 does (CLAUDE.md). Sources: Linrad's phasing window (SM5BSZ, "Linrad phasing
 window v6", sm5bsz.com/linuxdsp/run/phasing/), the F0 measurements in
 `docs/REDPITAYA.md`, and the standard results for two-element arrays
@@ -106,8 +118,11 @@ Closed form for 2×2 Hermitian R = [[r11, r12], [r12*, r22]]: the largest
 eigenvalue is λ = (r11 + r22)/2 + √(((r11 − r22)/2)² + |r12|²), and
 v = [r12, λ − r11]ᵀ (or [λ − r22, r12*]ᵀ when that is better
 conditioned), normalised. R_n⁻¹ for a 2×2 needs one division. Regularise
-it (diagonal loading of 1 % of the trace) so that a near-singular R_n (one
-overwhelming interferer) does not blow the weights up.
+it (diagonal loading) so that a near-singular R_n (one overwhelming
+interferer, or B a copy of A) does not blow the weights up. The loading is
+0.1 % of the trace, not 1 %: at 30 dB INR the trace is the interferer's,
+and 1 % of it costs ~4 dB of null depth, 0.1 % ~1 dB (gate `phase`: B a
+copy of A stays finite with no gain).
 
 What this does in each case:
 
@@ -184,9 +199,30 @@ channel. The other channels keep layer 1. "One phaser per decoder input"
 is exactly layer 2. Its cost is the same few MACs per channel sample, plus
 a probability stream from the decoder to the combiner, which needs a small
 hook in `decode.h` (an optional `mark_prob` output per sample block).
-Implement layer 1 first (P3), then layer 2 (a new P3b with its gate: a
-synthetic weak CW station 6 dB under a common interferer, decoded with
-layer 2 and not with layer 1).
+Implement layer 1 first (P3), then layer 2 (P3b).
+
+**Built (2026-11-26).** `decode.h` `mark_prob`: each sample's mark
+probability, −1 where the backend holds no keyed station, and how many
+frames its envelope lags (the combiner keeps 64 frames of A and B to pair
+them). CW v2 and v3: their soft envelope between their space and mark
+levels while the lattice holds a station (lag 2). CW v4 (the network
+decides nothing per sample): its front end's line bin (12.5 Hz) between
+twice the floor and the peak while the line is keyed or in its hangover,
+each 16 ms frame for the middle of its 80 ms window (lag N/2 + hop, 14
+frames at 250 Hz). DeepCW v1 and RTTY give none yet. The combiner (`skim_combiner_mark`)
+learns R_mark and R_space in the channel (p ≥ 0.75 / ≤ 0.25, τ 5 s); after
+3 s of marks R_mark − R_space gives v, R_space⁻¹·v the weight, which
+replaces layer 1's only while it promises 0.5 dB more SINR on the same
+estimates, and lets go 30 s after the decoder lost the station.
+`[phase] layer2` (default true); status.json's `phase.layer2` counts the
+channels on it. What it is for, measured: with ONE strong interferer two
+antennas have one null and nulling it fixes the weight's direction, so
+layer 1 is already near the optimum there (a station 12° from a 40 dB
+interferer: both ≈ 8 dB in theory; gate: layer 2 engages, decodes, no
+worse). Its own case is the interference in the station's channel that
+the group's quiet channels never see: as loud as the station, its own
+signature — layer 1 −5.6 dB SINR, layer 2 +21.1 dB (gate `phase`, true
+marks, measured on the components).
 
 ### What two antennas can and cannot do
 
@@ -235,10 +271,11 @@ The decoders see one stream, and the weights must not modulate it:
 
 Per channel and sample: 2 complex MACs for y, about 3 complex
 accumulations for R_s and R_n (gated), and a 2×2 eigen solve plus inverse
-a few times a second, not every sample. Over 768 channels this is well
-below 1 % of one core. The real cost is the **second channelizer** for the
-band, roughly the same as the first. Measure it before deciding how many
-bands to phase: `skimmer-replay` on a pair recording.
+a few times a second, not every sample. Measured on hra2 with
+`skimmer-phase-bench` (a 48 kHz synthetic pair, 30 s): the second
+channelizer costs 0.3 % of one core, the combiner with its three SNR
+meters 0.8 %. Both scale with the rate (×4 at 192 kHz). The channelizer
+is not what limits the number of phased bands; the board's DDCs are (8).
 
 ## Band-level output
 
@@ -264,6 +301,115 @@ picture of the common interference (near 1 = one source both antennas
 hear alike: nullable). Show it in the waterfall as an extra trace, beside
 A / B / combined selectors.
 
+## Measuring what it gives
+
+The combiner has both antennas' channels and its output at the same
+instants, so A alone, B alone and the combination are compared on the same
+stations at the same time — no second decoder (Dan, 2026-11-25: no shadow
+decoder). `src/engine/phase_meter.c` runs three shadow SNR meters
+(SNR_2500, each against its own band floor) on A, B and Y.
+
+Locally (a station, a channel):
+
+- **G = SNR_Y − max(SNR_A, SNR_B)**, the gain over the better antenna,
+  where the channel carries a station; **G_A = SNR_Y − SNR_A**, the gain
+  over today's skimmer (IN1 only).
+- **share_B**: B's part of the output noise (which antenna "carried" it).
+- **align = |vᴴ·u_n|²**: the station's signature against the noise's
+  principal direction. Near 1, nothing can separate the two.
+- Estimates from the combiner's own covariances, of the adaptive weight
+  whatever the mode applies (**gain_est**, **drop_est**): in modes A, B
+  and Fixed they show what phasing *would* give while the operator compares
+  by ear.
+
+Broadly (a noise group of 32 channels, the band):
+
+- **|γ|²**, the coherence of the quiet channels, and **D_max =
+  −10·log10(1 − |γ|²)**: the deepest null the interference allows.
+- **drop**: the floor the weight takes off antenna A's, A's own signals
+  kept at their gain — the interference suppression actually reached.
+  drop / D_max is how much of the possible the estimate gets.
+- A band summary a minute: medians of G, G_A, drop (and p90), the share of
+  groups whose drop is ≥ 3 dB, |γ|², D_max, share_B, same_dir (the share of
+  stations with align > 0.99).
+
+What the numbers tell (gate `phase`, all against the synthetic truth within
+1 dB): no interferer → G ≈ +3 dB on equal antennas, drop 0, |γ|² 0; a
+coherent interferer → drop ≈ D_max; IN2 empty → |γ|² ≈ 0 and G ≈ 0 (the
+page can say so); B a copy of A (a splitter) → |γ|² ≈ 1, same_dir ≈ 1 and
+G ≈ 0 — drop then reads huge but means nothing, since every signal comes as
+the noise does. The per-channel "stations" include a band-limited
+interferer's edges (they look like signals against the quiet neighbours;
+same_dir tells them); the statistics of stations therefore count the spots,
+each with its channel's numbers.
+
+Where they show:
+
+- **A second line in the waterfall's spectrum** for a phased band: per
+  channel, Gain (G where a station is) / Interference (drop) / Coherence,
+  one byte a channel (0.25 dB) once a second over the waterfall socket.
+- **A coarse waterfall in Statistics** (built: `src/headless/phase_hist.c`,
+  `GET /api/phase_hist`, Statistics → Phasing): channel = pixel, row =
+  minute, two planes (G, drop), 7 days by the minute and 90 days by the
+  quarter hour, `<state>/phase-<band>.bin`, only for phased bands (≈ 30 MB
+  a band at 768 channels); rows in modes A or B are estimates and
+  drawn greyed. The band's summary of each row (medians of gain, gain over
+  A, drop and its p90, coherence, D_max, B's share, stations) lives in the
+  same file and is drawn beside it — not in stats.bin (no stats v9: the
+  history concerns phased bands only, and stats.bin's 84 MB need no
+  migration for it).
+- The spots: SNR_A, SNR_B and G with each spot (the station table, the
+  archive's extra columns, a tooltip in the DX cluster).
+
+`skimmer-phase-bench A.cf32 B.cf32` prints the same numbers for a recorded
+pair (rp-spike pair or `[record]`): summary lines in time for MVDR and MRC
+side by side, the groups, the stations, the measured lag and the CPU.
+
+## Settings and coexistence
+
+- **Off by default.** A band without `ip=ab` is byte for byte as before:
+  no second channelizer, no meters, no history file, nothing extra on the
+  waterfall socket (the golden gate).
+- `[bands] 20m=14045500 cw ip=ab [phase=mvdr|mrc|fixed|a|b]`: one receiver
+  on IP A (IN1) and one on IP B (IN2) at one centre; `in=` not allowed on
+  that line.
+- `[bands] 20m=14045500 cw in=12` (2026-11-26; `ip=b in=12` on IP B): two
+  receivers of ONE IP at the centre, IN1 and IN2. One stream, so the two
+  are aligned by themselves (the same packets, the same FIFO reset), and
+  the other IP stays free — SkimSrv keeps IP B. It costs two of that IP's
+  eight receivers; `[rp] mode=extended` (an input per IP) refuses it. The
+  pairer, the pipeline and everything after are the same. Settings →
+  Bands: the input column's "IN1+IN2 Φ". `[phase]`: mode, layer2, tc_s, gate_db, history, wf_line.
+  `[phase.<band>]`: the Fixed weight and its memories (the panel writes
+  them).
+- Refused by the config check (exit 2; greyed out in the form with the
+  reason): no skimmer agent on the board, different rates on the two IPs,
+  no free receiver on either IP (a phased band takes one on each: 8 at
+  most), `ip=ab` with `@worker` (v1 phases locally only).
+- Settings → Bands: the IP column offers "A+B Φ" (`ip=ab`; refused while
+  the two IPs run two rates); a band's `phase=` is kept through the form.
+- The waterfall's phasing panel (⚙ beside Φ; built): the mode (MVDR, MRC,
+  Fixed, A, B), the Fixed weight as Linrad has it (gain dB and phase °,
+  fine and coarse steps; "from MVDR" takes MVDR's band-level weight as the
+  fixed one — adapt, then fix), three memories, Save: the band's phase=
+  and `[phase.<band>]` (fixed_gain_db, fixed_phase_deg, m1..m3) into the
+  config with a backup, no restart. In Fixed the line shows what the
+  hand-set weight does; in A and B what phasing would give.
+- Adding or removing `ip=ab` is a settings change (a restart). The mode and
+  the Fixed weight change live from the panel (POST `/api/phase`,
+  managers), saved to the config only on Save; the meters keep running in
+  mode A, so the line and the history show what phasing would give.
+- **The band never fails because of B**: IP B taken by another client, its
+  stream lost, or the alignment lost (a new epoch) → the band decodes A,
+  the weights reset, and phasing resumes when B is back and aligned. The
+  status says which ("Φ → A (IP B busy)"). An empty IN2 needs no rule:
+  MVDR degrades to A by itself.
+- Thermal guard / v4_guard: a new first step — a phased band drops to A
+  (stops its second channelizer) before any band is paused.
+- Downstream: decoders, feed and statistics count the band once (spots
+  from Y). Until the band-level W(f) (P4), FT8/JS8/WSPR and the waterfall
+  take A; `[record]` writes the pair.
+
 ## What changes where
 
 ### The board (agent, `rp/agent/skimmer-rp.c`)
@@ -272,7 +418,8 @@ A / B / combined selectors.
    frequencies on both instances (A on IN1, B on IN2), the agent resets
    both FIFO sets in one register sequence (as `rp-spike pair` did, lag 0)
    and starts both EP6 threads at once.
-2. **A sample index in the stream**, for marked clients only. Pavel's EP6
+2. **A sample index in the stream**, for marked clients only (built in
+   agent 0.4: the wire format is in `docs/REDPITAYA.md`). Pavel's EP6
    C&C bytes are constant, and CW Skimmer reads some of them, so the
    index must not appear for anyone else. Put a 48–64-bit "samples since
    the paired reset" counter, plus an epoch number, in the C&C bytes of a
@@ -313,11 +460,7 @@ A / B / combined selectors.
    dB, phase °, slow and fast arrows, O / T / − / I, three memories, and
    Adapt / Fixed per band. The waterfall gets A / B / combined and the
    coherence trace.
-7. **Statistics** (stats v9): per phased band, the null depth (the noise
-   floor with the combiner against the better single antenna, in dB), the
-   SNR gain of the spots (combined against the better single, from the
-   channels' estimates), and the share of spots each antenna "carried"
-   (which component of w dominated).
+7. **Statistics**: see "Measuring what it gives" below.
 
 ## An FPGA of our own: what changes, what does not
 
@@ -363,13 +506,61 @@ interfaces:
 
 | | what | gate (offline) |
 |---|---|---|
-| P0 | **Measure first.** Record pairs on real air with `rp-spike pair` (longer, 96 kHz, two real antennas, or the antenna and its interference); a Python notebook computes MRC and MVDR per channel and band coherence | numbers: the SNR gain and null depth on real air (if both are small for the station's antennas, stop here) |
-| P1 | agent: paired start, sample index, epoch | `rp-agent`: two sim streams carry identical indices; an overflow bumps the epoch on both |
-| P2 | config `ip=ab`, source pairing and alignment, `[record]` pairs | `rp-two-ip`: a paired band gets aligned blocks (sim tone, same phase difference each run) |
-| P3 | `SkimCombiner` (MVDR/MRC/fixed, gating, phase reference, noise normalisation) | synthetic: two antennas with independent Rayleigh fading plus one common broadband interferer with a fixed signature. MRC gains ≥ 2.5 dB with no interferer, MVDR nulls the interferer ≥ 20 dB, CW decodes not worse than the better antenna. **Golden byte-identical** for unphased bands |
-| P4 | band-level W(f): waterfall, digi_rx, WSPR | the FT8/WSPR gates on a synthetic pair (decodes ≥ the better antenna) |
+| P0 | **Measure first.** Record pairs on real air with `rp-spike pair` (longer, 96 kHz, two real antennas, or the antenna and its interference); `skimmer-phase-bench` (built) computes MRC and MVDR per channel, the groups' coherence and the measured lag | numbers: the SNR gain and null depth on real air (if both are small for the station's antennas, stop here) |
+| P1 | agent: paired start, sample index, epoch — **built** (agent 0.4, `docs/REDPITAYA.md`; not on the board yet) | `rp-agent`: both sim streams carry one epoch and a contiguous index, the same index is the same instant (phase 0.000°, a sample off = 3.75°); an overflow on A starts a new epoch on both, aligned again; an unmarked stream keeps Pavel's C&C; a paired start beside it resets nothing |
+| P2 | config `ip=ab`, `[phase]`, `phase=`; the client's paired start and stamps (`set_rx_iq_ix_cb`: blocks with epoch + index, loss filled by the index); a pairer per band in `source_hpsdr_p1.c` (same epoch, same index → `iq2_cb`; A's unmatched front and A while B is missing, late past 0.25 s or unstamped go alone); status.json `phase` — **built**. `[record]` writes the pair (`-b.cf32`, each .meta naming the other: replay and bench find B from A's file) | `rp-two-ip`: a phased band streams paired from both IPs (one epoch, IN1 at A, IN2 at B); the agent sim's noise (a function of the sample number, on both inputs) stays coherent end to end (\|γ\|² 0.99, nulled 47 dB — a pairer off by 4096 samples reads 0.00); IP B taken → IN1 alone, said so; B back → phased again; two rates refused. `config`: ip=ab and its refusals |
+| P3 | `SkimCombiner` (MVDR/MRC/fixed, gating, phase reference, noise normalisation), `SkimPhaseMeter`, and the pipeline (`SkimPipelineConfig.phased`: B's channelizer, the combiner in the drain, the Y meter as the band's shadow SNR, B missing → A, `push2`/`feed2`, a snapshot for the page, the spots' SNR_A/SNR_B/gain) — **built** | gate `phase`: MRC ≥ 2.5 dB, one interferer nulled ≥ 20 dB, two in two halves each where it is, B a copy of A, empty IN2, mode A bit for bit, Fixed, the meters against the truth; the whole pipeline spots a CW station 8 dB under a common interferer on each antenna (neither alone does), B missing decodes A, mode A shows the estimates. **Golden byte-identical** |
+| P4 | band-level W(f): waterfall, digi_rx, WSPR — **built** (`band_combine.c`: WOLA, √Hann, half overlapping, N = 2048 at 96 kHz; the weights per channel from the combiner's group canceller, MVDR towards e_A with no station steering, scaled to w_A = 1 so A's signals keep their gain and the interference leaves the floor; interpolated to every bin; A itself while the weights are A alone). The waterfall's Φ switches the band between its mode and A, the line over the spectrum shows gain / interference / coherence per channel (`GET /api/phase`) | gate `phase`: unit weights give A back exactly (2048 frames late), mode A changes nothing, MVDR takes a 30 dB interferer 18.6 dB off the band. Still to do: the FT8/WSPR gates on a synthetic pair |
 | P5 | web panel, coherence trace, stats v9 | headless Chrome screenshots; stats migration test |
-| P6 | live: one band phased against the same band single (skimmer-compare: spots, calls, SNR) | Dan's verdict on air |
+| P6 | live: one band phased against the same band single (skimmer-compare: spots, calls, SNR) — offline first on the P0 pairs (2026-11-26, CW v3, 3 min, 160/80/40 m open): calls spotted IN1 alone 27, IN2 alone 25, MRC 30, MVDR 32 (+19 % over IN1; a small sample) | Dan's verdict on air |
+
+## P0 on the air (rp-f08908, 2026-11-26 19:22Z)
+
+IN1 = the station's antenna, IN2 = a wideband receive antenna (Dan,
+2026-11-26). Eight segments 160–10 m phased at once for 3 min (agent 0.4,
+[record] pairs in `/var/tmp/skimmer-iq/phase-p0/`), skimmer-phase-bench on
+each pair; the medians of 5-s snapshots (SNR_2500, the stations' gain):
+
+| band | over IN1 alone | over the better antenna | B carries | MVDR: the drop in the worst groups |
+|---|---|---|---|---|
+| 160 m | +2.9 dB | +0.9 dB (MRC) | 67 % | 6 dB |
+| 80 m | +1.6 dB | +0.6 dB (MRC) | 34 % | 5 dB |
+| 40 m | +1.5 dB | +1.1 dB (MVDR) | 5 % | 12 dB |
+| 30 m | +0.7 dB | +0.4 dB | 88 % | — |
+| 20 m | +1.6 dB | +0.7 dB | 72 % | — |
+| 17 m | +0.4 dB | −0.1 dB | 79 % | 3 dB |
+| 15 m | −0.1 dB | −0.1 dB | 48 % | — |
+| 10 m | +1.3 dB | +1.3 dB | 100 % | — |
+
+What the air taught, and what changed for it:
+- **The noise is diffuse.** Most groups' coherence is 0.01–0.2: noise from
+  every direction, whose group correlation fits no channel. "Cancelling"
+  it added B's noise (80 m: the floor 0.6 dB up, the stations 2 dB down
+  against MRC). Now a group below |γ|² 0.3 (D_max 1.5 dB) — on its average
+  or on the last tick — takes the antennas' noise as independent: MVDR
+  becomes MRC there, the canceller A.
+- **Interference comes and goes.** On 80 m a common interferer came up
+  every ~40 s (coherence 0.01 ↔ 0.5): nulled while there (1.7–3.3 dB),
+  but for a second after it went the weight still nulled nothing and
+  added B's noise. Hence the last tick's coherence too. Still, on such a
+  band MRC is the better default (`phase=mrc`); MVDR earns its keep where
+  the interference sits steady (40 m: up to 12 dB in the worst groups).
+- **A rising broadband noise is no station.** When it came up, its
+  samples crossed the gate of the averaged floor in every channel and
+  700+ channels "steered" on it. A channel's gated samples now teach R_s
+  only while the channel stands 2× over its group's quiet channels in the
+  same tick.
+- **A noise channel reads 3–4 dB SNR_2500** (a held peak): the meter
+  counts a station from 6 dB.
+- **The lag between A and B** cannot be measured on the air by
+  correlation: the strongest signals dominate it, and the cross-spectrum's
+  phase follows each station's direction. The agent (0.5) now releases
+  both FIFO resets together, as rp-spike pair did when F0 measured lag 0
+  on a common signal.
+- **What it gives on this pair**: +1.5 dB over IN1 alone on most bands,
+  +3 dB on 160 m, and the wideband antenna is the better one for most
+  stations on 160, 30, 20, 17 and 10 m. Modest — two antennas this
+  different give diversity more than nulls.
 
 ## Open questions for P0
 

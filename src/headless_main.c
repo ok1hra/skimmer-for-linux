@@ -93,6 +93,8 @@
 #include "engine/decode_cw_v4.h"
 #include "engine/dcw4_kernel.h"
 #include "engine/pipeline.h"
+#include "engine/band_combine.h"
+#include "headless/phase_hist.h"
 #include "engine/rbn_feed.h"
 
 /* "Active decoder": a channel decoding running text, not noise. The decoders
@@ -153,6 +155,18 @@ typedef struct {
   gint          remote_prev[M_N];   /* main loop: at the last minute's end    */
   guint         shed_s;        /* main loop: the minute's s the thermal guard had it off */
   volatile gint ft8_paused;    /* the thermal guard has the band off: no FT8 (nor JS8) either */
+  /* a phased band's own IQ from both antennas (band_combine.h; source thread) */
+  SkimBandCombine *bc;
+  float        *bc_y;          /* the combination of the block in hand        */
+  guint         bc_cap;
+  float        *bc_ca, *bc_cb; /* the pipeline's coefficients, last copied    */
+  gint64        bc_next_us;
+  gboolean      bc_on;         /* not A alone: the combination goes out       */
+  SkimPhaseHist *phist;        /* main loop: what phasing gave, kept (phase_hist.h) */
+  /* the phasing panel's state, live (main loop): what Save writes */
+  gint          ph_mode;
+  double        ph_gain, ph_phase;
+  double        ph_mem[3][2];
 } Band;
 
 typedef struct {
@@ -378,30 +392,115 @@ static void state_cb(gboolean connected, const char *detail, gpointer user) {
   }
 }
 
-/* Source thread: one block of band i to its pipeline (and its recording). */
-static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double centre,
-                     gpointer user) {
+/* A phased band's own IQ (the waterfall, FT8/JS8/WSPR): the band-level
+ * combination of A and B with the coefficients the band's pipeline
+ * published (once a second), or A itself while they are A alone (mode A or
+ * MRC, B missing) — so switching phasing off shows A again at once. */
+static const float *phase_band_iq(Band *b, const float *a, const float *bb, guint n,
+                                  double rate) {
+  SkimPipeline *p = b->dec[M_CW].p ? b->dec[M_CW].p : b->dec[M_RTTY].p;
+  if (!p)
+    return a;
+  const gint64 now = g_get_monotonic_time();
+  if (now >= b->bc_next_us) {
+    b->bc_next_us = now + G_USEC_PER_SEC;
+    if (!b->bc_ca) {
+      b->bc_ca = g_new(float, 2 * 16384);
+      b->bc_cb = g_new(float, 2 * 16384);
+    }
+    double first = 0, spacing = 0;
+    const guint nc = skim_pipeline_phase_band_coef(p, b->bc_ca, b->bc_cb, 16384, &first, &spacing);
+    gboolean only_a = TRUE;
+    for (guint k = 0; k < nc && only_a; k++) {
+      only_a = b->bc_ca[2 * k] == 1.0f && b->bc_ca[2 * k + 1] == 0.0f &&
+               b->bc_cb[2 * k] == 0.0f && b->bc_cb[2 * k + 1] == 0.0f;
+    }
+    const gboolean on = nc > 0 && !only_a;
+    if (on) {
+      if (!b->bc) { b->bc = skim_band_combine_new(rate, 0); }
+      skim_band_combine_set_weights(b->bc, b->bc_ca, b->bc_cb, nc, first, spacing);
+    }
+    if (on && !b->bc_on && b->bc) { skim_band_combine_reset(b->bc); }   /* fresh */
+    b->bc_on = on;
+  }
+  if (!b->bc_on || !bb || !b->bc)
+    return a;
+  if (b->bc_cap < n) {
+    g_free(b->bc_y);
+    b->bc_y = g_new(float, 2 * (gsize)n);
+    b->bc_cap = n;
+  }
+  skim_band_combine_process(b->bc, a, bb, b->bc_y, n);
+  return b->bc_y;
+}
+
+/* Source thread: one block of band i to its pipeline (and its recording);
+ * iq_b: a phased band's antenna B (docs/PHASING.md; NULL = none or missing)
+ * — only the pipelines take it, the rest of the band runs on A for now. */
+static void rx_iq2_cb(guint i, const float *iq, const float *iq_b, guint n, double rate,
+                      double centre, gpointer user) {
   Hd *h = user;
   Band *b = &h->band[i];
   b->frames += n;
-  if (b->rec) { skim_rec_push(b->rec, iq, n, rate, centre); }
-  skim_hd_waterfall_push(h->wf, i, iq, n, rate, centre);   /* nothing unless watched */
-  skim_hd_wspr_push(h->wspr, i, iq, n);        /* nothing without a WSPR dial */
+  if (b->rec) { skim_rec_push2(b->rec, iq, iq_b, n, rate, centre); }
+  const float *band_iq = iq;                   /* what the band's own IQ is */
+  if (h->cfg.band[i].phased) { band_iq = phase_band_iq(b, iq, iq_b, n, rate); }
+  skim_hd_waterfall_push(h->wf, i, band_iq, n, rate, centre);   /* nothing unless watched */
+  skim_hd_wspr_push(h->wspr, i, band_iq, n);   /* nothing without a WSPR dial */
   if (h->ft8 && !g_atomic_int_get(&b->ft8_paused)) {   /* … an FT8/FT4 dial; off with the */
-    skim_hd_ft8_push(h->ft8, i, iq, n);                 /* thermal guard's band          */
+    skim_hd_ft8_push(h->ft8, i, band_iq, n);            /* thermal guard's band          */
   }
   if (h->js8 && !g_atomic_int_get(&b->ft8_paused)) {   /* … a JS8 dial, the same       */
-    skim_hd_js8_push(h->js8, i, iq, n);
+    skim_hd_js8_push(h->js8, i, band_iq, n);
   }
   if (b->worker) {                             /* decoded on another PC     */
     if (h->hub) { skim_hd_hub_push(h->hub, i, iq, n, rate, centre); }
     return;
   }
+  const gboolean phased = h->cfg.band[i].phased;
   for (guint k = 0; k < M_N; k++) {
     if (b->dec[k].p && !g_atomic_int_get(&b->dec[k].paused)) {
-      skim_pipeline_push(b->dec[k].p, iq, n, rate, centre);
+      if (phased) {
+        skim_pipeline_push2(b->dec[k].p, iq, iq_b, n, rate, centre);
+      } else {
+        skim_pipeline_push(b->dec[k].p, iq, n, rate, centre);
+      }
     }
   }
+}
+
+static void rx_iq_cb(guint i, const float *iq, guint n, double rate, double centre,
+                     gpointer user) {
+  rx_iq2_cb(i, iq, NULL, n, rate, centre, user);
+}
+
+/* A phased band's state for status.json: "phase":{…} or null. */
+static void phase_json(GString *json, Band *b) {
+  SkimPipeline *p = b->dec[M_CW].p ? b->dec[M_CW].p : b->dec[M_RTTY].p;
+  SkimPipelinePhase ph;
+  if (!p || !skim_pipeline_phase_snapshot(p, &ph, NULL, NULL, NULL, 0)) {
+    g_string_append(json, "null");
+    return;
+  }
+  const SkimPhaseSummary *u = &ph.sum;
+  const double v[] = { u->gain_db, u->gain_a_db, u->drop_db, u->drop_p90_db, u->drop_share,
+                       u->coherence, u->dmax_db, u->share_b, u->same_dir, u->gain_est_db,
+                       u->drop_est_db };
+  static const char *const k[] = { "gain_db", "gain_a_db", "drop_db", "drop_p90_db", "drop_share",
+                                   "coherence", "dmax_db", "share_b", "same_dir", "gain_est_db",
+                                   "drop_est_db" };
+  g_string_append_printf(json, "{\"mode\":\"%s\",\"b_missing\":%s,\"est\":%s,"
+                         "\"updates\":%" G_GUINT64_FORMAT ",\"stations\":%u,\"layer2\":%u",
+                         skim_phase_mode_name(ph.mode), ph.b_missing ? "true" : "false",
+                         ph.est ? "true" : "false", ph.updates, u->stations, u->layer2);
+  for (guint i = 0; i < G_N_ELEMENTS(v); i++) {
+    if (isnan(v[i])) {
+      g_string_append_printf(json, ",\"%s\":null", k[i]);
+    } else {
+      g_string_append_printf(json, ",\"%s\":%.2f", k[i], v[i]);
+    }
+  }
+  g_string_append_c(json, '}');
 }
 
 /* Why the governor pauses mode k of band i now (NULL: it runs). */
@@ -840,6 +939,192 @@ static void v4_json(Hd *h, GString *o) {
   g_free(rt);
 }
 
+static char *json_error(guint *st, guint code, const char *msg);
+
+/* GET /api/phase?band=: a phased band's line for the waterfall's spectrum —
+ * the snapshot's rows (pipeline.h: gain, drop, dmax; one value a channel in
+ * frequency order, 0.25 dB steps, -128 = none) and where they lie. No
+ * addresses or machine readings: the same for everyone who sees the data. */
+static char *web_phase_get(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
+                           gpointer user) {
+  (void)who; (void)type;
+  Hd *h = user;
+  const char *band = q ? g_hash_table_lookup(q, "band") : NULL;
+  for (guint i = 0; band && i < h->nb; i++) {
+    if (strcmp(h->band[i].name, band) != 0)
+      continue;
+    Band *b = &h->band[i];
+    SkimPipeline *p = b->dec[M_CW].p ? b->dec[M_CW].p : b->dec[M_RTTY].p;
+    SkimPipelinePhase ph;
+    gint8 *rows = g_new(gint8, 3 * 16384);
+    if (!p || !skim_pipeline_phase_snapshot(p, &ph, rows, rows + 16384, rows + 32768, 16384)) {
+      g_free(rows);
+      return g_strdup("{\"phased\":false}");
+    }
+    GString *o = g_string_new(NULL);
+    g_string_append_printf(o, "{\"phased\":true,\"band\":\"%s\",\"mode\":\"%s\",\"est\":%s,"
+                           "\"b_missing\":%s,\"centre_hz\":%.0f,\"first_hz\":%.1f,"
+                           "\"spacing_hz\":%.1f", b->name, skim_phase_mode_name(ph.mode),
+                           ph.est ? "true" : "false", ph.b_missing ? "true" : "false",
+                           ph.centre_hz, ph.first_hz, ph.spacing_hz);
+    /* the panel: the Fixed weight now, what MVDR's band-level weight is as
+     * one (the mean of B's coefficient over the channels: y = a + g·e^{jφ}·b),
+     * the memories */
+    {
+      float *ca = g_new(float, 2 * 16384), *cbf = g_new(float, 2 * 16384);
+      double first = 0, sp = 0, re = 0, im = 0;
+      const guint nc = skim_pipeline_phase_band_coef(p, ca, cbf, 16384, &first, &sp);
+      for (guint k = 0; k < nc; k++) { re += cbf[2 * k]; im += cbf[2 * k + 1]; }
+      const double mag = nc ? hypot(re, im) / nc : 0;
+      g_string_append_printf(o, ",\"fixed_gain_db\":%.2f,\"fixed_phase_deg\":%.1f", b->ph_gain,
+                             b->ph_phase);
+      if (mag > 1e-6 && ph.mode == SKIM_PHASE_MVDR) {
+        g_string_append_printf(o, ",\"adapt_gain_db\":%.2f,\"adapt_phase_deg\":%.1f",
+                               20.0 * log10(mag), atan2(im, re) * 180.0 / G_PI);
+      } else {
+        g_string_append(o, ",\"adapt_gain_db\":null,\"adapt_phase_deg\":null");
+      }
+      g_string_append(o, ",\"mem\":[");
+      for (guint k = 0; k < 3; k++) {
+        if (isnan(b->ph_mem[k][0])) {
+          g_string_append_printf(o, "%snull", k ? "," : "");
+        } else {
+          g_string_append_printf(o, "%s[%.2f,%.1f]", k ? "," : "", b->ph_mem[k][0], b->ph_mem[k][1]);
+        }
+      }
+      g_string_append_c(o, ']');
+      g_free(ca);
+      g_free(cbf);
+    }
+    static const char *const key[3] = { "gain", "drop", "dmax" };
+    const guint n = MIN(ph.nchan, 16384u);
+    for (guint r = 0; r < 3; r++) {
+      g_string_append_printf(o, ",\"%s\":[", key[r]);
+      for (guint k = 0; k < n; k++) {
+        g_string_append_printf(o, "%s%d", k ? "," : "", rows[r * 16384 + k]);
+      }
+      g_string_append_c(o, ']');
+    }
+    g_string_append_c(o, '}');
+    g_free(rows);
+    return g_string_free(o, FALSE);
+  }
+  *st = 404;
+  return g_strdup("{\"error\":\"no such band\"}");
+}
+
+/* GET /api/phase_hist?band=&hours=&end=: a phased band's coarse waterfall of
+ * what phasing gave (phase_hist.h) for the Statistics page. */
+static char *web_phase_hist(GHashTable *q, SkimHdWebWho who, guint *st, const char **type,
+                            gpointer user) {
+  (void)who; (void)type;
+  Hd *h = user;
+  const char *band = q ? g_hash_table_lookup(q, "band") : NULL;
+  const char *hs = q ? g_hash_table_lookup(q, "hours") : NULL;
+  const char *es = q ? g_hash_table_lookup(q, "end") : NULL;
+  const guint hours = hs ? (guint)CLAMP(g_ascii_strtoull(hs, NULL, 10), 1, 2160) : 24;
+  const gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+  const gint64 end = es && *es ? MIN((gint64)g_ascii_strtoll(es, NULL, 10), now) : now;
+  for (guint i = 0; band && i < h->nb; i++) {
+    if (strcmp(h->band[i].name, band) == 0) {
+      if (!h->band[i].phist) { return g_strdup("{\"rows\":0}"); }
+      return skim_phase_hist_json(h->band[i].phist, end, hours, 720);
+    }
+  }
+  *st = 404;
+  return g_strdup("{\"error\":\"no such band\"}");
+}
+
+/* POST /api/phase (managers): a phased band's combiner, live — the mode and
+ * the Fixed weight, for the band's CW and RTTY pipelines; not written to
+ * the config (docs/PHASING.md: the panel's Save does that). */
+static char *web_phase_post(GHashTable *form, guint *st, gpointer user) {
+  Hd *h = user;
+  const char *band = g_hash_table_lookup(form, "band");
+  const char *mode = g_hash_table_lookup(form, "mode");
+  SkimPhaseMode m;
+  if (!mode || !skim_phase_mode_parse(mode, &m)) {
+    *st = 400;
+    return g_strdup("{\"error\":\"mode: mvdr, mrc, fixed, a or b\"}");
+  }
+  for (guint i = 0; band && i < h->nb; i++) {
+    if (strcmp(h->band[i].name, band) != 0)
+      continue;
+    if (!h->cfg.band[i].phased) {
+      *st = 400;
+      return g_strdup("{\"error\":\"the band is not phased (ip=ab)\"}");
+    }
+    Band *b = &h->band[i];
+    const char *g = g_hash_table_lookup(form, "gain_db"), *ph = g_hash_table_lookup(form, "phase_deg");
+    const double gain = g ? g_ascii_strtod(g, NULL) : b->ph_gain;
+    const double phase = ph ? g_ascii_strtod(ph, NULL) : b->ph_phase;
+    if (!isfinite(gain) || fabs(gain) > 40 || !isfinite(phase) || fabs(phase) > 360) {
+      *st = 400;
+      return g_strdup("{\"error\":\"gain_db -40…40, phase_deg -360…360\"}");
+    }
+    for (guint k = 0; k < 3; k++) {             /* m1..m3 = "gain,phase" | "" (none) */
+      char key[4] = { 'm', (char)('1' + k), 0 };
+      const char *mv = g_hash_table_lookup(form, key);
+      if (!mv) { continue; }
+      char *e = NULL;
+      const double mg = g_ascii_strtod(mv, &e);
+      const double mp = e && *e == ',' ? g_ascii_strtod(e + 1, NULL) : NAN;
+      b->ph_mem[k][0] = *mv && !isnan(mp) && fabs(mg) <= 40 && fabs(mp) <= 360 ? mg : NAN;
+      b->ph_mem[k][1] = isnan(b->ph_mem[k][0]) ? NAN : mp;
+    }
+    if (m != (SkimPhaseMode)b->ph_mode || gain != b->ph_gain || phase != b->ph_phase) {
+      for (guint k = 0; k < M_N; k++) {
+        if (b->dec[k].p) { skim_pipeline_phase_set(b->dec[k].p, m, gain, phase); }
+      }
+      g_message("phase: %s → %s%s (from the web page)", band, skim_phase_mode_name(m),
+                m == SKIM_PHASE_FIXED ? " (a fixed weight)" : "");
+    }
+    b->ph_mode = (gint)m;
+    b->ph_gain = gain;
+    b->ph_phase = phase;
+    const char *action = g_hash_table_lookup(form, "action");
+    if (action && strcmp(action, "save") == 0) {
+      /* into the config, no restart: the band already runs so */
+      char *text = NULL, *out = NULL, *bak = NULL;
+      gsize len = 0;
+      GError *err = NULL;
+      SkimHdConfig chk;
+      char *body = NULL;
+      if (!g_file_get_contents(h->cfg_path, &text, &len, &err) ||
+          !(out = skim_hd_config_set_phase(text, len, band, (gint)m, gain, phase,
+                                           (const double (*)[2])b->ph_mem, &err))) {
+        body = json_error(st, 400, err->message);
+      } else if (!skim_hd_config_parse(&chk, out, strlen(out), h->cfg_path, &err)) {
+        body = json_error(st, 400, err->message);
+      } else {
+        skim_hd_config_clear(&chk);
+        if (strcmp(out, text) != 0 && !skim_hd_config_save(h->cfg_path, out, &bak, &err)) {
+          body = json_error(st, 500, err->message);
+        } else {
+          SkimHdBand *cb = &h->cfg.band[i];
+          cb->phase_mode = (gint)m;
+          cb->fixed_gain_db = gain;
+          cb->fixed_phase_deg = phase;
+          memcpy(cb->mem, b->ph_mem, sizeof(cb->mem));
+          g_message("phase: %s saved to %s — %s, fixed %.2f dB %.1f° (previous: %s)", band,
+                    h->cfg_path, skim_phase_mode_name(m), gain, phase, bak ? bak : "unchanged");
+          body = g_strdup_printf("{\"ok\":true,\"saved\":true,\"band\":\"%s\",\"mode\":\"%s\"}",
+                                 b->name, skim_phase_mode_name(m));
+        }
+      }
+      g_clear_error(&err);
+      g_free(bak);
+      g_free(out);
+      g_free(text);
+      return body;
+    }
+    return g_strdup_printf("{\"ok\":true,\"band\":\"%s\",\"mode\":\"%s\"}", b->name,
+                           skim_phase_mode_name(m));
+  }
+  *st = 404;
+  return g_strdup("{\"error\":\"no such band\"}");
+}
+
 static char *web_v4bench(GHashTable *form, guint *st, gpointer user) {
   (void)form; (void)st;
   Hd *h = user;
@@ -1021,11 +1306,13 @@ static void status_build(Hd *h, gboolean print) {
     g_free(jw);
     g_string_append_printf(json, "%s\"band\":\"%s\",\"centre_hz\":%.0f,\"ksps\":%.1f,"
                            "\"cw\":%s,\"engine_wanted\":\"%s\","
-                           "\"rtty_suppressed\":%" G_GUINT64_FORMAT ",",
+                           "\"rtty_suppressed\":%" G_GUINT64_FORMAT ",\"phase\":",
                            b->worker ? "" : i ? ",{" : "{", jname, b->centre_hz, b->ksps,
                            b->dec[M_CW].p ? "true" : "false",
                            b->dec[M_CW].p ? engine_key(h->cfg.band[i].cw_engine) : "",
                            b->dec[M_CW].p ? skim_pipeline_rtty_suppressed(b->dec[M_CW].p) : 0);
+    phase_json(json, b);
+    g_string_append_c(json, ',');
     g_free(jname);
     dec_json(json, &b->dec[M_CW], b->dec[M_CW].p ? paused_why(h, i, M_CW) : NULL, now);
     g_string_append(json, ",\"rtty\":");
@@ -1305,11 +1592,35 @@ static void restart_soon(Hd *h, const char *why);
 /* 1 Hz: link supervision, rates, status. */
 static void rp_tick(Hd *h);
 
+/* Once a second: each phased band's snapshot into its history (opened at
+ * the first snapshot, when the channels are known). */
+static void phase_hist_tick(Hd *h) {
+  static gint8 rows[2 * 16384];
+  for (guint i = 0; i < h->nb; i++) {
+    if (!h->cfg.band[i].phased)
+      continue;
+    Band *b = &h->band[i];
+    SkimPipeline *p = b->dec[M_CW].p ? b->dec[M_CW].p : b->dec[M_RTTY].p;
+    SkimPipelinePhase ph;
+    if (!p || !skim_pipeline_phase_snapshot(p, &ph, rows, rows + 16384, NULL, 16384) || !ph.updates)
+      continue;
+    if (!b->phist) {
+      char *dir = g_build_filename(g_get_user_state_dir(), "skimmer-for-linux", NULL);
+      b->phist = skim_phase_hist_open(dir, b->name, ph.nchan, ph.first_hz, ph.spacing_hz);
+      g_free(dir);
+      if (!b->phist)
+        continue;
+    }
+    skim_phase_hist_add(b->phist, g_get_real_time() / G_USEC_PER_SEC, &ph, rows, rows + 16384);
+  }
+}
+
 static gboolean tick(gpointer data) {
   Hd *h = data;
   skim_iq_source_tick(h->src);
   skim_iq_source_status(h->src, &h->src_st);
   rp_tick(h);
+  phase_hist_tick(h);
   if (h->src_st.gave_up) {
     h->exit_code = EXIT_NO_RADIO;
     g_main_loop_quit(h->loop);
@@ -1621,7 +1932,10 @@ static char *web_config(GHashTable *q, SkimHdWebWho who, guint *st, const char *
                              b->centre_hz, b->cw ? "true" : "false", engine_key(b->cw_engine),
                              b->rtty ? "true" : "false", b->off ? "false" : "true");
       json_kv(o, "worker", b->worker, FALSE);
-      g_string_append_printf(o, ",\"ip\":\"%s\",\"input\":%u}", b->ip ? "b" : "a", b->input + 1u);
+      g_string_append_printf(o, ",\"ip\":\"%s\",\"input\":%u,\"phase\":\"%s\"}",
+                             b->phased && !b->same_ip ? "ab" : b->ip ? "b" : "a",
+                             b->phased && b->same_ip ? 12u : b->input + 1u,
+                             b->phase_mode >= 0 ? skim_phase_mode_name((SkimPhaseMode)b->phase_mode) : "");
     }
     g_string_append_c(o, ']');
     skim_hd_config_clear(&c);
@@ -2529,6 +2843,21 @@ static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const c
     .call_pass = skim_hd_config_filter_on(c) ? call_pass : NULL,
     .call_pass_user = h,
   };
+  /* a phased band (ip=ab): the combiner's settings, [phase] and the band's phase= */
+  SkimCombinerConfig phase;
+  skim_combiner_config_default(&phase);
+  phase.mode = (SkimPhaseMode)(cb->phase_mode >= 0 ? cb->phase_mode : c->phase_mode);
+  phase.tc_s = c->phase_tc_s;
+  phase.layer2 = c->phase_layer2;
+  phase.gate_db = c->phase_gate_db;
+  phase.fixed_gain_db = isnan(cb->fixed_gain_db) ? c->phase_fixed_gain_db : cb->fixed_gain_db;
+  phase.fixed_phase_deg = isnan(cb->fixed_phase_deg) ? c->phase_fixed_phase_deg : cb->fixed_phase_deg;
+  b->ph_mode = (gint)phase.mode;
+  b->ph_gain = phase.fixed_gain_db;
+  b->ph_phase = phase.fixed_phase_deg;
+  memcpy(b->ph_mem, cb->mem, sizeof(b->ph_mem));
+  pc.phased = cb->phased;
+  pc.phase = cb->phased ? &phase : NULL;
   d->p = skim_pipeline_new(&pc);
   g_free(dlog);
   g_free(tap);
@@ -2984,6 +3313,7 @@ int main(int argc, char **argv) {
     g_mkdir_with_parents(c->rec_dir, 0755);
     b->rec = skim_rec_new(c->rec_dir, b->name, b->label, c->ppm, c->rec_at_us,
                           c->rec_minutes);
+    if (c->band[b - h->band].phased) { skim_rec_set_paired(b->rec); }   /* A + B */
     if (c->rec_at_us) {
       GDateTime *t = g_date_time_new_from_unix_utc(c->rec_at_us / G_USEC_PER_SEC);
       char *ts = g_date_time_format(t, "%Y-%m-%d %H:%M UTC");
@@ -3271,6 +3601,7 @@ int main(int argc, char **argv) {
       .v4bench = web_v4bench,
       .update = web_update, .update_post = web_update_post,
       .redpitaya = web_redpitaya, .redpitaya_post = web_redpitaya_post,
+      .phase = web_phase_get, .phase_post = web_phase_post, .phase_hist = web_phase_hist,
       .waterfall = web_waterfall,
       .user = h,
     };
@@ -3343,6 +3674,7 @@ int main(int argc, char **argv) {
   } else {
     h->src = skim_iq_source_new(c, h->take_over, rx_iq_cb, h);
   }
+  h->src->iq2_cb = rx_iq2_cb;                  /* phased bands (ip=ab)        */
   g_free(hub_frag);
   skim_iq_source_start(h->src);                /* first start attempt now     */
   tick(h);
@@ -3371,6 +3703,11 @@ int main(int argc, char **argv) {
     for (guint k = 0; k < M_N; k++) { skim_pipeline_free(h->band[i].dec[k].p); }
     g_clear_pointer(&h->band[i].pairs, skim_rtty_pairs_unref);
     skim_rec_free(h->band[i].rec);
+    g_clear_pointer(&h->band[i].bc, skim_band_combine_free);
+    g_clear_pointer(&h->band[i].phist, skim_phase_hist_free);   /* the minute in hand */
+    g_clear_pointer(&h->band[i].bc_y, g_free);
+    g_clear_pointer(&h->band[i].bc_ca, g_free);
+    g_clear_pointer(&h->band[i].bc_cb, g_free);
   }
   g_clear_pointer(&h->stats, skim_stats_free);  /* saves                       */
   g_clear_pointer(&h->gov, skim_hd_governor_free);

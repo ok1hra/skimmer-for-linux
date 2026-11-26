@@ -58,6 +58,15 @@
  * [decode] suppress_cw_on_rtty switch). Its output is the CW pipeline's,
  * plus how many decodes were dropped.
  *
+ * SKIM_REPLAY_B=<file> replays a two-antenna pair (docs/PHASING.md): the
+ * file is antenna A, this one antenna B (a [record] pair is found by itself:
+ * A's .meta names B, pair_b:) (cf32 or WAV, the same rate and
+ * centre, aligned to the sample — skimmer-phase-bench measures the lag);
+ * the band is phased, SKIM_REPLAY_PHASE=mvdr|mrc|fixed|a|b picks the mode
+ * (default mvdr; a and b = one antenna, with the meters running). The
+ * station table gains each station's SNR_2500 on A and B and its gain, the
+ * run ends with the phase meter's summary. Noise and mutes go to both.
+ *
  * SKIM_REPLAY_TAP=<file> / SKIM_REPLAY_ROWS=<file> write the feed-gate
  * learning logs (a decode tap and the gate's rows, gatelog.h) — with
  * SKIM_REPLAY_FEED set the rows carry the feed's events too.
@@ -493,7 +502,48 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
+  /* SKIM_REPLAY_B: antenna B beside the file (docs/PHASING.md) */
+  static Src src_b;
+  const char *bpath = g_getenv("SKIM_REPLAY_B");
+  char *bpair = NULL;               /* a [record] pair: A's .meta names B */
+  if (!(bpath && bpath[0]) && !src.wav) {
+    char *mt = g_strdup_printf("%s.meta", path), *body = NULL;
+    if (g_file_get_contents(mt, &body, NULL, NULL)) {
+      const char *hit = strstr(body, "\npair_b: ");
+      if (hit) {
+        hit += 9;
+        const char *e = strchr(hit, '\n');
+        char *name = g_strndup(hit, e ? (gsize)(e - hit) : strlen(hit));
+        char *dir = g_path_get_dirname(path);
+        bpair = g_build_filename(dir, g_strstrip(name), NULL);
+        g_free(dir);
+        g_free(name);
+        bpath = bpair;
+      }
+    }
+    g_free(body);
+    g_free(mt);
+  }
+  const gboolean phased = bpath && bpath[0];
+  SkimCombinerConfig pcfg;
+  skim_combiner_config_default(&pcfg);
+  if (phased) {
+    if (!src_open(&src_b, bpath)) {
+      fprintf(stderr, "cannot open %s\n", bpath);
+      return 2;
+    }
+    const char *pm = g_getenv("SKIM_REPLAY_PHASE");
+    if (pm && pm[0] && !skim_phase_mode_parse(pm, &pcfg.mode)) {
+      fprintf(stderr, "SKIM_REPLAY_PHASE=%s: mvdr, mrc, fixed, a or b\n", pm);
+      return 2;
+    }
+    cfg.phased = TRUE;
+    cfg.phase = &pcfg;
+  }
   SkimPipeline *p = skim_pipeline_new(&cfg);
+  if (phased) {
+    printf("phased: antenna B %s, mode %s\n", bpath, skim_phase_mode_name(pcfg.mode));
+  }
   printf("=== skimmer-replay %s — %.0f Hz, centre %.0f Hz, %s%s, engine %s, "
          "dict %s ===\n",
          path, rate, center, rtty ? "RTTY" : "CW",
@@ -527,6 +577,7 @@ int main(int argc, char **argv) {
     if (from && from[0]) {
       frames = (guint64)(g_ascii_strtod(from, NULL) * rate) / BLK * BLK;
       src_skip(&src, frames);
+      if (phased) { src_skip(&src_b, frames); }
       frames = src.frames;
     }
   }
@@ -553,7 +604,13 @@ int main(int argc, char **argv) {
   if (nz_seed && nz_seed[0]) { nz_s ^= g_ascii_strtoull(nz_seed, NULL, 10) * 0xD1B54A32D192ED03ull; }
   double nz_sig = -1.0;                /* per component; < 0 = not measured */
   GArray *nz_pw = nz_db > 0 ? g_array_new(FALSE, FALSE, sizeof(float)) : NULL;
+  static float buf_b[BLK * 2];
   while (frames < frames_to && (n = src_read(&src, buf, BLK)) > 0) {
+    size_t nb = 0;
+    if (phased) {
+      nb = src_read(&src_b, buf_b, n);
+      if (nb < n) { memset(buf_b + 2 * nb, 0, (n - nb) * 2 * sizeof(float)); }
+    }
     if (nz_pw && nz_sig < 0) {
       for (size_t i = 0; i < n; i++) {
         const float pw = buf[2 * i] * buf[2 * i] + buf[2 * i + 1] * buf[2 * i + 1];
@@ -573,6 +630,11 @@ int main(int argc, char **argv) {
         buf[2 * i]     += (float)(nz_sig * r * cos(ph));
         buf[2 * i + 1] += (float)(nz_sig * r * sin(ph));
       }
+      for (size_t i = 0; phased && i < n; i++) {
+        const double r = sqrt(-2.0 * log(nz_u())), ph = 2.0 * G_PI * nz_u();
+        buf_b[2 * i]     += (float)(nz_sig * r * cos(ph));
+        buf_b[2 * i + 1] += (float)(nz_sig * r * sin(ph));
+      }
     }
     if (holds->len) {
       skim_pipeline_set_tx_hold(p, holds_tx_at(holds, (double)frames / rate));
@@ -583,9 +645,14 @@ int main(int argc, char **argv) {
       if (z <= 0 || a >= (double)n) { continue; }
       const gsize i0 = a > 0 ? (gsize)a : 0, i1 = z < (double)n ? (gsize)z : n;
       memset(buf + 2 * i0, 0, (i1 - i0) * 2 * sizeof(float));
+      if (phased) { memset(buf_b + 2 * i0, 0, (i1 - i0) * 2 * sizeof(float)); }
     }
     if (rp) { skim_pipeline_feed(rp, buf, (guint)n, rate, center); }
-    skim_pipeline_feed(p, buf, (guint)n, rate, center);
+    if (phased) {
+      skim_pipeline_feed2(p, buf, nb ? buf_b : NULL, (guint)n, rate, center);
+    } else {
+      skim_pipeline_feed(p, buf, (guint)n, rate, center);
+    }
     frames += n;
   }
   if (src.f != stdin) { fclose(src.f); }
@@ -593,9 +660,13 @@ int main(int argc, char **argv) {
     memset(buf, 0, sizeof(buf));
     for (guint64 q = 0; q < (guint64)(10 * rate); q += BLK) {
       if (rp) { skim_pipeline_feed(rp, buf, BLK, rate, center); }
-      skim_pipeline_feed(p, buf, BLK, rate, center);
+      skim_pipeline_feed2(p, buf, phased ? buf : NULL, BLK, rate, center);
     }
   }
+  if (phased && src_b.f != stdin) { fclose(src_b.f); }
+  SkimPipelinePhase phs;
+  const gboolean have_phase = phased && skim_pipeline_phase_snapshot(p, &phs, NULL, NULL,
+                                                                     NULL, 0);
   g_array_free(holds, TRUE);
   g_array_free(mutes, TRUE);
   if (nz_pw) { g_array_free(nz_pw, TRUE); }
@@ -611,14 +682,20 @@ int main(int argc, char **argv) {
   g_hash_table_iter_init(&it, g_stations);
   while (g_hash_table_iter_next(&it, &key, &val)) { g_ptr_array_add(rows, val); }
   g_ptr_array_sort(rows, by_freq);
-  printf("\n%-12s %10s %5s %5s %7s %6s %3s\n",
-         "call", "kHz", rtty ? "bd" : "wpm", "dB", "reports", "score", "cq");
+  printf("\n%-12s %10s %5s %5s %7s %6s %3s%s\n",
+         "call", "kHz", rtty ? "bd" : "wpm", "dB", "reports", "score", "cq",
+         phased ? "   SNR_A  SNR_B  SNR_Y   gain" : "");
   for (guint i = 0; i < rows->len; i++) {
     const SkimStation *st = g_ptr_array_index(rows, i);
     char khz[G_ASCII_DTOSTR_BUF_SIZE];
     g_ascii_formatd(khz, sizeof(khz), "%.2f", st->freq_hz / 1000.0);
-    printf("%-12s %10s %5.0f %5.0f %7u %6.2f %3s\n", st->call, khz, st->speed,
+    printf("%-12s %10s %5.0f %5.0f %7u %6.2f %3s", st->call, khz, st->speed,
            st->snr_db, st->reports, st->score, st->cq ? "CQ" : "");
+    if (phased && st->phased) {
+      printf("  %+6.1f %+6.1f %+6.1f %+6.1f", st->snr2_a_db, st->snr2_b_db, st->snr2_db,
+             st->phase_gain_db);
+    }
+    printf("\n");
   }
 
   printf("\nsummary: %.1f s stream in %.1f s wall (%.1fx), %" G_GUINT64_FORMAT
@@ -626,6 +703,17 @@ int main(int argc, char **argv) {
          stream, wall, stream / MAX(wall, 0.001), frames, g_fragments,
          rows->len);
   printf("decode log: %s\n", dlog);
+  if (have_phase) {
+    const SkimPhaseSummary *u = &phs.sum;
+    printf("phasing (%s%s, the last update): stations %u, gain over the better antenna "
+           "%+.1f dB (over A %+.1f), floor drop %+.1f dB (p90 %+.1f, D_max %.1f, |γ|² %.3f), "
+           "groups ≥ 3 dB %.0f %%, B carried %.0f %%, same direction %.0f %%; estimates: "
+           "gain %+.1f, drop %+.1f\n",
+           skim_phase_mode_name(phs.mode), phs.b_missing ? ", B missing" : "", u->stations,
+           u->gain_db, u->gain_a_db, u->drop_db, u->drop_p90_db, u->dmax_db, u->coherence,
+           100 * u->drop_share, 100 * u->share_b, 100 * u->same_dir, u->gain_est_db,
+           u->drop_est_db);
+  }
   if (rp) {
     printf("on RTTY pairs: %" G_GUINT64_FORMAT " CW decodes dropped\n",
            skim_pipeline_rtty_suppressed(p));

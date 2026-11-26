@@ -306,6 +306,14 @@ typedef struct {
   gboolean inflight;
   Box     *box;
   gboolean flush_want, flush_inflight, resync_due;
+  /* layer 2 of two-antenna phasing (decode.h mark_prob): each input
+   * sample's mark probability, from the line bin between the floor and
+   * the peak while the window is keyed (-1 otherwise); a frame describes
+   * its window's middle, so they come mp_delay frames late */
+  float    pring[256];
+  guint64  abs_in;
+  float   *mp;
+  guint    mp_n, mp_cap, mp_delay;
 } V4;
 
 static guint g_reg;
@@ -324,6 +332,7 @@ static gpointer v4_channel_new(double rate) {
   c->box = box_new();
   c->noise_pw = NAN;
   c->rate = rate;
+  for (guint k = 0; k < G_N_ELEMENTS(c->pring); k++) { c->pring[k] = -1.0f; }
   const double nf = rate / BIN_HZ;
   const guint N = (guint)llround(nf);
   if (fabs(nf - N) > 1e-6 || N < 8 || !skim_dcw4_net_shared(NULL)) {
@@ -387,6 +396,7 @@ static void op_free(gpointer p) {
 static void v4_channel_free(gpointer state) {
   V4 *c = state;
   if (!c) { return; }
+  g_free(c->mp);
   g_atomic_int_set(&c->box->dying, 1);
   box_unref(c->box);
   g_queue_clear_full(&c->units, unit_free);
@@ -445,6 +455,23 @@ static void frame(V4 *c) {
     const double delta = den != 0.0 ? CLAMP(0.5 * (l - r) / den, -0.5, 0.5) : 0.0;
     const double off = ((double)p - HALF + delta) * BIN_HZ;
     c->off_ema += 0.05 * (off - c->off_ema);
+  }
+  /* layer 2: this frame's mark probability, for the samples around its
+   * window's middle — the line bin between twice the floor and the peak,
+   * while the line is keyed (its gate, or the hangover after it) */
+  {
+    const gboolean open = c->gate ||
+                          (c->was_open && c->frames_abs - c->last_open < c->hangover_f);
+    float pf = -1.0f;
+    if (open) {
+      const double lo = 2.0 * fl, hi = MAX(c->lvl_ema, 2.0 * lo);
+      pf = (float)CLAMP(((double)mags[c->line_bin] - lo) / MAX(hi - lo, 1e-12), 0.0, 1.0);
+    }
+    const guint64 mid = c->abs_in - c->N / 2;
+    for (guint k = 0; k < c->hop; k++) {
+      const guint64 sidx = mid - c->hop / 2 + k;
+      c->pring[sidx % G_N_ELEMENTS(c->pring)] = pf;
+    }
   }
   c->frames_abs++;
   if ((c->frames_abs + c->tick_phase) % c->tick_frames == 0) { tick(c); }
@@ -972,7 +999,10 @@ static gboolean v4_process(gpointer state, const float *iq, guint nframes, SkimD
     }
   }
   flush_try(c);
+  const guint64 blk0 = c->abs_in;
   for (guint i = 0; iq && i < nframes; i++) {
+    c->pring[c->abs_in % G_N_ELEMENTS(c->pring)] = -1.0f;   /* fresh slot */
+    c->abs_in++;
     const guint w = (c->spos + c->sfill) % c->N;
     c->sring[2 * w] = iq[2 * i];
     c->sring[2 * w + 1] = iq[2 * i + 1];
@@ -986,6 +1016,18 @@ static gboolean v4_process(gpointer state, const float *iq, guint nframes, SkimD
       frame(c);
     }
   }
+  /* layer 2: the block's samples, mp_delay frames back */
+  if (c->mp_cap < nframes) {
+    g_free(c->mp);
+    c->mp = g_new(float, MAX(nframes, 1u));
+    c->mp_cap = nframes;
+  }
+  c->mp_delay = c->N / 2 + c->hop;
+  for (guint i = 0; i < nframes; i++) {
+    c->mp[i] = blk0 + i >= c->mp_delay
+                   ? c->pring[(blk0 + i - c->mp_delay) % G_N_ELEMENTS(c->pring)] : -1.0f;
+  }
+  c->mp_n = nframes;
   Unit *u = g_queue_pop_head(&c->units);
   if (!u) {
     pane_compose(c);
@@ -1012,6 +1054,13 @@ static double v4_tone_offset_hz(gpointer state) {
 static void v4_set_freq(gpointer state, double freq_hz) { ((V4 *)state)->freq_hz = freq_hz; }
 static void v4_set_floor(gpointer state, double noise_pw) { ((V4 *)state)->noise_pw = noise_pw; }
 
+static guint v4_mark_prob(gpointer state, const float **p, guint *delay) {
+  V4 *c = state;
+  *p = c->mp;
+  *delay = c->mp_delay;
+  return c->mp && !c->dead ? c->mp_n : 0;
+}
+
 const SkimDecodeBackend *skim_decode_cw_v4(void) {
   static const SkimDecodeBackend backend = {
     .name           = "cw-v4",
@@ -1026,6 +1075,7 @@ const SkimDecodeBackend *skim_decode_cw_v4(void) {
     .take_pane_op   = v4_take_pane_op,
     .resync         = v4_resync,
     .hold_begin     = v4_hold_begin,
+    .mark_prob      = v4_mark_prob,
   };
   return &backend;
 }

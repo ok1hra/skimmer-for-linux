@@ -78,6 +78,12 @@ typedef struct {
                          * channel without the report keeps saying */
   gint64  pos_us;       /* when a fresh read last confirmed freq_hz
                          * (SKIM_ST_REPOS, station.c) */
+  /* A phased band (docs/PHASING.md) — the fields below mean nothing
+   * unless phased is TRUE: SNR_2500 on antenna A and on antenna B alone,
+   * and the gain of the combination (snr2_db) over the better of them;
+   * NAN where a meter has no reading yet. They ride with snr2_db. */
+  gboolean phased;
+  double  snr2_a_db, snr2_b_db, phase_gain_db;
 } SkimStation;
 
 typedef struct _SkimStationTable SkimStationTable;

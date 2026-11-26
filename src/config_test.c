@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "engine/combiner.h"
 #include "headless/config.h"
 
 static int fails, checks;
@@ -764,6 +765,111 @@ int main(void) {
     check("clock 0 ppm, rate 96 kHz, no decode log", ok && c.ppm == 0 && c.rate == 96000 && !c.decode_log);
     if (ok) { skim_hd_config_clear(&c); }
     g_clear_error(&e);
+  }
+
+  printf("== phased bands (ip=ab, docs/PHASING.md)\n");
+  {
+    SkimHdConfig c;
+    GError *e = NULL;
+    gboolean ok = parse(&c, "[radio]\nhost=192.0.2.7\n[phase]\nmode=mrc\ntc_s=2\n[bands]\n"
+                            "20m=14045500 cw ip=ab\n40m=7025000 ip=ab phase=fixed\n80m=3525000\n", &e);
+    check(e ? e->message : "parses", ok);
+    check("20m and 40m phased, 80m not; A and B each two or three receivers",
+          ok && c.band[0].phased && c.band[1].phased && !c.band[2].phased && c.band[0].ip == 0 &&
+          c.nb_ip[0] == 3 && c.nb_ip[1] == 2 && c.nb_phased == 2);
+    check("[phase] mode mrc, tc_s 2, gate 6 dB by default; 40m phase=fixed",
+          ok && c.phase_mode == SKIM_PHASE_MRC && c.phase_tc_s == 2.0 && c.phase_gate_db == 6.0 &&
+          c.band[0].phase_mode == -1 && c.band[1].phase_mode == SKIM_PHASE_FIXED);
+    char *m = ok ? skim_hd_band_modes(&c.band[1], c.engine) : NULL;
+    check("written back: \"cw ip=ab phase=fixed\"", m && strcmp(m, "cw ip=ab phase=fixed") == 0);
+    g_free(m);
+    if (ok) { skim_hd_config_clear(&c); }
+    g_clear_error(&e);
+    struct { const char *ini, *want; } bad_cases[] = {
+      { "[radio]\nhost=a\n[bands]\n20m=14045500 ip=ab in=2\n", "no in=" },
+      { "[radio]\nhost=a\n[bands]\n20m=14045500 ip=ab @w1\n", "not on a worker" },
+      { "[radio]\ntype=mock\n[bands]\n20m=14045500 ip=ab\n", "type=hpsdr-p1 only" },
+      { "[radio]\nhost=a\nrate=96000\n[rp]\nb_rate=192000\n[bands]\n20m=14045500 ip=ab\n",
+        "one rate on both IPs" },
+      { "[radio]\nhost=a\n[bands]\n20m=14045500 ip=ab phase=best\n", "phase=mvdr, mrc" },
+      { "[radio]\nhost=a\n[phase]\nmode=strong\n[bands]\n20m=14045500 ip=ab\n", "[phase] mode" },
+    };
+    for (guint i = 0; i < G_N_ELEMENTS(bad_cases); i++) {
+      GError *e2 = NULL;
+      const gboolean ok2 = parse(&c, bad_cases[i].ini, &e2);
+      char what[200];
+      g_snprintf(what, sizeof(what), "refused: %s", e2 ? e2->message : "(accepted)");
+      check(what, !ok2 && e2 && strstr(e2->message, bad_cases[i].want));
+      if (ok2) { skim_hd_config_clear(&c); }
+      g_clear_error(&e2);
+    }
+    /* the phasing panel's Save: phase= in the band's line, [phase.<band>] */
+    {
+      const char *INI = "# mine\n[radio]\nhost=a\n[bands]\n# the band\n20m=14045500 cw,ip=ab,phase=mrc\n";
+      const double mem[3][2] = { { 6.0, 180.0 }, { NAN, NAN }, { -1.5, 42.5 } };
+      GError *e4 = NULL;
+      char *out = skim_hd_config_set_phase(INI, strlen(INI), "20m", SKIM_PHASE_FIXED, 6.02, -179.5, mem, &e4);
+      gboolean ok4 = out && parse(&c, out, &e4);
+      check("Save: the file parses again", ok4);
+      check("… phase=fixed in the band's line (mrc gone), comments kept",
+            ok4 && c.band[0].phase_mode == SKIM_PHASE_FIXED && c.band[0].phased && strstr(out, "# the band") &&
+            !strstr(out, "phase=mrc"));
+      check("… [phase.20m]: the fixed weight and memories 1 and 3",
+            ok4 && fabs(c.band[0].fixed_gain_db - 6.02) < 1e-9 && fabs(c.band[0].fixed_phase_deg + 179.5) < 1e-9 &&
+            c.band[0].mem[0][0] == 6.0 && c.band[0].mem[0][1] == 180.0 && isnan(c.band[0].mem[1][0]) &&
+            c.band[0].mem[2][1] == 42.5);
+      if (ok4) { skim_hd_config_clear(&c); }
+      g_free(out);
+      g_clear_error(&e4);
+      out = skim_hd_config_set_phase(INI, strlen(INI), "40m", SKIM_PHASE_A, 0, 0, mem, &e4);
+      check("Save for a band with no line: refused", !out && e4);
+      g_clear_error(&e4);
+      const gboolean bad5 = !parse(&c, "[radio]\nhost=a\n[bands]\n20m=14045500 ip=ab\n[phase.20m]\nm1=6\n", &e4);
+      check("[phase.20m] m1=6 (no phase) refused", bad5 && e4 && strstr(e4->message, "gain_db,phase_deg"));
+      if (!bad5) { skim_hd_config_clear(&c); }
+      g_clear_error(&e4);
+    }
+    /* in=12: phased on one IP, two of its receivers */
+    {
+      GError *e6 = NULL;
+      gboolean ok6 = parse(&c, "[radio]\nhost=a\n[bands]\n20m=14045500 cw in=12\n40m=7025000\n"
+                               "80m=3525000 ip=b in=12 phase=mrc\n", &e6);
+      check(e6 ? e6->message : "in=12 parses", ok6);
+      check("in=12: phased on its own IP, two receivers there (A 3, B 2)",
+            ok6 && c.band[0].phased && c.band[0].same_ip && c.band[0].ip == 0 && !c.band[0].input &&
+            c.band[2].phased && c.band[2].same_ip && c.band[2].ip == 1 && c.nb_ip[0] == 3 &&
+            c.nb_ip[1] == 2);
+      char *m6 = ok6 ? skim_hd_band_modes(&c.band[2], c.engine) : NULL;
+      check("written back: \"cw ip=b in=12 phase=mrc\"", m6 && strcmp(m6, "cw ip=b in=12 phase=mrc") == 0);
+      g_free(m6);
+      if (ok6) { skim_hd_config_clear(&c); }
+      g_clear_error(&e6);
+      struct { const char *ini, *want; } bad6[] = {
+        { "[radio]\nhost=a\n[bands]\n20m=14045500 ip=ab in=12\n", "not both" },
+        { "[radio]\nhost=a\n[rp]\nmode=extended\n[bands]\n20m=14045500 in=12\n", "mode=extended" },
+        { "[radio]\nhost=a\n[bands]\na=1845500 in=12\nb=3545500 in=12\nc=7045500 in=12\nd=10145500 in=12\n"
+          "e=14045500 in=12\n", "two receivers of IP A" },
+      };
+      for (guint i = 0; i < G_N_ELEMENTS(bad6); i++) {
+        GError *e7 = NULL;
+        const gboolean ok7 = parse(&c, bad6[i].ini, &e7);
+        char what7[200];
+        g_snprintf(what7, sizeof(what7), "refused: %s", e7 ? e7->message : "(accepted)");
+        check(what7, !ok7 && e7 && strstr(e7->message, bad6[i].want));
+        if (ok7) { skim_hd_config_clear(&c); }
+        g_clear_error(&e7);
+      }
+    }
+    /* eight phased bands fill both IPs; a ninth has no receiver on B */
+    GString *ini = g_string_new("[radio]\nhost=a\n[bands]\n");
+    for (int i = 0; i < 9; i++) { g_string_append_printf(ini, "b%d=%d000000 ip=ab\n", i, i + 2); }
+    GError *e3 = NULL;
+    const gboolean ok3 = parse(&c, ini->str, &e3);
+    check("a ninth phased band is refused: IP B's eight receivers are taken",
+          !ok3 && e3 && strstr(e3->message, "IP B too"));
+    if (ok3) { skim_hd_config_clear(&c); }
+    g_clear_error(&e3);
+    g_string_free(ini, TRUE);
   }
 
   printf("\n%s (%d of %d checks failed)\n", fails ? "FAIL" : "PASS", fails, checks);
