@@ -59,7 +59,8 @@
  * plus how many decodes were dropped.
  *
  * SKIM_REPLAY_B=<file> replays a two-antenna pair (docs/PHASING.md): the
- * file is antenna A, this one antenna B (cf32 or WAV, the same rate and
+ * file is antenna A, this one antenna B (a [record] pair is found by itself:
+ * A's .meta names B, pair_b:) (cf32 or WAV, the same rate and
  * centre, aligned to the sample — skimmer-phase-bench measures the lag);
  * the band is phased, SKIM_REPLAY_PHASE=mvdr|mrc|fixed|a|b picks the mode
  * (default mvdr; a and b = one antenna, with the meters running). The
@@ -504,6 +505,25 @@ int main(int argc, char **argv) {
   /* SKIM_REPLAY_B: antenna B beside the file (docs/PHASING.md) */
   static Src src_b;
   const char *bpath = g_getenv("SKIM_REPLAY_B");
+  char *bpair = NULL;               /* a [record] pair: A's .meta names B */
+  if (!(bpath && bpath[0]) && !src.wav) {
+    char *mt = g_strdup_printf("%s.meta", path), *body = NULL;
+    if (g_file_get_contents(mt, &body, NULL, NULL)) {
+      const char *hit = strstr(body, "\npair_b: ");
+      if (hit) {
+        hit += 9;
+        const char *e = strchr(hit, '\n');
+        char *name = g_strndup(hit, e ? (gsize)(e - hit) : strlen(hit));
+        char *dir = g_path_get_dirname(path);
+        bpair = g_build_filename(dir, g_strstrip(name), NULL);
+        g_free(dir);
+        g_free(name);
+        bpath = bpair;
+      }
+    }
+    g_free(body);
+    g_free(mt);
+  }
   const gboolean phased = bpath && bpath[0];
   SkimCombinerConfig pcfg;
   skim_combiner_config_default(&pcfg);

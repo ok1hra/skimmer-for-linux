@@ -163,6 +163,10 @@ typedef struct {
   gint64        bc_next_us;
   gboolean      bc_on;         /* not A alone: the combination goes out       */
   SkimPhaseHist *phist;        /* main loop: what phasing gave, kept (phase_hist.h) */
+  /* the phasing panel's state, live (main loop): what Save writes */
+  gint          ph_mode;
+  double        ph_gain, ph_phase;
+  double        ph_mem[3][2];
 } Band;
 
 typedef struct {
@@ -438,7 +442,7 @@ static void rx_iq2_cb(guint i, const float *iq, const float *iq_b, guint n, doub
   Hd *h = user;
   Band *b = &h->band[i];
   b->frames += n;
-  if (b->rec) { skim_rec_push(b->rec, iq, n, rate, centre); }
+  if (b->rec) { skim_rec_push2(b->rec, iq, iq_b, n, rate, centre); }
   const float *band_iq = iq;                   /* what the band's own IQ is */
   if (h->cfg.band[i].phased) { band_iq = phase_band_iq(b, iq, iq_b, n, rate); }
   skim_hd_waterfall_push(h->wf, i, band_iq, n, rate, centre);   /* nothing unless watched */
@@ -935,6 +939,8 @@ static void v4_json(Hd *h, GString *o) {
   g_free(rt);
 }
 
+static char *json_error(guint *st, guint code, const char *msg);
+
 /* GET /api/phase?band=: a phased band's line for the waterfall's spectrum —
  * the snapshot's rows (pipeline.h: gain, drop, dmax; one value a channel in
  * frequency order, 0.25 dB steps, -128 = none) and where they lie. No
@@ -961,6 +967,35 @@ static char *web_phase_get(GHashTable *q, SkimHdWebWho who, guint *st, const cha
                            "\"spacing_hz\":%.1f", b->name, skim_phase_mode_name(ph.mode),
                            ph.est ? "true" : "false", ph.b_missing ? "true" : "false",
                            ph.centre_hz, ph.first_hz, ph.spacing_hz);
+    /* the panel: the Fixed weight now, what MVDR's band-level weight is as
+     * one (the mean of B's coefficient over the channels: y = a + g·e^{jφ}·b),
+     * the memories */
+    {
+      float *ca = g_new(float, 2 * 16384), *cbf = g_new(float, 2 * 16384);
+      double first = 0, sp = 0, re = 0, im = 0;
+      const guint nc = skim_pipeline_phase_band_coef(p, ca, cbf, 16384, &first, &sp);
+      for (guint k = 0; k < nc; k++) { re += cbf[2 * k]; im += cbf[2 * k + 1]; }
+      const double mag = nc ? hypot(re, im) / nc : 0;
+      g_string_append_printf(o, ",\"fixed_gain_db\":%.2f,\"fixed_phase_deg\":%.1f", b->ph_gain,
+                             b->ph_phase);
+      if (mag > 1e-6 && ph.mode == SKIM_PHASE_MVDR) {
+        g_string_append_printf(o, ",\"adapt_gain_db\":%.2f,\"adapt_phase_deg\":%.1f",
+                               20.0 * log10(mag), atan2(im, re) * 180.0 / G_PI);
+      } else {
+        g_string_append(o, ",\"adapt_gain_db\":null,\"adapt_phase_deg\":null");
+      }
+      g_string_append(o, ",\"mem\":[");
+      for (guint k = 0; k < 3; k++) {
+        if (isnan(b->ph_mem[k][0])) {
+          g_string_append_printf(o, "%snull", k ? "," : "");
+        } else {
+          g_string_append_printf(o, "%s[%.2f,%.1f]", k ? "," : "", b->ph_mem[k][0], b->ph_mem[k][1]);
+        }
+      }
+      g_string_append_c(o, ']');
+      g_free(ca);
+      g_free(cbf);
+    }
     static const char *const key[3] = { "gain", "drop", "dmax" };
     const guint n = MIN(ph.nchan, 16384u);
     for (guint r = 0; r < 3; r++) {
@@ -1019,14 +1054,71 @@ static char *web_phase_post(GHashTable *form, guint *st, gpointer user) {
       *st = 400;
       return g_strdup("{\"error\":\"the band is not phased (ip=ab)\"}");
     }
+    Band *b = &h->band[i];
     const char *g = g_hash_table_lookup(form, "gain_db"), *ph = g_hash_table_lookup(form, "phase_deg");
-    const double gain = g ? g_ascii_strtod(g, NULL) : h->cfg.phase_fixed_gain_db;
-    const double phase = ph ? g_ascii_strtod(ph, NULL) : h->cfg.phase_fixed_phase_deg;
-    for (guint k = 0; k < M_N; k++) {
-      if (h->band[i].dec[k].p) { skim_pipeline_phase_set(h->band[i].dec[k].p, m, gain, phase); }
+    const double gain = g ? g_ascii_strtod(g, NULL) : b->ph_gain;
+    const double phase = ph ? g_ascii_strtod(ph, NULL) : b->ph_phase;
+    if (!isfinite(gain) || fabs(gain) > 40 || !isfinite(phase) || fabs(phase) > 360) {
+      *st = 400;
+      return g_strdup("{\"error\":\"gain_db -40…40, phase_deg -360…360\"}");
     }
-    g_message("phase: %s → %s (from the web page)", band, skim_phase_mode_name(m));
-    return g_strdup_printf("{\"ok\":true,\"band\":\"%s\",\"mode\":\"%s\"}", h->band[i].name,
+    for (guint k = 0; k < 3; k++) {             /* m1..m3 = "gain,phase" | "" (none) */
+      char key[4] = { 'm', (char)('1' + k), 0 };
+      const char *mv = g_hash_table_lookup(form, key);
+      if (!mv) { continue; }
+      char *e = NULL;
+      const double mg = g_ascii_strtod(mv, &e);
+      const double mp = e && *e == ',' ? g_ascii_strtod(e + 1, NULL) : NAN;
+      b->ph_mem[k][0] = *mv && !isnan(mp) && fabs(mg) <= 40 && fabs(mp) <= 360 ? mg : NAN;
+      b->ph_mem[k][1] = isnan(b->ph_mem[k][0]) ? NAN : mp;
+    }
+    if (m != (SkimPhaseMode)b->ph_mode || gain != b->ph_gain || phase != b->ph_phase) {
+      for (guint k = 0; k < M_N; k++) {
+        if (b->dec[k].p) { skim_pipeline_phase_set(b->dec[k].p, m, gain, phase); }
+      }
+      g_message("phase: %s → %s%s (from the web page)", band, skim_phase_mode_name(m),
+                m == SKIM_PHASE_FIXED ? " (a fixed weight)" : "");
+    }
+    b->ph_mode = (gint)m;
+    b->ph_gain = gain;
+    b->ph_phase = phase;
+    const char *action = g_hash_table_lookup(form, "action");
+    if (action && strcmp(action, "save") == 0) {
+      /* into the config, no restart: the band already runs so */
+      char *text = NULL, *out = NULL, *bak = NULL;
+      gsize len = 0;
+      GError *err = NULL;
+      SkimHdConfig chk;
+      char *body = NULL;
+      if (!g_file_get_contents(h->cfg_path, &text, &len, &err) ||
+          !(out = skim_hd_config_set_phase(text, len, band, (gint)m, gain, phase,
+                                           (const double (*)[2])b->ph_mem, &err))) {
+        body = json_error(st, 400, err->message);
+      } else if (!skim_hd_config_parse(&chk, out, strlen(out), h->cfg_path, &err)) {
+        body = json_error(st, 400, err->message);
+      } else {
+        skim_hd_config_clear(&chk);
+        if (strcmp(out, text) != 0 && !skim_hd_config_save(h->cfg_path, out, &bak, &err)) {
+          body = json_error(st, 500, err->message);
+        } else {
+          SkimHdBand *cb = &h->cfg.band[i];
+          cb->phase_mode = (gint)m;
+          cb->fixed_gain_db = gain;
+          cb->fixed_phase_deg = phase;
+          memcpy(cb->mem, b->ph_mem, sizeof(cb->mem));
+          g_message("phase: %s saved to %s — %s, fixed %.2f dB %.1f° (previous: %s)", band,
+                    h->cfg_path, skim_phase_mode_name(m), gain, phase, bak ? bak : "unchanged");
+          body = g_strdup_printf("{\"ok\":true,\"saved\":true,\"band\":\"%s\",\"mode\":\"%s\"}",
+                                 b->name, skim_phase_mode_name(m));
+        }
+      }
+      g_clear_error(&err);
+      g_free(bak);
+      g_free(out);
+      g_free(text);
+      return body;
+    }
+    return g_strdup_printf("{\"ok\":true,\"band\":\"%s\",\"mode\":\"%s\"}", b->name,
                            skim_phase_mode_name(m));
   }
   *st = 404;
@@ -2756,8 +2848,12 @@ static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const c
   phase.mode = (SkimPhaseMode)(cb->phase_mode >= 0 ? cb->phase_mode : c->phase_mode);
   phase.tc_s = c->phase_tc_s;
   phase.gate_db = c->phase_gate_db;
-  phase.fixed_gain_db = c->phase_fixed_gain_db;
-  phase.fixed_phase_deg = c->phase_fixed_phase_deg;
+  phase.fixed_gain_db = isnan(cb->fixed_gain_db) ? c->phase_fixed_gain_db : cb->fixed_gain_db;
+  phase.fixed_phase_deg = isnan(cb->fixed_phase_deg) ? c->phase_fixed_phase_deg : cb->fixed_phase_deg;
+  b->ph_mode = (gint)phase.mode;
+  b->ph_gain = phase.fixed_gain_db;
+  b->ph_phase = phase.fixed_phase_deg;
+  memcpy(b->ph_mem, cb->mem, sizeof(b->ph_mem));
   pc.phased = cb->phased;
   pc.phase = cb->phased ? &phase : NULL;
   d->p = skim_pipeline_new(&pc);
@@ -3215,6 +3311,7 @@ int main(int argc, char **argv) {
     g_mkdir_with_parents(c->rec_dir, 0755);
     b->rec = skim_rec_new(c->rec_dir, b->name, b->label, c->ppm, c->rec_at_us,
                           c->rec_minutes);
+    if (c->band[b - h->band].phased) { skim_rec_set_paired(b->rec); }   /* A + B */
     if (c->rec_at_us) {
       GDateTime *t = g_date_time_new_from_unix_utc(c->rec_at_us / G_USEC_PER_SEC);
       char *ts = g_date_time_format(t, "%Y-%m-%d %H:%M UTC");

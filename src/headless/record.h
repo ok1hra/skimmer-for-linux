@@ -23,6 +23,14 @@ Rec *skim_rec_new(const char *dir, const char *band, const char *label, double p
 /* Receiver thread: one block (starts at at_us, stops after minutes). */
 void skim_rec_push(Rec *r, const float *iq, guint n, double rate, double centre);
 
+/* A phased band (docs/PHASING.md): before the start, antenna B is recorded
+ * beside A — <dir>/hd-<band>-<UTC>-b.cf32, sample for sample (silence while
+ * B is missing), each .meta naming the other (pair_b: / pair_a:), so
+ * skimmer-replay and skimmer-phase-bench find the pair from A's file. */
+void skim_rec_set_paired(Rec *r);
+void skim_rec_push2(Rec *r, const float *iq, const float *iq_b, guint n, double rate,
+                    double centre);
+
 /* Teardown: an unfinished recording is closed with what it has. */
 void skim_rec_free(Rec *r);
 

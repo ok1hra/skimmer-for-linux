@@ -331,7 +331,7 @@ Where they show:
   `GET /api/phase_hist`, Statistics → Phasing): channel = pixel, row =
   minute, two planes (G, drop), 7 days by the minute and 90 days by the
   quarter hour, `<state>/phase-<band>.bin`, only for phased bands (≈ 30 MB
-  a band at 768 channels); rows in modes A, B or Fixed are estimates and
+  a band at 768 channels); rows in modes A or B are estimates and
   drawn greyed. The band's summary of each row (medians of gain, gain over
   A, drop and its p90, coherence, D_max, B's share, stations) lives in the
   same file and is drawn beside it — not in stats.bin (no stats v9: the
@@ -360,6 +360,13 @@ side by side, the groups, the stations, the measured lag and the CPU.
   most), `ip=ab` with `@worker` (v1 phases locally only).
 - Settings → Bands: the IP column offers "A+B Φ" (`ip=ab`; refused while
   the two IPs run two rates); a band's `phase=` is kept through the form.
+- The waterfall's phasing panel (⚙ beside Φ; built): the mode (MVDR, MRC,
+  Fixed, A, B), the Fixed weight as Linrad has it (gain dB and phase °,
+  fine and coarse steps; "from MVDR" takes MVDR's band-level weight as the
+  fixed one — adapt, then fix), three memories, Save: the band's phase=
+  and `[phase.<band>]` (fixed_gain_db, fixed_phase_deg, m1..m3) into the
+  config with a backup, no restart. In Fixed the line shows what the
+  hand-set weight does; in A and B what phasing would give.
 - Adding or removing `ip=ab` is a settings change (a restart). The mode and
   the Fixed weight change live from the panel (POST `/api/phase`,
   managers), saved to the config only on Save; the meters keep running in
@@ -473,7 +480,7 @@ interfaces:
 |---|---|---|
 | P0 | **Measure first.** Record pairs on real air with `rp-spike pair` (longer, 96 kHz, two real antennas, or the antenna and its interference); `skimmer-phase-bench` (built) computes MRC and MVDR per channel, the groups' coherence and the measured lag | numbers: the SNR gain and null depth on real air (if both are small for the station's antennas, stop here) |
 | P1 | agent: paired start, sample index, epoch — **built** (agent 0.4, `docs/REDPITAYA.md`; not on the board yet) | `rp-agent`: both sim streams carry one epoch and a contiguous index, the same index is the same instant (phase 0.000°, a sample off = 3.75°); an overflow on A starts a new epoch on both, aligned again; an unmarked stream keeps Pavel's C&C; a paired start beside it resets nothing |
-| P2 | config `ip=ab`, `[phase]`, `phase=`; the client's paired start and stamps (`set_rx_iq_ix_cb`: blocks with epoch + index, loss filled by the index); a pairer per band in `source_hpsdr_p1.c` (same epoch, same index → `iq2_cb`; A's unmatched front and A while B is missing, late past 0.25 s or unstamped go alone); status.json `phase` — **built**. Still to do: `[record]` pairs | `rp-two-ip`: a phased band streams paired from both IPs (one epoch, IN1 at A, IN2 at B); the agent sim's noise (a function of the sample number, on both inputs) stays coherent end to end (\|γ\|² 0.99, nulled 47 dB — a pairer off by 4096 samples reads 0.00); IP B taken → IN1 alone, said so; B back → phased again; two rates refused. `config`: ip=ab and its refusals |
+| P2 | config `ip=ab`, `[phase]`, `phase=`; the client's paired start and stamps (`set_rx_iq_ix_cb`: blocks with epoch + index, loss filled by the index); a pairer per band in `source_hpsdr_p1.c` (same epoch, same index → `iq2_cb`; A's unmatched front and A while B is missing, late past 0.25 s or unstamped go alone); status.json `phase` — **built**. `[record]` writes the pair (`-b.cf32`, each .meta naming the other: replay and bench find B from A's file) | `rp-two-ip`: a phased band streams paired from both IPs (one epoch, IN1 at A, IN2 at B); the agent sim's noise (a function of the sample number, on both inputs) stays coherent end to end (\|γ\|² 0.99, nulled 47 dB — a pairer off by 4096 samples reads 0.00); IP B taken → IN1 alone, said so; B back → phased again; two rates refused. `config`: ip=ab and its refusals |
 | P3 | `SkimCombiner` (MVDR/MRC/fixed, gating, phase reference, noise normalisation), `SkimPhaseMeter`, and the pipeline (`SkimPipelineConfig.phased`: B's channelizer, the combiner in the drain, the Y meter as the band's shadow SNR, B missing → A, `push2`/`feed2`, a snapshot for the page, the spots' SNR_A/SNR_B/gain) — **built** | gate `phase`: MRC ≥ 2.5 dB, one interferer nulled ≥ 20 dB, two in two halves each where it is, B a copy of A, empty IN2, mode A bit for bit, Fixed, the meters against the truth; the whole pipeline spots a CW station 8 dB under a common interferer on each antenna (neither alone does), B missing decodes A, mode A shows the estimates. **Golden byte-identical** |
 | P4 | band-level W(f): waterfall, digi_rx, WSPR — **built** (`band_combine.c`: WOLA, √Hann, half overlapping, N = 2048 at 96 kHz; the weights per channel from the combiner's group canceller, MVDR towards e_A with no station steering, scaled to w_A = 1 so A's signals keep their gain and the interference leaves the floor; interpolated to every bin; A itself while the weights are A alone). The waterfall's Φ switches the band between its mode and A, the line over the spectrum shows gain / interference / coherence per channel (`GET /api/phase`) | gate `phase`: unit weights give A back exactly (2048 frames late), mode A changes nothing, MVDR takes a 30 dB interferer 18.6 dB off the band. Still to do: the FT8/WSPR gates on a synthetic pair |
 | P5 | web panel, coherence trace, stats v9 | headless Chrome screenshots; stats migration test |

@@ -803,6 +803,32 @@ int main(void) {
       if (ok2) { skim_hd_config_clear(&c); }
       g_clear_error(&e2);
     }
+    /* the phasing panel's Save: phase= in the band's line, [phase.<band>] */
+    {
+      const char *INI = "# mine\n[radio]\nhost=a\n[bands]\n# the band\n20m=14045500 cw,ip=ab,phase=mrc\n";
+      const double mem[3][2] = { { 6.0, 180.0 }, { NAN, NAN }, { -1.5, 42.5 } };
+      GError *e4 = NULL;
+      char *out = skim_hd_config_set_phase(INI, strlen(INI), "20m", SKIM_PHASE_FIXED, 6.02, -179.5, mem, &e4);
+      gboolean ok4 = out && parse(&c, out, &e4);
+      check("Save: the file parses again", ok4);
+      check("… phase=fixed in the band's line (mrc gone), comments kept",
+            ok4 && c.band[0].phase_mode == SKIM_PHASE_FIXED && c.band[0].phased && strstr(out, "# the band") &&
+            !strstr(out, "phase=mrc"));
+      check("… [phase.20m]: the fixed weight and memories 1 and 3",
+            ok4 && fabs(c.band[0].fixed_gain_db - 6.02) < 1e-9 && fabs(c.band[0].fixed_phase_deg + 179.5) < 1e-9 &&
+            c.band[0].mem[0][0] == 6.0 && c.band[0].mem[0][1] == 180.0 && isnan(c.band[0].mem[1][0]) &&
+            c.band[0].mem[2][1] == 42.5);
+      if (ok4) { skim_hd_config_clear(&c); }
+      g_free(out);
+      g_clear_error(&e4);
+      out = skim_hd_config_set_phase(INI, strlen(INI), "40m", SKIM_PHASE_A, 0, 0, mem, &e4);
+      check("Save for a band with no line: refused", !out && e4);
+      g_clear_error(&e4);
+      const gboolean bad5 = !parse(&c, "[radio]\nhost=a\n[bands]\n20m=14045500 ip=ab\n[phase.20m]\nm1=6\n", &e4);
+      check("[phase.20m] m1=6 (no phase) refused", bad5 && e4 && strstr(e4->message, "gain_db,phase_deg"));
+      if (!bad5) { skim_hd_config_clear(&c); }
+      g_clear_error(&e4);
+    }
     /* eight phased bands fill both IPs; a ninth has no receiver on B */
     GString *ini = g_string_new("[radio]\nhost=a\n[bands]\n");
     for (int i = 0; i < 9; i++) { g_string_append_printf(ini, "b%d=%d000000 ip=ab\n", i, i + 2); }

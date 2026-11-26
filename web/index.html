@@ -157,7 +157,7 @@
       <div class="legend" id="legend-rpnet"></div><div class="chart" id="chart-rpnet"></div>
       <p class="sub mut" id="rp-card-note"></p></div>
     <div class="chart-card" id="card-phase" hidden><h2>Phasing <span class="mut" id="phase-card-sub"></span></h2>
-      <p class="sub mut">what the two antennas gave, channel by channel (a pixel a channel) and in time (the newest on top): <b>interference</b> — what the combination takes off antenna A's floor; <b>gain</b> — a station's SNR over the better antenna alone. On the right the band's medians, the same rows. Grey stripes: modes A, B or Fixed (what phasing would give); black: nothing read, B missing.</p>
+      <p class="sub mut">what the two antennas gave, channel by channel (a pixel a channel) and in time (the newest on top): <b>interference</b> — what the combination takes off antenna A's floor; <b>gain</b> — a station's SNR over the better antenna alone. On the right the band's medians, the same rows. Grey stripes: antenna A or B alone (what phasing would give); black: nothing read, B missing.</p>
       <div class="phase-ctl"><label>band <select id="phase-band"></select></label> <label>show <select id="phase-plane"><option value="drop">interference off the floor</option><option value="gain">gain over the better antenna</option></select></label> <span class="mut" id="phase-legend"></span></div>
       <canvas id="phase-cv" class="phase-cv"></canvas>
       <p class="sub mut" id="phase-note"></p></div>
@@ -196,8 +196,18 @@
       <button type="button" class="wf-auto wf-rtty" id="wf-rtty" title="the RTTY palette: decodes the frequency heard">RTTY</button>
       <button type="button" class="wf-auto wf-ft8" id="wf-ft8" hidden title="the FT8 palette: what the skimmer decodes on this band's FT8/FT4 dial (the view narrows to it)">FT8</button>
       <button type="button" class="wf-auto wf-js8" id="wf-js8" hidden title="the JS8 palette: what the skimmer decodes on this band's JS8 dial, every submode, the frames put back into messages (the view narrows to it)">JS8</button>
-      <span class="wf-phase-ctl" id="wf-phase-ctl" hidden><button type="button" class="wf-auto wf-phase" id="wf-phase" title="phasing: this band from both antennas (IN1 + IN2), combined">Φ</button><select id="wf-phase-line" title="the line over the spectrum: what phasing gives, channel by channel"><option value="">no line</option><option value="gain">gain</option><option value="drop">interference</option><option value="dmax">coherence</option></select></span>
+      <span class="wf-phase-ctl" id="wf-phase-ctl" hidden><button type="button" class="wf-auto wf-phase" id="wf-phase" title="phasing: this band from both antennas (IN1 + IN2), combined">Φ</button><select id="wf-phase-line" title="the line over the spectrum: what phasing gives, channel by channel"><option value="">no line</option><option value="gain">gain</option><option value="drop">interference</option><option value="dmax">coherence</option></select><button type="button" class="wf-auto wf-phase-set" id="wf-phase-set" title="the phasing panel: the mode, a fixed weight, memories, Save">⚙</button></span>
       <span class="wf-net mut" id="wf-net"></span>
+    </div>
+    <div class="wf-phase-panel" id="wf-phase-panel" hidden>
+      <div class="pp-row"><span class="pp-lbl">mode</span><span id="pp-modes" class="pp-modes"></span><span class="mut" id="pp-now"></span></div>
+      <div class="pp-row" id="pp-fixed"><span class="pp-lbl" title="mode Fixed: y = A + g·e^{jφ}·B, one weight for the whole band (Linrad's phasing): equalise the noise with the gain, then turn the phase towards the null">B against A</span>
+        <span class="pp-grp">gain <button type="button" data-g="-1">−1</button><button type="button" data-g="-0.1">−.1</button><input id="pp-gain" type="number" step="0.1" min="-40" max="40" inputmode="decimal"> dB<button type="button" data-g="0.1">+.1</button><button type="button" data-g="1">+1</button></span>
+        <span class="pp-grp">phase <button type="button" data-p="-10">−10</button><button type="button" data-p="-1">−1</button><input id="pp-phase" type="number" step="0.5" min="-180" max="180" inputmode="decimal">°<button type="button" data-p="1">+1</button><button type="button" data-p="10">+10</button></span>
+        <button type="button" id="pp-adapt" title="adapt, then fix: MVDR's band-level weight (the mean over the channels) as the fixed one">from MVDR</button></div>
+      <div class="pp-row"><span class="pp-lbl">memories</span><button type="button" class="pp-m" data-m="0">M1</button><button type="button" class="pp-m" data-m="1">M2</button><button type="button" class="pp-m" data-m="2">M3</button>
+        <label class="chk" title="ticked: a memory button stores the fixed weight now instead of recalling it"><input type="checkbox" id="pp-store"> store</label>
+        <button type="button" id="pp-save" title="the mode, the fixed weight and the memories into the config — the band starts so next time">Save</button><span class="mut" id="pp-msg"></span></div>
     </div>
     <canvas id="wf-spec-cv" class="wf-spec" hidden title="wheel: tune (Shift: 10 Hz steps) · a call: listen there (RTTY: the palette decodes it)"></canvas>
     <canvas id="wf-scale" class="wf-scale"></canvas>

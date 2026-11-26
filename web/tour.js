@@ -73,7 +73,7 @@ const Tour = (() => {
       { sel: ['#wf-rtty', '#wf-ft8', '#wf-js8'], t: 'The palettes',
         x: '<b>RTTY</b> decodes the frequency heard in the browser. <b>FT8</b> and <b>JS8</b> show what the skimmer decodes on the band\'s FT8 or JS8 frequency — JS8\'s messages put back together — and narrow the picture to it.' },
       { sel: '#wf-phase-ctl', t: 'Phasing',
-        x: 'This band comes from both antennas. <b>Φ</b> switches the combination on and off — for decoding too — and the picture shows the difference within a second or two. The list beside it puts a line over the spectrum: per channel the interference taken off the floor, a station\'s gain over the better antenna, or the deepest null the coherence allows.' },
+        x: 'This band comes from both antennas. <b>Φ</b> switches the combination on and off — for decoding too — and the picture shows the difference within a second or two. The list beside it puts a line over the spectrum: per channel the interference taken off the floor, a station\'s gain over the better antenna, or the deepest null the coherence allows. <b>⚙</b> opens the panel: the mode, a fixed weight set by hand (or taken from MVDR), three memories and Save.' },
       { sel: '#wf-scale', t: 'The scale',
         x: 'The frequency in kHz. Coloured feet mark the windows the digital decoders listen to (FT8 violet, JS8 gold, WSPR red).' },
       { sel: '#wf-box', t: 'The waterfall',

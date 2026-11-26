@@ -485,7 +485,7 @@ const Wf = (() => {
   // two. The line over the spectrum: per channel what phasing gives — the
   // gain over the better antenna where a station is, the interference taken
   // off the floor, or the deepest null the coherence allows (dB).
-  let phaseData = null, phaseLast = 'mvdr', phaseBusy = false;
+  let phaseData = null, phaseLast = 'mvdr', phaseBusy = false, panelOpen = false, ppT = 0;
   function phaseOf() {
     const b = bandInfo(), bs = typeof status !== 'undefined' && status && status.bands;
     if (!b || !bs) return null;
@@ -526,7 +526,7 @@ const Wf = (() => {
   }
   async function phaseFetch() {
     const b = bandInfo();
-    if (!b || !opt.phaseLine || !phaseOf()) { phaseData = null; return; }
+    if (!b || !(opt.phaseLine || panelOpen) || !phaseOf()) { phaseData = null; panelUi(); return; }
     try {
       const r = await fetch(`api/phase?band=${encodeURIComponent(b.name)}`, { cache: 'no-store' });
       const j = await r.json();
@@ -534,6 +534,67 @@ const Wf = (() => {
     } catch (e) { phaseData = null; }
     bar();
     drawTop();
+    panelUi();
+  }
+  // ---- the phasing panel: the mode, a fixed weight (Linrad's way), memories, Save
+  const MODES = [['mvdr', 'MVDR', 'max SINR: nulls the interference and lifts each station'],
+                 ['mrc', 'MRC', 'maximal-ratio combining: lifts each station, no null'],
+                 ['fixed', 'Fixed', 'one weight for the whole band, set by hand below'],
+                 ['a', 'A', 'antenna A (IN1) alone'], ['b', 'B', 'antenna B (IN2) alone']];
+  function panelUi() {
+    const p = $('#wf-phase-panel'), btn = $('#wf-phase-set'), ph = phaseOf();
+    if (!p) return;
+    p.hidden = !panelOpen || !ph;
+    btn.classList.toggle('on', panelOpen);
+    if (p.hidden) return;
+    const d = phaseData, may = manager(), mode = (d && d.mode) || ph.mode;
+    const box = $('#pp-modes');
+    if (!box.children.length) {
+      box.innerHTML = MODES.map(([k, t, x]) => `<button type="button" data-mode="${k}" title="${x}">${t}</button>`).join('');
+    }
+    for (const b of box.children) { b.classList.toggle('on', b.dataset.mode === mode); b.disabled = !may; }
+    $('#pp-now').textContent = ph.b_missing ? 'IP B missing — antenna A alone'
+      : `interference ${ph.drop_db == null ? '—' : ph.drop_db.toFixed(1)} dB off the floor, coherence ${ph.coherence == null ? '—' : ph.coherence.toFixed(2)}`;
+    const gi = $('#pp-gain'), pi = $('#pp-phase');
+    if (d && document.activeElement !== gi && !ppT) gi.value = d.fixed_gain_db.toFixed(1);
+    if (d && document.activeElement !== pi && !ppT) pi.value = d.fixed_phase_deg.toFixed(1);
+    for (const el of p.querySelectorAll('#pp-fixed button, #pp-fixed input, #pp-save, #pp-store')) el.disabled = !may;
+    $('#pp-adapt').disabled = !may || !d || d.adapt_gain_db == null;
+    $('#pp-adapt').title = d && d.adapt_gain_db != null
+      ? `adapt, then fix: MVDR's band-level weight now — ${d.adapt_gain_db.toFixed(1)} dB, ${d.adapt_phase_deg.toFixed(1)}° — as the fixed one`
+      : 'adapt, then fix: needs MVDR running';
+    const mem = (d && d.mem) || [null, null, null];
+    for (const b of p.querySelectorAll('.pp-m')) {
+      const m = mem[Number(b.dataset.m)];
+      b.classList.toggle('empty', !m);
+      b.title = m ? `${m[0].toFixed(1)} dB, ${m[1].toFixed(1)}° — click: recall (store ticked: overwrite)` : 'empty — tick store and click to keep the fixed weight here';
+      b.disabled = !may || (!m && !$('#pp-store').checked);
+    }
+  }
+  async function phaseSend(fields, msg) {
+    const b = bandInfo();
+    if (!b || !manager()) return;
+    const d = phaseData || {};
+    const body = new URLSearchParams({ band: b.name, mode: fields.mode || d.mode || 'mvdr',
+      gain_db: String(fields.gain_db ?? Number($('#pp-gain').value)),
+      phase_deg: String(fields.phase_deg ?? Number($('#pp-phase').value)) });
+    for (const k of ['m1', 'm2', 'm3', 'action']) if (fields[k] != null) body.set(k, fields[k]);
+    try {
+      const j = await post('api/phase', body);
+      $('#pp-msg').textContent = msg || (j.saved ? 'saved to the config' : '');
+      if (phaseData) Object.assign(phaseData, { mode: body.get('mode'), fixed_gain_db: Number(body.get('gain_db')),
+                                                 fixed_phase_deg: Number(body.get('phase_deg')) });
+    } catch (e) { $('#pp-msg').textContent = e.message; }
+    setTimeout(phaseFetch, 1200);
+  }
+  // a fixed weight typed or nudged: mode Fixed, sent a moment later
+  function fixedChanged() {
+    const wrap = (x) => ((x + 180) % 360 + 360) % 360 - 180;
+    const gi = $('#pp-gain'), pi = $('#pp-phase');
+    gi.value = Math.max(-40, Math.min(40, Number(gi.value) || 0)).toFixed(1);
+    pi.value = wrap(Number(pi.value) || 0).toFixed(1);
+    clearTimeout(ppT);
+    ppT = setTimeout(() => { ppT = 0; phaseSend({ mode: 'fixed' }); }, 200);
   }
   // the line: 0 dB dashed, +40 … −10 dB over the strip's height
   function drawPhase(w, h) {
@@ -1017,6 +1078,37 @@ const Wf = (() => {
     $('#wf-js8').addEventListener('click', () => { if (typeof Js8Pal !== 'undefined') Js8Pal.toggleOn(band); });
     ft8Ui();
     $('#wf-phase').addEventListener('click', phaseToggle);
+    $('#wf-phase-set').addEventListener('click', () => { panelOpen = !panelOpen; panelUi(); phaseFetch(); });
+    $('#pp-modes').addEventListener('click', (e) => { const m = e.target.dataset && e.target.dataset.mode; if (m) phaseSend({ mode: m }); });
+    $('#pp-fixed').addEventListener('click', (e) => {
+      const t = e.target.dataset || {};
+      if (t.g) { $('#pp-gain').value = (Number($('#pp-gain').value) + Number(t.g)).toFixed(1); fixedChanged(); }
+      if (t.p) { $('#pp-phase').value = (Number($('#pp-phase').value) + Number(t.p)).toFixed(1); fixedChanged(); }
+    });
+    $('#pp-gain').addEventListener('change', fixedChanged);
+    $('#pp-phase').addEventListener('change', fixedChanged);
+    $('#pp-adapt').addEventListener('click', () => {
+      const d = phaseData;
+      if (!d || d.adapt_gain_db == null) return;
+      $('#pp-gain').value = d.adapt_gain_db.toFixed(1);
+      $('#pp-phase').value = d.adapt_phase_deg.toFixed(1);
+      phaseSend({ mode: 'fixed', gain_db: d.adapt_gain_db, phase_deg: d.adapt_phase_deg }, 'MVDR\'s weight now fixed');
+    });
+    $('#pp-store').addEventListener('change', panelUi);
+    for (const b of document.querySelectorAll('.pp-m')) {
+      b.addEventListener('click', () => {
+        const k = Number(b.dataset.m), mem = (phaseData && phaseData.mem) || [];
+        if ($('#pp-store').checked) {
+          phaseSend({ [`m${k + 1}`]: `${Number($('#pp-gain').value)},${Number($('#pp-phase').value)}` }, `stored in M${k + 1}`);
+          $('#pp-store').checked = false;
+        } else if (mem[k]) {
+          $('#pp-gain').value = mem[k][0].toFixed(1);
+          $('#pp-phase').value = mem[k][1].toFixed(1);
+          phaseSend({ mode: 'fixed', gain_db: mem[k][0], phase_deg: mem[k][1] }, `M${k + 1} recalled`);
+        }
+      });
+    }
+    $('#pp-save').addEventListener('click', () => phaseSend({ action: 'save' }));
     $('#wf-phase-line').addEventListener('change', (e) => { opt.phaseLine = e.target.value; save(); phaseFetch(); });
     phaseUi();
     // a click on a call over the waterfall: listen there (RTTY: the palette too)
@@ -1049,7 +1141,7 @@ const Wf = (() => {
       bytes = 0; bytesAt = now;
       if (opt.calls) fetchSpots();
       ft8Ui();                                       // [ft8] on or off: the status says
-      phaseUi();                                     // a phased band: Φ and its line
+      phaseUi();                                     // a phased band: Φ, its line, its panel
       phaseFetch();
     }, 2000);
   }

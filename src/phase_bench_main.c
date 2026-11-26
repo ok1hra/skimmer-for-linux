@@ -3,7 +3,8 @@
  * (docs/PHASING.md, P0): the same channelizer, combiner and meters as the
  * skimmer, run offline on antenna A's and antenna B's IQ.
  *
- *   skimmer-phase-bench A.cf32 B.cf32 [options]
+ *   skimmer-phase-bench A.cf32 [B.cf32] [options]   (B: a [record] pair's
+ *                      own, from A's .meta, when not given)
  *     --rate HZ        the pair's rate (default: the .meta sidecar)
  *     --centre HZ      its centre (default: the .meta; labels only)
  *     --conj / --no-conj  conjugate on read (default: when the .meta says
@@ -138,8 +139,27 @@ int main(int argc, char **argv) {
       return 2;
     }
   }
+  char *pair_b = NULL;              /* a [record] pair: A's .meta names B */
+  if (pa && !pb) {
+    char *mt = g_strdup_printf("%s.meta", pa), *body = NULL;
+    if (g_file_get_contents(mt, &body, NULL, NULL)) {
+      const char *hit = strstr(body, "\npair_b: ");
+      if (hit) {
+        hit += 9;
+        const char *e = strchr(hit, '\n');
+        char *name = g_strndup(hit, e ? (gsize)(e - hit) : strlen(hit));
+        char *dir = g_path_get_dirname(pa);
+        pair_b = g_build_filename(dir, g_strstrip(name), NULL);
+        g_free(dir);
+        g_free(name);
+        pb = pair_b;
+      }
+    }
+    g_free(body);
+    g_free(mt);
+  }
   if (!pa || !pb) {
-    fprintf(stderr, "usage: skimmer-phase-bench A.cf32 B.cf32 [--rate HZ] [--centre HZ] "
+    fprintf(stderr, "usage: skimmer-phase-bench A.cf32 [B.cf32] [--rate HZ] [--centre HZ] "
                     "[--conj|--no-conj] [--lag N] [--every S] [--hold S] [--csv FILE]\n");
     return 2;
   }

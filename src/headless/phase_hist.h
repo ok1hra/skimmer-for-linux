@@ -8,7 +8,7 @@
  * station was, and the floor drop (the interference taken out) — plus the
  * band's summary of the minute (the medians: gain, gain over A, drop and
  * its 90th percentile, coherence, D_max, B's share, stations). The values
- * are what the pipeline measured (or, in modes A, B and Fixed, what it
+ * are what the pipeline measured (or, in modes A and B, what it
  * estimates the adaptive weight would give — the row says which).
  *
  * The file (<state>/phase-<band>.bin, ≈ 30 MB at 768 channels) is held

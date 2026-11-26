@@ -1148,7 +1148,9 @@ static void phase_update(SkimPipeline *p, double center_hz) {
     skim_phase_meter_refresh(p->pmeter, p->comb);
   }
   const SkimPhaseMode mode = skim_combiner_mode(p->comb);
-  const gboolean est = mode != SKIM_PHASE_MVDR && mode != SKIM_PHASE_MRC;
+  /* A or B alone: the line shows what the adaptive weight would give; in
+   * Fixed it shows what the hand-set weight does (that is how it is tuned) */
+  const gboolean est = mode == SKIM_PHASE_A || mode == SKIM_PHASE_B;
   g_mutex_lock(&p->phase_lock);
   SkimPipelinePhase *o = &p->phase_snap;
   o->phased = TRUE;

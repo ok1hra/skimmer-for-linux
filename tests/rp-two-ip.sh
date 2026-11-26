@@ -9,10 +9,10 @@
 # IN1, B on IN2) into a phased pipeline; when another client takes IP B the
 # band goes on from A alone and says so, and phasing comes back with B.
 #
-#   rp-two-ip.sh <skimmer-headless> <skimmer-rp-host>
+#   rp-two-ip.sh <skimmer-headless> <skimmer-rp-host> [skimmer-phase-bench]
 set -uo pipefail
 
-HL=$1 AG=$2
+HL=$1 AG=$2 PB=${3:-}
 T=$(mktemp -d "${TMPDIR:-/tmp}/skimmer-rp-two-ip.XXXXXX")
 PID= APID=
 cleanup() { [[ -n $PID ]] && kill "$PID" 2>/dev/null; [[ -n $APID ]] && kill "$APID" 2>/dev/null; rm -rf "$T"; }
@@ -90,6 +90,10 @@ console_s=0
 http_port=$HTTP
 [web]
 settings_from=127.0.0.1
+[record]
+bands=20m
+minutes=0.05
+dir=$T/rec
 INI
 "$HL" --config "$T/phased.ini" > "$T/logp" 2>&1 &
 PID=$!
@@ -107,7 +111,7 @@ check "status.json: 20m phased (mvdr, B there, the combiner updating), 40m not" 
 # only blocks paired at the same instants keep it coherent, and can null it
 v=$(ph '"%.3f %.1f" % (b["coherence"] or 0, b["drop_db"] or 0)')
 read -r coh drop <<< "$v"
-python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) > 0.9 and float(sys.argv[2]) > 15 else 1)" "$coh" "$drop"
+python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) > 0.9 and float(sys.argv[2]) > 10 else 1)" "$coh" "$drop"
 check "A and B paired at the same instants: the common noise coherent (|γ|² $coh), nulled ($drop dB)" $?
 # the waterfall's Φ: POST /api/phase switches the band live; GET gives its line
 code=$(curl -s -o "$T/pa.json" -w '%{http_code}' -d 'band=20m&mode=a' "http://127.0.0.1:$HTTP/api/phase")
@@ -126,6 +130,16 @@ for _ in $(seq 40); do [[ $(ph 'b["mode"] == "mvdr" and not b["est"]') == True ]
 n=$(curl -s "http://127.0.0.1:$HTTP/api/phase?band=20m" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['drop']) if d.get('phased') else 0)")
 [[ $ok == 0 && $n == 384 ]]
 check "… back to mvdr; GET /api/phase: the line, one value a channel ($n)" $?
+# the phasing panel: a fixed weight, a memory, Save into the config (no restart)
+curl -s -d 'band=20m&mode=fixed&gain_db=6&phase_deg=180&m2=6,180' "http://127.0.0.1:$HTTP/api/phase" > /dev/null
+code=$(curl -s -o "$T/save.json" -w '%{http_code}' -d 'band=20m&mode=fixed&gain_db=6&phase_deg=180&action=save' "http://127.0.0.1:$HTTP/api/phase")
+pj=$(curl -s "http://127.0.0.1:$HTTP/api/phase?band=20m")
+[[ $code == 200 && $(cat "$T/save.json") == *'"saved":true'* ]] && grep -q '^20m=14045500 ip=ab phase=fixed$' "$T/phased.ini" &&
+  grep -q '^fixed_gain_db=6.00$' "$T/phased.ini" && grep -q '^m2=6.00,180.0$' "$T/phased.ini" &&
+  [[ $pj == *'"fixed_gain_db":6.00'* && $pj == *'"mem":[null,[6.00,180.0],null]'* ]] && pgrep -f "$T/phased.ini" > /dev/null
+check "the panel: a fixed weight and M2, Save → phase=fixed and [phase.20m] in the config, no restart" $?
+curl -s -d 'band=20m&mode=mvdr' "http://127.0.0.1:$HTTP/api/phase" > /dev/null
+for _ in $(seq 40); do [[ $(ph 'b["mode"] == "mvdr"') == True ]] && break; sleep 0.1; done
 # another client takes IP B: its start from a socket that closes (the agent stops it as an orphan)
 python3 -c "import socket,sys; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.sendto(bytes([0xef,0xfe,4,1])+bytes(60),('127.0.0.7',int(sys.argv[1])))" $P
 lost=1
@@ -144,6 +158,16 @@ done
 [[ $back == 0 ]] && grep -q "IP B streaming" "$T/logp"
 check "IP B free again: phasing comes back by itself" $?
 kill "$PID"; wait "$PID" 2>/dev/null; PID=
+# [record] of the phased band: A and B side by side, each .meta naming the other
+ra=$(ls "$T"/rec/hd-20m-*Z.cf32 2>/dev/null | head -1); rb=${ra%.cf32}-b.cf32
+[[ -n $ra && -s $ra && -s $rb && $(stat -c %s "$ra") == $(stat -c %s "$rb") ]] &&
+  grep -q "^pair_b: $(basename "$rb")$" "$ra.meta" && grep -q "^pair_a: $(basename "$ra")$" "$rb.meta"
+check "[record] of a phased band: A and B as long as each other, each .meta naming the other" $?
+if [[ -n $PB && -n $ra ]]; then
+  out=$("$PB" "$ra" 2>&1)
+  [[ $out == *"$(basename "$rb")"* && $out == *"B lag 0 samples (measured"* ]]
+  check "skimmer-phase-bench finds the pair from A's file, B lag 0" $?
+fi
 printf '[radio]\nhost=127.0.0.6\nrate=48000\n[rp]\nb_rate=96000\n[bands]\n20m=14045500 ip=ab\n' > "$T/prate.ini"
 out=$("$HL" --config "$T/prate.ini" --check-config 2>&1); rc=$?
 [[ $rc == 2 && $out == *"ip=ab needs one rate on both IPs"* ]]

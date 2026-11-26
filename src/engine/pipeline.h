@@ -276,7 +276,7 @@ void     skim_pipeline_phase_set(SkimPipeline *p, SkimPhaseMode mode,
  *   drop  the floor drop (the interference taken out) where none is;
  *   dmax  the deepest null the channel's group allows (its coherence).
  * In modes MVDR and MRC gain and drop are measured on the output; in
- * modes A, B and Fixed they are the adaptive weight's estimates — what
+ * modes A and B they are the adaptive weight's estimates — what
  * phasing WOULD give (est = TRUE). */
 typedef struct {
   gboolean         phased;     /* FALSE: the band is not phased            */

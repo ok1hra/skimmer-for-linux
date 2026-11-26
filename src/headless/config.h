@@ -36,6 +36,9 @@
  *            estimates' time constant), gate_db (6: a station sample stands
  *            this far over the noise), fixed_gain_db / fixed_phase_deg (B
  *            against A in mode fixed)
+ *   [phase.<band>]  a phased band's own: fixed_gain_db, fixed_phase_deg, and
+ *            the phasing panel's memories m1..m3 = "gain_db,phase_deg" (the
+ *            panel's Save writes them, with the band's phase=)
  *   [decode] engine=v3|v4|v2|deepcw (the bands that name none), log=true|false,
  *            v4_workers (0 = half the CPUs): CW v4's inference threads,
  *            v4_guard (default true): the governor's v4 load guard,
@@ -177,6 +180,9 @@ typedef struct {
   gboolean     phased;                /* ip=ab: IP A (IN1) + IP B (IN2), ip
                                        * stays 0 (A is the band's own)       */
   gint         phase_mode;            /* phase=: a SkimPhaseMode, -1 = [phase] */
+  double       fixed_gain_db;         /* [phase.<band>]: mode fixed's weight  */
+  double       fixed_phase_deg;       /* (NAN = [phase]'s)                     */
+  double       mem[3][2];             /* m1..m3: gain dB, phase ° (NAN none)   */
 } SkimHdBand;
 
 typedef struct {
@@ -389,6 +395,14 @@ char *skim_hd_config_worker_merge(const char *own, gsize own_len, const char *fr
 
 /* "cw", "cw:deepcw,rtty", "cw,off" … — the band's modes as the ini writes them. */
 char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt);
+
+/* The phasing panel's Save (docs/PHASING.md): text (an ini) with band's
+ * phase= set to mode (a SkimPhaseMode) in its [bands] line, and
+ * [phase.<band>] fixed_gain_db, fixed_phase_deg and m1..m3 (mem[k][0] NAN
+ * = none) — comments kept. NULL + error when the band has no line. */
+char *skim_hd_config_set_phase(const char *text, gsize len, const char *band, gint mode,
+                               double gain_db, double phase_deg, const double mem[3][2],
+                               GError **error);
 
 /* [filter] in force at all (a pattern, or the own call's filter on with a
  * call to compare with). */

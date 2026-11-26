@@ -6,6 +6,7 @@
 
 #include <gio/gio.h>
 #include <glib/gstdio.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -427,11 +428,70 @@ char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt) {
   return g_string_free(s, FALSE);
 }
 
+char *skim_hd_config_set_phase(const char *text, gsize len, const char *band, gint mode,
+                               double gain_db, double phase_deg, const double mem[3][2],
+                               GError **error) {
+  GKeyFile *kf = g_key_file_new();
+  if (!g_key_file_load_from_data(kf, text, len, G_KEY_FILE_KEEP_COMMENTS, error)) {
+    g_key_file_free(kf);
+    return NULL;
+  }
+  char *line = g_key_file_get_value(kf, "bands", band, NULL);
+  if (!line) {
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "no [bands] line %s", band);
+    g_key_file_free(kf);
+    return NULL;
+  }
+  /* the line again without its phase=, then the new one */
+  GString *nl = g_string_new(NULL);
+  char **tok = g_strsplit_set(line, " \t", -1);
+  for (char **t = tok; *t; t++) {
+    if (!**t) { continue; }
+    char **sub = g_strsplit(*t, ",", -1);   /* "cw,ip=ab,phase=x" too */
+    GString *keep = g_string_new(NULL);
+    for (char **u = sub; *u; u++) {
+      if (!g_str_has_prefix(*u, "phase=") && **u) {
+        g_string_append_printf(keep, "%s%s", keep->len ? "," : "", *u);
+      }
+    }
+    if (keep->len) { g_string_append_printf(nl, "%s%s", nl->len ? " " : "", keep->str); }
+    g_string_free(keep, TRUE);
+    g_strfreev(sub);
+  }
+  g_strfreev(tok);
+  g_string_append_printf(nl, " phase=%s", phase_mode_name((SkimPhaseMode)mode));
+  g_key_file_set_value(kf, "bands", band, nl->str);
+  g_string_free(nl, TRUE);
+  g_free(line);
+  char *grp = g_strdup_printf("phase.%s", band);
+  char num[G_ASCII_DTOSTR_BUF_SIZE];
+  g_key_file_set_value(kf, grp, "fixed_gain_db", g_ascii_formatd(num, sizeof(num), "%.2f", gain_db));
+  g_key_file_set_value(kf, grp, "fixed_phase_deg", g_ascii_formatd(num, sizeof(num), "%.1f", phase_deg));
+  for (guint k = 0; k < 3; k++) {
+    char key[4] = { 'm', (char)('1' + k), 0 };
+    if (mem && !isnan(mem[k][0]) && !isnan(mem[k][1])) {
+      char a[G_ASCII_DTOSTR_BUF_SIZE], b[G_ASCII_DTOSTR_BUF_SIZE];
+      char *v = g_strdup_printf("%s,%s", g_ascii_formatd(a, sizeof(a), "%.2f", mem[k][0]),
+                                g_ascii_formatd(b, sizeof(b), "%.1f", mem[k][1]));
+      g_key_file_set_value(kf, grp, key, v);
+      g_free(v);
+    } else {
+      g_key_file_remove_key(kf, grp, key, NULL);
+    }
+  }
+  g_free(grp);
+  char *out = g_key_file_to_data(kf, NULL, NULL);
+  g_key_file_free(kf);
+  return out;
+}
+
 /* "<centre Hz> [mode,mode…]" */
 static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
                            SkimCwEngine dflt, const char *path, GError **error) {
   g_strlcpy(b->name, name, sizeof(b->name));
   b->phase_mode = -1;
+  b->fixed_gain_db = b->fixed_phase_deg = NAN;
+  for (guint k = 0; k < 3; k++) { b->mem[k][0] = b->mem[k][1] = NAN; }
   char *v = g_strstrip(g_strdup(value));
   char *end = NULL;
   b->centre_hz = g_ascii_strtod(v, &end);
@@ -1273,6 +1333,36 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     if (!ok) { break; }
     b->rate = b->ip ? h->rp_b_rate : h->rate;
     if (h->rp_split) { b->input = b->ip; }     /* two antennas: the IP names the input */
+    {                                          /* [phase.<band>]: its own weight, memories */
+      char *grp = g_strdup_printf("phase.%s", keys[i]);
+      double v;
+      if (given(kf, grp, "fixed_gain_db", NULL)) {
+        if (!opt_num(kf, grp, "fixed_gain_db", 0, -40, 40, FALSE, &v, path, error)) { ok = FALSE; }
+        b->fixed_gain_db = v;
+      }
+      if (ok && given(kf, grp, "fixed_phase_deg", NULL)) {
+        if (!opt_num(kf, grp, "fixed_phase_deg", 0, -360, 360, FALSE, &v, path, error)) { ok = FALSE; }
+        b->fixed_phase_deg = v;
+      }
+      for (guint k = 0; ok && k < 3; k++) {
+        char key[4] = { 'm', (char)('1' + k), 0 };
+        char *m = g_key_file_get_string(kf, grp, key, NULL);
+        if (m && *g_strstrip(m)) {
+          char *e1 = NULL, *e2 = NULL;
+          const double g = g_ascii_strtod(m, &e1);
+          const double ph = e1 && *e1 == ',' ? g_ascii_strtod(e1 + 1, &e2) : NAN;
+          if (isnan(ph) || !e2 || *g_strstrip(e2) || fabs(g) > 40 || fabs(ph) > 360) {
+            ok = bad(error, path, "[%s] %s = \"%s\": gain_db,phase_deg", grp, key, m);
+          } else {
+            b->mem[k][0] = g;
+            b->mem[k][1] = ph;
+          }
+        }
+        g_free(m);
+      }
+      g_free(grp);
+      if (!ok) { break; }
+    }
     if (b->phased) {
       if (b->input) {
         ok = bad(error, path, "band %s: ip=ab takes IN1 on IP A and IN2 on IP B — no in=", keys[i]);

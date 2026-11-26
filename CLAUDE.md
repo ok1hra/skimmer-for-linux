@@ -187,7 +187,10 @@ here; what was done and why is in git.
   coherence per channel (`GET /api/phase`). Statistics → Phasing: a coarse
   waterfall of what it gave (`phase_hist.c`, `<state>/phase-<band>.bin`,
   a minute × 7 d + a quarter hour × 90 d, `GET /api/phase_hist`). Settings
-  → Bands: IP "A+B Φ". `[record]` takes A so far.
+  → Bands: IP "A+B Φ". The waterfall's ⚙ beside Φ opens the phasing
+  panel (mode, Fixed gain/phase, "from MVDR", M1–M3, Save → phase= and
+  `[phase.<band>]` in the config, no restart). `[record]` of a phased band
+  writes the pair (`hd-<band>-<UTC>-b.cf32`, each .meta names the other).
   rp-f08908 runs agent 0.4 since 2026-11-26.
 - **`meson test` = 45 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
