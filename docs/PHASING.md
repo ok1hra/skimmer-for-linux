@@ -507,6 +507,54 @@ interfaces:
 | P5 | web panel, coherence trace, stats v9 | headless Chrome screenshots; stats migration test |
 | P6 | live: one band phased against the same band single (skimmer-compare: spots, calls, SNR) | Dan's verdict on air |
 
+## P0 on the air (rp-f08908, 2026-11-26 19:22Z)
+
+IN1 = the station's antenna, IN2 = a wideband receive antenna (Dan,
+2026-11-26). Eight segments 160–10 m phased at once for 3 min (agent 0.4,
+[record] pairs in `/var/tmp/skimmer-iq/phase-p0/`), skimmer-phase-bench on
+each pair; the medians of 5-s snapshots (SNR_2500, the stations' gain):
+
+| band | over IN1 alone | over the better antenna | B carries | MVDR: the drop in the worst groups |
+|---|---|---|---|---|
+| 160 m | +2.9 dB | +0.9 dB (MRC) | 67 % | 6 dB |
+| 80 m | +1.6 dB | +0.6 dB (MRC) | 34 % | 5 dB |
+| 40 m | +1.5 dB | +1.1 dB (MVDR) | 5 % | 12 dB |
+| 30 m | +0.7 dB | +0.4 dB | 88 % | — |
+| 20 m | +1.6 dB | +0.7 dB | 72 % | — |
+| 17 m | +0.4 dB | −0.1 dB | 79 % | 3 dB |
+| 15 m | −0.1 dB | −0.1 dB | 48 % | — |
+| 10 m | +1.3 dB | +1.3 dB | 100 % | — |
+
+What the air taught, and what changed for it:
+- **The noise is diffuse.** Most groups' coherence is 0.01–0.2: noise from
+  every direction, whose group correlation fits no channel. "Cancelling"
+  it added B's noise (80 m: the floor 0.6 dB up, the stations 2 dB down
+  against MRC). Now a group below |γ|² 0.3 (D_max 1.5 dB) — on its average
+  or on the last tick — takes the antennas' noise as independent: MVDR
+  becomes MRC there, the canceller A.
+- **Interference comes and goes.** On 80 m a common interferer came up
+  every ~40 s (coherence 0.01 ↔ 0.5): nulled while there (1.7–3.3 dB),
+  but for a second after it went the weight still nulled nothing and
+  added B's noise. Hence the last tick's coherence too. Still, on such a
+  band MRC is the better default (`phase=mrc`); MVDR earns its keep where
+  the interference sits steady (40 m: up to 12 dB in the worst groups).
+- **A rising broadband noise is no station.** When it came up, its
+  samples crossed the gate of the averaged floor in every channel and
+  700+ channels "steered" on it. A channel's gated samples now teach R_s
+  only while the channel stands 2× over its group's quiet channels in the
+  same tick.
+- **A noise channel reads 3–4 dB SNR_2500** (a held peak): the meter
+  counts a station from 6 dB.
+- **The lag between A and B** cannot be measured on the air by
+  correlation: the strongest signals dominate it, and the cross-spectrum's
+  phase follows each station's direction. The agent (0.5) now releases
+  both FIFO resets together, as rp-spike pair did when F0 measured lag 0
+  on a common signal.
+- **What it gives on this pair**: +1.5 dB over IN1 alone on most bands,
+  +3 dB on 160 m, and the wideband antenna is the better one for most
+  stations on 160, 30, 20, 17 and 10 m. Modest — two antennas this
+  different give diversity more than nulls.
+
 ## Open questions for P0
 
 - (2026-11-25: IN2 is empty at the station; Dan will say when an antenna

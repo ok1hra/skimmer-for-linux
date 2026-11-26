@@ -73,7 +73,7 @@
 #include <unistd.h>
 
 #define AGENT_MAJOR 0
-#define AGENT_MINOR 4
+#define AGENT_MINOR 5
 #define ADC_HZ      122.88e6
 #define NRX         8
 #define MODE_P1     0
@@ -205,9 +205,28 @@ static uint64_t sim_next(const Inst *in) { return hw.base[in->k] + hw.n[in->k][0
  * its samples go on from sim_base — a solo reset where it stopped, so a
  * tone stays continuous; a paired one where the further of the two is, so
  * both give the same sample at the same index). */
+static void fifo_reset_bookkeeping(Inst *in, int64_t now_ns, uint64_t sim_base);
+
 static void fifo_reset_at(Inst *in, int64_t now_ns, uint64_t sim_base) {
   *in->rst |= 1;
   *in->rst &= ~1;
+  fifo_reset_bookkeeping(in, now_ns, sim_base);
+}
+
+/* Both FIFO sets at once: both reset bits set, then both released — as
+ * rp-spike pair did (lag 0). Releasing one before setting the other left
+ * B 5 samples (52 µs at 96 kHz) behind A on rp-f08908 (2026-11-26: the
+ * register writes take that long). */
+static void fifo_reset_pair(Inst *a, Inst *b, int64_t now_ns, uint64_t sim_base) {
+  *a->rst |= 1;
+  *b->rst |= 1;
+  *a->rst &= ~1;
+  *b->rst &= ~1;
+  fifo_reset_bookkeeping(a, now_ns, sim_base);
+  fifo_reset_bookkeeping(b, now_ns, sim_base);
+}
+
+static void fifo_reset_bookkeeping(Inst *in, int64_t now_ns, uint64_t sim_base) {
   in->fifo_reset_ns = now_ns;
   if (hw.sim) {
     hw.t0[in->k] = now_ns * 1e-9;
@@ -246,8 +265,11 @@ static void stream_reset(Inst *in) {
   const int64_t now = mono_ns();
   uint64_t base = sim_next(in);
   if (o && sim_next(o) > base) { base = sim_next(o); }
-  fifo_reset_at(in, now, base);
-  if (o) { fifo_reset_at(o, now, base); }                 /* back to back */
+  if (o) {
+    fifo_reset_pair(in, o, now, base);                    /* at once      */
+  } else {
+    fifo_reset_at(in, now, base);
+  }
   in->reset_epoch = e;
   __atomic_add_fetch(&in->resets, 1, __ATOMIC_SEQ_CST);
   if (o) {

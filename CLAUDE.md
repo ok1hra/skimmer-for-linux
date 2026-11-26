@@ -194,7 +194,9 @@ here; what was done and why is in git.
   Layer 2: CW v2/v3/v4 give `mark_prob` (decode.h), the combiner steers a
   locked station's channel from its marks/spaces (`skim_combiner_mark`,
   `[phase] layer2`, default on).
-  rp-f08908 runs agent 0.4 since 2026-11-26.
+  rp-f08908 runs agent 0.5 since 2026-11-26 (both FIFO resets released
+  together); IN2 has a wideband RX antenna since then — P0 on the air:
+  +1.5 dB over IN1 on most bands, +3 dB on 160 m (PHASING.md).
 - **`meson test` = 45 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
   only with gfortran, `js8` only with C++20 + Boost headers). `headless-mock` runs

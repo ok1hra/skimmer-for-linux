@@ -9,11 +9,13 @@
 #include <string.h>
 
 /* A station counts once the combination or the better antenna reads it
- * this far over its floor. The combination is enough: a station under the
+ * this far over its floor — 6 dB: a channel of noise alone reads 3–4 dB
+ * (the mark power is a held peak; rp-f08908 160 m, 2026-11-26, counted 300
+ * "stations" at 0 dB). The combination is enough: a station under the
  * noise on each antenna and clear on the output is the gain that matters
  * most — its single readings then sit a dB or two high (snr_test: mark
  * power picked from noise near -10 dB), so its G reads low, never high. */
-#define MIN_SNR_DB  0.0
+#define MIN_SNR_DB  6.0
 
 struct _SkimPhaseMeter {
   guint         nchan;

@@ -18,6 +18,18 @@
 /* R_s − R_n's principal eigenvalue must reach this share of the noise per
  * antenna before its eigenvector steers (else: layer 1, e_A). */
 #define MIN_SIG_REL    0.1
+/* A channel's tick power over its group's quiet channels' (the same
+ * tick) for its gated samples to teach R_s: a keyed station 6 dB over the
+ * floor in its marks holds about 2.5 on average. */
+#define STAND_OUT      2.0
+/* Below this coherence of its group, a channel's weights take the noise
+ * as independent between the antennas (r12 = 0: MVDR becomes MRC, the
+ * canceller becomes A): a diffuse noise from every direction leaves a
+ * weak group correlation whose phase fits no single channel, and
+ * "cancelling" it only adds B's noise (rp-f08908, 80 m, 2026-11-26: the
+ * floor 0.6 dB up, the stations 2 dB down against MRC). 0.3 = D_max
+ * 1.5 dB, about what the estimates' noise eats. */
+#define COH_MIN        0.3     /* (on the average and on the last tick)   */
 /* The weight is "mostly A" while |w_a|² holds this share of |w|²: below it
  * drop_db is not defined (the output is B, turned). */
 #define MIN_A_SHARE    0.05
@@ -78,6 +90,7 @@ struct _SkimCombiner {
   Cov    *grp_inst;        /* the last tick's, unaveraged                   */
   gboolean grp_ok;
   double *coh;             /* per group                                     */
+  double *coh_inst;        /* … of the last tick alone                      */
   Quiet  *qs;              /* scratch: a group's channels by power          */
   guint64 updates;
 };
@@ -147,6 +160,7 @@ SkimCombiner *skim_combiner_new(guint nchan, double rate,
   c->grp = g_new0(Cov, c->ngroup);
   c->grp_inst = g_new0(Cov, c->ngroup);
   c->coh = g_new(double, c->ngroup);
+  c->coh_inst = g_new(double, c->ngroup);
   c->qs = g_new(Quiet, c->cfg.group);
   skim_combiner_reset(c);
   return c;
@@ -160,6 +174,7 @@ void skim_combiner_free(SkimCombiner *c) {
   g_free(c->grp);
   g_free(c->grp_inst);
   g_free(c->coh);
+  g_free(c->coh_inst);
   g_free(c->qs);
   g_free(c);
 }
@@ -172,7 +187,7 @@ void skim_combiner_reset(SkimCombiner *c) {
   }
   memset(c->grp, 0, c->ngroup * sizeof(Cov));
   memset(c->grp_inst, 0, c->ngroup * sizeof(Cov));
-  for (guint g = 0; g < c->ngroup; g++) { c->coh[g] = NAN; }
+  for (guint g = 0; g < c->ngroup; g++) { c->coh[g] = c->coh_inst[g] = NAN; }
   c->grp_ok = FALSE;
   c->updates = 0;
 }
@@ -534,6 +549,8 @@ void skim_combiner_update(SkimCombiner *c) {
     const Cov *r = &c->grp[g];
     c->coh[g] = r->r11 > 0 && r->r22 > 0
                     ? creal(r->r12 * conj(r->r12)) / (r->r11 * r->r22) : NAN;
+    c->coh_inst[g] = x.r11 > 0 && x.r22 > 0
+                         ? creal(x.r12 * conj(x.r12)) / (x.r11 * x.r22) : NAN;
   }
   c->grp_ok = TRUE;
 
@@ -542,10 +559,23 @@ void skim_combiner_update(SkimCombiner *c) {
   for (guint k = 0; k < c->nchan; k++) {
     Ch *h = &c->ch[k];
     const guint pos = pos_of(c, k);
-    const Cov rn = rn_at(c, c->grp, pos);
+    Cov rn = rn_at(c, c->grp, pos);
+    {
+      /* coherent on average AND in the last second: an interferer that
+       * comes and goes (rp-f08908, 80 m: every ~40 s) is nulled while it
+       * is there, not for a second after it went (that only adds B's noise) */
+      const guint g = pos / c->cfg.group;
+      if (!(c->coh[g] >= COH_MIN && c->coh_inst[g] >= COH_MIN)) { rn.r12 = 0; }
+    }
     const Cov rn_inst = rn_at(c, c->grp_inst, pos);
     const double min_gated = MIN_GATED_S * c->rate;
-    if (h->gn >= min_gated) {
+    /* a station stands out of its own group's quiet channels in the same
+     * tick: a broadband noise that rises (live 2026-11-26, 160 and 80 m: a
+     * common interferer came up) lifts the samples over the gate of the
+     * averaged floor in every channel at once — that is no station */
+    const gboolean stands_out = h->n > 0 && h->inst.r11 + h->inst.r22 >
+                                STAND_OUT * (rn_inst.r11 + rn_inst.r22);
+    if (h->gn >= min_gated && stands_out) {
       Cov x = { h->ga / h->gn, h->gb / h->gn, h->gab / h->gn };
       if (!h->rs_ok) { h->rs = x; } else { cov_ema(&h->rs, &x, alpha); }
       h->rs_ok = TRUE;
