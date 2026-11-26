@@ -59,6 +59,9 @@ typedef struct {
   double quiet_frac;       /* the quietest share of a group = its noise (0.3) */
   double fixed_gain_db;    /* FIXED: B's gain against A, dB                   */
   double fixed_phase_deg;  /* FIXED: B's phase against A, degrees             */
+  gboolean layer2;         /* the decoders' marks steer their own channels
+                            * (skim_combiner_mark; default TRUE)             */
+  double tc2_s;            /* layer 2's time constant (5 s)                  */
 } SkimCombinerConfig;
 
 /* The defaults above, mode MVDR. */
@@ -92,6 +95,18 @@ void skim_combiner_hold(SkimCombiner *c, gboolean hold);
 void skim_combiner_process(SkimCombiner *c, guint chan, const float *a,
                            const float *b, float *y, guint n);
 
+/* Layer 2 (docs/PHASING.md): after the channel's decoder ran on the
+ * block, the same n samples of A and B and the decoder's mark probability
+ * of each (decode.h mark_prob: 0..1, -1 = no keyed station held). Marks
+ * (p ≥ 0.75) teach the station's covariance, spaces (p ≤ 0.25) what
+ * disturbs it in its own channel; integrated over seconds, R_mark − R_space
+ * gives its signature even where no power gate could, and R_space⁻¹·v
+ * its max-SINR weight. It replaces the layer-1 weight only while it
+ * promises a better SINR on the same estimates (by 0.5 dB), and lets go
+ * hold_s after the decoder lost the station. */
+void skim_combiner_mark(SkimCombiner *c, guint chan, const float *a, const float *b,
+                        const float *p, guint n);
+
 /* Re-estimate every channel's weight from what process() saw since the
  * last update. The owner calls it about once a second (stream time). */
 void skim_combiner_update(SkimCombiner *c);
@@ -117,6 +132,7 @@ typedef struct {
   double   gain_est_db;    /* its SINR over the better antenna's, from the
                             * estimates (λ·v·vᴴ the station, R_n the rest);
                             * NAN where no station steers                    */
+  gboolean layer2;         /* the weight follows the decoder's marks         */
   double   align;          /* |vᴴ·u_n|²: the station's signature against the
                             * noise's principal direction, 0..1; near 1 = it
                             * comes as the interference does (B a copy of A,

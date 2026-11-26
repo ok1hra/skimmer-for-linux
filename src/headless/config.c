@@ -670,6 +670,8 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     }
     g_free(pm);
     h->phase_mode = (gint)m;
+    h->phase_layer2 = given(kf, "phase", "layer2", NULL)
+                          ? g_key_file_get_boolean(kf, "phase", "layer2", NULL) : TRUE;
     if (!opt_num(kf, "phase", "tc_s", 1.0, 0.1, 30, FALSE, &h->phase_tc_s, path, error) ||
         !opt_num(kf, "phase", "gate_db", 6.0, 1, 30, FALSE, &h->phase_gate_db, path, error) ||
         !opt_num(kf, "phase", "fixed_gain_db", 0.0, -40, 40, FALSE, &h->phase_fixed_gain_db, path,

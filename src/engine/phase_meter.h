@@ -61,6 +61,7 @@ typedef struct {
   double same_dir;         /* share of the stations whose signature is the
                             * noise's own (align > 0.99): near 1 with |γ|²
                             * near 1 = B hears what A hears (a splitter?)   */
+  guint  layer2;           /* channels whose weight follows their decoder   */
   guint  stations;         /* channels with a station — any signal the
                             * combiner steers on, a band-limited interferer's
                             * edge too (same_dir tells them); the statistics

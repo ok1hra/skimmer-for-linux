@@ -1191,17 +1191,19 @@ static void phase_update(SkimPipeline *p, double center_hz) {
 }
 
 /* One block of channel c: buf holds A's samples and gets the combination
- * (A alone while B is missing); the meters see A, B and the output. */
-static void phase_channel(SkimPipeline *p, guint c, float *buf, guint n) {
-  float bb[DRAIN_FRAMES * 2], a[DRAIN_FRAMES * 2];
+ * (A alone while B is missing); the meters see A, B and the output; a and
+ * bb keep A's and B's samples for layer 2 (TRUE: both there). */
+static gboolean phase_channel(SkimPipeline *p, guint c, float *buf, guint n, float *a,
+                              float *bb) {
   const guint m = skim_channelizer_read(p->bank_b, c, bb, n);
   if (p->b_missing || m != n) {
     skim_snr_meter_push(p->snr, c, buf, n);   /* Y = A */
-    return;
+    return FALSE;
   }
   memcpy(a, buf, (gsize)n * 2 * sizeof(float));
   skim_combiner_process(p->comb, c, a, bb, buf, n);
   skim_phase_meter_push(p->pmeter, c, a, bb, buf, n);
+  return TRUE;
 }
 
 /* ---- engine thread ------------------------------------------------------------ */
@@ -1879,8 +1881,10 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
     }
     guint n;
     while ((n = skim_channelizer_read(p->bank, c, buf, DRAIN_FRAMES)) > 0) {
+      float la[DRAIN_FRAMES * 2], lb[DRAIN_FRAMES * 2];
+      gboolean have_ab = FALSE;
       if (p->comb) {
-        phase_channel(p, c, buf, n);           /* buf: A → the combination */
+        have_ab = phase_channel(p, c, buf, n, la, lb);   /* buf: A → the combination */
       } else {
         skim_snr_meter_push(p->snr, c, buf, n);
       }
@@ -1889,6 +1893,12 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
       }
       if (!sp) {
         const gboolean got = cw->process(p->dec[SL(c, WIDE_LANE)], buf, n, &d);
+        if (have_ab && cw->mark_prob) {        /* layer 2: its marks steer it */
+          const float *mp = NULL;
+          if (cw->mark_prob(p->dec[SL(c, WIDE_LANE)], &mp) == n) {
+            skim_combiner_mark(p->comb, c, la, lb, mp, n);
+          }
+        }
         char *aux = cw->take_aux_text
                         ? cw->take_aux_text(p->dec[SL(c, WIDE_LANE)]) : NULL;
         GArray *ops = hit_take_ops(cw, p->dec[SL(c, WIDE_LANE)]);

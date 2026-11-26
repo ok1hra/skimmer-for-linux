@@ -490,9 +490,9 @@ static void phase_json(GString *json, Band *b) {
                                    "coherence", "dmax_db", "share_b", "same_dir", "gain_est_db",
                                    "drop_est_db" };
   g_string_append_printf(json, "{\"mode\":\"%s\",\"b_missing\":%s,\"est\":%s,"
-                         "\"updates\":%" G_GUINT64_FORMAT ",\"stations\":%u",
+                         "\"updates\":%" G_GUINT64_FORMAT ",\"stations\":%u,\"layer2\":%u",
                          skim_phase_mode_name(ph.mode), ph.b_missing ? "true" : "false",
-                         ph.est ? "true" : "false", ph.updates, u->stations);
+                         ph.est ? "true" : "false", ph.updates, u->stations, u->layer2);
   for (guint i = 0; i < G_N_ELEMENTS(v); i++) {
     if (isnan(v[i])) {
       g_string_append_printf(json, ",\"%s\":null", k[i]);
@@ -2847,6 +2847,7 @@ static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const c
   skim_combiner_config_default(&phase);
   phase.mode = (SkimPhaseMode)(cb->phase_mode >= 0 ? cb->phase_mode : c->phase_mode);
   phase.tc_s = c->phase_tc_s;
+  phase.layer2 = c->phase_layer2;
   phase.gate_db = c->phase_gate_db;
   phase.fixed_gain_db = isnan(cb->fixed_gain_db) ? c->phase_fixed_gain_db : cb->fixed_gain_db;
   phase.fixed_phase_deg = isnan(cb->fixed_phase_deg) ? c->phase_fixed_phase_deg : cb->fixed_phase_deg;

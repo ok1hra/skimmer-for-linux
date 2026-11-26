@@ -451,6 +451,10 @@ typedef struct {
   gboolean hy_dirty;                    /* op due at the end of this call     */
   gboolean pane_own_call;               /* this call's d.text is pane-owned   */
   GArray  *ops;                         /* queued SkimPaneOp                  */
+  /* layer 2 of two-antenna phasing: each sample's mark probability of the
+   * last process() call (-1 = no keyed station held) */
+  float   *mp;
+  guint    mp_n, mp_cap;
 } Cw3State;
 
 typedef struct { guint8 key; float dur_ms; guint64 t_end; } RrRun;
@@ -885,6 +889,7 @@ static void cw3_channel_free(gpointer state) {
   Cw3State *st = state;
   if (!st)
     return;
+  g_free(st->mp);
   if (st->rr_runs) { g_array_free(st->rr_runs, TRUE); }
   if (st->rr_stream) { skim_cw_reader_stream_free(st->rr_stream); }
   if (st->ov_txt) { g_string_free(st->ov_txt, TRUE); }
@@ -3465,6 +3470,13 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
     }
   }
 
+  if (st->mp_cap < nframes) {
+    g_free(st->mp);
+    st->mp = g_new(float, nframes);
+    st->mp_cap = nframes;
+  }
+  for (guint k = 0; k < nframes; k++) { st->mp[k] = -1.0f; }
+  st->mp_n = nframes;
   for (guint n = 0; n < nframes; n++) {
     const float i = iq[2 * n], q = iq[2 * n + 1];
     const float mag = sqrtf(i * i + q * q);
@@ -3787,6 +3799,13 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
     }
 
     soft_step(st, ms, mr, out, &pos);
+    /* layer 2 (decode.h mark_prob): a locked lattice's view of this sample,
+     * on its own soft envelope between the space and mark levels */
+    if (st->active && !st->carrier && !st->paused && st->marks_ok >= 4 &&
+        st->mu_m > 1.5 * st->mu_s) {
+      const double pm = ((double)ms - st->mu_s) / (st->mu_m - st->mu_s);
+      st->mp[n] = (float)CLAMP(pm, 0.0, 1.0);
+    }
     if (st->fe_on && st->active && !st->paused && st->dit > 0 && kr_cfg()->on &&
         st->t >= st->kr_next) {
       st->kr_next = st->t + (guint64)(KR_EVERY_S * st->rate);
@@ -3814,6 +3833,12 @@ static gboolean cw3_process(gpointer state, const float *iq, guint nframes,
 
 static double cw3_level(gpointer state) {
   return ((Cw3State *)state)->env_hi;
+}
+
+static guint cw3_mark_prob(gpointer state, const float **p) {
+  Cw3State *st = state;
+  *p = st->mp;
+  return st->mp ? st->mp_n : 0;
 }
 
 static double cw3_tone_offset_hz(gpointer state) {
@@ -3848,6 +3873,7 @@ const SkimDecodeBackend *skim_decode_cw_v3(void) {
     .process        = cw3_process,
     .level          = cw3_level,
     .tone_offset_hz = cw3_tone_offset_hz,
+    .mark_prob      = cw3_mark_prob,
   };
   return &backend;
 }

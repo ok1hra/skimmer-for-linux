@@ -130,6 +130,15 @@ struct _SkimDecodeBackend {
    * The pipeline publishes it (rtty_pairs.h) so the band's CW decoders can
    * stay off the RTTY station. Optional. */
   gboolean (*held_pair)(gpointer state, double *centre_hz);
+
+  /* Two-antenna phasing, layer 2 (docs/PHASING.md): the backend's own
+   * mark probability for each sample of the last process() call, 0..1 —
+   * -1 where it holds no keyed station (not locked, dead air, bootstrap).
+   * Returns that call's frame count and points *p at the values (valid
+   * until the next process()). The combiner learns the station's
+   * signature from the marks and what disturbs it from the spaces, in its
+   * own channel. Optional. */
+  guint (*mark_prob)(gpointer state, const float **p);
 };
 
 G_END_DECLS

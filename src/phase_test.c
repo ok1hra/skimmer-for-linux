@@ -464,7 +464,17 @@ static gboolean seen_has(const Seen *s, const char *call) {
 /* The band of the pipeline checks: OK1PHS calling at SNR_2500 21 dB over
  * the receiver noise, under a wideband interferer 30 dB over it that both
  * antennas hear (B = 0.8∠57° · A), the station 0 dB ∠170° on B. */
+static void pipe_band_ex(float **pa, float **pb, guint *frames, double snr_db,
+                         double complex bs, double ipow_db, double complex h);
+
 static void pipe_band(float **pa, float **pb, guint *frames) {
+  pipe_band_ex(pa, pb, frames, 21, cexp(I * 170 * G_PI / 180), 30, 0.8 * cexp(I * 57 * G_PI / 180));
+}
+
+/* The same band: OK1PHS at snr_db, its signature bs on B, an interferer
+ * ipow_db over the noise with signature h. */
+static void pipe_band_ex(float **pa, float **pb, guint *frames, double snr_db,
+                         double complex bs, double ipow_db, double complex h) {
   guint len;
   char *text = g_strdup("CQ TEST OK1PHS OK1PHS CQ TEST OK1PHS OK1PHS K "
                         "CQ TEST OK1PHS OK1PHS CQ TEST OK1PHS OK1PHS K");
@@ -473,9 +483,8 @@ static void pipe_band(float **pa, float **pb, guint *frames) {
   const guint total = len + (guint)(2 * FS);
   float *a = g_new(float, 2 * (gsize)total), *b = g_new(float, 2 * (gsize)total);
   GRand *r = g_rand_new_with_seed(77);
-  const double amp = sqrt(pow(10.0, 21 / 10.0) / FS * 2500.0);
-  const double complex bs = cexp(I * 170 * G_PI / 180), h = 0.8 * cexp(I * 57 * G_PI / 180);
-  const double ipow = 1000.0, off = 7005.0;
+  const double amp = sqrt(pow(10.0, snr_db / 10.0) / FS * 2500.0);
+  const double ipow = pow(10.0, ipow_db / 10.0), off = 7005.0;
   double ph = 0;
   for (guint n = 0; n < total; n++) {
     const double e = n < len ? env[n] * amp : 0;
@@ -558,6 +567,8 @@ static void check_band_unit(void) {
 
 /* One offline pipeline over the band: phased with B (b given), phased with
  * B missing all along (b NULL, phased), or a plain pipeline on one input. */
+static gboolean run_layer2 = TRUE;
+
 static void pipe_run(const float *in, const float *b, gboolean phased, guint frames,
                      Seen *seen, SkimPipelinePhase *ph, gint8 *rows, SkimPhaseMode mode) {
   SkimPipelineConfig cfg = { 0 };
@@ -566,6 +577,7 @@ static void pipe_run(const float *in, const float *b, gboolean phased, guint fra
   SkimCombinerConfig cc;
   skim_combiner_config_default(&cc);
   cc.mode = mode;
+  cc.layer2 = run_layer2;
   cfg.phase = &cc;
   SkimPipeline *p = skim_pipeline_new(&cfg);
   memset(seen, 0, sizeof(*seen));
@@ -584,6 +596,106 @@ static void pipe_run(const float *in, const float *b, gboolean phased, guint fra
   last_bcn = skim_pipeline_phase_band_coef(p, last_bca, last_bcb, 1024, &last_first, &last_spacing);
   skim_pipeline_stop(p);
   skim_pipeline_free(p);
+}
+
+/* Layer 2: a station 12° from a strong interferer's signature. The group
+ * canceller (layer 1) nulls the interferer and most of the station with it
+ * (|1 − e^{-j12°}| = −13.6 dB), and the station is too weak beside the
+ * interferer for layer 1's power gate to steer on it; the decoder still
+ * reads it, and its marks teach layer 2 the station's own signature. */
+static void check_layer2(void) {
+  char what[220];
+  printf("== layer 2: OK1PHS 26 dB, 12° from an interferer 40 dB over the noise\n");
+  float *a, *b;
+  guint frames;
+  const double complex h = 0.8 * cexp(I * 57 * G_PI / 180);
+  pipe_band_ex(&a, &b, &frames, 26, 0.8 * cexp(I * 69 * G_PI / 180), 40, h);
+  Seen s1, s2;
+  SkimPipelinePhase p1, p2;
+  run_layer2 = FALSE;
+  pipe_run(a, b, TRUE, frames, &s1, &p1, NULL, SKIM_PHASE_MVDR);
+  run_layer2 = TRUE;
+  pipe_run(a, b, TRUE, frames, &s2, &p2, NULL, SKIM_PHASE_MVDR);
+  printf("    layer 1 only: %s, SNR_2500 combined %+.1f (A %+.1f, B %+.1f), %u channels on layer 2\n",
+         seen_has(&s1, "OK1PHS") ? "OK1PHS spotted" : "no OK1PHS", s1.snr_y, s1.snr_a, s1.snr_b,
+         p1.sum.layer2);
+  printf("    layer 2:      %s, SNR_2500 combined %+.1f, gain %+.1f dB, %u channels on layer 2\n",
+         seen_has(&s2, "OK1PHS") ? "OK1PHS spotted" : "no OK1PHS", s2.snr_y, s2.gain, p2.sum.layer2);
+  check("layer 2 engages on the station's channel (and only with it on)",
+        p2.sum.layer2 >= 1 && p1.sum.layer2 == 0);
+  /* one strong interferer: nulling it fixes the weight's direction (two
+   * antennas, one null), so layer 1 is already near the optimum — layer 2
+   * must not do worse (the in-channel case below is where it gains) */
+  g_snprintf(what, sizeof(what), "it decodes, no worse than layer 1 (%+.1f dB)", s2.snr_y - s1.snr_y);
+  check(what, seen_has(&s2, "OK1PHS") && s2.snr_y - s1.snr_y >= -0.5);
+  gboolean bogus = FALSE;
+  for (guint i = 0; i < s2.n; i++) { bogus = bogus || strcmp(s2.calls[i], "OK1PHS") != 0; }
+  check("… and no other call comes out", !bogus);
+  run_layer2 = TRUE;
+  g_free(a);
+  g_free(b);
+}
+
+/* Layer 2's own case, on the combiner alone with the true marks: an
+ * interferer in the station's channel only (as loud as the station, its
+ * own signature), which the group's quiet channels never see. Layer 1
+ * steers on the mix of both; layer 2 learns the station from the marks and
+ * the interferer from the spaces, and nulls it. The SINR of each final
+ * weight measured on the components. */
+static double l2_sinr(gboolean layer2) {
+  const guint NC = 64, K = 10, RATE = 250, SECS2 = 40;
+  SkimCombinerConfig cfg;
+  skim_combiner_config_default(&cfg);
+  cfg.layer2 = layer2;
+  SkimCombiner *c = skim_combiner_new(NC, RATE, &cfg);
+  GRand *r = g_rand_new_with_seed(99);
+  const double complex s = cexp(I * 100 * G_PI / 180), h = 0.9 * cexp(I * -60 * G_PI / 180);
+  const double ps = 100.0, pi = 100.0;       /* station and interferer: 20 dB over the noise */
+  float a[2 * RATE], b[2 * RATE], y[2 * RATE], pm[RATE];
+  double sig_y = 0, noi_y = 0;
+  guint key_t = 0;
+  for (guint sec = 0; sec < SECS2; sec++) {
+    if (sec == SECS2 - 10) { skim_combiner_hold(c, TRUE); }
+    for (guint k = 0; k < NC; k++) {
+      for (guint n = 0; n < RATE; n++) {
+        const double complex na = gauss(r, 1.0), nb = gauss(r, 1.0);
+        double complex xa = na, xb = nb, st = 0, it = 0;
+        if (k == K) {
+          const gboolean down = ((key_t + n) / 12) % 3 != 2;   /* 2/3 key-down */
+          st = down ? sqrt(ps) * cexp(I * 0.3 * (key_t + n)) : 0;
+          it = gauss(r, pi);
+          xa += st + it;
+          xb += st * s + it * h;
+          pm[n] = down ? 1.0f : 0.0f;
+        }
+        a[2 * n] = (float)creal(xa); a[2 * n + 1] = (float)cimag(xa);
+        b[2 * n] = (float)creal(xb); b[2 * n + 1] = (float)cimag(xb);
+        if (k == K && sec >= SECS2 - 8) {      /* the truth, weights held */
+          SkimCombinerChanInfo info;
+          skim_combiner_chan_info(c, K, &info);
+          const double complex ca = info.ca[0] + I * info.ca[1], cb = info.cb[0] + I * info.cb[1];
+          const double complex so = ca * st + cb * st * s, no = ca * (na + it) + cb * (nb + it * h);
+          sig_y += creal(so * conj(so));
+          noi_y += creal(no * conj(no));
+        }
+      }
+      skim_combiner_process(c, k, a, b, y, RATE);
+      skim_combiner_mark(c, k, a, b, k == K ? pm : NULL, RATE);
+    }
+    key_t += RATE;
+    skim_combiner_update(c);
+  }
+  g_rand_free(r);
+  skim_combiner_free(c);
+  return 10.0 * log10(sig_y / noi_y);
+}
+
+static void check_layer2_inchannel(void) {
+  char what[200];
+  printf("== layer 2 on its own case: an interferer in the station's channel only\n");
+  const double l1 = l2_sinr(FALSE), l2 = l2_sinr(TRUE);
+  g_snprintf(what, sizeof(what), "the station's SINR: layer 1 %+.1f dB, layer 2 %+.1f dB (≥ 10 dB more)", l1, l2);
+  check(what, l2 - l1 >= 10.0);
 }
 
 static void check_pipeline(void) {
@@ -643,6 +755,11 @@ static void check_pipeline(void) {
              "interferer off the floor (%+.1f dB ≥ 15)", off, on);
   check(what, fabs(off) < 0.05 && on >= 15.0);
   check_band_unit();
+  g_free(a);
+  g_free(b);
+  a = b = NULL;
+  check_layer2();
+  check_layer2_inchannel();
   g_free(a);
   g_free(b);
 }

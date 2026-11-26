@@ -35,7 +35,8 @@
  *            (mvdr | mrc | fixed | a | b, default mvdr), tc_s (1: the
  *            estimates' time constant), gate_db (6: a station sample stands
  *            this far over the noise), fixed_gain_db / fixed_phase_deg (B
- *            against A in mode fixed)
+ *            against A in mode fixed), layer2 (true: the decoders' marks
+ *            steer their own channels — layer 2)
  *   [phase.<band>]  a phased band's own: fixed_gain_db, fixed_phase_deg, and
  *            the phasing panel's memories m1..m3 = "gain_db,phase_deg" (the
  *            panel's Save writes them, with the band's phase=)
@@ -207,6 +208,7 @@ typedef struct {
   double           phase_gate_db;
   double           phase_fixed_gain_db;
   double           phase_fixed_phase_deg;
+  gboolean         phase_layer2;      /* the decoders' marks steer (layer 2) */
   guint            nb_phased;
   /* [bands] — band[]: the ones received, in receiver order; listed[]:
    * every line in file order, the ones off included (the settings page) */

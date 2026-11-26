@@ -199,9 +199,25 @@ channel. The other channels keep layer 1. "One phaser per decoder input"
 is exactly layer 2. Its cost is the same few MACs per channel sample, plus
 a probability stream from the decoder to the combiner, which needs a small
 hook in `decode.h` (an optional `mark_prob` output per sample block).
-Implement layer 1 first (P3), then layer 2 (a new P3b with its gate: a
-synthetic weak CW station 6 dB under a common interferer, decoded with
-layer 2 and not with layer 1).
+Implement layer 1 first (P3), then layer 2 (P3b).
+
+**Built (2026-11-26).** `decode.h` `mark_prob`: CW v2 and v3 give each
+sample's mark probability from their own soft envelope between their
+space and mark levels while the lattice holds a station (−1 otherwise);
+v4, DeepCW and RTTY do not yet. The combiner (`skim_combiner_mark`)
+learns R_mark and R_space in the channel (p ≥ 0.75 / ≤ 0.25, τ 5 s); after
+3 s of marks R_mark − R_space gives v, R_space⁻¹·v the weight, which
+replaces layer 1's only while it promises 0.5 dB more SINR on the same
+estimates, and lets go 30 s after the decoder lost the station.
+`[phase] layer2` (default true); status.json's `phase.layer2` counts the
+channels on it. What it is for, measured: with ONE strong interferer two
+antennas have one null and nulling it fixes the weight's direction, so
+layer 1 is already near the optimum there (a station 12° from a 40 dB
+interferer: both ≈ 8 dB in theory; gate: layer 2 engages, decodes, no
+worse). Its own case is the interference in the station's channel that
+the group's quiet channels never see: as loud as the station, its own
+signature — layer 1 −5.6 dB SINR, layer 2 +21.1 dB (gate `phase`, true
+marks, measured on the components).
 
 ### What two antennas can and cannot do
 

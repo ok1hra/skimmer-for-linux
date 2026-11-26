@@ -94,12 +94,13 @@ void skim_phase_meter_refresh(SkimPhaseMeter *m, const SkimCombiner *c) {
   if (!m || !c)
     return;
   for (guint s = 0; s < SKIM_PH_N; s++) { skim_snr_meter_refresh(m->snr[s]); }
-  guint ns = 0, nb = 0, nsame = 0, nal = 0;
+  guint ns = 0, nb = 0, nsame = 0, nal = 0, nl2 = 0;
   for (guint k = 0; k < m->nchan; k++) {
     SkimCombinerChanInfo info;
     m->gain[k] = m->gain_a[k] = m->drop[k] = m->gain_est[k] = m->drop_est[k] = NAN;
     if (!skim_combiner_chan_info(c, k, &info))
       continue;
+    if (info.layer2) { nl2++; }
     if (info.steered) {
       m->gain_est[k] = info.gain_est_db;
       if (!isnan(info.align)) {
@@ -124,6 +125,7 @@ void skim_phase_meter_refresh(SkimPhaseMeter *m, const SkimCombiner *c) {
   }
 
   SkimPhaseSummary *o = &m->sum;
+  o->layer2 = nl2;
   guint n = 0;
   for (guint k = 0; k < m->nchan; k++) {
     if (!isnan(m->gain[k])) { m->scratch[n++] = m->gain[k]; }

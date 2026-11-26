@@ -505,7 +505,8 @@ const Wf = (() => {
     const f = (v, s) => (v == null ? '—' : `${v > 0 && s ? '+' : ''}${v.toFixed(1)}`);
     const now = ph.b_missing ? 'IP B missing — antenna A alone'
       : `${ph.mode.toUpperCase()}: interference off the floor ${f(ph.drop_db)} dB, stations ${f(ph.gain_db, 1)} dB `
-        + `over the better antenna${ph.est ? ' (what it would give)' : ''}, coherence ${ph.coherence == null ? '—' : ph.coherence.toFixed(2)}`;
+        + `over the better antenna${ph.est ? ' (what it would give)' : ''}, coherence ${ph.coherence == null ? '—' : ph.coherence.toFixed(2)}`
+        + (ph.layer2 ? `, ${ph.layer2} station${ph.layer2 > 1 ? 's' : ''} steered by the decoder (layer 2)` : '');
     btn.title = `phasing: this band from both antennas (IN1 + IN2) — ${now}`
       + (manager() ? `\nclick: ${on ? 'off (antenna A alone)' : `on (${phaseLast.toUpperCase()})`} — for decoding too`
                    : '\nswitched from an address that may change the settings');
@@ -554,7 +555,8 @@ const Wf = (() => {
     }
     for (const b of box.children) { b.classList.toggle('on', b.dataset.mode === mode); b.disabled = !may; }
     $('#pp-now').textContent = ph.b_missing ? 'IP B missing — antenna A alone'
-      : `interference ${ph.drop_db == null ? '—' : ph.drop_db.toFixed(1)} dB off the floor, coherence ${ph.coherence == null ? '—' : ph.coherence.toFixed(2)}`;
+      : `interference ${ph.drop_db == null ? '—' : ph.drop_db.toFixed(1)} dB off the floor, coherence ${ph.coherence == null ? '—' : ph.coherence.toFixed(2)}`
+        + (ph.layer2 ? ` · layer 2 on ${ph.layer2} channel${ph.layer2 > 1 ? 's' : ''}` : '');
     const gi = $('#pp-gain'), pi = $('#pp-phase');
     if (d && document.activeElement !== gi && !ppT) gi.value = d.fixed_gain_db.toFixed(1);
     if (d && document.activeElement !== pi && !ppT) pi.value = d.fixed_phase_deg.toFixed(1);

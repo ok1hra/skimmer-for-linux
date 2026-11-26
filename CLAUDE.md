@@ -191,6 +191,9 @@ here; what was done and why is in git.
   panel (mode, Fixed gain/phase, "from MVDR", M1–M3, Save → phase= and
   `[phase.<band>]` in the config, no restart). `[record]` of a phased band
   writes the pair (`hd-<band>-<UTC>-b.cf32`, each .meta names the other).
+  Layer 2: CW v2/v3 give `mark_prob` (decode.h), the combiner steers a
+  locked station's channel from its marks/spaces (`skim_combiner_mark`,
+  `[phase] layer2`, default on).
   rp-f08908 runs agent 0.4 since 2026-11-26.
 - **`meson test` = 45 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist

@@ -49,6 +49,14 @@ typedef struct {
   gboolean steered;
   double   drop_db, share_b;
   double   drop_est_db, gain_est_db, align;
+  /* layer 2: the decoder's marks and spaces in this channel */
+  double   ma, mb, sa2, sb2;
+  cplx     mab, sab2;
+  guint    mn, sn;
+  Cov      rm2, rs2;           /* exponentially averaged                   */
+  double   l2_s;               /* seconds of marks learnt                  */
+  double   l2_idle_s;
+  gboolean l2_ok, layer2;
   cplx     bw[2];          /* the band-level weight (no station steering),
                             * turned and scaled: c = conj(w)               */
 } Ch;
@@ -80,6 +88,8 @@ void skim_combiner_config_default(SkimCombinerConfig *cfg) {
   cfg->hold_s     = 30.0;
   cfg->group      = 32;
   cfg->quiet_frac = 0.3;
+  cfg->layer2     = TRUE;
+  cfg->tc2_s      = 5.0;
 }
 
 static const char *const mode_names[] = { "mvdr", "mrc", "fixed", "a", "b" };
@@ -129,6 +139,7 @@ SkimCombiner *skim_combiner_new(guint nchan, double rate,
   if (c->cfg.quiet_frac <= 0 || c->cfg.quiet_frac > 1) { c->cfg.quiet_frac = 0.3; }
   if (c->cfg.tc_s <= 0) { c->cfg.tc_s = 1.0; }
   if (c->cfg.hold_s <= 0) { c->cfg.hold_s = 30.0; }
+  if (c->cfg.tc2_s <= 0) { c->cfg.tc2_s = 5.0; }
   c->ngroup = (nchan + c->cfg.group - 1) / c->cfg.group;
   c->ch = g_new(Ch, nchan);
   c->grp = g_new0(Cov, c->ngroup);
@@ -220,6 +231,40 @@ void skim_combiner_process(SkimCombiner *c, guint chan, const float *a,
   h->gb += gb;
   h->gab += gab;
   h->gn += gn;
+}
+
+void skim_combiner_mark(SkimCombiner *c, guint chan, const float *a, const float *b,
+                        const float *p, guint n) {
+  if (!c || chan >= c->nchan || !c->cfg.layer2 || !p)
+    return;
+  Ch *h = &c->ch[chan];
+  for (guint i = 0; i < n; i++) {
+    if (p[i] < 0)
+      continue;
+    const float ar = a[2 * i], ai = a[2 * i + 1], br = b[2 * i], bi = b[2 * i + 1];
+    const double pa = (double)ar * ar + (double)ai * ai;
+    const double pb = (double)br * br + (double)bi * bi;
+    const cplx ab = ((double)ar * br + (double)ai * bi) + I * ((double)ai * br - (double)ar * bi);
+    if (p[i] >= 0.75f) {
+      h->ma += pa;
+      h->mb += pb;
+      h->mab += ab;
+      h->mn++;
+    } else if (p[i] <= 0.25f) {
+      h->sa2 += pa;
+      h->sb2 += pb;
+      h->sab2 += ab;
+      h->sn++;
+    }
+  }
+}
+
+/* SINR of weight w for a station λ·v·vᴴ in noise r. */
+static double sinr_of(const Cov *r, double lam, const cplx v[2], const cplx w[2]) {
+  const cplx wv = conj(w[0]) * v[0] + conj(w[1]) * v[1];
+  const double q = creal(conj(w[0]) * w[0]) * r->r11 + creal(conj(w[1]) * w[1]) * r->r22 +
+                   2.0 * creal(conj(w[0]) * r->r12 * w[1]);
+  return q > 0 ? lam * creal(wv * conj(wv)) / q : 0;
 }
 
 static int cmp_quiet(const void *x, const void *y) {
@@ -486,6 +531,55 @@ void skim_combiner_update(SkimCombiner *c) {
     cplx ad[2], v[2], w[2];
     double lam;
     adaptive(c, h, &rn, ad, v, &lam);
+    /* layer 2: the decoder's marks and spaces of this tick */
+    h->layer2 = FALSE;
+    if (c->cfg.layer2) {
+      const double min_n = MIN_GATED_S * c->rate;
+      if (h->mn >= min_n && h->sn >= min_n) {
+        const double a2 = 1.0 - exp(-tick_s / c->cfg.tc2_s);
+        const Cov xm = { h->ma / h->mn, h->mb / h->mn, h->mab / h->mn };
+        const Cov xs = { h->sa2 / h->sn, h->sb2 / h->sn, h->sab2 / h->sn };
+        if (h->l2_s <= 0) {
+          h->rm2 = xm;
+          h->rs2 = xs;
+        } else {
+          cov_ema(&h->rm2, &xm, a2);
+          cov_ema(&h->rs2, &xs, a2);
+        }
+        h->l2_s += h->mn / c->rate;
+        h->l2_idle_s = 0;
+      } else if (h->l2_s > 0 && (h->l2_idle_s += tick_s) > c->cfg.hold_s) {
+        h->l2_s = 0;                           /* the decoder let go of it */
+      }
+      h->l2_ok = h->l2_s >= 3.0;
+      if (h->l2_ok && (c->cfg.mode == SKIM_PHASE_MVDR || c->cfg.mode == SKIM_PHASE_MRC)) {
+        Cov sig = { h->rm2.r11 - h->rs2.r11, h->rm2.r22 - h->rs2.r22, h->rm2.r12 - h->rs2.r12 };
+        cplx v2[2];
+        const double lam2 = principal(&sig, v2);
+        Cov r2 = h->rs2;
+        if (c->cfg.mode == SKIM_PHASE_MRC) { r2.r12 = 0; }
+        const double load = LOADING * (h->rs2.r11 + h->rs2.r22);
+        r2.r11 += load;
+        r2.r22 += load;
+        cplx w2[2];
+        if (lam2 > 0.02 * 0.5 * (h->rs2.r11 + h->rs2.r22) && solve(&r2, v2, w2)) {
+          /* on the same estimates, only where it is better than layer 1 */
+          const double s2 = sinr_of(&h->rs2, lam2, v2, w2), s1 = sinr_of(&h->rs2, lam2, v2, ad);
+          if (s2 > 1.122 * s1) {
+            ad[0] = w2[0];
+            ad[1] = w2[1];
+            v[0] = v2[0];
+            v[1] = v2[1];
+            lam = lam2;
+            h->layer2 = TRUE;
+            h->steered = TRUE;
+          }
+        }
+      }
+      h->ma = h->mb = h->sa2 = h->sb2 = 0;
+      h->mab = h->sab2 = 0;
+      h->mn = h->sn = 0;
+    }
     applied(c, ad, w);
     /* what the adaptive weight gives, whatever the mode applies */
     h->drop_est_db = drop_of(&rn_inst, ad);
@@ -576,6 +670,7 @@ gboolean skim_combiner_chan_info(const SkimCombiner *c, guint chan,
   out->drop_est_db = c->updates ? h->drop_est_db : NAN;
   out->gain_est_db = h->gain_est_db;
   out->align = h->align;
+  out->layer2 = h->layer2;
   return TRUE;
 }
 
