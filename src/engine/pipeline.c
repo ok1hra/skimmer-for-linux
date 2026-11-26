@@ -239,6 +239,7 @@ struct _SkimPipeline {
   double            pend_gain, pend_phase;
   SkimPipelinePhase phase_snap;
   gint8            *phase_rows;                /* 3 × nchan: gain, drop, dmax */
+  float            *phase_bc;                  /* 4 × nchan: band ca, cb     */
   guint             phase_rows_n;
 
   GAsyncQueue      *queue;                     /* IqBlock*                   */
@@ -650,6 +651,7 @@ void skim_pipeline_free(SkimPipeline *p) {
   }
   g_async_queue_unref(p->queue);
   g_free(p->phase_rows);
+  g_free(p->phase_bc);
   g_mutex_clear(&p->phase_lock);
   g_array_free(p->hits, TRUE);
   g_free(p->host);
@@ -1105,6 +1107,9 @@ static void phase_build(SkimPipeline *p, double rate, double out_rate) {
   p->phase_rows_n = p->nchan;
   p->phase_rows = g_new(gint8, 3 * p->nchan);
   memset(p->phase_rows, SKIM_PHASE_NONE, 3 * p->nchan);
+  g_free(p->phase_bc);
+  p->phase_bc = g_new0(float, 4 * p->nchan);
+  for (guint i = 0; i < p->nchan; i++) { p->phase_bc[4 * i] = 1.0f; }
   memset(&p->phase_snap, 0, sizeof(p->phase_snap));
   g_mutex_unlock(&p->phase_lock);
 }
@@ -1167,6 +1172,14 @@ static void phase_update(SkimPipeline *p, double center_hz) {
                      : est ? skim_phase_meter_drop_est(p->pmeter, k)
                            : skim_phase_meter_drop(p->pmeter, k);
     const double y = skim_combiner_coherence(p->comb, skim_combiner_group_of(p->comb, k));
+    float ca[2], cb[2];
+    skim_combiner_band_coef(p->comb, k, ca, cb);
+    if (p->b_missing) {                         /* A alone meanwhile        */
+      ca[0] = 1.0f;
+      ca[1] = cb[0] = cb[1] = 0.0f;
+    }
+    memcpy(p->phase_bc + 4 * i, ca, sizeof(ca));
+    memcpy(p->phase_bc + 4 * i + 2, cb, sizeof(cb));
     p->phase_rows[i] = skim_phase_q8(g);
     p->phase_rows[p->nchan + i] = skim_phase_q8(d);
     p->phase_rows[2 * p->nchan + i] =
@@ -2103,6 +2116,25 @@ gboolean skim_pipeline_phase_snapshot(SkimPipeline *p, SkimPipelinePhase *out,
   }
   g_mutex_unlock(&p->phase_lock);
   return ok;
+}
+
+guint skim_pipeline_phase_band_coef(SkimPipeline *p, float *ca, float *cb, guint max,
+                                    double *first_hz, double *spacing_hz) {
+  if (!p->cfg.phased)
+    return 0;
+  g_mutex_lock(&p->phase_lock);
+  guint n = 0;
+  if (p->phase_snap.phased && p->phase_bc) {
+    n = MIN(max, p->phase_rows_n);
+    for (guint i = 0; i < n; i++) {
+      memcpy(ca + 2 * i, p->phase_bc + 4 * i, 2 * sizeof(float));
+      memcpy(cb + 2 * i, p->phase_bc + 4 * i + 2, 2 * sizeof(float));
+    }
+    *first_hz = p->phase_snap.first_hz;
+    *spacing_hz = p->phase_snap.spacing_hz;
+  }
+  g_mutex_unlock(&p->phase_lock);
+  return n;
 }
 
 void skim_pipeline_feed2(SkimPipeline *p, const float *iq, const float *iq_b,

@@ -297,6 +297,13 @@ gboolean skim_pipeline_phase_snapshot(SkimPipeline *p, SkimPipelinePhase *out,
                                       gint8 *gain, gint8 *drop, gint8 *dmax,
                                       guint max);
 
+/* Any thread: the band-level coefficients of the last update, one {re, im}
+ * pair of ca and of cb a channel in frequency order (band_combine.h; A
+ * alone while B is missing): the count copied (0 = none yet); the first
+ * channel's offset and the spacing out. */
+guint    skim_pipeline_phase_band_coef(SkimPipeline *p, float *ca, float *cb, guint max,
+                                       double *first_hz, double *spacing_hz);
+
 /* TX hold: TRUE while the operator's own radio
  * transmits. Live it is driven automatically from the TCI trx/tune
  * broadcasts (sdr-for-linux ≥ cc470af reports the real keyed state); the

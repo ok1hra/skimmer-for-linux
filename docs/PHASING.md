@@ -9,8 +9,12 @@ when its config says so and is fed both antennas (`skim_pipeline_feed2`,
 stamps them with an epoch and a sample index (P1, agent 0.4, not on the
 board yet). skimmer-headless runs a band from both inputs with `ip=ab`
 (P2): `[phase]`, the client's stamps, a pairer per band, status.json's
-`phase` — the waterfall, FT8/JS8/WSPR and `[record]` still take A. It is
-written so that another agent can implement it phase by phase. Each phase ends with an offline gate, as the rest of the engine
+`phase`; the band's own IQ (waterfall, FT8/JS8/WSPR) is the band-level
+combination (P4), and the waterfall's Φ switches phasing on and off live
+(`POST /api/phase`). Tried on rp-f08908 (agent 0.4) 2026-11-26 with IN2
+empty: both IPs paired, one epoch, coherence 0.00, gain 0 — MVDR gives A,
+as it should. `[record]` still takes A. It is written so that another
+agent can implement it phase by phase. Each phase ends with an offline gate, as the rest of the engine
 does (CLAUDE.md). Sources: Linrad's phasing window (SM5BSZ, "Linrad phasing
 window v6", sm5bsz.com/linuxdsp/run/phasing/), the F0 measurements in
 `docs/REDPITAYA.md`, and the standard results for two-element arrays
@@ -323,11 +327,16 @@ Where they show:
 - **A second line in the waterfall's spectrum** for a phased band: per
   channel, Gain (G where a station is) / Interference (drop) / Coherence,
   one byte a channel (0.25 dB) once a second over the waterfall socket.
-- **A coarse waterfall in Statistics**: channel = pixel, row = minute, two
-  planes (G, drop), 7 days by the minute and 90 days by the quarter hour,
-  `<state>/phase-<band>.bin`, only for phased bands (≈ 29 MB a band at
-  96 kHz).
-- **stats v9**: the band summary as series (8 phased bands at most).
+- **A coarse waterfall in Statistics** (built: `src/headless/phase_hist.c`,
+  `GET /api/phase_hist`, Statistics → Phasing): channel = pixel, row =
+  minute, two planes (G, drop), 7 days by the minute and 90 days by the
+  quarter hour, `<state>/phase-<band>.bin`, only for phased bands (≈ 30 MB
+  a band at 768 channels); rows in modes A, B or Fixed are estimates and
+  drawn greyed. The band's summary of each row (medians of gain, gain over
+  A, drop and its p90, coherence, D_max, B's share, stations) lives in the
+  same file and is drawn beside it — not in stats.bin (no stats v9: the
+  history concerns phased bands only, and stats.bin's 84 MB need no
+  migration for it).
 - The spots: SNR_A, SNR_B and G with each spot (the station table, the
   archive's extra columns, a tooltip in the DX cluster).
 
@@ -349,6 +358,8 @@ side by side, the groups, the stations, the measured lag and the CPU.
   reason): no skimmer agent on the board, different rates on the two IPs,
   no free receiver on either IP (a phased band takes one on each: 8 at
   most), `ip=ab` with `@worker` (v1 phases locally only).
+- Settings → Bands: the IP column offers "A+B Φ" (`ip=ab`; refused while
+  the two IPs run two rates); a band's `phase=` is kept through the form.
 - Adding or removing `ip=ab` is a settings change (a restart). The mode and
   the Fixed weight change live from the panel (POST `/api/phase`,
   managers), saved to the config only on Save; the meters keep running in
@@ -464,7 +475,7 @@ interfaces:
 | P1 | agent: paired start, sample index, epoch — **built** (agent 0.4, `docs/REDPITAYA.md`; not on the board yet) | `rp-agent`: both sim streams carry one epoch and a contiguous index, the same index is the same instant (phase 0.000°, a sample off = 3.75°); an overflow on A starts a new epoch on both, aligned again; an unmarked stream keeps Pavel's C&C; a paired start beside it resets nothing |
 | P2 | config `ip=ab`, `[phase]`, `phase=`; the client's paired start and stamps (`set_rx_iq_ix_cb`: blocks with epoch + index, loss filled by the index); a pairer per band in `source_hpsdr_p1.c` (same epoch, same index → `iq2_cb`; A's unmatched front and A while B is missing, late past 0.25 s or unstamped go alone); status.json `phase` — **built**. Still to do: `[record]` pairs | `rp-two-ip`: a phased band streams paired from both IPs (one epoch, IN1 at A, IN2 at B); the agent sim's noise (a function of the sample number, on both inputs) stays coherent end to end (\|γ\|² 0.99, nulled 47 dB — a pairer off by 4096 samples reads 0.00); IP B taken → IN1 alone, said so; B back → phased again; two rates refused. `config`: ip=ab and its refusals |
 | P3 | `SkimCombiner` (MVDR/MRC/fixed, gating, phase reference, noise normalisation), `SkimPhaseMeter`, and the pipeline (`SkimPipelineConfig.phased`: B's channelizer, the combiner in the drain, the Y meter as the band's shadow SNR, B missing → A, `push2`/`feed2`, a snapshot for the page, the spots' SNR_A/SNR_B/gain) — **built** | gate `phase`: MRC ≥ 2.5 dB, one interferer nulled ≥ 20 dB, two in two halves each where it is, B a copy of A, empty IN2, mode A bit for bit, Fixed, the meters against the truth; the whole pipeline spots a CW station 8 dB under a common interferer on each antenna (neither alone does), B missing decodes A, mode A shows the estimates. **Golden byte-identical** |
-| P4 | band-level W(f): waterfall, digi_rx, WSPR | the FT8/WSPR gates on a synthetic pair (decodes ≥ the better antenna) |
+| P4 | band-level W(f): waterfall, digi_rx, WSPR — **built** (`band_combine.c`: WOLA, √Hann, half overlapping, N = 2048 at 96 kHz; the weights per channel from the combiner's group canceller, MVDR towards e_A with no station steering, scaled to w_A = 1 so A's signals keep their gain and the interference leaves the floor; interpolated to every bin; A itself while the weights are A alone). The waterfall's Φ switches the band between its mode and A, the line over the spectrum shows gain / interference / coherence per channel (`GET /api/phase`) | gate `phase`: unit weights give A back exactly (2048 frames late), mode A changes nothing, MVDR takes a 30 dB interferer 18.6 dB off the band. Still to do: the FT8/WSPR gates on a synthetic pair |
 | P5 | web panel, coherence trace, stats v9 | headless Chrome screenshots; stats migration test |
 | P6 | live: one band phased against the same band single (skimmer-compare: spots, calls, SNR) | Dan's verdict on air |
 

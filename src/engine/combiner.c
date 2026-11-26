@@ -49,6 +49,8 @@ typedef struct {
   gboolean steered;
   double   drop_db, share_b;
   double   drop_est_db, gain_est_db, align;
+  cplx     bw[2];          /* the band-level weight (no station steering),
+                            * turned and scaled: c = conj(w)               */
 } Ch;
 
 typedef struct {
@@ -110,6 +112,8 @@ static void ch_reset(Ch *h) {
   h->c0[0] = h->c1[0] = 1.0;
   h->drop_db = h->drop_est_db = h->gain_est_db = h->align = NAN;
   h->share_b = 0.0;
+  h->bw[0] = 1.0;
+  h->bw[1] = 0.0;
 }
 
 SkimCombiner *skim_combiner_new(guint nchan, double rate,
@@ -350,6 +354,70 @@ static double drop_of(const Cov *r, const cplx w[2]) {
              ? 10.0 * log10(r->r11 * pa2 / q) : NAN;
 }
 
+/* w turned (A's component real, positive) and scaled to A's noise on rn;
+ * the coefficients c = conj(w) out. */
+static void turn_scale(const Cov *rn, cplx w[2], cplx out[2]) {
+  const double wa2 = creal(w[0] * conj(w[0])), wb2 = creal(w[1] * conj(w[1]));
+  if (wa2 > 1e-12 * (wa2 + wb2)) {
+    const cplx rot = conj(w[0]) / sqrt(wa2);
+    w[0] = creal(w[0] * rot);
+    w[1] *= rot;
+  } else if (wb2 > 0) {
+    const cplx rot = conj(w[1]) / sqrt(wb2);
+    w[1] = creal(w[1] * rot);
+    w[0] = 0;
+  }
+  const double q = quad(rn, w);
+  const double s = q > 0 && rn->r11 > 0 ? sqrt(rn->r11 / q) : 1.0;
+  out[0] = conj(w[0] * s);
+  out[1] = conj(w[1] * s);
+}
+
+/* The band-level weight of a channel: the group's interference canceller
+ * (MVDR towards e_A, no station steering — smooth across the band), or the
+ * mode's fixed one; scaled so that A's own signals keep their gain. */
+static void band_weight(const SkimCombiner *c, const Cov *rn, cplx out[2]) {
+  cplx w[2] = { 1.0, 0.0 };
+  switch (c->cfg.mode) {
+  case SKIM_PHASE_A:
+  case SKIM_PHASE_MRC:                     /* no preference, no null: A    */
+    out[0] = 1.0;
+    out[1] = 0.0;
+    return;
+  case SKIM_PHASE_B:
+    w[0] = 0.0;
+    w[1] = 1.0;
+    break;
+  case SKIM_PHASE_FIXED: {
+    const double g = pow(10.0, c->cfg.fixed_gain_db / 20.0);
+    w[1] = conj(g * cexp(I * c->cfg.fixed_phase_deg * G_PI / 180.0));
+    break;
+  }
+  case SKIM_PHASE_MVDR: {
+    Cov r = *rn;
+    const double load = LOADING * (rn->r11 + rn->r22);
+    r.r11 += load;
+    r.r22 += load;
+    const cplx e[2] = { 1.0, 0.0 };
+    if (!solve(&r, e, w)) {
+      w[0] = 1.0;
+      w[1] = 0.0;
+    }
+    break;
+  }
+  }
+  /* A's signals kept at their gain (w_A = 1): the interference leaves the
+   * floor, the stations stay — what a waterfall shows plainly. B alone (no
+   * A in it) is scaled to A's floor instead. */
+  const double wa = cabs(w[0]);
+  if (c->cfg.mode != SKIM_PHASE_B && wa > 1e-9 * (wa + cabs(w[1]))) {
+    out[0] = 1.0;
+    out[1] = conj(w[1] / w[0]);
+    return;
+  }
+  turn_scale(rn, w, out);
+}
+
 void skim_combiner_update(SkimCombiner *c) {
   /* 1. every channel's tick covariance */
   double tick_s = 0;
@@ -458,6 +526,7 @@ void skim_combiner_update(SkimCombiner *c) {
       w[0] *= s;
       w[1] *= s;
     }
+    if (!c->hold) { band_weight(c, &rn, h->bw); }
     if (!c->hold) {
       /* the ramp starts where the output is now */
       cplx now0 = h->c1[0], now1 = h->c1[1];
@@ -507,6 +576,17 @@ gboolean skim_combiner_chan_info(const SkimCombiner *c, guint chan,
   out->drop_est_db = c->updates ? h->drop_est_db : NAN;
   out->gain_est_db = h->gain_est_db;
   out->align = h->align;
+  return TRUE;
+}
+
+gboolean skim_combiner_band_coef(const SkimCombiner *c, guint chan, float ca[2], float cb[2]) {
+  if (!c || chan >= c->nchan)
+    return FALSE;
+  const Ch *h = &c->ch[chan];
+  ca[0] = (float)creal(h->bw[0]);
+  ca[1] = (float)cimag(h->bw[0]);
+  cb[0] = (float)creal(h->bw[1]);
+  cb[1] = (float)cimag(h->bw[1]);
   return TRUE;
 }
 

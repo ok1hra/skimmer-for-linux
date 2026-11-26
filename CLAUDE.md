@@ -180,8 +180,16 @@ here; what was done and why is in git.
   the client's indexed blocks go to a pairer per band
   (`source_hpsdr_p1.c`) that hands A+B to `iq2_cb` → `push2`, A alone
   while B is missing; status.json bands carry `phase` (null when not
-  phased). Waterfall, FT8/JS8/WSPR, `[record]` take A so far.
-- **`meson test` = 44 gates** (DeepCW skips without the model, golden skips
+  phased). The band's own IQ (waterfall, FT8/JS8/WSPR) is the band-level
+  combination (`band_combine.c`, the combiner's group canceller, w_A = 1);
+  the waterfall's Φ (managers: `POST /api/phase`, live, not saved) switches
+  the band between its mode and A, its line shows gain / interference /
+  coherence per channel (`GET /api/phase`). Statistics → Phasing: a coarse
+  waterfall of what it gave (`phase_hist.c`, `<state>/phase-<band>.bin`,
+  a minute × 7 d + a quarter hour × 90 d, `GET /api/phase_hist`). Settings
+  → Bands: IP "A+B Φ". `[record]` takes A so far.
+  rp-f08908 runs agent 0.4 since 2026-11-26.
+- **`meson test` = 45 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
   only with gfortran, `js8` only with C++20 + Boost headers). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).

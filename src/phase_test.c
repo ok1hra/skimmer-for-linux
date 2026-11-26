@@ -29,6 +29,7 @@
 #include "engine/combiner.h"
 #include "engine/phase_meter.h"
 #include "engine/pipeline.h"
+#include "engine/band_combine.h"
 
 #define FS       48000.0
 #define SPACING  125.0
@@ -495,6 +496,66 @@ static void pipe_band(float **pa, float **pb, guint *frames) {
   *frames = total;
 }
 
+/* The band-level coefficients the last pipe_run's pipeline published. */
+static float  last_bca[2048], last_bcb[2048];
+static guint  last_bcn;
+static double last_first, last_spacing;
+
+/* The band-level combination of the whole pair with the last coefficients:
+ * its power against A's, dB (≥ 0: the floor went down). */
+static double band_drop(const float *a, const float *b, guint frames) {
+  SkimBandCombine *bc = skim_band_combine_new(FS, 0);
+  skim_band_combine_set_weights(bc, last_bca, last_bcb, last_bcn, last_first, last_spacing);
+  float *y = g_new(float, 2 * (gsize)frames);
+  for (guint at = 0; at < frames; at += BLK) {
+    const guint n = MIN((guint)BLK, frames - at);
+    skim_band_combine_process(bc, a + 2 * (gsize)at, b + 2 * (gsize)at, y + 2 * (gsize)at, n);
+  }
+  const guint skip = (guint)(2 * FS);          /* past the start            */
+  const double pa = pw(a + 2 * (gsize)skip, frames - skip - 4096);
+  const double py = pw(y + 2 * (gsize)(skip + 4096), frames - skip - 4096);
+  g_free(y);
+  skim_band_combine_free(bc);
+  return 10.0 * log10(pa / py);
+}
+
+/* Unit weights give A back exactly, delayed by a fixed number of frames. */
+static void check_band_unit(void) {
+  const guint frames = 48000;
+  float *a = g_new(float, 2 * frames), *b = g_new(float, 2 * frames), *y = g_new(float, 2 * frames);
+  GRand *r = g_rand_new_with_seed(5);
+  for (guint i = 0; i < 2 * frames; i++) {
+    a[i] = (float)g_rand_double_range(r, -1, 1);
+    b[i] = (float)g_rand_double_range(r, -1, 1);
+  }
+  g_rand_free(r);
+  SkimBandCombine *bc = skim_band_combine_new(FS, 0);
+  const float one[2] = { 1, 0 }, zero[2] = { 0, 0 };
+  skim_band_combine_set_weights(bc, one, zero, 1, 0, SPACING);
+  for (guint at = 0; at < frames; at += 1000) {     /* odd chunks: across hops */
+    const guint n = MIN(1000u, frames - at);
+    skim_band_combine_process(bc, a + 2 * at, b + 2 * at, y + 2 * at, n);
+  }
+  skim_band_combine_free(bc);
+  guint best = 0;
+  double best_err = G_MAXDOUBLE;
+  for (guint d = 0; d < 8192; d++) {
+    double e = 0;
+    for (guint i = 10000; i < 20000; i++) {
+      const double dr = y[2 * (i + d)] - a[2 * i], di = y[2 * (i + d) + 1] - a[2 * i + 1];
+      e = MAX(e, fabs(dr) + fabs(di));
+    }
+    if (e < best_err) { best_err = e; best = d; }
+  }
+  char what[160];
+  g_snprintf(what, sizeof(what), "band level, unit weights: A back exactly (error %.1e), %u frames late",
+             best_err, best);
+  check(what, best_err < 1e-5);
+  g_free(a);
+  g_free(b);
+  g_free(y);
+}
+
 /* One offline pipeline over the band: phased with B (b given), phased with
  * B missing all along (b NULL, phased), or a plain pipeline on one input. */
 static void pipe_run(const float *in, const float *b, gboolean phased, guint frames,
@@ -520,6 +581,7 @@ static void pipe_run(const float *in, const float *b, gboolean phased, guint fra
     skim_pipeline_feed2(p, in + 2 * (gsize)at, b ? b + 2 * (gsize)at : NULL, n, FS, 14050000.0);
   }
   if (ph) { skim_pipeline_phase_snapshot(p, ph, rows, rows ? rows + 1024 : NULL, NULL, 1024); }
+  last_bcn = skim_pipeline_phase_band_coef(p, last_bca, last_bcb, 1024, &last_first, &last_spacing);
   skim_pipeline_stop(p);
   skim_pipeline_free(p);
 }
@@ -573,6 +635,14 @@ static void check_pipeline(void) {
              pha.sum.drop_est_db);
   check(what, pha.est && pha.mode == SKIM_PHASE_A && pha.sum.drop_est_db >= 20.0 &&
               seen_has(&s_a, "OK1PHS") == seen_has(&sa, "OK1PHS"));
+  /* the band's own IQ (waterfall, FT8): mode A → A; MVDR → the floor drops */
+  const double off = band_drop(a, b, frames);
+  pipe_run(a, b, TRUE, frames, &sp, &ph, rows, SKIM_PHASE_MVDR);
+  const double on = band_drop(a, b, frames);
+  g_snprintf(what, sizeof(what), "band level: mode A changes nothing (%+.2f dB), MVDR takes the "
+             "interferer off the floor (%+.1f dB ≥ 15)", off, on);
+  check(what, fabs(off) < 0.05 && on >= 15.0);
+  check_band_unit();
   g_free(a);
   g_free(b);
 }

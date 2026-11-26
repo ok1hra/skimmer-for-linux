@@ -127,6 +127,14 @@ typedef struct {
 gboolean skim_combiner_chan_info(const SkimCombiner *c, guint chan,
                                  SkimCombinerChanInfo *out);
 
+/* The band-level coefficients of a channel (y = ca·a + cb·b, as chan_info):
+ * the group's interference canceller with no station steering (MVDR towards
+ * e_A), so they vary smoothly across the band — what band_combine.h applies
+ * to the band's own IQ (the waterfall, FT8/JS8/WSPR). ca = 1: A's own
+ * signals keep their gain and the interference leaves the floor. Modes A
+ * and MRC: A; B: B scaled to A's floor; Fixed: the manual weight. */
+gboolean skim_combiner_band_coef(const SkimCombiner *c, guint chan, float ca[2], float cb[2]);
+
 /* Noise groups: their number, a channel's group, and a group's coherence
  * |γ|² = |R_ab|² / (R_aa·R_bb) of its quiet channels (0..1; NAN before the
  * first update). Near 1 = one source both antennas hear alike: it can be

@@ -585,6 +585,13 @@ b.temp.cool { color: var(--ok); } b.temp.warm { color: var(--warn); } b.temp.hot
 .wf-bar .wf-js8:hover { color: var(--fg); background: rgba(242,212,107,.2); }
 .wf-bar .wf-js8.on { color: var(--hot-ink); background: var(--js8); border-color: var(--js8); }
 .wf-bar .wf-js8[hidden] { display: none; }
+.wf-bar .wf-phase-ctl { display: inline-flex; gap: 4px; align-items: center; }
+.wf-bar .wf-phase-ctl[hidden] { display: none; }
+.wf-bar .wf-phase { font-size: 12px; font-weight: 700; letter-spacing: .06em; color: #ffd24a;
+  border-color: rgba(255,210,74,.5); min-width: 52px; }
+.wf-bar .wf-phase:hover:not(:disabled) { color: var(--fg); background: rgba(255,210,74,.2); }
+.wf-bar .wf-phase.on { color: var(--hot-ink); background: #ffd24a; border-color: #ffd24a; }
+.wf-bar .wf-phase:disabled { cursor: default; opacity: .85; }
 
 /* ---- the FT8 palette over the waterfall (ft8-palette.js): WSJT-X's Band Activity ---- */
 .ft8-pal {
@@ -716,3 +723,6 @@ body.touring { overflow: hidden; }
 .rp-ext-row b { width: 3.5em; }
 #settings.no-rp .rp-only, .no-rp .rp-only { display: none; }
 td.rxl { white-space: nowrap; }
+/* Statistics → Phasing: the coarse waterfall of what phasing gave */
+.phase-ctl { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 4px 0 8px; font-size: 13px; }
+.phase-cv { display: block; width: 100%; image-rendering: pixelated; }

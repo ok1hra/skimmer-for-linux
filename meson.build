@@ -81,6 +81,7 @@ engine_sources = [
   'src/engine/oracle.c',       # measurement only: R's stations → v2 (SKIM_ORACLE)
   'src/engine/combiner.c',     # two antennas per channel (docs/PHASING.md)
   'src/engine/phase_meter.c',  # … and what the combination gives
+  'src/engine/band_combine.c', # … and a phased band's own IQ (waterfall, FT8)
 ]
 engine_deps = [glib_dep, gio_dep, lws_dep, wdsp_dep, fftw3f_dep, m_dep, dl_dep]
 
@@ -335,6 +336,16 @@ skimmer_phase_test = executable('skimmer-phase-test',
   link_with : engine_lib,
 )
 test('phase', skimmer_phase_test, timeout : 300)
+
+# What phasing gave, kept: minute rows, quarter-hour rows, a reopen, a new
+# layout (headless/phase_hist.h).
+skimmer_phase_hist_test = executable('skimmer-phase-hist-test',
+  ['src/phase_hist_test.c', 'src/headless/phase_hist.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('phase-hist', skimmer_phase_hist_test, timeout : 60)
 
 # P0's tool: what phasing gives on a recorded pair (rp-spike pair or
 # [record]), the same code as the skimmer; gated on a synthetic pair.
@@ -643,6 +654,7 @@ headless_sources = files(
   'src/headless/source_hub.c',      # … a worker: the bands its hub passes on
   'src/headless/source_mock.c',     # … synthetic CW (the headless gate)
   'src/headless/stats.c',           # the 7-day per-minute history
+  'src/headless/phase_hist.c',      # what phasing gave, kept (docs/PHASING.md)
   'src/headless/update.c',          # [update]: a newer release swapped in
   'src/headless/switches.c',        # the SKIM_* switches a start runs with
   'src/headless/visitors.c',        # the page's visitors: sign-in, their log
@@ -687,9 +699,10 @@ test('headless-mock', find_program('tests/headless-mock.sh'),
   args : [skimmer_headless], timeout : 120)
 
 # Two-IP gate: skimmer-headless on both IPs of a board that runs the agent
-# (skimmer-rp-host --sim): B named by the agent, b_rate, in=2 through P1.
+# (skimmer-rp-host --sim): B named by the agent, b_rate, in=2 through P1;
+# a phased band (ip=ab): paired, aligned, Φ live, B lost and back.
 test('rp-two-ip', find_program('tests/rp-two-ip.sh'),
-  args : [skimmer_headless, skimmer_rp_host], timeout : 60)
+  args : [skimmer_headless, skimmer_rp_host], timeout : 180)
 
 # Hub gate: a hub and a worker on this machine (mock source) — a band
 # passed on, decoded there, spotted on the hub's feed; the peer duplicate;

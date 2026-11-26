@@ -24,7 +24,7 @@ check() {  # what, condition-exit-code
 }
 
 P=$((30000 + RANDOM % 5000))
-HTTP=$((35000 + RANDOM % 5000))
+HTTP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 "$AG" serve --sim --bind 127.0.0.6:$P,127.0.0.7:$P --ctl "$T/ctl.sock" --orphan-s 2 > "$T/agent.log" 2>&1 &
 APID=$!
 for _ in $(seq 50); do [[ -S $T/ctl.sock ]] && break; sleep 0.1; done
@@ -109,6 +109,23 @@ v=$(ph '"%.3f %.1f" % (b["coherence"] or 0, b["drop_db"] or 0)')
 read -r coh drop <<< "$v"
 python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) > 0.9 and float(sys.argv[2]) > 15 else 1)" "$coh" "$drop"
 check "A and B paired at the same instants: the common noise coherent (|γ|² $coh), nulled ($drop dB)" $?
+# the waterfall's Φ: POST /api/phase switches the band live; GET gives its line
+code=$(curl -s -o "$T/pa.json" -w '%{http_code}' -d 'band=20m&mode=a' "http://127.0.0.1:$HTTP/api/phase")
+ok=1
+for _ in $(seq 40); do [[ $(ph 'b["mode"] == "a" and b["est"]') == True ]] && { ok=0; break; }; sleep 0.1; done
+[[ $code == 200 && $ok == 0 ]]
+check "POST /api/phase mode=a: 20m runs on antenna A, the line shows what phasing would give" $?
+c1=$(curl -s -o /dev/null -w '%{http_code}' -d 'band=40m&mode=a' "http://127.0.0.1:$HTTP/api/phase")
+c2=$(curl -s -o /dev/null -w '%{http_code}' -d 'band=20m&mode=best' "http://127.0.0.1:$HTTP/api/phase")
+c3=$(curl -s -o /dev/null -w '%{http_code}' -H 'Origin: http://evil.example' -d 'band=20m&mode=a' "http://127.0.0.1:$HTTP/api/phase")
+[[ $c1 == 400 && $c2 == 400 && $c3 == 403 ]]
+check "… refused for a band not phased (400), an unknown mode (400), another origin (403)" $?
+curl -s -d 'band=20m&mode=mvdr' "http://127.0.0.1:$HTTP/api/phase" > /dev/null
+ok=1
+for _ in $(seq 40); do [[ $(ph 'b["mode"] == "mvdr" and not b["est"]') == True ]] && { ok=0; break; }; sleep 0.1; done
+n=$(curl -s "http://127.0.0.1:$HTTP/api/phase?band=20m" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d['drop']) if d.get('phased') else 0)")
+[[ $ok == 0 && $n == 384 ]]
+check "… back to mvdr; GET /api/phase: the line, one value a channel ($n)" $?
 # another client takes IP B: its start from a socket that closes (the agent stops it as an orphan)
 python3 -c "import socket,sys; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.sendto(bytes([0xef,0xfe,4,1])+bytes(60),('127.0.0.7',int(sys.argv[1])))" $P
 lost=1

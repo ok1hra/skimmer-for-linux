@@ -18,7 +18,8 @@
 const Wf = (() => {
   const SPANS = [0, 48000, 24000, 12000, 6000, 3000, 1500];   // 0 = the whole band
   const RATES = [1, 2, 5, 10, 20];
-  const DEF = { band: '', span: 0, centre: 0, rate: 5, range: 50, floor: 0, spec: true, calls: true, abw: 250 };
+  const DEF = { band: '', span: 0, centre: 0, rate: 5, range: 50, floor: 0, spec: true, calls: true, abw: 250,
+                phaseLine: 'drop' };
   const BWS = [50, 100, 150, 200, 250, 300, 400, 500];
   const store = (() => { try { return JSON.parse(localStorage.getItem('skwf') || '{}'); } catch (e) { return {}; } })();
   if (store.v !== 2) { store.spec = true; store.v = 2; }        // v2: the spectrum on by default
@@ -475,7 +476,88 @@ const Wf = (() => {
   // (each fades and goes when its last spot leaves the picture). Shown while
   // either is on.
   let lastFloor = -130;
-  function topShown() { return opt.spec || opt.calls; }
+  function topShown() { return opt.spec || opt.calls || !!(opt.phaseLine && phaseOf()); }
+
+  // ---- phasing (docs/PHASING.md) -----------------------------------------------------
+  // A phased band (ip=ab): Φ switches it between the combination (the mode
+  // it runs, MVDR by default) and antenna A alone — for everyone, decoding
+  // included; the waterfall then shows the difference within a second or
+  // two. The line over the spectrum: per channel what phasing gives — the
+  // gain over the better antenna where a station is, the interference taken
+  // off the floor, or the deepest null the coherence allows (dB).
+  let phaseData = null, phaseLast = 'mvdr', phaseBusy = false;
+  function phaseOf() {
+    const b = bandInfo(), bs = typeof status !== 'undefined' && status && status.bands;
+    if (!b || !bs) return null;
+    const e = bs.find((x) => x.band === b.name);
+    return e && e.phase ? e.phase : null;
+  }
+  const manager = () => !!document.getElementById('hdr-update');
+  function phaseUi() {
+    const ctl = $('#wf-phase-ctl'), btn = $('#wf-phase'), ph = phaseOf();
+    if (!ctl) return;
+    ctl.hidden = !ph;
+    if (!ph) { phaseData = null; return; }
+    const on = ph.mode !== 'a';
+    if (on) phaseLast = ph.mode;
+    btn.textContent = on ? 'Φ on' : 'Φ off';
+    btn.classList.toggle('on', on);
+    const f = (v, s) => (v == null ? '—' : `${v > 0 && s ? '+' : ''}${v.toFixed(1)}`);
+    const now = ph.b_missing ? 'IP B missing — antenna A alone'
+      : `${ph.mode.toUpperCase()}: interference off the floor ${f(ph.drop_db)} dB, stations ${f(ph.gain_db, 1)} dB `
+        + `over the better antenna${ph.est ? ' (what it would give)' : ''}, coherence ${ph.coherence == null ? '—' : ph.coherence.toFixed(2)}`;
+    btn.title = `phasing: this band from both antennas (IN1 + IN2) — ${now}`
+      + (manager() ? `\nclick: ${on ? 'off (antenna A alone)' : `on (${phaseLast.toUpperCase()})`} — for decoding too`
+                   : '\nswitched from an address that may change the settings');
+    btn.disabled = !manager() || phaseBusy;
+    $('#wf-phase-line').value = opt.phaseLine;
+  }
+  async function phaseToggle() {
+    const b = bandInfo(), ph = phaseOf();
+    if (!b || !ph || !manager() || typeof post === 'undefined') return;
+    phaseBusy = true;
+    phaseUi();
+    try {
+      await post('api/phase', new URLSearchParams({ band: b.name, mode: ph.mode !== 'a' ? 'a' : phaseLast }));
+      if (typeof status !== 'undefined' && status) ph.mode = ph.mode !== 'a' ? 'a' : phaseLast;   // until the next status
+    } catch (e) { $('#wf-phase').title = e.message; }
+    phaseBusy = false;
+    phaseUi();
+  }
+  async function phaseFetch() {
+    const b = bandInfo();
+    if (!b || !opt.phaseLine || !phaseOf()) { phaseData = null; return; }
+    try {
+      const r = await fetch(`api/phase?band=${encodeURIComponent(b.name)}`, { cache: 'no-store' });
+      const j = await r.json();
+      phaseData = j && j.phased && j.band === b.name ? j : null;
+    } catch (e) { phaseData = null; }
+    bar();
+    drawTop();
+  }
+  // the line: 0 dB dashed, +40 … −10 dB over the strip's height
+  function drawPhase(w, h) {
+    const d = phaseData;
+    if (!d || !opt.phaseLine || !d[opt.phaseLine] || !view.hi) return;
+    const v = d[opt.phaseLine], span = view.hi - view.lo, top = 40, bot = -10;
+    const y = (db) => h - ((Math.max(bot, Math.min(top, db)) - bot) / (top - bot)) * h;
+    spg.setLineDash([3, 3]); spg.strokeStyle = 'rgba(200,210,230,.35)'; spg.lineWidth = 1;
+    spg.beginPath(); spg.moveTo(0, y(0) + 0.5); spg.lineTo(w, y(0) + 0.5); spg.stroke();
+    spg.setLineDash([]);
+    spg.lineWidth = 2;
+    for (let i = 0; i < v.length; i++) {
+      if (v[i] === -128) continue;
+      const db = v[i] / 4, fc = d.centre_hz + d.first_hz + i * d.spacing_hz;
+      const x0 = ((fc - d.spacing_hz / 2 - view.lo) / span) * w, x1 = ((fc + d.spacing_hz / 2 - view.lo) / span) * w;
+      if (x1 < 0 || x0 > w) continue;
+      spg.strokeStyle = opt.phaseLine === 'dmax' ? '#6fb7ff' : db >= 0 ? '#ffd24a' : '#ff5a5a';
+      spg.beginPath(); spg.moveTo(x0, y(db)); spg.lineTo(x1, y(db)); spg.stroke();
+    }
+    const name = { gain: 'gain over the better antenna', drop: 'interference off the floor', dmax: 'deepest null (coherence)' }[opt.phaseLine];
+    spg.font = '700 10px RC, sans-serif'; spg.textAlign = 'right'; spg.textBaseline = 'top';
+    spg.fillStyle = opt.phaseLine === 'dmax' ? '#6fb7ff' : '#ffd24a';
+    spg.fillText(`Φ ${name}${d.est ? ' (would give)' : ''}, dB: +40 top, −10 bottom`, w - 4, 2);
+  }
   function drawTop(dbFloor) {
     if (dbFloor != null) lastFloor = dbFloor;
     if (!topShown()) return;
@@ -507,6 +589,7 @@ const Wf = (() => {
       spg.fillStyle = 'rgba(57,217,138,.18)'; spg.fill();
       path(); spg.strokeStyle = '#39d98a'; spg.lineWidth = 1.2; spg.stroke();
     }
+    drawPhase(w, h);
     drawWspr(w, h);
     if (opt.calls) drawCalls(w);
     placeWspr();
@@ -933,6 +1016,9 @@ const Wf = (() => {
     $('#wf-ft8').addEventListener('click', () => { if (typeof Ft8Pal !== 'undefined') Ft8Pal.toggleOn(band); });
     $('#wf-js8').addEventListener('click', () => { if (typeof Js8Pal !== 'undefined') Js8Pal.toggleOn(band); });
     ft8Ui();
+    $('#wf-phase').addEventListener('click', phaseToggle);
+    $('#wf-phase-line').addEventListener('change', (e) => { opt.phaseLine = e.target.value; save(); phaseFetch(); });
+    phaseUi();
     // a click on a call over the waterfall: listen there (RTTY: the palette too)
     sp.addEventListener('click', (e) => {
       const x = e.clientX - sp.getBoundingClientRect().left;
@@ -963,6 +1049,8 @@ const Wf = (() => {
       bytes = 0; bytesAt = now;
       if (opt.calls) fetchSpots();
       ft8Ui();                                       // [ft8] on or off: the status says
+      phaseUi();                                     // a phased band: Φ and its line
+      phaseFetch();
     }, 2000);
   }
 
