@@ -416,7 +416,10 @@ char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt) {
   if (b->rtty) { g_string_append_printf(s, "%srtty", s->len ? "," : ""); }
   if (b->off) { g_string_append_printf(s, "%soff", s->len ? "," : ""); }
   if (b->worker[0]) { g_string_append_printf(s, " @%s", b->worker); }
-  if (b->phased) {
+  if (b->phased && b->same_ip) {
+    if (b->ip) { g_string_append(s, " ip=b"); }
+    g_string_append(s, " in=12");
+  } else if (b->phased) {
     g_string_append(s, " ip=ab");
   } else {
     if (b->ip) { g_string_append(s, " ip=b"); }
@@ -532,10 +535,20 @@ static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
         b->off = TRUE;
       } else if (g_strcmp0(t, "ip=a") == 0 || g_strcmp0(t, "ip=b") == 0) {
         b->ip = t[3] == 'b';
-        b->phased = FALSE;
+        if (!b->same_ip) { b->phased = FALSE; }
       } else if (g_strcmp0(t, "ip=ab") == 0) {
+        if (b->same_ip) {
+          ok = bad(error, path, "band %s: ip=ab or in=12, not both", name);
+        }
         b->ip = 0;
         b->phased = TRUE;
+      } else if (g_strcmp0(t, "in=12") == 0) {
+        if (b->phased && !b->same_ip) {
+          ok = bad(error, path, "band %s: ip=ab or in=12, not both", name);
+        }
+        b->phased = TRUE;
+        b->same_ip = TRUE;
+        b->input = 0;
       } else if (g_strcmp0(t, "in=1") == 0 || g_strcmp0(t, "in=2") == 0) {
         b->input = t[3] == '2';
       } else if (g_str_has_prefix(t, "phase=")) {
@@ -1365,6 +1378,12 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
       g_free(grp);
       if (!ok) { break; }
     }
+    if (b->phased && b->same_ip && h->rp_split) {
+      ok = bad(error, path, "band %s: in=12 takes both inputs on one IP — [rp] mode=extended "
+               "gives each IP one input (ip=ab phases there)", keys[i]);
+      break;
+    }
+    if (b->phased && b->same_ip) { b->input = 0; }
     if (b->phased) {
       if (b->input) {
         ok = bad(error, path, "band %s: ip=ab takes IN1 on IP A and IN2 on IP B — no in=", keys[i]);
@@ -1374,7 +1393,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
       } else if (h->source != SKIM_HD_SOURCE_HPSDR_P1) {
         ok = bad(error, path, "band %s: ip=ab is a Red Pitaya's two inputs (type=hpsdr-p1 only)",
                  keys[i]);
-      } else if (h->rate != h->rp_b_rate) {
+      } else if (!b->same_ip && h->rate != h->rp_b_rate) {
         ok = bad(error, path, "band %s: ip=ab needs one rate on both IPs — [radio] rate %u, "
                  "[rp] b_rate %u", keys[i], h->rate, h->rp_b_rate);
       }
@@ -1382,7 +1401,12 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     }
     h->nlisted++;
     if (b->off) { continue; }
-    if (b->phased && h->nb_ip[1] == SKIM_HD_IP_RX) {
+    if (b->phased && b->same_ip && h->nb_ip[b->ip] + 2 > SKIM_HD_IP_RX) {
+      ok = bad(error, path, "band %s: in=12 takes two receivers of IP %c, and %u of its %d are "
+               "taken", keys[i], b->ip ? 'B' : 'A', h->nb_ip[b->ip], SKIM_HD_IP_RX);
+      break;
+    }
+    if (b->phased && !b->same_ip && h->nb_ip[1] == SKIM_HD_IP_RX) {
       ok = bad(error, path, "band %s: ip=ab takes a receiver on IP B too, and its %d are taken",
                keys[i], SKIM_HD_IP_RX);
       break;
@@ -1400,7 +1424,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     }
     h->nb_ip[b->ip]++;
     if (b->phased) {
-      h->nb_ip[1]++;
+      h->nb_ip[b->same_ip ? b->ip : 1]++;      /* the IN2 receiver */
       h->nb_phased++;
     }
     h->band[h->nb++] = *b;

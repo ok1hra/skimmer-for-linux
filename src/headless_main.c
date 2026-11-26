@@ -1933,7 +1933,8 @@ static char *web_config(GHashTable *q, SkimHdWebWho who, guint *st, const char *
                              b->rtty ? "true" : "false", b->off ? "false" : "true");
       json_kv(o, "worker", b->worker, FALSE);
       g_string_append_printf(o, ",\"ip\":\"%s\",\"input\":%u,\"phase\":\"%s\"}",
-                             b->phased ? "ab" : b->ip ? "b" : "a", b->input + 1u,
+                             b->phased && !b->same_ip ? "ab" : b->ip ? "b" : "a",
+                             b->phased && b->same_ip ? 12u : b->input + 1u,
                              b->phase_mode >= 0 ? skim_phase_mode_name((SkimPhaseMode)b->phase_mode) : "");
     }
     g_string_append_c(o, ']');

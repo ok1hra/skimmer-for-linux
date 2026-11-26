@@ -829,6 +829,37 @@ int main(void) {
       if (!bad5) { skim_hd_config_clear(&c); }
       g_clear_error(&e4);
     }
+    /* in=12: phased on one IP, two of its receivers */
+    {
+      GError *e6 = NULL;
+      gboolean ok6 = parse(&c, "[radio]\nhost=a\n[bands]\n20m=14045500 cw in=12\n40m=7025000\n"
+                               "80m=3525000 ip=b in=12 phase=mrc\n", &e6);
+      check(e6 ? e6->message : "in=12 parses", ok6);
+      check("in=12: phased on its own IP, two receivers there (A 3, B 2)",
+            ok6 && c.band[0].phased && c.band[0].same_ip && c.band[0].ip == 0 && !c.band[0].input &&
+            c.band[2].phased && c.band[2].same_ip && c.band[2].ip == 1 && c.nb_ip[0] == 3 &&
+            c.nb_ip[1] == 2);
+      char *m6 = ok6 ? skim_hd_band_modes(&c.band[2], c.engine) : NULL;
+      check("written back: \"cw ip=b in=12 phase=mrc\"", m6 && strcmp(m6, "cw ip=b in=12 phase=mrc") == 0);
+      g_free(m6);
+      if (ok6) { skim_hd_config_clear(&c); }
+      g_clear_error(&e6);
+      struct { const char *ini, *want; } bad6[] = {
+        { "[radio]\nhost=a\n[bands]\n20m=14045500 ip=ab in=12\n", "not both" },
+        { "[radio]\nhost=a\n[rp]\nmode=extended\n[bands]\n20m=14045500 in=12\n", "mode=extended" },
+        { "[radio]\nhost=a\n[bands]\na=1845500 in=12\nb=3545500 in=12\nc=7045500 in=12\nd=10145500 in=12\n"
+          "e=14045500 in=12\n", "two receivers of IP A" },
+      };
+      for (guint i = 0; i < G_N_ELEMENTS(bad6); i++) {
+        GError *e7 = NULL;
+        const gboolean ok7 = parse(&c, bad6[i].ini, &e7);
+        char what7[200];
+        g_snprintf(what7, sizeof(what7), "refused: %s", e7 ? e7->message : "(accepted)");
+        check(what7, !ok7 && e7 && strstr(e7->message, bad6[i].want));
+        if (ok7) { skim_hd_config_clear(&c); }
+        g_clear_error(&e7);
+      }
+    }
     /* eight phased bands fill both IPs; a ninth has no receiver on B */
     GString *ini = g_string_new("[radio]\nhost=a\n[bands]\n");
     for (int i = 0; i < 9; i++) { g_string_append_printf(ini, "b%d=%d000000 ip=ab\n", i, i + 2); }

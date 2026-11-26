@@ -1664,7 +1664,7 @@ function withSegments(list, rate) {
 }
 // a band off that is still saved: its own, or a segment set up beyond a plain CW one
 function setUp(b) {
-  return !b.seg || !b.cw || b.rtty || !!b.worker || !!b.khz || !!b.engine || b.ip === 'b' || b.ip === 'ab' || b.input === 2;
+  return !b.seg || !b.cw || b.rtty || !!b.worker || !!b.khz || !!b.engine || b.ip === 'b' || b.ip === 'ab' || b.input === 2 || b.input === 12;
 }
 // the board's two IPs: a Red Pitaya source only; extended = IN1 → A, IN2 → B
 const rpOn = () => $('[name="radio.type"]').value === 'hpsdr-p1';
@@ -1682,7 +1682,7 @@ function defaultEngineText() {
 
 function bandRow(b, may, rx, rate) {
   const ip = b.ip === 'b' || b.ip === 'ab' ? b.ip : 'a';
-  const input = ip === 'ab' ? 1 : rpSplit() ? (ip === 'b' ? 2 : 1) : b.input === 2 ? 2 : 1;
+  const input = ip === 'ab' ? 1 : rpSplit() ? (ip === 'b' ? 2 : 1) : b.input === 12 ? 12 : b.input === 2 ? 2 : 1;
   const tr = document.createElement('tr');
   tr.dataset.phase = b.phase || '';
   const dis = may ? '' : ' disabled';
@@ -1700,7 +1700,7 @@ function bandRow(b, may, rx, rate) {
     `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${b.seg ? ` placeholder="${esc(fmtKhz(b.def / 1000, null, ' '))}" title="empty = the segment's centre; a number moves it"` : ''}${dis}></td>` +
     `<td class="mut span">${span}</td>` +
     `<td class="rp-only"><select data-k="ip"${dis}><option value="a">A</option><option value="b">B</option><option value="ab" title="phased: IN1 on IP A and IN2 on IP B at this centre, combined channel by channel before decoding — a receiver on each IP, one rate on both, the skimmer's agent on the board">A+B Φ</option></select></td>` +
-    `<td class="rp-only"><select data-k="input"${dis}${rpSplit() || ip === 'ab' ? ` disabled title="${ip === 'ab' ? 'phased: IN1 at A, IN2 at B' : 'two antennas: the IP names the input'}"` : ''}><option value="1">IN1</option><option value="2">IN2</option></select></td>` +
+    `<td class="rp-only"><select data-k="input"${dis}${rpSplit() || ip === 'ab' ? ` disabled title="${ip === 'ab' ? 'phased: IN1 at A, IN2 at B' : 'two antennas: the IP names the input'}"` : ''}><option value="1">IN1</option><option value="2">IN2</option><option value="12" title="phased on this IP: two of its receivers at this centre, IN1 and IN2, combined channel by channel before decoding — one stream, so aligned by itself; the other IP stays free">IN1+IN2 Φ</option></select></td>` +
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
     `<td><select data-k="engine"${dis}><option value="">${esc(defaultEngineText())}</option><option value="v3">v3.1</option><option value="v4">v4.0 DeepCW</option><option value="v2">v2</option><option value="deepcw" title="not tested with this skimmer">DeepCW v1 (not tested)</option></select></td>` +
     `<td><input type="checkbox" data-k="rtty"${b.rtty ? ' checked' : ''}${dis}></td>` +
@@ -1879,7 +1879,9 @@ function drawBands(list, note) {
       return bandRow(b, may, b.on ? ++n.a : 0, ipRate('a'));
     }
     const ip = b.ip === 'b' ? 'b' : 'a';
-    return bandRow(b, may, b.on ? ++n[ip] : 0, ipRate(ip));
+    const row = bandRow(b, may, b.on ? ++n[ip] : 0, ipRate(ip));
+    if (b.on && b.input === 12 && !rpSplit()) n[ip]++;   /* in=12: its IN2 receiver too */
+    return row;
   }));
   const rx = n.a + n.b;
   // the workers this hub knows: named in a band, connected, or found on the LAN
@@ -1901,19 +1903,20 @@ function drawBands(list, note) {
 // ticking a band on or off renumbers the receivers; a ninth stays off
 on('#band-rows', 'change', (e) => {
   const k = e.target.dataset && e.target.dataset.k;
-  if (k === 'on' || k === 'ip') {
+  if (k === 'on' || k === 'ip' || k === 'input') {
     const list = readBands(), tr = e.target.closest('tr');
     const ip = tr.querySelector('[data-k=ip]').value;
-    const uses = (b, x) => b.on && (b.ip === x || b.ip === 'ab');
+    const uses = (b, x) => (b.on ? ((b.ip === x || b.ip === 'ab') ? 1 : 0) + (b.ip === x && b.input === 12 ? 1 : 0) : 0);
     if (ip === 'ab' && ipRate('a') !== ipRate('b')) {
       e.target.value = 'a';
       drawBands(readBands(), `A+B (phased) needs one rate on both IPs: ${ipRate('a') / 1000} and ${ipRate('b') / 1000} kHz now`);
       return;
     }
-    const full = ip === 'ab' ? ['a', 'b'].find((x) => list.filter((b) => uses(b, x)).length > maxOn(x))
-      : list.filter((b) => uses(b, ip)).length > maxOn(ip) ? ip : null;
-    if ((k === 'ip' || e.target.checked) && full) {
+    const full = ip === 'ab' ? ['a', 'b'].find((x) => list.reduce((t, b) => t + uses(b, x), 0) > maxOn(x))
+      : list.reduce((t, b) => t + uses(b, ip), 0) > maxOn(ip) ? ip : null;
+    if ((k !== 'on' || e.target.checked) && full) {
       if (k === 'on') e.target.checked = false;
+      else if (k === 'input') e.target.value = '1';
       else e.target.value = ip === 'b' ? 'a' : ip === 'ab' ? 'a' : 'b';
       drawBands(readBands(), `IP ${full.toUpperCase()} takes ${maxOn(full)} receivers at ${ipRate(full) / 1000} kHz: turn one off first`);
       return;
@@ -2144,7 +2147,8 @@ function formBody() {
     if (b.worker) modes.push(`@${b.worker}`);
     if (rpOn() && b.ip === 'b') modes.push('ip=b');
     if (rpOn() && b.ip === 'ab') modes.push('ip=ab');
-    if (rpOn() && b.ip === 'ab' && b.phase) modes.push(`phase=${b.phase}`);
+    if (rpOn() && !rpSplit() && b.ip !== 'ab' && b.input === 12) modes.push('in=12');
+    if (rpOn() && (b.ip === 'ab' || b.input === 12) && b.phase) modes.push(`phase=${b.phase}`);
     if (rpOn() && !rpSplit() && b.ip !== 'ab' && b.input === 2) modes.push('in=2');
     lines.push(`${b.name}=${Number.isFinite(hz) ? hz : b.khz}${modes.length ? ` ${modes.join(',')}` : ''}`);
   }

@@ -183,7 +183,8 @@ here; what was done and why is in git.
   phased). The band's own IQ (waterfall, FT8/JS8/WSPR) is the band-level
   combination (`band_combine.c`, the combiner's group canceller, w_A = 1);
   the waterfall's Φ (managers: `POST /api/phase`, live, not saved) switches
-  the band between its mode and A, its line shows gain / interference /
+  the band between its mode and A (`in=12` phases on ONE IP — two of its
+  receivers, IN1 and IN2, the other IP left free), its line shows gain / interference /
   coherence per channel (`GET /api/phase`). Statistics → Phasing: a coarse
   waterfall of what it gave (`phase_hist.c`, `<state>/phase-<band>.bin`,
   a minute × 7 d + a quarter hour × 90 d, `GET /api/phase_hist`). Settings

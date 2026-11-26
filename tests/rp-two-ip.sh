@@ -168,6 +168,20 @@ if [[ -n $PB && -n $ra ]]; then
   [[ $out == *"$(basename "$rb")"* && $out == *"B lag 0 samples (measured"* ]]
   check "skimmer-phase-bench finds the pair from A's file, B lag 0" $?
 fi
+# in=12: phased on IP A alone (two of its receivers, IN1 and IN2); IP B free
+sed -e 's/^20m=14045500 ip=ab.*/20m=14045500 in=12/' -e '/^\[record\]/,/^dir=/d' "$T/phased.ini" > "$T/same.ini"
+"$HL" --config "$T/same.ini" > "$T/logs" 2>&1 &
+PID=$!
+for _ in $(seq 100); do grep -q "radio: streaming" "$T/logs" && break; sleep 0.1; done
+sleep 4
+s=$(st)
+v=$(ph '"%.3f %s" % (b["coherence"] or 0, b["b_missing"])')
+read -r coh miss <<< "$v"
+got=$(py '[(i["streaming"], i["receivers"], i["sel"]) for i in d["inst"]]' "$s")
+[[ $got == "[(True, 3, 4), (False, 1, 0)]" ]] &&
+  [[ $miss == False ]] && python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) > 0.9 else 1)" "$coh"
+check "in=12: 20m phased on IP A alone (RX1 IN1, RX3 IN2: $got), IP B untouched, the common noise coherent (|γ|² $coh)" $?
+kill "$PID"; wait "$PID" 2>/dev/null; PID=
 printf '[radio]\nhost=127.0.0.6\nrate=48000\n[rp]\nb_rate=96000\n[bands]\n20m=14045500 ip=ab\n' > "$T/prate.ini"
 out=$("$HL" --config "$T/prate.ini" --check-config 2>&1); rc=$?
 [[ $rc == 2 && $out == *"ip=ab needs one rate on both IPs"* ]]

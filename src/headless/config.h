@@ -24,8 +24,11 @@
  *            (docs/PHASING.md): a receiver on IP A (IN1) and one on IP B
  *            (IN2) at the centre, combined per channel before decoding —
  *            counts on both IPs, needs the agent (0.4: paired streams), one
- *            rate on both IPs, no in=, no @worker; phase=mvdr|mrc|fixed|a|b
- *            overrides [phase] mode for the band
+ *            rate on both IPs, no in=, no @worker; in=12 = phased on ONE IP:
+ *            two of its receivers at the centre, IN1 and IN2 (the same
+ *            stream: aligned by itself, the other IP left free; [rp] mode
+ *            p1 only); phase=mvdr|mrc|fixed|a|b overrides [phase] mode for
+ *            the band
  *   [rp]     mode — p1 (default: one set of 16 DDCs, each band its input,
  *            in=) or extended (two antennas: every ip=a band on IN1, every
  *            ip=b band on IN2 — in= is then implied), b_host — the second IP
@@ -179,7 +182,10 @@ typedef struct {
   guint        rate;                  /* its IQ rate: its IP's ([radio] rate,
                                        * [rp] b_rate)                        */
   gboolean     phased;                /* ip=ab: IP A (IN1) + IP B (IN2), ip
-                                       * stays 0 (A is the band's own)       */
+                                       * stays 0 (A is the band's own); or
+                                       * in=12: two receivers of its own IP,
+                                       * IN1 and IN2 (same_ip)               */
+  gboolean     same_ip;
   gint         phase_mode;            /* phase=: a SkimPhaseMode, -1 = [phase] */
   double       fixed_gain_db;         /* [phase.<band>]: mode fixed's weight  */
   double       fixed_phase_deg;       /* (NAN = [phase]'s)                     */

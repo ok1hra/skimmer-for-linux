@@ -372,7 +372,14 @@ side by side, the groups, the stations, the measured lag and the CPU.
   waterfall socket (the golden gate).
 - `[bands] 20m=14045500 cw ip=ab [phase=mvdr|mrc|fixed|a|b]`: one receiver
   on IP A (IN1) and one on IP B (IN2) at one centre; `in=` not allowed on
-  that line. `[phase]`: mode, layer2, tc_s, gate_db, history, wf_line.
+  that line.
+- `[bands] 20m=14045500 cw in=12` (2026-11-26; `ip=b in=12` on IP B): two
+  receivers of ONE IP at the centre, IN1 and IN2. One stream, so the two
+  are aligned by themselves (the same packets, the same FIFO reset), and
+  the other IP stays free — SkimSrv keeps IP B. It costs two of that IP's
+  eight receivers; `[rp] mode=extended` (an input per IP) refuses it. The
+  pairer, the pipeline and everything after are the same. Settings →
+  Bands: the input column's "IN1+IN2 Φ". `[phase]`: mode, layer2, tc_s, gate_db, history, wf_line.
   `[phase.<band>]`: the Fixed weight and its memories (the panel writes
   them).
 - Refused by the config check (exit 2; greyed out in the form with the
@@ -505,7 +512,7 @@ interfaces:
 | P3 | `SkimCombiner` (MVDR/MRC/fixed, gating, phase reference, noise normalisation), `SkimPhaseMeter`, and the pipeline (`SkimPipelineConfig.phased`: B's channelizer, the combiner in the drain, the Y meter as the band's shadow SNR, B missing → A, `push2`/`feed2`, a snapshot for the page, the spots' SNR_A/SNR_B/gain) — **built** | gate `phase`: MRC ≥ 2.5 dB, one interferer nulled ≥ 20 dB, two in two halves each where it is, B a copy of A, empty IN2, mode A bit for bit, Fixed, the meters against the truth; the whole pipeline spots a CW station 8 dB under a common interferer on each antenna (neither alone does), B missing decodes A, mode A shows the estimates. **Golden byte-identical** |
 | P4 | band-level W(f): waterfall, digi_rx, WSPR — **built** (`band_combine.c`: WOLA, √Hann, half overlapping, N = 2048 at 96 kHz; the weights per channel from the combiner's group canceller, MVDR towards e_A with no station steering, scaled to w_A = 1 so A's signals keep their gain and the interference leaves the floor; interpolated to every bin; A itself while the weights are A alone). The waterfall's Φ switches the band between its mode and A, the line over the spectrum shows gain / interference / coherence per channel (`GET /api/phase`) | gate `phase`: unit weights give A back exactly (2048 frames late), mode A changes nothing, MVDR takes a 30 dB interferer 18.6 dB off the band. Still to do: the FT8/WSPR gates on a synthetic pair |
 | P5 | web panel, coherence trace, stats v9 | headless Chrome screenshots; stats migration test |
-| P6 | live: one band phased against the same band single (skimmer-compare: spots, calls, SNR) | Dan's verdict on air |
+| P6 | live: one band phased against the same band single (skimmer-compare: spots, calls, SNR) — offline first on the P0 pairs (2026-11-26, CW v3, 3 min, 160/80/40 m open): calls spotted IN1 alone 27, IN2 alone 25, MRC 30, MVDR 32 (+19 % over IN1; a small sample) | Dan's verdict on air |
 
 ## P0 on the air (rp-f08908, 2026-11-26 19:22Z)
 

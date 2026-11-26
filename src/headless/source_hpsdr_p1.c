@@ -654,8 +654,10 @@ static void p1_status(SkimIqSource *s, SkimIqSourceStatus *o) {
     if (alone && strlen(o->state) + 64 < sizeof(o->state)) {
       g_strlcat(o->state, "; ", sizeof(o->state));
       g_strlcat(o->state, p->base.cfg->band[b].name, sizeof(o->state));
-      g_strlcat(o->state, stamps ? " phased: IN1 alone (IP B missing)"
-                                 : " phased: IN1 alone (no agent 0.4 stamps)", sizeof(o->state));
+      g_strlcat(o->state, !stamps ? " phased: IN1 alone (no agent 0.4 stamps)"
+                          : p->base.cfg->band[b].same_ip ? " phased: IN1 alone (IN2 missing)"
+                                                         : " phased: IN1 alone (IP B missing)",
+                sizeof(o->state));
     }
   }
   g_strlcpy(o->host, p->host, sizeof(o->host));
@@ -695,21 +697,25 @@ SkimIqSource *skim_iq_source_hpsdr_p1_new(const SkimHdConfig *cfg, gboolean take
     p->band_of[ip][r] = b;
     if (cfg->band[b].input) { p->inputs[ip] |= (guint8)(1u << r); }
   }
-  for (guint b = 0; b < cfg->nb; b++) {        /* phased: B's receivers after IP B's own */
+  for (guint b = 0; b < cfg->nb; b++) {        /* phased: the IN2 receivers after the IPs' own */
     if (!cfg->band[b].phased) { continue; }
     p->pair[b] = pair_new(&p->base, b, cfg->band[b].rate);
     p->nphased++;
-    for (guint r = 0; r < p->nrx_ip[0]; r++) {
-      if (p->band_of[0][r] == b) {
-        p->phased_rx[0][r] = TRUE;
-        p->side[0][r] = (PairSide){ p->pair[b], 0 };
+    const guint ipa = cfg->band[b].same_ip && cfg->band[b].ip ? 1 : 0;
+    for (guint r = 0; r < p->nrx_ip[ipa]; r++) {
+      if (p->band_of[ipa][r] == b) {
+        p->phased_rx[ipa][r] = TRUE;
+        p->side[ipa][r] = (PairSide){ p->pair[b], 0 };
       }
     }
-    const guint rb = p->nrx_ip[1]++;
-    p->band_of[1][rb] = b;
-    p->inputs[1] |= (guint8)(1u << rb);          /* IN2 */
-    p->phased_rx[1][rb] = TRUE;
-    p->side[1][rb] = (PairSide){ p->pair[b], 1 };
+    /* in=12: the IN2 receiver on the same IP (one stream: aligned by
+     * itself); ip=ab: on IP B */
+    const guint ipb = cfg->band[b].same_ip ? ipa : 1;
+    const guint rb = p->nrx_ip[ipb]++;
+    p->band_of[ipb][rb] = b;
+    p->inputs[ipb] |= (guint8)(1u << rb);        /* IN2 */
+    p->phased_rx[ipb][rb] = TRUE;
+    p->side[ipb][rb] = (PairSide){ p->pair[b], 1 };
   }
   return &p->base;
 }
