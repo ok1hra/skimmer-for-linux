@@ -3835,9 +3835,10 @@ static double cw3_level(gpointer state) {
   return ((Cw3State *)state)->env_hi;
 }
 
-static guint cw3_mark_prob(gpointer state, const float **p) {
+static guint cw3_mark_prob(gpointer state, const float **p, guint *delay) {
   Cw3State *st = state;
   *p = st->mp;
+  *delay = 2;                    /* the 3-tap average (and the 45 Hz filter) */
   return st->mp ? st->mp_n : 0;
 }
 

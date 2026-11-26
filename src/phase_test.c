@@ -568,11 +568,13 @@ static void check_band_unit(void) {
 /* One offline pipeline over the band: phased with B (b given), phased with
  * B missing all along (b NULL, phased), or a plain pipeline on one input. */
 static gboolean run_layer2 = TRUE;
+static SkimCwEngine run_engine = SKIM_CW_ENGINE_V2;
 
 static void pipe_run(const float *in, const float *b, gboolean phased, guint frames,
                      Seen *seen, SkimPipelinePhase *ph, gint8 *rows, SkimPhaseMode mode) {
   SkimPipelineConfig cfg = { 0 };
   cfg.chan_bw_hz = SPACING;
+  cfg.cw_engine = run_engine;
   cfg.phased = phased;
   SkimCombinerConfig cc;
   skim_combiner_config_default(&cc);
@@ -603,9 +605,17 @@ static void pipe_run(const float *in, const float *b, gboolean phased, guint fra
  * (|1 − e^{-j12°}| = −13.6 dB), and the station is too weak beside the
  * interferer for layer 1's power gate to steer on it; the decoder still
  * reads it, and its marks teach layer 2 the station's own signature. */
+static void check_layer2_engine(SkimCwEngine eng, const char *name);
 static void check_layer2(void) {
+  check_layer2_engine(SKIM_CW_ENGINE_V2, "CW v2");
+  check_layer2_engine(SKIM_CW_ENGINE_V3, "CW v3");
+  check_layer2_engine(SKIM_CW_ENGINE_V4, "CW v4");
+}
+
+static void check_layer2_engine(SkimCwEngine eng, const char *name) {
   char what[220];
-  printf("== layer 2: OK1PHS 26 dB, 12° from an interferer 40 dB over the noise\n");
+  run_engine = eng;
+  printf("== layer 2 (%s): OK1PHS 26 dB, 12° from an interferer 40 dB over the noise\n", name);
   float *a, *b;
   guint frames;
   const double complex h = 0.8 * cexp(I * 57 * G_PI / 180);
@@ -632,6 +642,7 @@ static void check_layer2(void) {
   for (guint i = 0; i < s2.n; i++) { bogus = bogus || strcmp(s2.calls[i], "OK1PHS") != 0; }
   check("… and no other call comes out", !bogus);
   run_layer2 = TRUE;
+  run_engine = SKIM_CW_ENGINE_V2;
   g_free(a);
   g_free(b);
 }
@@ -680,7 +691,7 @@ static double l2_sinr(gboolean layer2) {
         }
       }
       skim_combiner_process(c, k, a, b, y, RATE);
-      skim_combiner_mark(c, k, a, b, k == K ? pm : NULL, RATE);
+      skim_combiner_mark(c, k, a, b, k == K ? pm : NULL, RATE, 0);
     }
     key_t += RATE;
     skim_combiner_update(c);
@@ -905,6 +916,7 @@ static int write_pair(const char *pa, const char *pb, double secs) {
 
 int main(int argc, char **argv) {
   char what[200];
+  g_setenv("SKIM_DCW4_SYNC", "1", FALSE);      /* CW v4 inline: deterministic */
   if (argc >= 4 && strcmp(argv[1], "--write-pair") == 0) {
     return write_pair(argv[2], argv[3], argc > 4 ? g_ascii_strtod(argv[4], NULL) : 30.0);
   }

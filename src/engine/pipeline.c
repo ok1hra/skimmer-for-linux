@@ -1895,8 +1895,9 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
         const gboolean got = cw->process(p->dec[SL(c, WIDE_LANE)], buf, n, &d);
         if (have_ab && cw->mark_prob) {        /* layer 2: its marks steer it */
           const float *mp = NULL;
-          if (cw->mark_prob(p->dec[SL(c, WIDE_LANE)], &mp) == n) {
-            skim_combiner_mark(p->comb, c, la, lb, mp, n);
+          guint delay = 0;
+          if (cw->mark_prob(p->dec[SL(c, WIDE_LANE)], &mp, &delay) == n) {
+            skim_combiner_mark(p->comb, c, la, lb, mp, n, delay);
           }
         }
         char *aux = cw->take_aux_text

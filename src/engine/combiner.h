@@ -97,7 +97,9 @@ void skim_combiner_process(SkimCombiner *c, guint chan, const float *a,
 
 /* Layer 2 (docs/PHASING.md): after the channel's decoder ran on the
  * block, the same n samples of A and B and the decoder's mark probability
- * of each (decode.h mark_prob: 0..1, -1 = no keyed station held). Marks
+ * of each (decode.h mark_prob: 0..1, -1 = no keyed station held; they
+ * describe the samples delay frames before, ≤ 64 — the combiner keeps that
+ * much of A and B to pair them with). Marks
  * (p ≥ 0.75) teach the station's covariance, spaces (p ≤ 0.25) what
  * disturbs it in its own channel; integrated over seconds, R_mark − R_space
  * gives its signature even where no power gate could, and R_space⁻¹·v
@@ -105,7 +107,7 @@ void skim_combiner_process(SkimCombiner *c, guint chan, const float *a,
  * promises a better SINR on the same estimates (by 0.5 dB), and lets go
  * hold_s after the decoder lost the station. */
 void skim_combiner_mark(SkimCombiner *c, guint chan, const float *a, const float *b,
-                        const float *p, guint n);
+                        const float *p, guint n, guint delay);
 
 /* Re-estimate every channel's weight from what process() saw since the
  * last update. The owner calls it about once a second (stream time). */

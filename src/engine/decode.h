@@ -135,10 +135,11 @@ struct _SkimDecodeBackend {
    * mark probability for each sample of the last process() call, 0..1 —
    * -1 where it holds no keyed station (not locked, dead air, bootstrap).
    * Returns that call's frame count and points *p at the values (valid
-   * until the next process()). The combiner learns the station's
-   * signature from the marks and what disturbs it from the spaces, in its
-   * own channel. Optional. */
-  guint (*mark_prob)(gpointer state, const float **p);
+   * until the next process()); *delay: they describe the samples that
+   * many frames before the block's (the backend's envelope lags its
+   * input). The combiner learns the station's signature from the marks
+   * and what disturbs it from the spaces, in its own channel. Optional. */
+  guint (*mark_prob)(gpointer state, const float **p, guint *delay);
 };
 
 G_END_DECLS

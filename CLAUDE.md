@@ -191,7 +191,7 @@ here; what was done and why is in git.
   panel (mode, Fixed gain/phase, "from MVDR", M1–M3, Save → phase= and
   `[phase.<band>]` in the config, no restart). `[record]` of a phased band
   writes the pair (`hd-<band>-<UTC>-b.cf32`, each .meta names the other).
-  Layer 2: CW v2/v3 give `mark_prob` (decode.h), the combiner steers a
+  Layer 2: CW v2/v3/v4 give `mark_prob` (decode.h), the combiner steers a
   locked station's channel from its marks/spaces (`skim_combiner_mark`,
   `[phase] layer2`, default on).
   rp-f08908 runs agent 0.4 since 2026-11-26.

@@ -2760,9 +2760,10 @@ static gboolean cw2_process(gpointer state, const float *iq, guint nframes,
   return TRUE;
 }
 
-static guint cw2_mark_prob(gpointer state, const float **p) {
+static guint cw2_mark_prob(gpointer state, const float **p, guint *delay) {
   Cw2State *st = state;
   *p = st->mp;
+  *delay = 2;                    /* the 3-tap average (and the 45 Hz filter) */
   return st->mp ? st->mp_n : 0;
 }
 

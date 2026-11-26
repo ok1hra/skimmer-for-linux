@@ -57,6 +57,8 @@ typedef struct {
   double   l2_s;               /* seconds of marks learnt                  */
   double   l2_idle_s;
   gboolean l2_ok, layer2;
+  float   *hist;               /* the last HIST frames of A and B (a, b)   */
+  guint    hpos;
   cplx     bw[2];          /* the band-level weight (no station steering),
                             * turned and scaled: c = conj(w)               */
 } Ch;
@@ -141,7 +143,7 @@ SkimCombiner *skim_combiner_new(guint nchan, double rate,
   if (c->cfg.hold_s <= 0) { c->cfg.hold_s = 30.0; }
   if (c->cfg.tc2_s <= 0) { c->cfg.tc2_s = 5.0; }
   c->ngroup = (nchan + c->cfg.group - 1) / c->cfg.group;
-  c->ch = g_new(Ch, nchan);
+  c->ch = g_new0(Ch, nchan);                   /* hist NULL: reset keeps it */
   c->grp = g_new0(Cov, c->ngroup);
   c->grp_inst = g_new0(Cov, c->ngroup);
   c->coh = g_new(double, c->ngroup);
@@ -153,6 +155,7 @@ SkimCombiner *skim_combiner_new(guint nchan, double rate,
 void skim_combiner_free(SkimCombiner *c) {
   if (!c)
     return;
+  for (guint k = 0; k < c->nchan; k++) { g_free(c->ch[k].hist); }
   g_free(c->ch);
   g_free(c->grp);
   g_free(c->grp_inst);
@@ -162,7 +165,11 @@ void skim_combiner_free(SkimCombiner *c) {
 }
 
 void skim_combiner_reset(SkimCombiner *c) {
-  for (guint k = 0; k < c->nchan; k++) { ch_reset(&c->ch[k]); }
+  for (guint k = 0; k < c->nchan; k++) {
+    float *hist = c->ch[k].hist;               /* kept: the history buffer */
+    ch_reset(&c->ch[k]);
+    c->ch[k].hist = hist;
+  }
   memset(c->grp, 0, c->ngroup * sizeof(Cov));
   memset(c->grp_inst, 0, c->ngroup * sizeof(Cov));
   for (guint g = 0; g < c->ngroup; g++) { c->coh[g] = NAN; }
@@ -233,15 +240,35 @@ void skim_combiner_process(SkimCombiner *c, guint chan, const float *a,
   h->gn += gn;
 }
 
+#define HIST 128
+
 void skim_combiner_mark(SkimCombiner *c, guint chan, const float *a, const float *b,
-                        const float *p, guint n) {
-  if (!c || chan >= c->nchan || !c->cfg.layer2 || !p)
+                        const float *p, guint n, guint delay) {
+  if (!c || chan >= c->nchan || !c->cfg.layer2 || !p || delay > 64)
     return;
+  if (n > 64) {                                /* the history holds 64 + 64 */
+    for (guint o = 0; o < n; o += 64) {
+      const guint m = MIN(64u, n - o);
+      skim_combiner_mark(c, chan, a + 2 * o, b + 2 * o, p + o, m, delay);
+    }
+    return;
+  }
   Ch *h = &c->ch[chan];
+  if (!h->hist) { h->hist = g_new0(float, 4 * HIST); }
+  const guint start = h->hpos;                 /* the block's first frame  */
+  for (guint i = 0; i < n; i++) {              /* A and B of this block in */
+    float *x = h->hist + 4 * ((start + i) % HIST);
+    x[0] = a[2 * i];
+    x[1] = a[2 * i + 1];
+    x[2] = b[2 * i];
+    x[3] = b[2 * i + 1];
+  }
+  h->hpos = (start + n) % HIST;
   for (guint i = 0; i < n; i++) {
     if (p[i] < 0)
       continue;
-    const float ar = a[2 * i], ai = a[2 * i + 1], br = b[2 * i], bi = b[2 * i + 1];
+    const float *x = h->hist + 4 * ((start + i + HIST - delay % HIST) % HIST);
+    const float ar = x[0], ai = x[1], br = x[2], bi = x[3];
     const double pa = (double)ar * ar + (double)ai * ai;
     const double pb = (double)br * br + (double)bi * bi;
     const cplx ab = ((double)ar * br + (double)ai * bi) + I * ((double)ai * br - (double)ar * bi);

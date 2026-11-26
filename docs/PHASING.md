@@ -201,10 +201,15 @@ a probability stream from the decoder to the combiner, which needs a small
 hook in `decode.h` (an optional `mark_prob` output per sample block).
 Implement layer 1 first (P3), then layer 2 (P3b).
 
-**Built (2026-11-26).** `decode.h` `mark_prob`: CW v2 and v3 give each
-sample's mark probability from their own soft envelope between their
-space and mark levels while the lattice holds a station (−1 otherwise);
-v4, DeepCW and RTTY do not yet. The combiner (`skim_combiner_mark`)
+**Built (2026-11-26).** `decode.h` `mark_prob`: each sample's mark
+probability, −1 where the backend holds no keyed station, and how many
+frames its envelope lags (the combiner keeps 64 frames of A and B to pair
+them). CW v2 and v3: their soft envelope between their space and mark
+levels while the lattice holds a station (lag 2). CW v4 (the network
+decides nothing per sample): its front end's line bin (12.5 Hz) between
+twice the floor and the peak while the line is keyed or in its hangover,
+each 16 ms frame for the middle of its 80 ms window (lag N/2 + hop, 14
+frames at 250 Hz). DeepCW v1 and RTTY give none yet. The combiner (`skim_combiner_mark`)
 learns R_mark and R_space in the channel (p ≥ 0.75 / ≤ 0.25, τ 5 s); after
 3 s of marks R_mark − R_space gives v, R_space⁻¹·v the weight, which
 replaces layer 1's only while it promises 0.5 dB more SINR on the same
