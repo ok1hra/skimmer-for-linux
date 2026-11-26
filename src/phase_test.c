@@ -28,6 +28,7 @@
 #include "engine/channelizer.h"
 #include "engine/combiner.h"
 #include "engine/phase_meter.h"
+#include "engine/pipeline.h"
 
 #define FS       48000.0
 #define SPACING  125.0
@@ -380,6 +381,202 @@ static void run(const Scenario *sc, Result *res) {
   skim_combiner_free(comb);
 }
 
+/* --- the whole pipeline ------------------------------------------------------ */
+
+static const struct { char c; const char *m; } MORSE[] = {
+  {'A',".-"},{'B',"-..."},{'C',"-.-."},{'D',"-.."},{'E',"."},{'F',"..-."},
+  {'G',"--."},{'H',"...."},{'I',".."},{'J',".---"},{'K',"-.-"},{'L',".-.."},
+  {'M',"--"},{'N',"-."},{'O',"---"},{'P',".--."},{'Q',"--.-"},{'R',".-."},
+  {'S',"..."},{'T',"-"},{'U',"..-"},{'V',"...-"},{'W',".--"},{'X',"-..-"},
+  {'Y',"-.--"},{'Z',"--.."},{'0',"-----"},{'1',".----"},{'2',"..---"},
+  {'3',"...--"},{'4',"....-"},{'5',"....."},{'6',"-...."},{'7',"--..."},
+  {'8',"---.."},{'9',"----."},
+};
+
+/* The keying envelope of text at wpm, edges shaped (5 ms raised cosine). */
+static float *cw_env(const char *text, double wpm, guint *len) {
+  GArray *e = g_array_new(FALSE, FALSE, sizeof(float));
+  const double dit = 1.2 / wpm * FS;
+  const float one = 1.0f, zero = 0.0f;
+#define RUN(n, v) for (guint i_ = 0; i_ < (guint)((n) + 0.5); i_++) g_array_append_val(e, v)
+  RUN(3 * dit, zero);
+  for (const char *p = text; *p; p++) {
+    if (*p == ' ') { RUN(4 * dit, zero); continue; }
+    const char *m = NULL;
+    for (guint i = 0; i < G_N_ELEMENTS(MORSE); i++) {
+      if (MORSE[i].c == *p) { m = MORSE[i].m; }
+    }
+    if (!m) { continue; }
+    for (const char *q = m; *q; q++) {
+      RUN(*q == '-' ? 3 * dit : dit, one);
+      RUN(dit, zero);
+    }
+    RUN(2 * dit, zero);
+  }
+#undef RUN
+  const guint L = (guint)(FS * RAMP_S);
+  float *src = (float *)e->data, *out = g_new0(float, e->len);
+  for (guint n = 0; n < e->len; n++) {
+    double acc = 0, ws = 0;
+    for (guint k = 0; k < L && k <= n; k++) {
+      const double w = 0.5 - 0.5 * cos(2 * G_PI * (k + 0.5) / L);
+      acc += w * src[n - k];
+      ws += w;
+    }
+    out[n] = (float)(acc / ws);
+  }
+  *len = e->len;
+  g_array_free(e, TRUE);
+  return out;
+}
+
+typedef struct {
+  char   calls[32][16];
+  guint  n;
+  gboolean phased;
+  double gain, snr_a, snr_b, snr_y;
+} Seen;
+
+static void seen_cb(const SkimStation *st, gpointer user) {
+  Seen *s = user;
+  if (strcmp(st->call, "OK1PHS") == 0) {
+    s->phased = st->phased;
+    s->gain = st->phase_gain_db;
+    s->snr_a = st->snr2_a_db;
+    s->snr_b = st->snr2_b_db;
+    s->snr_y = st->snr2_db;
+  }
+  for (guint i = 0; i < s->n; i++) {
+    if (strcmp(s->calls[i], st->call) == 0)
+      return;
+  }
+  if (s->n < G_N_ELEMENTS(s->calls)) { g_strlcpy(s->calls[s->n++], st->call, 16); }
+}
+
+static gboolean seen_has(const Seen *s, const char *call) {
+  for (guint i = 0; i < s->n; i++) {
+    if (strcmp(s->calls[i], call) == 0) { return TRUE; }
+  }
+  return FALSE;
+}
+
+/* The band of the pipeline checks: OK1PHS calling at SNR_2500 21 dB over
+ * the receiver noise, under a wideband interferer 30 dB over it that both
+ * antennas hear (B = 0.8∠57° · A), the station 0 dB ∠170° on B. */
+static void pipe_band(float **pa, float **pb, guint *frames) {
+  guint len;
+  char *text = g_strdup("CQ TEST OK1PHS OK1PHS CQ TEST OK1PHS OK1PHS K "
+                        "CQ TEST OK1PHS OK1PHS CQ TEST OK1PHS OK1PHS K");
+  float *env = cw_env(text, 24, &len);
+  g_free(text);
+  const guint total = len + (guint)(2 * FS);
+  float *a = g_new(float, 2 * (gsize)total), *b = g_new(float, 2 * (gsize)total);
+  GRand *r = g_rand_new_with_seed(77);
+  const double amp = sqrt(pow(10.0, 21 / 10.0) / FS * 2500.0);
+  const double complex bs = cexp(I * 170 * G_PI / 180), h = 0.8 * cexp(I * 57 * G_PI / 180);
+  const double ipow = 1000.0, off = 7005.0;
+  double ph = 0;
+  for (guint n = 0; n < total; n++) {
+    const double e = n < len ? env[n] * amp : 0;
+    const double complex x = e * cexp(I * ph);
+    ph = remainder(ph + 2 * G_PI * off / FS, 2 * G_PI);
+    const double complex i0 = gauss(r, ipow);
+    const double complex va = x + i0 + gauss(r, 1.0);
+    const double complex vb = x * bs + i0 * h + gauss(r, 1.0);
+    a[2 * n] = (float)creal(va);
+    a[2 * n + 1] = (float)cimag(va);
+    b[2 * n] = (float)creal(vb);
+    b[2 * n + 1] = (float)cimag(vb);
+  }
+  g_rand_free(r);
+  g_free(env);
+  *pa = a;
+  *pb = b;
+  *frames = total;
+}
+
+/* One offline pipeline over the band: phased with B (b given), phased with
+ * B missing all along (b NULL, phased), or a plain pipeline on one input. */
+static void pipe_run(const float *in, const float *b, gboolean phased, guint frames,
+                     Seen *seen, SkimPipelinePhase *ph, gint8 *rows, SkimPhaseMode mode) {
+  SkimPipelineConfig cfg = { 0 };
+  cfg.chan_bw_hz = SPACING;
+  cfg.phased = phased;
+  SkimCombinerConfig cc;
+  skim_combiner_config_default(&cc);
+  cc.mode = mode;
+  cfg.phase = &cc;
+  SkimPipeline *p = skim_pipeline_new(&cfg);
+  memset(seen, 0, sizeof(*seen));
+  seen->gain = seen->snr_a = seen->snr_b = seen->snr_y = NAN;
+  skim_pipeline_set_station_cb(p, seen_cb, seen);
+  GError *err = NULL;
+  if (!skim_pipeline_start_offline(p, &err)) {
+    printf("  FAIL offline pipeline: %s\n", err ? err->message : "?");
+    g_clear_error(&err);
+  }
+  for (guint at = 0; at < frames; at += BLK) {
+    const guint n = MIN((guint)BLK, frames - at);
+    skim_pipeline_feed2(p, in + 2 * (gsize)at, b ? b + 2 * (gsize)at : NULL, n, FS, 14050000.0);
+  }
+  if (ph) { skim_pipeline_phase_snapshot(p, ph, rows, rows ? rows + 1024 : NULL, NULL, 1024); }
+  skim_pipeline_stop(p);
+  skim_pipeline_free(p);
+}
+
+static void check_pipeline(void) {
+  char what[200];
+  float *a, *b;
+  guint frames;
+  pipe_band(&a, &b, &frames);
+  Seen sa, sb, sp, sm, s_a;
+  SkimPipelinePhase ph, phm, pha;
+  gint8 rows[2048];
+  pipe_run(a, NULL, FALSE, frames, &sa, NULL, NULL, SKIM_PHASE_MVDR);
+  pipe_run(b, NULL, FALSE, frames, &sb, NULL, NULL, SKIM_PHASE_MVDR);
+  pipe_run(a, b, TRUE, frames, &sp, &ph, rows, SKIM_PHASE_MVDR);
+  pipe_run(a, NULL, TRUE, frames, &sm, &phm, NULL, SKIM_PHASE_MVDR);
+  pipe_run(a, b, TRUE, frames, &s_a, &pha, NULL, SKIM_PHASE_A);
+  printf("    A alone: %u calls%s; B alone: %u calls%s; phased: %u calls%s\n",
+         sa.n, seen_has(&sa, "OK1PHS") ? " (OK1PHS)" : "",
+         sb.n, seen_has(&sb, "OK1PHS") ? " (OK1PHS)" : "",
+         sp.n, seen_has(&sp, "OK1PHS") ? " (OK1PHS)" : "");
+  printf("    phased OK1PHS: SNR_2500 A %+.1f, B %+.1f, combined %+.1f, gain %+.1f dB\n",
+         sp.snr_a, sp.snr_b, sp.snr_y, sp.gain);
+  printf("    snapshot: %llu updates, G %+.1f, drop %+.1f (D_max %.1f), %u stations\n",
+         (unsigned long long)ph.updates, ph.sum.gain_db, ph.sum.drop_db, ph.sum.dmax_db,
+         ph.sum.stations);
+  check("phased, the pipeline spots OK1PHS under the interferer", seen_has(&sp, "OK1PHS"));
+  check("not worse than either antenna alone (every call they spot, it spots)",
+        (!seen_has(&sa, "OK1PHS") || seen_has(&sp, "OK1PHS")) &&
+        (!seen_has(&sb, "OK1PHS") || seen_has(&sp, "OK1PHS")));
+  check("… and it hears what neither antenna alone does: A and B miss OK1PHS",
+        !seen_has(&sa, "OK1PHS") && !seen_has(&sb, "OK1PHS"));
+  gboolean bogus = FALSE;
+  for (guint i = 0; i < sp.n; i++) { bogus = bogus || strcmp(sp.calls[i], "OK1PHS") != 0; }
+  check("no other call comes out of the phased band", !bogus);
+  g_snprintf(what, sizeof(what), "the spot carries its numbers: phased, gain %+.1f dB ≥ 10",
+             sp.gain);
+  check(what, sp.phased && sp.gain >= 10.0);
+  g_snprintf(what, sizeof(what), "the snapshot: floor drop %+.1f dB ≥ 20, the station's "
+             "gain %+.1f dB ≥ 10, rows filled", ph.sum.drop_db, ph.sum.gain_db);
+  gboolean rows_ok = FALSE;
+  for (guint i = 0; i < MIN(ph.nchan, 1024u); i++) {
+    rows_ok = rows_ok || rows[1024 + i] != SKIM_PHASE_NONE;
+  }
+  check(what, ph.phased && !ph.b_missing && ph.sum.drop_db >= 20.0 && rows_ok &&
+              ph.sum.stations >= 1 && ph.sum.gain_db >= 10.0 &&
+              ph.nchan == 384 && fabs(ph.first_hz + 23875.0) < 1);
+  check("B missing all along: the band decodes A, the snapshot says so",
+        phm.phased && phm.b_missing && seen_has(&sm, "OK1PHS") == seen_has(&sa, "OK1PHS"));
+  g_snprintf(what, sizeof(what), "mode A: estimates (est, drop %+.1f dB ≥ 20) while A decodes alone",
+             pha.sum.drop_est_db);
+  check(what, pha.est && pha.mode == SKIM_PHASE_A && pha.sum.drop_est_db >= 20.0 &&
+              seen_has(&s_a, "OK1PHS") == seen_has(&sa, "OK1PHS"));
+  g_free(a);
+  g_free(b);
+}
+
 static void result_free(Result *r) {
   g_free(r->g_true);
   g_free(r->g_meter);
@@ -665,6 +862,9 @@ int main(int argc, char **argv) {
     check(what, drop >= 20.0);
     result_free(&r);
   }
+
+  printf("== the whole pipeline: OK1PHS 21 dB over the noise under a 30 dB interferer\n");
+  check_pipeline();
 
   printf("\n%d/%d checks passed\n", checks - fails, checks);
   return fails ? 1 : 0;

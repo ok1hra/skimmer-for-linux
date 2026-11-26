@@ -122,6 +122,7 @@ typedef struct {
 
 typedef struct {
   float  *iq;
+  float  *iq_b;            /* a phased band's antenna B; NULL = missing     */
   guint   nframes;
   double  rate;
   double  center_hz;
@@ -218,9 +219,27 @@ struct _SkimPipeline {
   GArray           *hits;                      /* Hit — one block's decodes  */
   double           *lvl;                       /* per-channel level snapshot */
   FreqLock         *flock;                     /* per-channel frequency lock */
-  SkimSnrMeter     *snr;                       /* shadow SNR (snr_meter.h)   */
+  SkimSnrMeter     *snr;                       /* shadow SNR (snr_meter.h); a
+                                                * phased band's is the phase
+                                                * meter's Y (borrowed)       */
   gint64            snr_due_us;                /* next band-floor refresh    */
   guint64           ghosts;                    /* decodes suppressed         */
+
+  /* Two antennas (docs/PHASING.md); all NULL/FALSE unless cfg.phased. */
+  SkimCombinerConfig phase_cfg;
+  SkimChannelizer  *bank_b;                    /* antenna B's channels       */
+  SkimCombiner     *comb;
+  SkimPhaseMeter   *pmeter;
+  gint64            phase_due_us;              /* next update (stream time)  */
+  gboolean          b_missing;                 /* this block came without B  */
+  gboolean          b_was_missing;             /* … and the one before       */
+  GMutex            phase_lock;                /* pending + the snapshot     */
+  gboolean          phase_pending;
+  SkimPhaseMode     pend_mode;
+  double            pend_gain, pend_phase;
+  SkimPipelinePhase phase_snap;
+  gint8            *phase_rows;                /* 3 × nchan: gain, drop, dmax */
+  guint             phase_rows_n;
 
   GAsyncQueue      *queue;                     /* IqBlock*                   */
   GThread          *thread;
@@ -475,6 +494,12 @@ SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {
     }
     p->use_split = g_getenv("SKIM_TONE_SPLIT") != NULL || fenv != NULL;
   }
+  g_mutex_init(&p->phase_lock);
+  if (cfg->phased) {
+    if (cfg->phase) { p->phase_cfg = *cfg->phase; }
+    else { skim_combiner_config_default(&p->phase_cfg); }
+  }
+  p->cfg.phase = NULL;                         /* copied: never dangles     */
   p->stations = skim_station_table_new();
   skim_station_table_set_gone_cb(p->stations, station_gone_fwd, p);
   p->queue    = g_async_queue_new();
@@ -579,7 +604,11 @@ static void bank_teardown(SkimPipeline *p) {
   g_free(p->sgen);
   g_free(p->lvl);
   g_free(p->flock);
+  if (p->pmeter) { p->snr = NULL; }           /* the phase meter's own     */
   g_clear_pointer(&p->snr, skim_snr_meter_free);
+  g_clear_pointer(&p->pmeter, skim_phase_meter_free);
+  g_clear_pointer(&p->comb, skim_combiner_free);
+  g_clear_pointer(&p->bank_b, skim_channelizer_free);
   p->dec = NULL;
   p->ext = NULL;
   p->split = NULL;
@@ -616,9 +645,12 @@ void skim_pipeline_free(SkimPipeline *p) {
   IqBlock *b;
   while ((b = g_async_queue_try_pop(p->queue)) != NULL) {
     g_free(b->iq);
+    g_free(b->iq_b);
     g_free(b);
   }
   g_async_queue_unref(p->queue);
+  g_free(p->phase_rows);
+  g_mutex_clear(&p->phase_lock);
   g_array_free(p->hits, TRUE);
   g_free(p->host);
   g_free(p->dlog_path);
@@ -1021,8 +1053,8 @@ static void tx_fwd_cb(gboolean tx, gpointer user) {
 
 /* ---- LWS-thread side: queue the block ---------------------------------------- */
 
-static void iq_cb(const float *iq, guint nframes, double rate, double center,
-                  gpointer user) {
+static void iq2_cb(const float *iq, const float *iq_b, guint nframes, double rate,
+                   double center, gpointer user) {
   SkimPipeline *p = user;
   if (g_async_queue_length(p->queue) >= QUEUE_MAX) {
     p->dropped++;                              /* overload: drop, don't stall */
@@ -1030,10 +1062,131 @@ static void iq_cb(const float *iq, guint nframes, double rate, double center,
   }
   IqBlock *b = g_new(IqBlock, 1);
   b->iq = g_memdup2(iq, (gsize)nframes * 2 * sizeof(float));
+  b->iq_b = iq_b && p->cfg.phased
+                ? g_memdup2(iq_b, (gsize)nframes * 2 * sizeof(float)) : NULL;
   b->nframes   = nframes;
   b->rate      = rate;
   b->center_hz = center;
   g_async_queue_push(p->queue, b);
+}
+
+static void iq_cb(const float *iq, guint nframes, double rate, double center,
+                  gpointer user) {
+  iq2_cb(iq, NULL, nframes, rate, center, user);
+}
+
+/* ---- two antennas (docs/PHASING.md) -------------------------------------------- */
+
+/* B's channelizer (A's geometry), the combiner and the phase meter. A CW
+ * band's shadow SNR meter becomes the phase meter's Y: the decoders' floor
+ * and the spots' snr2 then read the combination, as the decoders hear it. */
+static void phase_build(SkimPipeline *p, double rate, double out_rate) {
+  p->bank_b = p->cfg.mode == SKIM_PIPELINE_MODE_RTTY
+                  ? skim_channelizer_new_ex(rate, p->cfg.chan_bw_hz,
+                                            0.9 * p->cfg.chan_bw_hz, 16)
+                  : skim_channelizer_new(rate, p->cfg.chan_bw_hz);
+  p->comb = skim_combiner_new(p->nchan, out_rate, &p->phase_cfg);
+  p->pmeter = skim_phase_meter_new(p->nchan, out_rate,
+                                   SKIM_SNR_CW_ENBW * p->cfg.chan_bw_hz);
+  if (!p->bank_b || !p->comb || !p->pmeter) {
+    g_warning("pipeline: no phasing for %.0f Hz / %.0f Hz", rate, p->cfg.chan_bw_hz);
+    g_clear_pointer(&p->pmeter, skim_phase_meter_free);
+    g_clear_pointer(&p->comb, skim_combiner_free);
+    g_clear_pointer(&p->bank_b, skim_channelizer_free);
+    return;
+  }
+  if (p->snr) {
+    skim_snr_meter_free(p->snr);
+    p->snr = skim_phase_meter_snr_meter(p->pmeter, SKIM_PH_Y);
+  }
+  p->phase_due_us = p->stream_us + G_USEC_PER_SEC;
+  g_mutex_lock(&p->phase_lock);
+  g_free(p->phase_rows);
+  p->phase_rows_n = p->nchan;
+  p->phase_rows = g_new(gint8, 3 * p->nchan);
+  memset(p->phase_rows, SKIM_PHASE_NONE, 3 * p->nchan);
+  memset(&p->phase_snap, 0, sizeof(p->phase_snap));
+  g_mutex_unlock(&p->phase_lock);
+}
+
+/* A centre change (or B back after a gap): learn afresh. */
+static void phase_restart(SkimPipeline *p) {
+  if (!p->pmeter)
+    return;
+  const double out_rate = skim_channelizer_out_rate(p->bank);
+  const gboolean cw_snr = p->snr != NULL;
+  p->snr = NULL;
+  skim_phase_meter_free(p->pmeter);
+  p->pmeter = skim_phase_meter_new(p->nchan, out_rate,
+                                   SKIM_SNR_CW_ENBW * p->cfg.chan_bw_hz);
+  if (cw_snr) { p->snr = skim_phase_meter_snr_meter(p->pmeter, SKIM_PH_Y); }
+  skim_combiner_reset(p->comb);
+}
+
+/* Once a second (stream time): the live settings, the weights, the
+ * meters, the snapshot the other threads read. */
+static void phase_update(SkimPipeline *p, double center_hz) {
+  g_mutex_lock(&p->phase_lock);
+  if (p->phase_pending) {
+    p->phase_pending = FALSE;
+    skim_combiner_set_mode(p->comb, p->pend_mode);
+    skim_combiner_set_fixed(p->comb, p->pend_gain, p->pend_phase);
+    p->phase_cfg.mode = p->pend_mode;
+    p->phase_cfg.fixed_gain_db = p->pend_gain;
+    p->phase_cfg.fixed_phase_deg = p->pend_phase;
+  }
+  g_mutex_unlock(&p->phase_lock);
+  if (p->b_missing) {
+    if (p->snr) { skim_snr_meter_refresh(p->snr); }  /* the floor A gives */
+  } else {
+    skim_combiner_update(p->comb);
+    skim_phase_meter_refresh(p->pmeter, p->comb);
+  }
+  const SkimPhaseMode mode = skim_combiner_mode(p->comb);
+  const gboolean est = mode != SKIM_PHASE_MVDR && mode != SKIM_PHASE_MRC;
+  g_mutex_lock(&p->phase_lock);
+  SkimPipelinePhase *o = &p->phase_snap;
+  o->phased = TRUE;
+  o->b_missing = p->b_missing;
+  o->est = est;
+  o->mode = mode;
+  o->fixed_gain_db = p->phase_cfg.fixed_gain_db;
+  o->fixed_phase_deg = p->phase_cfg.fixed_phase_deg;
+  o->centre_hz = center_hz;
+  o->nchan = p->nchan;
+  o->spacing_hz = p->cfg.chan_bw_hz;
+  o->first_hz = skim_channelizer_offset_hz(p->bank, (p->nchan / 2 + 1) % p->nchan);
+  o->updates = skim_combiner_updates(p->comb);
+  skim_phase_meter_summary(p->pmeter, &o->sum);
+  for (guint i = 0; i < p->nchan; i++) {
+    const guint k = (i + p->nchan / 2 + 1) % p->nchan;  /* low to high */
+    const double g = p->b_missing ? NAN
+                     : est ? skim_phase_meter_gain_est(p->pmeter, k)
+                           : skim_phase_meter_gain(p->pmeter, k);
+    const double d = p->b_missing ? NAN
+                     : est ? skim_phase_meter_drop_est(p->pmeter, k)
+                           : skim_phase_meter_drop(p->pmeter, k);
+    const double y = skim_combiner_coherence(p->comb, skim_combiner_group_of(p->comb, k));
+    p->phase_rows[i] = skim_phase_q8(g);
+    p->phase_rows[p->nchan + i] = skim_phase_q8(d);
+    p->phase_rows[2 * p->nchan + i] =
+        skim_phase_q8(isnan(y) ? NAN : -10.0 * log10(MAX(1e-6, 1.0 - y)));
+  }
+  g_mutex_unlock(&p->phase_lock);
+}
+
+/* One block of channel c: buf holds A's samples and gets the combination
+ * (A alone while B is missing); the meters see A, B and the output. */
+static void phase_channel(SkimPipeline *p, guint c, float *buf, guint n) {
+  float bb[DRAIN_FRAMES * 2], a[DRAIN_FRAMES * 2];
+  const guint m = skim_channelizer_read(p->bank_b, c, bb, n);
+  if (p->b_missing || m != n) {
+    skim_snr_meter_push(p->snr, c, buf, n);   /* Y = A */
+    return;
+  }
+  memcpy(a, buf, (gsize)n * 2 * sizeof(float));
+  skim_combiner_process(p->comb, c, a, bb, buf, n);
+  skim_phase_meter_push(p->pmeter, c, a, bb, buf, n);
 }
 
 /* ---- engine thread ------------------------------------------------------------ */
@@ -1088,6 +1241,7 @@ static void bank_build(SkimPipeline *p, double rate) {
                ? skim_snr_meter_new(p->nchan, out_rate,
                                     SKIM_SNR_CW_ENBW * p->cfg.chan_bw_hz)
                : NULL;
+  if (p->cfg.phased) { phase_build(p, rate, out_rate); }
   for (guint c = 0; c < p->nchan; c++) {
     p->dec[SL(c, WIDE_LANE)] = cw->channel_new(out_rate);
     p->ext[SL(c, WIDE_LANE)] = skim_callsign_extractor_new();
@@ -1300,6 +1454,16 @@ static void take_text(SkimPipeline *p, guint ix, double sig_hz,
   st.speed      = d->speed;
   st.snr_db     = d->snr_db;
   st.snr2_db    = p->snr ? skim_snr_meter_db(p->snr, ix / NSLOT) : NAN;
+  if (p->pmeter) {
+    st.phased = TRUE;
+    st.snr2_a_db = skim_phase_meter_snr(p->pmeter, SKIM_PH_A, ix / NSLOT);
+    st.snr2_b_db = p->b_missing ? NAN
+                   : skim_phase_meter_snr(p->pmeter, SKIM_PH_B, ix / NSLOT);
+    const double sy = skim_phase_meter_snr(p->pmeter, SKIM_PH_Y, ix / NSLOT);
+    const double best = isnan(st.snr2_b_db) || st.snr2_a_db >= st.snr2_b_db
+                            ? st.snr2_a_db : st.snr2_b_db;
+    st.phase_gain_db = isnan(sy) || isnan(best) ? NAN : sy - best;
+  }
   st.score      = score;
   st.hearings   = skim_callsign_extractor_hearings(p->ext[ix], call);
   st.heard_us   = skim_callsign_extractor_last_heard(p->ext[ix], call);
@@ -1615,7 +1779,9 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
     if (p->center_hz != 0) {
       const SkimDecodeBackend *cwf = pipe_backend(p);
       const double out_rate = skim_channelizer_out_rate(p->bank);
-      if (p->snr) {
+      if (p->pmeter) {
+        phase_restart(p);
+      } else if (p->snr) {
         skim_snr_meter_free(p->snr);
         p->snr = skim_snr_meter_new(p->nchan, out_rate,
                                     SKIM_SNR_CW_ENBW * p->cfg.chan_bw_hz);
@@ -1649,6 +1815,19 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
   }
 
   skim_channelizer_push(p->bank, b->iq, b->nframes);
+  if (p->bank_b) {
+    /* B missing: silence keeps B's channels aligned with A's */
+    p->b_missing = b->iq_b == NULL;
+    if (p->b_missing) {
+      float *z = g_new0(float, 2 * (gsize)b->nframes);
+      skim_channelizer_push(p->bank_b, z, b->nframes);
+      g_free(z);
+    } else {
+      if (p->b_was_missing) { phase_restart(p); }
+      skim_channelizer_push(p->bank_b, b->iq_b, b->nframes);
+    }
+    p->b_was_missing = p->b_missing;
+  }
   p->frames += b->nframes;
   p->stream_us = (gint64)((double)p->frames * G_USEC_PER_SEC /
                           MAX(b->rate, 1.0));
@@ -1663,7 +1842,12 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
    * through it and come back out per slot (verbatim while passthrough). */
   /* The band floor for the backends (decode.h set_floor), refreshed once a
    * second: the percentile over the neighbours is too dear per block. */
-  if (p->snr && cw->set_floor && p->stream_us >= p->snr_due_us) {
+  if (p->comb) {
+    if (p->stream_us >= p->phase_due_us) {
+      phase_update(p, b->center_hz);
+      p->phase_due_us += G_USEC_PER_SEC;
+    }
+  } else if (p->snr && cw->set_floor && p->stream_us >= p->snr_due_us) {
     skim_snr_meter_refresh(p->snr);
     p->snr_due_us = p->stream_us + G_USEC_PER_SEC;
   }
@@ -1680,10 +1864,14 @@ static void process_block(SkimPipeline *p, IqBlock *b) {
     }
     guint n;
     while ((n = skim_channelizer_read(p->bank, c, buf, DRAIN_FRAMES)) > 0) {
+      if (p->comb) {
+        phase_channel(p, c, buf, n);           /* buf: A → the combination */
+      } else {
+        skim_snr_meter_push(p->snr, c, buf, n);
+      }
       if (G_UNLIKELY(p->chdump) && p->chdump[c]) {
         fwrite(buf, 2 * sizeof(float), n, p->chdump[c]);
       }
-      skim_snr_meter_push(p->snr, c, buf, n);
       if (!sp) {
         const gboolean got = cw->process(p->dec[SL(c, WIDE_LANE)], buf, n, &d);
         char *aux = cw->take_aux_text
@@ -1759,6 +1947,7 @@ static gpointer engine_thread(gpointer data) {
     if (b) {
       process_block(p, b);
       g_free(b->iq);
+      g_free(b->iq_b);
       g_free(b);
     }
     const gint64 now = g_get_monotonic_time();
@@ -1876,11 +2065,52 @@ void skim_pipeline_push(SkimPipeline *p, const float *iq, guint nframes,
   iq_cb(iq, nframes, rate, center_hz, p);
 }
 
+void skim_pipeline_push2(SkimPipeline *p, const float *a, const float *b,
+                         guint nframes, double rate, double center_hz) {
+  if (!g_atomic_int_get(&p->run)) { return; }
+  iq2_cb(a, b, nframes, rate, center_hz, p);
+}
+
 void skim_pipeline_feed(SkimPipeline *p, const float *iq, guint nframes,
                         double rate, double center_hz) {
+  skim_pipeline_feed2(p, iq, NULL, nframes, rate, center_hz);
+}
+
+void skim_pipeline_phase_set(SkimPipeline *p, SkimPhaseMode mode,
+                             double fixed_gain_db, double fixed_phase_deg) {
+  g_mutex_lock(&p->phase_lock);
+  p->phase_pending = TRUE;
+  p->pend_mode = mode;
+  p->pend_gain = fixed_gain_db;
+  p->pend_phase = fixed_phase_deg;
+  g_mutex_unlock(&p->phase_lock);
+}
+
+gboolean skim_pipeline_phase_snapshot(SkimPipeline *p, SkimPipelinePhase *out,
+                                      gint8 *gain, gint8 *drop, gint8 *dmax,
+                                      guint max) {
+  memset(out, 0, sizeof(*out));
+  if (!p->cfg.phased)
+    return FALSE;
+  g_mutex_lock(&p->phase_lock);
+  *out = p->phase_snap;
+  const gboolean ok = out->phased && p->phase_rows;
+  if (ok) {
+    const guint n = MIN(max, p->phase_rows_n);
+    if (gain) { memcpy(gain, p->phase_rows, n); }
+    if (drop) { memcpy(drop, p->phase_rows + p->phase_rows_n, n); }
+    if (dmax) { memcpy(dmax, p->phase_rows + 2 * p->phase_rows_n, n); }
+  }
+  g_mutex_unlock(&p->phase_lock);
+  return ok;
+}
+
+void skim_pipeline_feed2(SkimPipeline *p, const float *iq, const float *iq_b,
+                         guint nframes, double rate, double center_hz) {
   g_return_if_fail(p->offline);
   IqBlock b = {
     .iq = (float *)iq,                 /* process_block never writes into it */
+    .iq_b = p->cfg.phased ? (float *)iq_b : NULL,
     .nframes   = nframes,
     .rate      = rate,
     .center_hz = center_hz,

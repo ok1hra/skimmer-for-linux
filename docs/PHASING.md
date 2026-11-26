@@ -3,8 +3,10 @@
 Status: a design for work still ahead (Dan, 2026-11-25). Built so far
 (2026-11-25): the combiner and its meters in the engine
 (`src/engine/combiner.c`, `phase_meter.c`, gate `phase`) and P0's tool
-(`skimmer-phase-bench`, gate `phase-bench`); nothing of it is wired into
-the skimmer yet. It is written so that another agent can implement it
+(`skimmer-phase-bench`, gate `phase-bench`); the pipeline phases a band
+when its config says so and is fed both antennas (`skim_pipeline_feed2`,
+`skimmer-replay` with `SKIM_REPLAY_B`). skimmer-headless does not feed it a
+pair yet (P1, P2). It is written so that another agent can implement it
 phase by phase. Each phase ends with an offline gate, as the rest of the engine
 does (CLAUDE.md). Sources: Linrad's phasing window (SM5BSZ, "Linrad phasing
 window v6", sm5bsz.com/linuxdsp/run/phasing/), the F0 measurements in
@@ -457,7 +459,7 @@ interfaces:
 | P0 | **Measure first.** Record pairs on real air with `rp-spike pair` (longer, 96 kHz, two real antennas, or the antenna and its interference); `skimmer-phase-bench` (built) computes MRC and MVDR per channel, the groups' coherence and the measured lag | numbers: the SNR gain and null depth on real air (if both are small for the station's antennas, stop here) |
 | P1 | agent: paired start, sample index, epoch | `rp-agent`: two sim streams carry identical indices; an overflow bumps the epoch on both |
 | P2 | config `ip=ab`, source pairing and alignment, `[record]` pairs | `rp-two-ip`: a paired band gets aligned blocks (sim tone, same phase difference each run) |
-| P3 | `SkimCombiner` (MVDR/MRC/fixed, gating, phase reference, noise normalisation) and `SkimPhaseMeter` — **built** with gate `phase` (MRC ≥ 2.5 dB, one interferer nulled ≥ 20 dB, two in two halves each where it is, B a copy of A, empty IN2, mode A bit for bit, Fixed; the meters against the truth). Still to do: the pipeline (two channelizers + combiner) | the pipeline on a synthetic pair: CW decodes not worse than the better antenna. **Golden byte-identical** for unphased bands |
+| P3 | `SkimCombiner` (MVDR/MRC/fixed, gating, phase reference, noise normalisation), `SkimPhaseMeter`, and the pipeline (`SkimPipelineConfig.phased`: B's channelizer, the combiner in the drain, the Y meter as the band's shadow SNR, B missing → A, `push2`/`feed2`, a snapshot for the page, the spots' SNR_A/SNR_B/gain) — **built** | gate `phase`: MRC ≥ 2.5 dB, one interferer nulled ≥ 20 dB, two in two halves each where it is, B a copy of A, empty IN2, mode A bit for bit, Fixed, the meters against the truth; the whole pipeline spots a CW station 8 dB under a common interferer on each antenna (neither alone does), B missing decodes A, mode A shows the estimates. **Golden byte-identical** |
 | P4 | band-level W(f): waterfall, digi_rx, WSPR | the FT8/WSPR gates on a synthetic pair (decodes ≥ the better antenna) |
 | P5 | web panel, coherence trace, stats v9 | headless Chrome screenshots; stats migration test |
 | P6 | live: one band phased against the same band single (skimmer-compare: spots, calls, SNR) | Dan's verdict on air |

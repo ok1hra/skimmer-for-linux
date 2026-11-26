@@ -8,10 +8,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* A station counts once the better antenna reads it this far over its
- * floor: below, SNR_2500's mark power is picked from noise (snr_test: a dB
- * or two of bias at -10 dB) and the difference of two such readings is no
- * gain. */
+/* A station counts once the combination or the better antenna reads it
+ * this far over its floor. The combination is enough: a station under the
+ * noise on each antenna and clear on the output is the gain that matters
+ * most — its single readings then sit a dB or two high (snr_test: mark
+ * power picked from noise near -10 dB), so its G reads low, never high. */
 #define MIN_SNR_DB  0.0
 
 struct _SkimPhaseMeter {
@@ -112,7 +113,7 @@ void skim_phase_meter_refresh(SkimPhaseMeter *m, const SkimCombiner *c) {
     const double sb = skim_snr_meter_db(m->snr[SKIM_PH_B], k);
     const double sy = skim_snr_meter_db(m->snr[SKIM_PH_Y], k);
     const double best = isnan(sb) || sa >= sb ? sa : sb;
-    if (info.steered && !isnan(sy) && !isnan(best) && best >= MIN_SNR_DB) {
+    if (info.steered && !isnan(sy) && !isnan(best) && MAX(sy, best) >= MIN_SNR_DB) {
       m->gain[k] = sy - best;
       m->gain_a[k] = isnan(sa) ? NAN : sy - sa;
       ns++;

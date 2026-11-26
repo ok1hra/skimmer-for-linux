@@ -302,6 +302,10 @@ const SkimStation *skim_station_table_report(SkimStationTable *t,
         }
         e->snr_db  = st->snr_db;
         e->snr2_db = st->snr2_db;
+        e->phased  = st->phased;
+        e->snr2_a_db = st->snr2_a_db;
+        e->snr2_b_db = st->snr2_b_db;
+        e->phase_gain_db = st->phase_gain_db;
         e->speed   = st->speed;
       }
       e->score      = MAX(e->score, st->score);
@@ -338,6 +342,10 @@ const SkimStation *skim_station_table_report(SkimStationTable *t,
       e->freq_hz    = st->freq_hz;
       e->snr_db     = st->snr_db;
       e->snr2_db    = st->snr2_db;
+      e->phased     = st->phased;
+      e->snr2_a_db  = st->snr2_a_db;
+      e->snr2_b_db  = st->snr2_b_db;
+      e->phase_gain_db = st->phase_gain_db;
       e->speed      = st->speed;
       e->pos_us     = st->last_heard;
       e->score      = MAX(e->score, st->score);
