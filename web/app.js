@@ -175,6 +175,12 @@ const contOn = (c) => typeof Dxc === 'undefined' || Dxc.contOn(c);
 // the age the map, the ladder and the heat map show (5, 10, 15 or 30 min)
 const ladderAgeS = () => (typeof Dxc === 'undefined' ? 30 : Dxc.age()) * 60;
 let status = null;
+// The antennas on the Red Pitaya's inputs as the user names them ([rp]
+// in1_name, in2_name; status.antennas): "IN1 · Beverage NE", or just "IN1";
+// a phased band's antenna A is IN1, B is IN2.
+const antName = (k) => (status && status.antennas && status.antennas[k]) || '';
+const antIn = (k) => (antName(k) ? `IN${k + 1} · ${antName(k)}` : `IN${k + 1}`);
+const antAB = (k) => `antenna ${k ? 'B' : 'A'} (${antIn(k)})`;
 
 // the header's CW engine: the default, and any other one with its bands
 // ("cw-v3.1 · cw-v4 40m 20m") — a band's own engine (cw:v4) is not the default
@@ -1355,7 +1361,8 @@ function drawPhase() {
   g.fillStyle = '#6a7d96'; g.textAlign = 'left'; g.fillText('0', sx + 2, H - 3); g.textAlign = 'right'; g.fillText('dB', W - 8, H - 3);
   const med = (a) => { const x = a.filter((y) => y != null).sort((p, q) => p - q); return x.length ? x[x.length >> 1] : null; };
   const md = med(d.sum.drop_db), mg = med(d.sum.gain_db), mc = med(d.sum.coherence);
-  $('#phase-legend').innerHTML = `<span style="color:#ffd24a">━ interference off the floor (0–30 dB)</span> · <span style="color:#58d6ff">━ gain (0–15 dB)</span>`;
+  $('#phase-legend').innerHTML = `<span style="color:#ffd24a">━ interference off the floor (0–30 dB)</span> · <span style="color:#58d6ff">━ gain (0–15 dB)</span>` +
+    ` · A = ${esc(antIn(0))}, B = ${esc(antIn(1))}`;
   $('#phase-note').textContent = `over the window: interference ${md == null ? '—' : `${md.toFixed(1)} dB`} off the floor, `
     + `stations ${mg == null ? '—' : `${mg > 0 ? '+' : ''}${mg.toFixed(1)} dB`} over the better antenna, coherence ${mc == null ? '—' : mc.toFixed(2)} (medians); `
     + `a row ${d.step_min} min, ${rows} rows, ${n} channels of ${d.spacing_hz} Hz`;
@@ -1570,6 +1577,48 @@ window.addEventListener('resize', () => {
 
 // ---- settings --------------------------------------------------------------------
 const cfg = { data: null, dirty: false };
+// The settings in tabs of related ones, each a page; the form is one (Save
+// takes every tab). A tab with an edit not saved carries a dot, one with a
+// field marked wrong a red one; the tab is kept for a reload.
+let setPane = (() => { try { return sessionStorage.getItem('skimmer-settab') || 'radio'; } catch (e) { return 'radio'; } })();
+const paneShown = (b) => b && getComputedStyle(b).display !== 'none';
+function showPane(name) {
+  const btns = [...document.querySelectorAll('#set-tabs button[data-pane]')];
+  let b = btns.find((x) => x.dataset.pane === name);
+  if (!paneShown(b)) b = btns.find(paneShown);       // the Red Pitaya's without one
+  if (!b) return;
+  setPane = b.dataset.pane;
+  for (const x of btns) { x.classList.toggle('on', x === b); x.setAttribute('aria-selected', String(x === b)); }
+  for (const p of document.querySelectorAll('#settings .set-pane')) p.hidden = p.dataset.pane !== setPane;
+  try { sessionStorage.setItem('skimmer-settab', setPane); } catch (e) { /* private window */ }
+}
+on('#set-tabs', 'click', (e) => { const b = e.target.closest('button[data-pane]'); if (b) showPane(b.dataset.pane); });
+// the long explanations under the fieldsets folded, a click away
+for (const n of document.querySelectorAll('#settings .set-pane fieldset > small.note-s')) {
+  if (n.textContent.length < 260 || n.closest('#rp-card')) continue;
+  const d = document.createElement('details');
+  d.className = 'note-d';
+  d.innerHTML = '<summary>how it works</summary>';
+  n.replaceWith(d);
+  d.appendChild(n);
+}
+const paneOf = (el) => el && el.closest && el.closest('.set-pane');
+function paneMark(cls, els) {
+  for (const b of document.querySelectorAll('#set-tabs button')) b.classList.remove(cls);
+  for (const el of els) {
+    const p = paneOf(el);
+    const b = p && document.querySelector(`#set-tabs button[data-pane="${p.dataset.pane}"]`);
+    if (b) b.classList.add(cls);
+  }
+}
+function paneChanged(e) {
+  const p = paneOf(e.target);
+  if (!p || !cfg.data || (!e.target.name && !e.target.closest('#band-rows'))) return;   // a config field only
+  const b = document.querySelector(`#set-tabs button[data-pane="${p.dataset.pane}"]`);
+  if (b) b.classList.add('chg');
+}
+on('#settings', 'input', paneChanged);
+on('#settings', 'change', paneChanged);
 // An edit not saved yet: a bar in the header on every tab, and the browser
 // asks before the page is left.
 function setDirty(v) {
@@ -1724,8 +1773,8 @@ function bandRow(b, may, rx, rate) {
       : `<td><input data-k="name" value="${esc(b.name)}" size="6"${dis} title="a band of your own"></td>`) +
     `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${b.seg ? ` placeholder="${esc(fmtKhz(b.def / 1000, null, ' '))}" title="empty = the segment's centre; a number moves it"` : ''}${dis}></td>` +
     `<td class="mut span">${span}</td>` +
-    `<td class="rp-only"><select data-k="ip"${dis}><option value="a">A</option><option value="b">B</option><option value="ab" title="phased: IN1 on IP A and IN2 on IP B at this centre, combined channel by channel before decoding — a receiver on each IP, one rate on both, the decoder agent on the board">A+B Φ</option></select></td>` +
-    `<td class="rp-only"><select data-k="input"${dis}${rpSplit() || ip === 'ab' ? ` disabled title="${ip === 'ab' ? 'phased: IN1 at A, IN2 at B' : 'two antennas: the IP names the input'}"` : ''}><option value="1">IN1</option><option value="2">IN2</option><option value="12" title="phased on this IP: two of its receivers at this centre, IN1 and IN2, combined channel by channel before decoding — one stream, so aligned by itself; the other IP stays free">IN1+IN2 Φ</option></select></td>` +
+    `<td class="rp-only"><select data-k="ip"${dis}><option value="a">A</option><option value="b">B</option><option value="ab" title="phased: ${esc(antIn(0))} on IP A and ${esc(antIn(1))} on IP B at this centre, combined channel by channel before decoding — a receiver on each IP, one rate on both, the decoder agent on the board">A+B Φ</option></select></td>` +
+    `<td class="rp-only"><select data-k="input"${dis}${rpSplit() || ip === 'ab' ? ` disabled title="${ip === 'ab' ? esc(`phased: ${antIn(0)} at A, ${antIn(1)} at B`) : 'two antennas: the IP names the input'}"` : ''}><option value="1">${esc(antIn(0))}</option><option value="2">${esc(antIn(1))}</option><option value="12" title="phased on this IP: two of its receivers at this centre, ${esc(antIn(0))} and ${esc(antIn(1))}, combined channel by channel before decoding — one stream, so aligned by itself; the other IP stays free">IN1+IN2 Φ</option></select></td>` +
     `<td class="skrs-only"><select data-k="rate"${dis}><option value="">${bandRate() / 1000} k</option><option value="48000">48 k</option><option value="96000">96 k</option><option value="192000">192 k</option><option value="384000">384 k</option></select></td>` +
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
     `<td><select data-k="engine"${dis}><option value="">${esc(defaultEngineText())}</option><option value="v3">v3.1</option><option value="v4">v4.0 DeepCW</option><option value="v2">v2</option><option value="deepcw" title="not tested with this skimmer">DeepCW v1 (not tested)</option></select></td>` +
@@ -2089,7 +2138,10 @@ on('[name="radio.rate"]', 'change', () => {
   drawBands(withSegments(readBands(), bandRate()));
 });
 // the source, the layout, IP B's rate: the bands' columns, spans and inputs follow
-function rpLayout() { $('#settings').classList.toggle('no-rp', !rpOn()); }
+function rpLayout() {
+  $('#settings').classList.toggle('no-rp', !rpOn());
+  showPane(setPane);                              // the Red Pitaya's tab may have gone
+}
 for (const n of ['radio.type', 'rp.mode', 'rp.stream', 'rp.b_rate']) {
   on(`[name="${n}"]`, 'change', () => {
     if (!cfg.data) return;
@@ -2145,6 +2197,8 @@ on('#filter-clear', 'click', () => {
 function fillSettings(d) {
   cfg.data = d;
   setDirty(false);
+  paneMark('chg', []);
+  paneMark('err', []);
   const f = $('#settings');
   for (const [k, v] of Object.entries(d.values)) {
     const inp = f.elements[k];
@@ -2190,6 +2244,7 @@ function fillSettings(d) {
   mycallShow();
   if (status) { renderDcw(status.deepcw); renderV4(status.v4); }
   rpRefresh();
+  showPane(setPane);
 }
 
 function formBody() {
@@ -2336,6 +2391,8 @@ function notSaved(text, first) {
   box.hidden = false;
   box.textContent = `Not saved: ${text}`;
   $('#set-msg').textContent = '';
+  paneMark('err', document.querySelectorAll('#settings .bad, #settings .ferr'));
+  if (paneOf(first)) showPane(paneOf(first).dataset.pane);   // the tab with the first wrong field
   if (first) { first.scrollIntoView({ block: 'center', behavior: 'smooth' }); if (first.focus) first.focus({ preventScroll: true }); }
 }
 on('#settings', 'input', (e) => {                 // typing in a red field clears it
@@ -2626,9 +2683,12 @@ function rpDiagram() {
   };
   const y = [40, 120];
   let g = '';
-  for (let i = 0; i < 2; i++) {                       // the inputs
-    g += `<rect class="box" x="6" y="${y[i] - 18}" width="72" height="36" rx="4"/>` +
-         `<text x="42" y="${y[i] + 5}" text-anchor="middle">IN${i + 1}</text>`;
+  for (let i = 0; i < 2; i++) {                       // the inputs, the antenna's name under each
+    const nm = antName(i), short = nm.length > 11 ? `${nm.slice(0, 10)}…` : nm;
+    g += `<rect class="box" x="6" y="${y[i] - 18}" width="72" height="36" rx="4"><title>${svgEsc(antIn(i))}</title></rect>` +
+         (nm ? `<text x="42" y="${y[i] - 2}" text-anchor="middle">IN${i + 1}</text>` +
+               `<text class="mut" x="42" y="${y[i] + 12}" text-anchor="middle" font-size="10">${svgEsc(short)}</text>`
+             : `<text x="42" y="${y[i] + 5}" text-anchor="middle">IN${i + 1}</text>`);
   }
   for (let k = 0; k < 2; k++) {                       // the receiver sets and IPs
     const s = sets[k], w = who(k);
@@ -2648,7 +2708,7 @@ function rpDiagram() {
          `<text x="536" y="${y[k] - 4}">${svgEsc(w[0])}</text>` +
          `<text class="mut" x="536" y="${y[k] + 14}">${svgEsc(w[1])}</text>`;
   }
-  g += `<text class="mut" x="265" y="172" text-anchor="middle">${split ? 'two antennas: IN1 → IP A, IN2 → IP B' : 'P1: each band its input, both IPs from one set of 16'}</text>`;
+  g += `<text class="mut" x="265" y="172" text-anchor="middle">${split ? svgEsc(`two antennas: ${antIn(0)} → IP A, ${antIn(1)} → IP B`) : 'P1: each band its input, both IPs from one set of 16'}</text>`;
   svg.innerHTML = g;
 }
 function rpRender() {
@@ -2766,7 +2826,7 @@ function renderRp(x, g) {
   if (r && r.bitstream === 'skrf') {
     const db = (p) => (p > 0 ? `${fmt(Math.min(0, Math.round(200 * Math.log10(p / 32768)) / 10) || 0, 1)} dBFS` : '–');
     const clip = (bit) => (r.clips & bit ? ' <b class="temp hot">clipped</b>' : '');
-    tile('ADC', `IN1 ${db(r.peak_in1)}${clip(1)} · IN2 ${db(r.peak_in2)}${clip(2)}`,
+    tile('ADC', `${esc(antIn(0))} ${db(r.peak_in1)}${clip(1)} · ${esc(antIn(1))} ${db(r.peak_in2)}${clip(2)}`,
       'the decoder bitstream: each input\'s peak over the last 5 ms; "clipped" = a full-scale sample since the board\'s last sync (a null needs both inputs unclipped)');
     tile('bitstream', `decoder · ${r.slots || 24} slots`, 'docs/FPGA.md');
   }
@@ -2800,17 +2860,17 @@ function renderRp(x, g) {
   $('#rp-adc').hidden = !has(p1) && !has(p2);
   if (!$('#rp-adc').hidden) {
     const c1 = Charts.seriesColor(0), c2 = Charts.seriesColor(1);
-    $('#legend-rppeak').innerHTML = `<span><i style="background:${c1}"></i>IN1</span><span><i style="background:${c2}"></i>IN2</span>`;
-    Charts.line($('#chart-rppeak'), x, p1, { name: 'IN1, the loudest peak', color: c1, fmtV: (v) => `${fmt(v, 1)} dBFS`,
+    $('#legend-rppeak').innerHTML = `<span><i style="background:${c1}"></i>${esc(antIn(0))}</span><span><i style="background:${c2}"></i>${esc(antIn(1))}</span>`;
+    Charts.line($('#chart-rppeak'), x, p1, { name: `${antIn(0)}, the loudest peak`, color: c1, fmtV: (v) => `${fmt(v, 1)} dBFS`,
       fmtTick: (v) => `${fmt(v)} dB`, height: 110, minSpan: 20, mark: { value: 0, label: 'full scale (0 dBFS)' },
-      more: [{ name: 'IN2, the loudest peak', color: c2, values: p2 }] });
+      more: [{ name: `${antIn(1)}, the loudest peak`, color: c2, values: p2 }] });
   }
   // clipped windows (stacked, left) and the FIFO overflows (right)
   const k1 = g.rp_clip1 || nul, k2 = g.rp_clip2 || nul, ov = g.rp_ovf || nul;
   $('#rp-ev').hidden = !has(k1) && !has(k2) && !has(ov);
   if (!$('#rp-ev').hidden) {
-    const evLayers = [{ name: 'IN1 clipped', color: css('--warn'), values: k1 }, { name: 'IN2 clipped', color: css('--bad'), values: k2 }];
-    $('#legend-rpev').innerHTML = evLayers.map((l) => `<span><i style="background:${l.color}"></i>${l.name}</span>`).join('') +
+    const evLayers = [{ name: `${antIn(0)} clipped`, color: css('--warn'), values: k1 }, { name: `${antIn(1)} clipped`, color: css('--bad'), values: k2 }];
+    $('#legend-rpev').innerHTML = evLayers.map((l) => `<span><i style="background:${l.color}"></i>${esc(l.name)}</span>`).join('') +
       `<span><i class="line" style="border-color:${css('--accent')};opacity:1"></i>FIFO overflows (right)</span>` +
       '<span><i class="line"></i>clipped, both</span>';
     Charts.area($('#chart-rpev'), x, evLayers, k1.map((v, i) => (v == null && k2[i] == null ? null : (v || 0) + (k2[i] || 0))),

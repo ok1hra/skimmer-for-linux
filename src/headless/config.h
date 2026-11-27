@@ -208,6 +208,9 @@ typedef struct {
   /* [rp] — the board's second IP (bands with ip=b) */
   gboolean         rp_split;          /* mode=extended: IN1 → IP A, IN2 → IP B */
   char            *rp_b_host;         /* NULL = the agent's discovery names it */
+  char            *rp_in_name[2];     /* in1_name, in2_name: the antennas on IN1
+                                       * and IN2, as the user names them (NULL =
+                                       * none) — the page's labels only        */
   gboolean         rp_skrs;           /* stream=skrs: the skimmer's bitstream —
                                        * every band its own slot(s) and rate,
                                        * SKRS from [radio] host (docs/FPGA.md) */

@@ -1766,6 +1766,24 @@ static char *web_status(GHashTable *q, SkimHdWebWho who, guint *st, const char *
     g_free(body);
     body = with;
   }
+  /* [rp] in1_name, in2_name: the antennas' names, for everyone who may see
+   * the phasing (the waterfall, Statistics) */
+  if (body[0] == '{') {
+    GString *a = g_string_new("{\"antennas\":[");
+    for (int k = 0; k < 2; k++) {
+      if (k) { g_string_append_c(a, ','); }
+      if (h->cfg.rp_in_name[k]) {
+        g_string_append_c(a, '"');
+        skim_json_append(a, h->cfg.rp_in_name[k]);
+        g_string_append_c(a, '"');
+      } else {
+        g_string_append(a, "null");
+      }
+    }
+    g_string_append_printf(a, "]%s%s", body[1] == '}' ? "" : ",", body + 1);
+    g_free(body);
+    body = g_string_free(a, FALSE);
+  }
   return body;
 }
 

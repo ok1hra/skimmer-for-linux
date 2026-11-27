@@ -185,7 +185,10 @@ here; what was done and why is in git.
   the waterfall's Φ (managers: `POST /api/phase`, live, not saved) switches
   the band between its mode and A (`in=12` phases on ONE IP — two of its
   receivers, IN1 and IN2, the other IP left free), its line shows gain / interference /
-  coherence per channel (`GET /api/phase`). Statistics → Phasing: a coarse
+  coherence per channel (`GET /api/phase`). The antennas' names (`[rp]
+  in1_name`, `in2_name`, ≤ 24 characters; status.json `antennas`, for
+  everyone; `antIn`/`antAB` in app.js) label IN1/IN2 and A/B wherever
+  phasing is switched or shown. Statistics → Phasing: a coarse
   waterfall of what it gave (`phase_hist.c`, `<state>/phase-<band>.bin`,
   a minute × 7 d + a quarter hour × 90 d, `GET /api/phase_hist`). Settings
   → Bands: IP "A+B Φ". The waterfall's ⚙ beside Φ opens the phasing
@@ -260,7 +263,11 @@ here; what was done and why is in git.
   "active decoders by band"), 6 FT8; a version 3–6 file is carried over and
   kept as `stats.bin.v3` … `.v8` for an older build; ≈ 84 MB), settings (one parser:
   `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
-  backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
+  backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec) in
+  tabs of related settings, each a page (Radio, Red Pitaya, Bands,
+  Decoding, FT8 · JS8 · WSPR, Feed, Filters, Network, System; one form, Save
+  takes every tab; a dot marks a tab edited, a red one a tab with a wrong
+  field; long notes folded — `showPane` in app.js), log.
   Managers only (settings_from, no proxy headers, a Host that is this
   machine — DNS rebinding): Settings and Log (cut out of index.html for the
   others), /api/config, /api/log, /api/skimmers, every POST; viewers get a

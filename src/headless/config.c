@@ -212,6 +212,8 @@ void skim_hd_config_clear(SkimHdConfig *cfg) {
   g_free(cfg->host_ppm);
   g_free(cfg->hosts_text);
   g_free(cfg->rp_b_host);
+  g_free(cfg->rp_in_name[0]);
+  g_free(cfg->rp_in_name[1]);
   g_free(cfg->feed_call);
   g_free(cfg->feed_gate);
   g_free(cfg->feed_gate_mode);
@@ -698,6 +700,25 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     h->rp_b_host = bh;
   } else {
     g_free(bh);
+  }
+  /* [rp] in1_name, in2_name: what the user calls the antenna on each input */
+  for (int k = 0; k < 2; k++) {
+    char key[16];
+    g_snprintf(key, sizeof(key), "in%d_name", k + 1);
+    char *nm = g_key_file_get_string(kf, "rp", key, NULL);
+    if (nm) { g_strstrip(nm); }
+    if (nm && nm[0]) {
+      gboolean clean = g_utf8_validate(nm, -1, NULL) && g_utf8_strlen(nm, -1) <= 24;
+      for (const char *c = nm; clean && *c; c++) { clean = (guchar)*c >= 0x20 && *c != 0x7f; }
+      if (!clean) {
+        bad(error, path, "[rp] %s: at most 24 characters, one line", key);
+        g_free(nm);
+        return FALSE;
+      }
+      h->rp_in_name[k] = nm;
+    } else {
+      g_free(nm);
+    }
   }
   /* [phase] */
   {
@@ -1568,6 +1589,7 @@ gboolean skim_hd_config_load(SkimHdConfig *cfg, const char *path, GError **error
 
 const char *const SKIM_HD_EDITABLE[] = {
   "radio.type", "radio.host", "radio.rate", "radio.clock_ppm", "rp.mode", "rp.stream", "rp.b_host", "rp.b_rate",
+  "rp.in1_name", "rp.in2_name",
   "bands",
   "decode.engine", "decode.log", "decode.suppress_cw_on_rtty", "decode.rtty_adaptive",
   "decode.rtty_adaptive_spots", "decode.rtty_adaptive_minutes", "decode.v4_workers", "decode.v4_guard",

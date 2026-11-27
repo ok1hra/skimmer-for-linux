@@ -503,14 +503,20 @@ const Wf = (() => {
     btn.textContent = on ? 'Φ on' : 'Φ off';
     btn.classList.toggle('on', on);
     const f = (v, s) => (v == null ? '—' : `${v > 0 && s ? '+' : ''}${v.toFixed(1)}`);
-    const now = ph.b_missing ? 'IP B missing — antenna A alone'
+    const now = ph.b_missing ? `IP B missing — ${antAB(0)} alone`
       : `${ph.mode.toUpperCase()}: interference off the floor ${f(ph.drop_db)} dB, stations ${f(ph.gain_db, 1)} dB `
         + `over the better antenna${ph.est ? ' (what it would give)' : ''}, coherence ${ph.coherence == null ? '—' : ph.coherence.toFixed(2)}`
         + (ph.layer2 ? `, ${ph.layer2} station${ph.layer2 > 1 ? 's' : ''} steered by the decoder (layer 2)` : '');
-    btn.title = `phasing: this band from both antennas (IN1 + IN2) — ${now}`
-      + (manager() ? `\nclick: ${on ? 'off (antenna A alone)' : `on (${phaseLast.toUpperCase()})`} — for decoding too`
+    btn.title = `phasing: this band from both antennas (${antIn(0)} + ${antIn(1)}) — ${now}`
+      + (manager() ? `\nclick: ${on ? `off (${antAB(0)} alone)` : `on (${phaseLast.toUpperCase()})`} — for decoding too`
                    : '\nswitched from an address that may change the settings');
     btn.disabled = !manager() || phaseBusy;
+    // what the band hears now: one antenna, or both combined — by name
+    const ant = $('#wf-phase-ant');
+    ant.textContent = ph.mode === 'a' || ph.b_missing ? `A ${antName(0) || 'IN1'}`
+      : ph.mode === 'b' ? `B ${antName(1) || 'IN2'}` : `${antName(0) || 'IN1'} + ${antName(1) || 'IN2'}`;
+    ant.title = ph.mode === 'a' || ph.b_missing ? `${antAB(0)} alone` : ph.mode === 'b' ? `${antAB(1)} alone`
+      : `${antAB(0)} and ${antAB(1)}, combined (${ph.mode.toUpperCase()})`;
     $('#wf-phase-line').value = opt.phaseLine;
   }
   async function phaseToggle() {
@@ -542,6 +548,8 @@ const Wf = (() => {
                  ['mrc', 'MRC', 'maximal-ratio combining: lifts each station, no null'],
                  ['fixed', 'Fixed', 'one weight for the whole band, set by hand below'],
                  ['a', 'A', 'antenna A (IN1) alone'], ['b', 'B', 'antenna B (IN2) alone']];
+  const modeText = (k, t) => (k === 'a' || k === 'b' ? (antName(k === 'b' ? 1 : 0) ? `${t} · ${antName(k === 'b' ? 1 : 0)}` : t) : t);
+  const modeTitle = (k, x) => (k === 'a' || k === 'b' ? `${antAB(k === 'b' ? 1 : 0)} alone` : x);
   function panelUi() {
     const p = $('#wf-phase-panel'), btn = $('#wf-phase-set'), ph = phaseOf();
     if (!p) return;
@@ -551,10 +559,15 @@ const Wf = (() => {
     const d = phaseData, may = manager(), mode = (d && d.mode) || ph.mode;
     const box = $('#pp-modes');
     if (!box.children.length) {
-      box.innerHTML = MODES.map(([k, t, x]) => `<button type="button" data-mode="${k}" title="${x}">${t}</button>`).join('');
+      box.innerHTML = MODES.map(([k]) => `<button type="button" data-mode="${k}"></button>`).join('');
+    }
+    for (const [k, t, x] of MODES) {                 // the antennas' names may change with a status
+      const b = box.querySelector(`[data-mode="${k}"]`);
+      b.textContent = modeText(k, t);
+      b.title = modeTitle(k, x);
     }
     for (const b of box.children) { b.classList.toggle('on', b.dataset.mode === mode); b.disabled = !may; }
-    $('#pp-now').textContent = ph.b_missing ? 'IP B missing — antenna A alone'
+    $('#pp-now').textContent = ph.b_missing ? `IP B missing — ${antAB(0)} alone`
       : `interference ${ph.drop_db == null ? '—' : ph.drop_db.toFixed(1)} dB off the floor, coherence ${ph.coherence == null ? '—' : ph.coherence.toFixed(2)}`
         + (ph.layer2 ? ` · layer 2 on ${ph.layer2} channel${ph.layer2 > 1 ? 's' : ''}` : '');
     const gi = $('#pp-gain'), pi = $('#pp-phase');

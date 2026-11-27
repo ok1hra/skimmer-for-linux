@@ -200,7 +200,7 @@
       <button type="button" class="wf-auto wf-rtty" id="wf-rtty" title="the RTTY palette: decodes the frequency heard">RTTY</button>
       <button type="button" class="wf-auto wf-ft8" id="wf-ft8" hidden title="the FT8 palette: what the skimmer decodes on this band's FT8/FT4 dial (the view narrows to it)">FT8</button>
       <button type="button" class="wf-auto wf-js8" id="wf-js8" hidden title="the JS8 palette: what the skimmer decodes on this band's JS8 dial, every submode, the frames put back into messages (the view narrows to it)">JS8</button>
-      <span class="wf-phase-ctl" id="wf-phase-ctl" hidden><button type="button" class="wf-auto wf-phase" id="wf-phase" title="phasing: this band from both antennas (IN1 + IN2), combined">Φ</button><select id="wf-phase-line" title="the line over the spectrum: what phasing gives, channel by channel"><option value="">no line</option><option value="gain">gain</option><option value="drop">interference</option><option value="dmax">coherence</option></select><button type="button" class="wf-auto wf-phase-set" id="wf-phase-set" title="the phasing panel: the mode, a fixed weight, memories, Save">⚙</button></span>
+      <span class="wf-phase-ctl" id="wf-phase-ctl" hidden><button type="button" class="wf-auto wf-phase" id="wf-phase" title="phasing: this band from both antennas (IN1 + IN2), combined">Φ</button><span class="wf-phase-ant" id="wf-phase-ant"></span><select id="wf-phase-line" title="the line over the spectrum: what phasing gives, channel by channel"><option value="">no line</option><option value="gain">gain</option><option value="drop">interference</option><option value="dmax">coherence</option></select><button type="button" class="wf-auto wf-phase-set" id="wf-phase-set" title="the phasing panel: the mode, a fixed weight, memories, Save">⚙</button></span>
       <span class="wf-net mut" id="wf-net"></span>
     </div>
     <div class="wf-phase-panel" id="wf-phase-panel" hidden>
@@ -225,332 +225,401 @@
     <div id="set-lock" class="warnbox" hidden></div>
     <div id="set-error" class="warnbox" hidden></div>
     <form id="settings" autocomplete="off">
-      <div class="set-grid">
-        <fieldset>
-          <legend>Radio</legend>
-          <label>Source <select name="radio.type">
-            <option value="hpsdr-p1">Red Pitaya (HPSDR P1)</option>
-            <option value="mock">mock — synthetic CW, no radio</option>
-            <option value="hub">a hub — decode bands another skimmer passes on (worker)</option></select>
-            <small>worker: the hub assigns the bands (its Settings → Bands → decoded by) and the decoding policy;
-            this skimmer's bands below are then not used</small></label>
-          <label class="wide">Hosts <input name="radio.host" placeholder="auto">
-            <small>auto = the first idle Red Pitaya on the LAN (<code>skimmer-headless --find-radios</code> lists them);
-            or addresses tried in order, address@ppm = that radio's clock correction. A worker: auto = the hub that
-            names it, or the hub's address[:port]</small></label>
-          <label>Rate <select name="radio.rate" data-default="96000">
-            <option value="48000">48 kHz</option><option value="96000">96 kHz</option>
-            <option value="192000">192 kHz</option><option value="384000" title="4 receivers an IP; each band costs ~7× the CPU of 96 kHz on this PC (measured: 54 % of a core for CW+RTTY)">384 kHz (4 receivers)</option></select></label>
-          <label>Clock ppm <input name="radio.clock_ppm" inputmode="decimal" placeholder="0">
-            <small>for the hosts without @ppm</small></label>
-          <label class="rp-only p1-only">Layout <select name="rp.mode" data-default="p1">
-            <option value="p1">P1 — both inputs into one set of 16 receivers, each band its input</option>
-            <option value="extended">two antennas — IN1 → IP A, IN2 → IP B</option></select>
-            <small>the board's two IPs: A = the host above (receivers 1–8), B = its second address (9–16);
-            the input of a band needs the decoder agent on the board (Red Pitaya below)</small></label>
-          <label class="rp-only">Stream <select name="rp.stream" data-default="p1">
-            <option value="p1">Protocol 1 — the stock bitstream: 8 receivers an IP, one rate an IP</option>
-            <option value="skrs">SKRS — the decoder bitstream: 24 slots, each band its own rate</option></select>
-            <small>SKRS needs the decoder bitstream and agent 0.6 on the board (docs/FPGA.md): every band one
-            slot from the host above, a phased band (Φ) two — IN1 and IN2</small></label>
-          <label class="rp-only p1-only">Rate IP B <select name="rp.b_rate" data-default="">
-            <option value="">as IP A</option><option value="48000">48 kHz</option><option value="96000">96 kHz</option>
-            <option value="192000">192 kHz</option><option value="384000" title="4 receivers an IP; each band costs ~7× the CPU of 96 kHz on this PC (measured: 54 % of a core for CW+RTTY)">384 kHz (4 receivers)</option></select></label>
-          <label class="rp-only p1-only">Address IP B <input name="rp.b_host" placeholder="the agent names it">
-            <small>empty = the address the decoder agent reports</small></label>
-        </fieldset>
-        <fieldset>
-          <legend>Decoding</legend>
-          <label>CW engine <select name="decode.engine">
-            <option value="v3">v3.1 (classical, weak-signal, precision rules)</option><option value="v4">v4.0 DeepCW (neural, on the CPU)</option><option value="v2">v2 (classical, v0.7)</option><option value="deepcw">DeepCW v1 (neural) — not tested</option></select>
-            <small>for the bands that do not name one</small>
-            <small class="warn" id="v4-warn">v4.0 DeepCW reads 3–5 dB deeper than v3 and far better in fading, at about three times its CPU on a busy band — see its compute check below</small>
-            <small class="warn">DeepCW v1 has not been tested with this skimmer — no live or replay verdict</small></label>
-          <label>v4 threads <input name="decode.v4_workers" inputmode="numeric" placeholder="0">
-            <small>CW v4's inference threads; 0 = half the CPUs</small></label>
-          <label class="check"><input type="checkbox" name="decode.v4_guard" data-default="true"> v4 load guard — when v4
-            cannot keep up, the v4 band with the fewest spots is paused (one always stays)</label>
-          <div id="v4" class="dcw"></div>
-          <label class="check"><input type="checkbox" name="decode.log"> raw decode logs per band</label>
-          <label class="check"><input type="checkbox" name="decode.suppress_cw_on_rtty"> CW off the RTTY stations
-            (bands with CW and RTTY)</label>
-          <label class="check"><input type="checkbox" name="decode.rtty_adaptive"> adaptive RTTY — the RTTY
-            decoders only while a contest runs</label>
-          <label>RTTY spots <input name="decode.rtty_adaptive_spots" inputmode="numeric" placeholder="100">
-            <small>more than this, all bands together …</small></label>
-          <label>in minutes <input name="decode.rtty_adaptive_minutes" inputmode="numeric" placeholder="2">
-            <small>… in the first minutes of each full hour (and of a start) keeps RTTY on until the next hour; fewer turn it off till then</small></label>
-          <div id="dcw" class="dcw"></div>
-        </fieldset>
-        <fieldset>
-          <legend>Visitors</legend>
-          <label class="check"><input type="checkbox" name="visitors.login" data-default="true"> visitors from outside sign in with their callsign</label>
-          <label class="wide">Free from <input name="visitors.free_from" placeholder="the private networks" spellcheck="false">
-            <small>the addresses or networks (a.b.c.d/n, comma separated) that see the page without signing in; empty = the private networks (10/8, 172.16/12, 192.168/16, loopback, link-local). Through a proxy everyone signs in. The visits are in the Log tab.</small></label>
-        </fieldset>
-        <fieldset>
-          <legend>Thermal guard</legend>
-          <label class="check"><input type="checkbox" name="thermal.enabled"> pause the quietest band while the CPU runs hot</label>
-          <label>Limit °C <input name="thermal.limit_c" inputmode="decimal" placeholder="auto">
-            <small>the mean of the hottest CPU sensor; empty = the sensor's critical temperature − 15 °C (85 °C on most Intel CPUs), else 80 °C</small></label>
-          <label>Mean over min <input name="thermal.average_min" inputmode="numeric" placeholder="5">
-            <small>short bursts of work do not count</small></label>
-          <label>Margin °C <input name="thermal.restore_margin_c" inputmode="decimal" placeholder="3">
-            <small>a band comes back once the mean stays under the limit by what pausing it saved (5 °C at least) plus this, for 20 min</small></label>
-          <label>Test every min <input name="thermal.probe_every_min" inputmode="numeric" placeholder="30">
-            <small>a band paused this long is tested in place of the band with the fewest spots; 0 = never (10 at least)</small></label>
-          <label>Test for min <input name="thermal.probe_min" inputmode="numeric" placeholder="5">
-            <small>with more spots a minute than that band had (2 at least) the two change places, else each goes back</small></label>
-          <small class="note-s">Over the limit now and for 3 of the last 5 min (a dip under it does not start the count again): the band with the fewest spots in the last 30 min stops decoding (CW and RTTY); still hot 10 min later, the next — one band always stays. A paused band has no spots, so it is tested now and then: a band that opened takes the place of the quietest. The drop each pause brought is shown on Status.</small>
-        </fieldset>
-        <fieldset>
-          <legend>Station and feed</legend>
-          <label>Call <input name="feed.call" class="upper" placeholder="YOURCALL" autocapitalize="characters"></label>
-          <label>Locator <input name="station.locator" class="upper" placeholder="JN18EU" maxlength="6" autocapitalize="characters">
-            <small>the centre of the map on Status, the distances and bearings; the public pages show its first four characters only (JN18) — empty: the centre is your call's DXCC</small></label>
-          <label>Port <input name="feed.port" inputmode="numeric" placeholder="7300">
-            <small>0 = off</small></label>
-          <label class="check"><input type="checkbox" name="feed.rtty" data-default="true"> RTTY spots on the feed too</label>
-          <label>Telnet address <input name="feed.address" placeholder="skimmer.example.net:7300" spellcheck="false" autocomplete="off">
-            <small>how the world reaches the feed — host:port, or a telnet:// or http(s):// URL; shown in the header of the page to everyone (empty: not shown)</small></label>
-        </fieldset>
-        <fieldset>
-          <legend>Callsign filter</legend>
-          <label>DX filter <input name="filter.call" id="filter-call" placeholder="Callsign, text, or regex" spellcheck="false" autocomplete="off">
-            <small class="bad" id="filter-bad" hidden>not a valid regular expression</small></label>
-          <div class="filter-row">
-            <label class="check"><input type="checkbox" name="filter.regex" id="filter-regex"> Regex</label>
-            <button type="button" class="small" id="filter-clear">Clear</button>
+      <div class="set-tabs" id="set-tabs" role="tablist">
+        <button type="button" role="tab" data-pane="radio">Radio</button>
+        <button type="button" role="tab" data-pane="rp" class="rp-only">Red Pitaya</button>
+        <button type="button" role="tab" data-pane="bands">Bands</button>
+        <button type="button" role="tab" data-pane="decoding">Decoding</button>
+        <button type="button" role="tab" data-pane="digital">FT8 · JS8 · WSPR</button>
+        <button type="button" role="tab" data-pane="feed">Feed</button>
+        <button type="button" role="tab" data-pane="filters">Filters</button>
+        <button type="button" role="tab" data-pane="network">Network</button>
+        <button type="button" role="tab" data-pane="system">System</button>
+      </div>
+      <div class="set-pane" data-pane="radio" role="tabpanel" hidden>
+        <div class="set-grid">
+          <fieldset>
+            <legend>Radio</legend>
+            <label>Source <select name="radio.type">
+              <option value="hpsdr-p1">Red Pitaya (HPSDR P1)</option>
+              <option value="mock">mock — synthetic CW, no radio</option>
+              <option value="hub">a hub — decode bands another skimmer passes on (worker)</option></select>
+              <small>worker: the hub assigns the bands (its Settings → Bands → decoded by) and the decoding policy;
+              this skimmer's bands below are then not used</small></label>
+            <label class="wide">Hosts <input name="radio.host" placeholder="auto">
+              <small>auto = the first idle Red Pitaya on the LAN (<code>skimmer-headless --find-radios</code> lists them);
+              or addresses tried in order, address@ppm = that radio's clock correction. A worker: auto = the hub that
+              names it, or the hub's address[:port]</small></label>
+            <label>Rate <select name="radio.rate" data-default="96000">
+              <option value="48000">48 kHz</option><option value="96000">96 kHz</option>
+              <option value="192000">192 kHz</option><option value="384000" title="4 receivers an IP; each band costs ~7× the CPU of 96 kHz on this PC (measured: 54 % of a core for CW+RTTY)">384 kHz (4 receivers)</option></select></label>
+            <label>Clock ppm <input name="radio.clock_ppm" inputmode="decimal" placeholder="0">
+              <small>for the hosts without @ppm</small></label>
+            <label class="rp-only p1-only">Layout <select name="rp.mode" data-default="p1">
+              <option value="p1">P1 — both inputs into one set of 16 receivers, each band its input</option>
+              <option value="extended">two antennas — IN1 → IP A, IN2 → IP B</option></select>
+              <small>the board's two IPs: A = the host above (receivers 1–8), B = its second address (9–16);
+              the input of a band needs the decoder agent on the board (Red Pitaya below)</small></label>
+            <label class="rp-only">Stream <select name="rp.stream" data-default="p1">
+              <option value="p1">Protocol 1 — the stock bitstream: 8 receivers an IP, one rate an IP</option>
+              <option value="skrs">SKRS — the decoder bitstream: 24 slots, each band its own rate</option></select>
+              <small>SKRS needs the decoder bitstream and agent 0.6 on the board (docs/FPGA.md): every band one
+              slot from the host above, a phased band (Φ) two — IN1 and IN2</small></label>
+            <label class="rp-only p1-only">Rate IP B <select name="rp.b_rate" data-default="">
+              <option value="">as IP A</option><option value="48000">48 kHz</option><option value="96000">96 kHz</option>
+              <option value="192000">192 kHz</option><option value="384000" title="4 receivers an IP; each band costs ~7× the CPU of 96 kHz on this PC (measured: 54 % of a core for CW+RTTY)">384 kHz (4 receivers)</option></select></label>
+            <label class="rp-only p1-only">Address IP B <input name="rp.b_host" placeholder="the agent names it">
+              <small>empty = the address the decoder agent reports</small></label>
+          </fieldset>
+          <fieldset>
+            <legend>Recording raw IQ</legend>
+            <div class="set-grid">
+              <label>Bands <input name="record.bands" placeholder="20m, 40m"><small>empty = off</small></label>
+              <label>Minutes <input name="record.minutes" inputmode="decimal" placeholder="10"></label>
+              <label>Directory <input name="record.dir" placeholder="/var/tmp/skimmer-iq"></label>
+              <label>Start (UTC) <input name="record.start_utc" placeholder="HH:MM"><small>empty = at once</small></label>
+            </div>
+          </fieldset>
+        </div>
+      </div>
+      <div class="set-pane rp-only" data-pane="rp" role="tabpanel" hidden>
+        <fieldset id="rp-card" class="rp-only">
+          <legend>Red Pitaya <span class="mut" id="rp-sub">…</span></legend>
+          <svg id="rp-diagram" class="rp-diagram" viewBox="0 0 660 176" role="img" aria-label="the board's inputs, receiver sets, IPs and who takes them"></svg>
+          <div id="rp-state" class="rp-state mut"></div>
+          <div class="rp-actions">
+            <input type="password" id="rp-pw" placeholder="root password (once)" autocomplete="off" hidden>
+            <button type="button" class="small" id="rp-connect" title="with the decoder's own key; the first time the board's root password, never stored">Connect</button>
+            <select id="rp-fpga" class="small" title="the bitstream the agent runs on: Pavel Demin's (16 receivers, one rate an IP) or the decoder bitstream (24 slots, a rate each: SKRS — docs/FPGA.md)">
+              <option value="">bitstream: as the card has it</option><option value="stock">Pavel Demin's stock bitstream</option><option value="skimmer">the decoder bitstream (24 slots)</option></select>
+            <button type="button" class="small" id="rp-install" title="the decoder agent in place of Pavel Demin's two servers (his start.sh kept)">Install the agent</button>
+            <button type="button" class="small" id="rp-uninstall" title="Pavel Demin's start.sh back, and run">Uninstall</button>
+            <label class="rp-take"><input type="checkbox" id="rp-take"> even while another client streams</label>
           </div>
-          <small class="note-s">Without Regex, this matches plain text. With Regex enabled, it is a regular
-            expression and ignores letter case.</small>
-          <div class="filter-row mycall">
-            <label class="check"><input type="checkbox" name="filter.mycall" id="filter-mycall">
-              <span>drop my call <b id="filter-mycall-call"></b> and the calls up to</span></label>
-            <input name="filter.mycall_diff" id="filter-mycall-diff" inputmode="numeric" placeholder="2" size="2" maxlength="1">
-            <span class="mut">characters off it</span>
+          <div id="rp-ext" class="rp-ext" hidden>
+            <div class="mut">Inputs for another client (an IP this decoder does not take — e.g. CW Skimmer Server), kept on the board:</div>
+            <div id="rp-ext-rows"></div>
+            <button type="button" class="small" id="rp-ext-apply">Apply on the board</button>
           </div>
-          <small class="note-s">Compared place by place: a letter other, or missing at the end (a cut call),
-            counts one change; the letters keep their places, so a call read backwards differs in all of them.
-            These are the busts the skimmer makes of this station's own signal. A call MASTER.SCP knows passes
-            all the same (a real neighbour), only my call itself never: for OK1HRA, two changes drop OK1HRB,
-            OK1HR, OK1H, OK2HRB, while OK1BR and OK1RR (known) pass; 0 = the call itself. My call = Station and
-            feed → Call.</small>
-          <small class="note-s">Only the calls that pass go anywhere; empty = all. The rest are dropped right
-            where they are decoded: no spot on the telnet feed or to the RBN, no dot on the map, not in the
-            DX cluster nor the statistics — peers' and workers' spots too.</small>
+          <small class="note-s">The decoder talks to its board over SSH with its own key. Connect asks once for the board's
+            root password (it is never stored) and puts the key there. <i>Install</i> replaces Pavel Demin's two servers with
+            the decoder agent on the same FPGA image: Protocol 1 on both IPs as before (CW Skimmer Server and others work
+            unchanged), plus each receiver's input and the board's state for Statistics. <i>Uninstall</i> puts Pavel Demin's start
+            back. Nothing changes on the board without one of these buttons.</small>
         </fieldset>
+        <div class="set-grid">
+          <fieldset id="ant-card" class="rp-only">
+            <legend>Antennas</legend>
+            <div class="ant-grid">
+            <label>IN1 — the rightmost input <input name="rp.in1_name" maxlength="24" placeholder="e.g. Beverage NE" spellcheck="false" autocomplete="off">
+              <small>the antenna on IN1 (antenna A when a band is phased)</small></label>
+            <label>IN2 — the second from the right <input name="rp.in2_name" maxlength="24" placeholder="e.g. wideband RX loop" spellcheck="false" autocomplete="off">
+              <small>the antenna on IN2 (antenna B)</small></label>
+            </div>
+            <small class="note-s">Names only, at most 24 characters: they label the inputs wherever phasing is switched or shown —
+              the waterfall's Φ and its panel, Statistics, the bands' input, the board's diagram. Empty = IN1, IN2.</small>
+          </fieldset>
+        </div>
+      </div>
+      <div class="set-pane" data-pane="bands" role="tabpanel" hidden>
         <fieldset>
-          <legend>Bad calls</legend>
-          <label>Bad calls <input name="filter.bad" id="filter-bad-calls" placeholder="e.g. UA9, OK1ABC, 3B8" spellcheck="false" autocomplete="off">
-            <small class="bad" id="filter-bad-calls-bad" hidden>only letters, digits and / in a prefix or a call</small></label>
-          <small class="note-s">Prefixes or whole calls, separated by commas, any case. A prefix drops every call
-            that starts with it (UA9 drops UA9ABC); a whole call drops that call, also with a /part (OK1ABC drops
-            OK1ABC/P and DL/OK1ABC). They are dropped right where they are decoded, as by the callsign filter: no
-            spot on the telnet feed or to the RBN, no dot on the map, not in the DX cluster nor the statistics —
-            peers' and workers' spots too.</small>
-        </fieldset>
-        <fieldset>
-          <legend>Spot archive</legend>
-          <label>Directory <input name="archive.dir" placeholder="off — e.g. ~/skimmer-spots" spellcheck="false" autocomplete="off">
-            <small>every spot the feed sends is kept here, a gzip file a UTC day: <code>YYYYMMDD-spots.gz</code>
-            (<code>zcat</code> or <code>zless</code> reads it), a tab-separated line a spot — time, kHz, call,
-            mode, dB, WPM/baud, band, source. Written once a minute. Empty = off; <code>~/</code> = the home of
-            the user the skimmer runs as</small></label>
-          <div class="arch" id="archive-state"></div>
-        </fieldset>
-        <fieldset>
-          <legend>Reverse Beacon Network</legend>
-          <p class="mut note">The RBN takes spots only through its own program, the
-            <a href="https://www.reversebeacon.net" target="_blank" rel="noopener">RBN Aggregator</a>: the skimmer offers
-            its spots on the port below and the Aggregator, connected to it, relays them to reversebeacon.net. Without a
-            connected Aggregator no spot reaches the RBN (Status → "RBN now" counts who is connected). In the Aggregator:
-            Skimmer IP = this machine, Skimmer Port = the port below, Skimmer Call = the call under Station and feed. One
-            Aggregator serves one skimmer — beside CW Skimmer Server it takes a second Aggregator.</p>
-          <label class="check"><input type="checkbox" name="rbn.enabled"> offer the spots to the RBN Aggregator</label>
-          <label>Aggregator port <input name="rbn.port" inputmode="numeric" placeholder="7550">
-            <small>the RBN Aggregator connects here; the feed's spots, under its call. With the Aggregator on this machine
-            not 7550 — that is the Aggregator's own port for loggers (Local User)</small></label>
-          <label>Delay <input name="rbn.delay_s" inputmode="numeric" placeholder="0" data-max="99">
-            <small>seconds each spot is held before it goes to the RBN, 0–99</small></label>
-        </fieldset>
-        <fieldset>
-          <legend>Other skimmers: workers and peers</legend>
-          <label>Name on the LAN <input name="hub.name" placeholder="host name">
-            <small>how other skimmers list this one (Skimmers on the LAN, below); a worker asks its hub for bands under it</small></label>
-          <label>Hub port <input name="hub.port" inputmode="numeric" placeholder="7380">
-            <small>workers connect here for the bands Bands → decoded by names after them; 0 = no hub</small></label>
-          <label class="wide">Their feeds <input name="peers.hosts" placeholder="192.168.1.30, pc2:7300">
-            <small>telnet feeds of other skimmers (ours or CW Skimmer Server), host or host:port; their CQ spots go out
-            on this feed and to the RBN under this call, duplicates dropped — fine for skimmers on this station's antennas,
-            not for someone else's</small></label>
-        </fieldset>
-        <fieldset>
-          <legend>Status</legend>
-          <label>Console every <input name="status.console_s" inputmode="numeric" placeholder="10">
-            <small>seconds, 0 = quiet; always off as a service</small></label>
-          <label>Web port <input name="status.http_port" inputmode="numeric" placeholder="8073">
-            <small>this page moves with it</small></label>
-        </fieldset>
-        <fieldset>
-          <legend>RTTY palette</legend>
-          <label class="check"><input type="checkbox" name="rtty_palette.open_on_spot" data-default="true"> opens on a click on an RTTY spot</label>
-          <label>Passband Hz <input name="rtty_palette.bandwidth" inputmode="numeric" placeholder="400">
-            <small>the audio while it decodes, 250–500: mark and space (170 Hz apart) and room for the AFC</small></label>
-          <label class="check"><input type="checkbox" name="rtty_palette.autotune" data-default="true"> autotune — centre a steady pair</label>
-          <label class="check"><input type="checkbox" name="rtty_palette.afc" data-default="true"> AFC — follow a drift</label>
-          <label>AFC within Hz <input name="rtty_palette.afc_max_hz" inputmode="numeric" placeholder="60">
-            <small>10–180, either way</small></label>
-          <label>AFC speed <input name="rtty_palette.afc_rate" inputmode="numeric" placeholder="60">
-            <small>Hz a character, 5–85</small></label>
-          <label>Squelch dB <input name="rtty_palette.squelch_db" inputmode="numeric" placeholder="0">
-            <small>over the noise, 1–10; 0 = off (a weak caller is never cut)</small></label>
-          <label class="check"><input type="checkbox" name="rtty_palette.reverse"> reverse — mark and space swapped</label>
-          <label class="check"><input type="checkbox" name="rtty_palette.usos" data-default="true"> unshift on space</label>
-          <label class="check"><input type="checkbox" name="rtty_palette.second_decoder" data-default="true"> DEC 2 beside DEC 1</label>
-          <label class="check"><input type="checkbox" name="rtty_palette.clean"> clean text — no time tape</label>
-          <label class="check"><input type="checkbox" name="rtty_palette.sound" data-default="true"> heard while it decodes</label>
-          <small class="note-s">Decodes in the browser (WIFILT's RTTY-ICOM decoder) what the waterfall's audio brings:
-            45.45 Bd, 170 Hz shift. RTTY in the waterfall's bar opens it too. Autotune moves the frequency heard once after
-            each tuning, when a pair holds still; DEC 2 averages each bit and holds the rhythm. For everyone who watches
-            the waterfall; CLEAN and REV in the palette are that browser's own.</small>
-        </fieldset>
-        <fieldset>
-          <legend>WSPR</legend>
-          <label class="check"><input type="checkbox" name="wspr.enabled"> decode WSPR on every WSPR frequency inside the bands received</label>
-          <label class="check"><input type="checkbox" name="wspr.deep"> Deeper candidate search <small>(wsprd -d: slower, a few more decodes)</small></label>
-          <label class="check"><input type="checkbox" name="wspr.subtract" data-default="true"> Subtract decoded signals <small>(decoded ones are taken out and the rest decoded again — WSJT-X's default; off = one pass, wsprd -s)</small></label>
-          <label class="check"><input type="checkbox" name="wspr.upload"> send the spots to WSPRnet (wsprnet.org)</label>
-          <label>Call <input name="wspr.call" class="upper" placeholder="as Station and feed" autocapitalize="characters">
-            <small>the receiver's call on WSPRnet; empty = Station and feed → Call</small></label>
-          <label>Locator <input name="wspr.locator" class="upper" placeholder="as Station and feed" maxlength="6" autocapitalize="characters">
-            <small>the receiver's locator on WSPRnet, public there as written (6 characters: a few km); empty = Station and feed → Locator</small></label>
-          <small class="note-s" id="wspr-note"></small>
-          <small class="note-s">WSPR-2 on WSJT-X's dial frequencies (USB, the signals 1400–1600 Hz above), each even UTC minute,
-            WSJT-X's own decoder (wsprd) one band after the other — the radio's IQ, no extra receiver. A frequency counts when
-            its 300 Hz lie inside 45 % of the rate around a band's centre (Bands below). The stations heard in the last 24 h:
-            Statistics, under the bands' table.</small>
-        </fieldset>
-        <fieldset>
-          <legend>FT8 / FT4</legend>
-          <label class="check"><input type="checkbox" name="ft8.enabled"> decode FT8 and FT4 on every FT8/FT4 frequency inside the bands received</label>
-          <label class="check"><input type="checkbox" name="ft8.ft8" data-default="true"> FT8 <small>(15 s cycles)</small></label>
-          <label class="check"><input type="checkbox" name="ft8.ft4" data-default="true"> FT4 <small>(7.5 s cycles)</small></label>
-          <label class="check"><input type="checkbox" name="ft8.feed" data-default="true"> spots to the telnet feed <small>(off: the web page only)</small></label>
-          <label>Depth <select name="ft8.depth" data-default="2">
-            <option value="1">1 — Fast: one pass</option>
-            <option value="2">2 — Normal: subtraction, three passes</option>
-            <option value="3">3 — Deep: a few more decodes, much more CPU</option></select>
-            <small>WSJT-X's Decode menu</small></label>
-          <label>Audio from <input name="ft8.lo_hz" inputmode="numeric" placeholder="200" size="6"> to
-            <input name="ft8.hi_hz" inputmode="numeric" placeholder="3500" size="6"> Hz above the dial
-            <small>from 200–1000, to 2000–4000</small></label>
-          <label>Bands <input name="ft8.bands" placeholder="every band" spellcheck="false">
-            <small>the Bands names whose FT8/FT4 frequencies are decoded, e.g. "40m, 20m"; empty = every band</small></label>
-          <label>Decoders <input name="ft8.threads" inputmode="numeric" placeholder="2" size="4">
-            <small>side by side (1–8); a cycle they are still behind on when its next is done is skipped</small></label>
-          <label class="check"><input type="checkbox" name="ft8.upload"> send the stations heard to PSK Reporter (pskreporter.info)</label>
-          <label>Call <input name="ft8.call" class="upper" placeholder="as Station and feed" autocapitalize="characters">
-            <small>the receiver's call on PSK Reporter; empty = Station and feed → Call</small></label>
-          <label>Locator <input name="ft8.locator" class="upper" placeholder="as Station and feed" maxlength="6" autocapitalize="characters">
-            <small>the receiver's locator there, public as written (6 characters: a few km); empty = Station and feed → Locator</small></label>
-          <small class="note-s" id="ft8-note"></small>
-          <small class="note-s">WSJT-X's own FT8 and FT4 decoders (built in) on its dial frequencies, every cycle — the radio's IQ,
-            no extra receiver. Each station that sends (a CQ, a report, an RR73…) is a spot once a band and mode in 10 min at its
-            own frequency, "FT8 -12 dB CQ" (DE for one not calling CQ) — never on the RBN Aggregator's port; hashed calls
-            &lt;…&gt; and a-priori decodes never. PSK Reporter gets each station once an hour a band and mode, with its
-            locator when it sent one, in a datagram every 5 minutes — as WSJT-X reports. FT8 in the waterfall's bar (or a
-            click on an FT8 spot) opens the FT8 palette: every message of the last 15 min, as WSJT-X's Band Activity.
-            Not on a worker (its hub decodes FT8); a band the thermal guard has off decodes no FT8 either.</small>
-        </fieldset>
-        <fieldset>
-          <legend>JS8</legend>
-          <label class="check"><input type="checkbox" name="js8.enabled"> decode JS8 on every JS8 frequency inside the bands received</label>
-          <label>Submodes <input name="js8.submodes" placeholder="normal,fast,turbo,slow" spellcheck="false">
-            <small>normal (15 s), fast (10 s), turbo (6 s), slow (30 s, the deepest: −28 dB) — all decoded at once from the same audio; empty = all four</small></label>
-          <label class="check"><input type="checkbox" name="js8.feed" data-default="true"> spots to the telnet feed <small>(a deep frame's call only once confirmed; off: the web page only)</small></label>
-          <label class="check"><input type="checkbox" name="js8.serve" data-default="true"> one decoder a frequency kept running <small>(it combines a repeated frame across periods, and costs a tenth of the CPU of one run a period)</small></label>
-          <label>Clean from quality <input name="js8.clean" inputmode="decimal" placeholder="0.80" size="5">
-            <small>0.50–1.00: the decoder's quality (1 − hard errors/60) from which a frame is clean; under it a frame is deep and its call waits for a confirmation before the feed</small></label>
-          <label>Audio from <input name="js8.lo_hz" inputmode="numeric" placeholder="200" size="6"> to
-            <input name="js8.hi_hz" inputmode="numeric" placeholder="3500" size="6"> Hz above the dial
-            <small>from 200–1000, to 2000–4000</small></label>
-          <label>Bands <input name="js8.bands" placeholder="every band" spellcheck="false">
-            <small>the Bands names whose JS8 frequencies are decoded, e.g. "40m, 20m"; empty = every band</small></label>
-          <label>Decoders <input name="js8.threads" inputmode="numeric" placeholder="2" size="4">
-            <small>side by side (1–8); a period they are still behind on when its next is done is skipped</small></label>
-          <label class="check"><input type="checkbox" name="js8.upload"> send the confirmed stations to PSK Reporter <small>(under FT8 / FT4 → Call and Locator)</small></label>
-          <small class="note-s" id="js8-note"></small>
-          <small class="note-s">JS8Call-improved's own JS8 decoder (built in) on JS8Call's dial frequencies, every submode every
-            period — the radio's IQ, no extra receiver. A heartbeat, a CQ, a directed frame names its sender: a spot once a band in
-            10 min at its own frequency. JS8 has only a 12-bit check, so a frame read with many errors is deep: its call is on this
-            page at once, on the telnet feed once confirmed — a second decode within 30 min, MASTER.SCP, or confirmed on JS8 in the
-            last 90 days. The JS8 palette over the waterfall shows what the frames say.</small>
-        </fieldset>
-        <fieldset>
-          <legend>Updates</legend>
-          <label>Mode <select name="update.mode" data-default="auto">
-            <option value="auto">automatic — install a newer release by itself</option>
-            <option value="notify">notify — only show that one is out</option>
-            <option value="off">off — never look</option></select>
-            <small>once a day the skimmer looks at its releases on GitHub (ok1hra/skimmer-for-linux)</small></label>
-          <label>Install at UTC hour <input name="update.hour_utc" inputmode="numeric" placeholder="3" data-max="23">
-            <small>0–23: a newer release is downloaded and checked at once, swapped in and restarted into at this hour — a few seconds without spots</small></label>
-          <div id="upd" class="upd"></div>
-          <small class="note-s">A new version is checked against the sha256 GitHub publishes for it and run once on this
-            config before it replaces the running AppImage; the old file stays beside it as <code>….AppImage.prev</code>
-            (<i>Back to</i> puts it back). A version that crashes three times right after the update goes back by
-            itself (under the systemd service). Only a release AppImage replaces itself — a development build, or a
-            program from a build tree, only reports. Name the file without a version
-            (<code>skimmer-headless-x86_64.AppImage</code>): it keeps its name across updates.</small>
+          <legend>Bands <span class="mut" id="band-count"></span></legend>
+          <div class="wrap"><table class="grid bands-edit">
+            <thead><tr><th>RX</th><th title="received — an unticked band stays in the list, off">on</th><th>name</th><th>centre kHz</th><th title="what the receiver takes in: its centre ± half the rate">kHz from – to</th><th class="rp-only" title="the board's IP: A = receivers 1–8, B = 9–16 (8 each)">IP</th><th class="rp-only" title="the ADC input (needs the decoder agent on the board)">input</th><th class="skrs-only" title="the band's own rate (SKRS); empty = the Rate above">rate</th><th>CW</th><th>engine</th><th>RTTY</th><th title="empty = this PC; a worker's name = received here, its IQ passed to that worker, which decodes it">decoded by</th><th></th></tr></thead>
+            <tbody id="band-rows"></tbody>
+          </table></div>
+          <datalist id="worker-names"></datalist>
+          <button type="button" id="band-add" class="small">Add band</button>
+          <button type="button" id="band-skimsrv" class="small" title="the bands CW Skimmer Server uses: its rate and the segments ticked there, from its SkimSrv.ini — found on this PC (wine), or a file you choose">From CW Skimmer</button>
+          <input type="file" id="band-skimsrv-file" accept=".ini" hidden>
+          <div id="band-from" class="band-from"></div>
+          <small class="mut">the Rate (Radio) sets the segments, as CW Skimmer has them: 45.5, 91 or 182 kHz each from a band's low edge — tick up to 8 a Red Pitaya IP (16 with IP B), one receiver each, in frequency order; a segment's centre can be moved (empty = its own); <i>Add band</i> = a band of your own anywhere. The Mb/s are the IQ the radio sends this PC over the network.</small>
         </fieldset>
       </div>
-      <fieldset id="rp-card" class="rp-only">
-        <legend>Red Pitaya <span class="mut" id="rp-sub">…</span></legend>
-        <svg id="rp-diagram" class="rp-diagram" viewBox="0 0 660 176" role="img" aria-label="the board's inputs, receiver sets, IPs and who takes them"></svg>
-        <div id="rp-state" class="rp-state mut"></div>
-        <div class="rp-actions">
-          <input type="password" id="rp-pw" placeholder="root password (once)" autocomplete="off" hidden>
-          <button type="button" class="small" id="rp-connect" title="with the decoder's own key; the first time the board's root password, never stored">Connect</button>
-          <select id="rp-fpga" class="small" title="the bitstream the agent runs on: Pavel Demin's (16 receivers, one rate an IP) or the decoder bitstream (24 slots, a rate each: SKRS — docs/FPGA.md)">
-            <option value="">bitstream: as the card has it</option><option value="stock">Pavel Demin's stock bitstream</option><option value="skimmer">the decoder bitstream (24 slots)</option></select>
-          <button type="button" class="small" id="rp-install" title="the decoder agent in place of Pavel Demin's two servers (his start.sh kept)">Install the agent</button>
-          <button type="button" class="small" id="rp-uninstall" title="Pavel Demin's start.sh back, and run">Uninstall</button>
-          <label class="rp-take"><input type="checkbox" id="rp-take"> even while another client streams</label>
-        </div>
-        <div id="rp-ext" class="rp-ext" hidden>
-          <div class="mut">Inputs for another client (an IP this decoder does not take — e.g. CW Skimmer Server), kept on the board:</div>
-          <div id="rp-ext-rows"></div>
-          <button type="button" class="small" id="rp-ext-apply">Apply on the board</button>
-        </div>
-        <small class="note-s">The decoder talks to its board over SSH with its own key. Connect asks once for the board's
-          root password (it is never stored) and puts the key there. <i>Install</i> replaces Pavel Demin's two servers with
-          the decoder agent on the same FPGA image: Protocol 1 on both IPs as before (CW Skimmer Server and others work
-          unchanged), plus each receiver's input and the board's state for Statistics. <i>Uninstall</i> puts Pavel Demin's start
-          back. Nothing changes on the board without one of these buttons.</small>
-      </fieldset>
-      <fieldset>
-        <legend>Bands <span class="mut" id="band-count"></span></legend>
-        <div class="wrap"><table class="grid bands-edit">
-          <thead><tr><th>RX</th><th title="received — an unticked band stays in the list, off">on</th><th>name</th><th>centre kHz</th><th title="what the receiver takes in: its centre ± half the rate">kHz from – to</th><th class="rp-only" title="the board's IP: A = receivers 1–8, B = 9–16 (8 each)">IP</th><th class="rp-only" title="the ADC input (needs the decoder agent on the board)">input</th><th class="skrs-only" title="the band's own rate (SKRS); empty = the Rate above">rate</th><th>CW</th><th>engine</th><th>RTTY</th><th title="empty = this PC; a worker's name = received here, its IQ passed to that worker, which decodes it">decoded by</th><th></th></tr></thead>
-          <tbody id="band-rows"></tbody>
-        </table></div>
-        <datalist id="worker-names"></datalist>
-        <button type="button" id="band-add" class="small">Add band</button>
-        <button type="button" id="band-skimsrv" class="small" title="the bands CW Skimmer Server uses: its rate and the segments ticked there, from its SkimSrv.ini — found on this PC (wine), or a file you choose">From CW Skimmer</button>
-        <input type="file" id="band-skimsrv-file" accept=".ini" hidden>
-        <div id="band-from" class="band-from"></div>
-        <small class="mut">the Rate (Radio) sets the segments, as CW Skimmer has them: 45.5, 91 or 182 kHz each from a band's low edge — tick up to 8 a Red Pitaya IP (16 with IP B), one receiver each, in frequency order; a segment's centre can be moved (empty = its own); <i>Add band</i> = a band of your own anywhere. The Mb/s are the IQ the radio sends this PC over the network.</small>
-      </fieldset>
-      <fieldset>
-        <legend>Recording raw IQ</legend>
+      <div class="set-pane" data-pane="decoding" role="tabpanel" hidden>
         <div class="set-grid">
-          <label>Bands <input name="record.bands" placeholder="20m, 40m"><small>empty = off</small></label>
-          <label>Minutes <input name="record.minutes" inputmode="decimal" placeholder="10"></label>
-          <label>Directory <input name="record.dir" placeholder="/var/tmp/skimmer-iq"></label>
-          <label>Start (UTC) <input name="record.start_utc" placeholder="HH:MM"><small>empty = at once</small></label>
+          <fieldset>
+            <legend>Decoding</legend>
+            <label>CW engine <select name="decode.engine">
+              <option value="v3">v3.1 (classical, weak-signal, precision rules)</option><option value="v4">v4.0 DeepCW (neural, on the CPU)</option><option value="v2">v2 (classical, v0.7)</option><option value="deepcw">DeepCW v1 (neural) — not tested</option></select>
+              <small>for the bands that do not name one</small>
+              <small class="warn" id="v4-warn">v4.0 DeepCW reads 3–5 dB deeper than v3 and far better in fading, at about three times its CPU on a busy band — see its compute check below</small>
+              <small class="warn">DeepCW v1 has not been tested with this skimmer — no live or replay verdict</small></label>
+            <label>v4 threads <input name="decode.v4_workers" inputmode="numeric" placeholder="0">
+              <small>CW v4's inference threads; 0 = half the CPUs</small></label>
+            <label class="check"><input type="checkbox" name="decode.v4_guard" data-default="true"> v4 load guard — when v4
+              cannot keep up, the v4 band with the fewest spots is paused (one always stays)</label>
+            <div id="v4" class="dcw"></div>
+            <label class="check"><input type="checkbox" name="decode.log"> raw decode logs per band</label>
+            <label class="check"><input type="checkbox" name="decode.suppress_cw_on_rtty"> CW off the RTTY stations
+              (bands with CW and RTTY)</label>
+            <label class="check"><input type="checkbox" name="decode.rtty_adaptive"> adaptive RTTY — the RTTY
+              decoders only while a contest runs</label>
+            <label>RTTY spots <input name="decode.rtty_adaptive_spots" inputmode="numeric" placeholder="100">
+              <small>more than this, all bands together …</small></label>
+            <label>in minutes <input name="decode.rtty_adaptive_minutes" inputmode="numeric" placeholder="2">
+              <small>… in the first minutes of each full hour (and of a start) keeps RTTY on until the next hour; fewer turn it off till then</small></label>
+            <div id="dcw" class="dcw"></div>
+          </fieldset>
+          <fieldset>
+            <legend>Thermal guard</legend>
+            <label class="check"><input type="checkbox" name="thermal.enabled"> pause the quietest band while the CPU runs hot</label>
+            <label>Limit °C <input name="thermal.limit_c" inputmode="decimal" placeholder="auto">
+              <small>the mean of the hottest CPU sensor; empty = the sensor's critical temperature − 15 °C (85 °C on most Intel CPUs), else 80 °C</small></label>
+            <label>Mean over min <input name="thermal.average_min" inputmode="numeric" placeholder="5">
+              <small>short bursts of work do not count</small></label>
+            <label>Margin °C <input name="thermal.restore_margin_c" inputmode="decimal" placeholder="3">
+              <small>a band comes back once the mean stays under the limit by what pausing it saved (5 °C at least) plus this, for 20 min</small></label>
+            <label>Test every min <input name="thermal.probe_every_min" inputmode="numeric" placeholder="30">
+              <small>a band paused this long is tested in place of the band with the fewest spots; 0 = never (10 at least)</small></label>
+            <label>Test for min <input name="thermal.probe_min" inputmode="numeric" placeholder="5">
+              <small>with more spots a minute than that band had (2 at least) the two change places, else each goes back</small></label>
+            <small class="note-s">Over the limit now and for 3 of the last 5 min (a dip under it does not start the count again): the band with the fewest spots in the last 30 min stops decoding (CW and RTTY); still hot 10 min later, the next — one band always stays. A paused band has no spots, so it is tested now and then: a band that opened takes the place of the quietest. The drop each pause brought is shown on Status.</small>
+          </fieldset>
+          <fieldset>
+            <legend>RTTY palette</legend>
+            <label class="check"><input type="checkbox" name="rtty_palette.open_on_spot" data-default="true"> opens on a click on an RTTY spot</label>
+            <label>Passband Hz <input name="rtty_palette.bandwidth" inputmode="numeric" placeholder="400">
+              <small>the audio while it decodes, 250–500: mark and space (170 Hz apart) and room for the AFC</small></label>
+            <label class="check"><input type="checkbox" name="rtty_palette.autotune" data-default="true"> autotune — centre a steady pair</label>
+            <label class="check"><input type="checkbox" name="rtty_palette.afc" data-default="true"> AFC — follow a drift</label>
+            <label>AFC within Hz <input name="rtty_palette.afc_max_hz" inputmode="numeric" placeholder="60">
+              <small>10–180, either way</small></label>
+            <label>AFC speed <input name="rtty_palette.afc_rate" inputmode="numeric" placeholder="60">
+              <small>Hz a character, 5–85</small></label>
+            <label>Squelch dB <input name="rtty_palette.squelch_db" inputmode="numeric" placeholder="0">
+              <small>over the noise, 1–10; 0 = off (a weak caller is never cut)</small></label>
+            <label class="check"><input type="checkbox" name="rtty_palette.reverse"> reverse — mark and space swapped</label>
+            <label class="check"><input type="checkbox" name="rtty_palette.usos" data-default="true"> unshift on space</label>
+            <label class="check"><input type="checkbox" name="rtty_palette.second_decoder" data-default="true"> DEC 2 beside DEC 1</label>
+            <label class="check"><input type="checkbox" name="rtty_palette.clean"> clean text — no time tape</label>
+            <label class="check"><input type="checkbox" name="rtty_palette.sound" data-default="true"> heard while it decodes</label>
+            <small class="note-s">Decodes in the browser (WIFILT's RTTY-ICOM decoder) what the waterfall's audio brings:
+              45.45 Bd, 170 Hz shift. RTTY in the waterfall's bar opens it too. Autotune moves the frequency heard once after
+              each tuning, when a pair holds still; DEC 2 averages each bit and holds the rhythm. For everyone who watches
+              the waterfall; CLEAN and REV in the palette are that browser's own.</small>
+          </fieldset>
         </div>
-      </fieldset>
+      </div>
+      <div class="set-pane" data-pane="digital" role="tabpanel" hidden>
+        <div class="set-grid">
+          <fieldset>
+            <legend>FT8 / FT4</legend>
+            <label class="check"><input type="checkbox" name="ft8.enabled"> decode FT8 and FT4 on every FT8/FT4 frequency inside the bands received</label>
+            <label class="check"><input type="checkbox" name="ft8.ft8" data-default="true"> FT8 <small>(15 s cycles)</small></label>
+            <label class="check"><input type="checkbox" name="ft8.ft4" data-default="true"> FT4 <small>(7.5 s cycles)</small></label>
+            <label class="check"><input type="checkbox" name="ft8.feed" data-default="true"> spots to the telnet feed <small>(off: the web page only)</small></label>
+            <label>Depth <select name="ft8.depth" data-default="2">
+              <option value="1">1 — Fast: one pass</option>
+              <option value="2">2 — Normal: subtraction, three passes</option>
+              <option value="3">3 — Deep: a few more decodes, much more CPU</option></select>
+              <small>WSJT-X's Decode menu</small></label>
+            <label>Audio from <input name="ft8.lo_hz" inputmode="numeric" placeholder="200" size="6"> to
+              <input name="ft8.hi_hz" inputmode="numeric" placeholder="3500" size="6"> Hz above the dial
+              <small>from 200–1000, to 2000–4000</small></label>
+            <label>Bands <input name="ft8.bands" placeholder="every band" spellcheck="false">
+              <small>the Bands names whose FT8/FT4 frequencies are decoded, e.g. "40m, 20m"; empty = every band</small></label>
+            <label>Decoders <input name="ft8.threads" inputmode="numeric" placeholder="2" size="4">
+              <small>side by side (1–8); a cycle they are still behind on when its next is done is skipped</small></label>
+            <label class="check"><input type="checkbox" name="ft8.upload"> send the stations heard to PSK Reporter (pskreporter.info)</label>
+            <label>Call <input name="ft8.call" class="upper" placeholder="as Station and feed" autocapitalize="characters">
+              <small>the receiver's call on PSK Reporter; empty = Station and feed → Call</small></label>
+            <label>Locator <input name="ft8.locator" class="upper" placeholder="as Station and feed" maxlength="6" autocapitalize="characters">
+              <small>the receiver's locator there, public as written (6 characters: a few km); empty = Station and feed → Locator</small></label>
+            <small class="note-s" id="ft8-note"></small>
+            <small class="note-s">WSJT-X's own FT8 and FT4 decoders (built in) on its dial frequencies, every cycle — the radio's IQ,
+              no extra receiver. Each station that sends (a CQ, a report, an RR73…) is a spot once a band and mode in 10 min at its
+              own frequency, "FT8 -12 dB CQ" (DE for one not calling CQ) — never on the RBN Aggregator's port; hashed calls
+              &lt;…&gt; and a-priori decodes never. PSK Reporter gets each station once an hour a band and mode, with its
+              locator when it sent one, in a datagram every 5 minutes — as WSJT-X reports. FT8 in the waterfall's bar (or a
+              click on an FT8 spot) opens the FT8 palette: every message of the last 15 min, as WSJT-X's Band Activity.
+              Not on a worker (its hub decodes FT8); a band the thermal guard has off decodes no FT8 either.</small>
+          </fieldset>
+          <fieldset>
+            <legend>JS8</legend>
+            <label class="check"><input type="checkbox" name="js8.enabled"> decode JS8 on every JS8 frequency inside the bands received</label>
+            <label>Submodes <input name="js8.submodes" placeholder="normal,fast,turbo,slow" spellcheck="false">
+              <small>normal (15 s), fast (10 s), turbo (6 s), slow (30 s, the deepest: −28 dB) — all decoded at once from the same audio; empty = all four</small></label>
+            <label class="check"><input type="checkbox" name="js8.feed" data-default="true"> spots to the telnet feed <small>(a deep frame's call only once confirmed; off: the web page only)</small></label>
+            <label class="check"><input type="checkbox" name="js8.serve" data-default="true"> one decoder a frequency kept running <small>(it combines a repeated frame across periods, and costs a tenth of the CPU of one run a period)</small></label>
+            <label>Clean from quality <input name="js8.clean" inputmode="decimal" placeholder="0.80" size="5">
+              <small>0.50–1.00: the decoder's quality (1 − hard errors/60) from which a frame is clean; under it a frame is deep and its call waits for a confirmation before the feed</small></label>
+            <label>Audio from <input name="js8.lo_hz" inputmode="numeric" placeholder="200" size="6"> to
+              <input name="js8.hi_hz" inputmode="numeric" placeholder="3500" size="6"> Hz above the dial
+              <small>from 200–1000, to 2000–4000</small></label>
+            <label>Bands <input name="js8.bands" placeholder="every band" spellcheck="false">
+              <small>the Bands names whose JS8 frequencies are decoded, e.g. "40m, 20m"; empty = every band</small></label>
+            <label>Decoders <input name="js8.threads" inputmode="numeric" placeholder="2" size="4">
+              <small>side by side (1–8); a period they are still behind on when its next is done is skipped</small></label>
+            <label class="check"><input type="checkbox" name="js8.upload"> send the confirmed stations to PSK Reporter <small>(under FT8 / FT4 → Call and Locator)</small></label>
+            <small class="note-s" id="js8-note"></small>
+            <small class="note-s">JS8Call-improved's own JS8 decoder (built in) on JS8Call's dial frequencies, every submode every
+              period — the radio's IQ, no extra receiver. A heartbeat, a CQ, a directed frame names its sender: a spot once a band in
+              10 min at its own frequency. JS8 has only a 12-bit check, so a frame read with many errors is deep: its call is on this
+              page at once, on the telnet feed once confirmed — a second decode within 30 min, MASTER.SCP, or confirmed on JS8 in the
+              last 90 days. The JS8 palette over the waterfall shows what the frames say.</small>
+          </fieldset>
+          <fieldset>
+            <legend>WSPR</legend>
+            <label class="check"><input type="checkbox" name="wspr.enabled"> decode WSPR on every WSPR frequency inside the bands received</label>
+            <label class="check"><input type="checkbox" name="wspr.deep"> Deeper candidate search <small>(wsprd -d: slower, a few more decodes)</small></label>
+            <label class="check"><input type="checkbox" name="wspr.subtract" data-default="true"> Subtract decoded signals <small>(decoded ones are taken out and the rest decoded again — WSJT-X's default; off = one pass, wsprd -s)</small></label>
+            <label class="check"><input type="checkbox" name="wspr.upload"> send the spots to WSPRnet (wsprnet.org)</label>
+            <label>Call <input name="wspr.call" class="upper" placeholder="as Station and feed" autocapitalize="characters">
+              <small>the receiver's call on WSPRnet; empty = Station and feed → Call</small></label>
+            <label>Locator <input name="wspr.locator" class="upper" placeholder="as Station and feed" maxlength="6" autocapitalize="characters">
+              <small>the receiver's locator on WSPRnet, public there as written (6 characters: a few km); empty = Station and feed → Locator</small></label>
+            <small class="note-s" id="wspr-note"></small>
+            <small class="note-s">WSPR-2 on WSJT-X's dial frequencies (USB, the signals 1400–1600 Hz above), each even UTC minute,
+              WSJT-X's own decoder (wsprd) one band after the other — the radio's IQ, no extra receiver. A frequency counts when
+              its 300 Hz lie inside 45 % of the rate around a band's centre (Bands below). The stations heard in the last 24 h:
+              Statistics, under the bands' table.</small>
+          </fieldset>
+        </div>
+      </div>
+      <div class="set-pane" data-pane="feed" role="tabpanel" hidden>
+        <div class="set-grid">
+          <fieldset>
+            <legend>Station and feed</legend>
+            <label>Call <input name="feed.call" class="upper" placeholder="YOURCALL" autocapitalize="characters"></label>
+            <label>Locator <input name="station.locator" class="upper" placeholder="JN18EU" maxlength="6" autocapitalize="characters">
+              <small>the centre of the map on Status, the distances and bearings; the public pages show its first four characters only (JN18) — empty: the centre is your call's DXCC</small></label>
+            <label>Port <input name="feed.port" inputmode="numeric" placeholder="7300">
+              <small>0 = off</small></label>
+            <label class="check"><input type="checkbox" name="feed.rtty" data-default="true"> RTTY spots on the feed too</label>
+            <label>Telnet address <input name="feed.address" placeholder="skimmer.example.net:7300" spellcheck="false" autocomplete="off">
+              <small>how the world reaches the feed — host:port, or a telnet:// or http(s):// URL; shown in the header of the page to everyone (empty: not shown)</small></label>
+          </fieldset>
+          <fieldset>
+            <legend>Reverse Beacon Network</legend>
+            <p class="mut note">The RBN takes spots only through its own program, the
+              <a href="https://www.reversebeacon.net" target="_blank" rel="noopener">RBN Aggregator</a>: the skimmer offers
+              its spots on the port below and the Aggregator, connected to it, relays them to reversebeacon.net. Without a
+              connected Aggregator no spot reaches the RBN (Status → "RBN now" counts who is connected). In the Aggregator:
+              Skimmer IP = this machine, Skimmer Port = the port below, Skimmer Call = the call under Station and feed. One
+              Aggregator serves one skimmer — beside CW Skimmer Server it takes a second Aggregator.</p>
+            <label class="check"><input type="checkbox" name="rbn.enabled"> offer the spots to the RBN Aggregator</label>
+            <label>Aggregator port <input name="rbn.port" inputmode="numeric" placeholder="7550">
+              <small>the RBN Aggregator connects here; the feed's spots, under its call. With the Aggregator on this machine
+              not 7550 — that is the Aggregator's own port for loggers (Local User)</small></label>
+            <label>Delay <input name="rbn.delay_s" inputmode="numeric" placeholder="0" data-max="99">
+              <small>seconds each spot is held before it goes to the RBN, 0–99</small></label>
+          </fieldset>
+          <fieldset>
+            <legend>Spot archive</legend>
+            <label>Directory <input name="archive.dir" placeholder="off — e.g. ~/skimmer-spots" spellcheck="false" autocomplete="off">
+              <small>every spot the feed sends is kept here, a gzip file a UTC day: <code>YYYYMMDD-spots.gz</code>
+              (<code>zcat</code> or <code>zless</code> reads it), a tab-separated line a spot — time, kHz, call,
+              mode, dB, WPM/baud, band, source. Written once a minute. Empty = off; <code>~/</code> = the home of
+              the user the skimmer runs as</small></label>
+            <div class="arch" id="archive-state"></div>
+          </fieldset>
+        </div>
+      </div>
+      <div class="set-pane" data-pane="filters" role="tabpanel" hidden>
+        <div class="set-grid">
+          <fieldset>
+            <legend>Callsign filter</legend>
+            <label>DX filter <input name="filter.call" id="filter-call" placeholder="Callsign, text, or regex" spellcheck="false" autocomplete="off">
+              <small class="bad" id="filter-bad" hidden>not a valid regular expression</small></label>
+            <div class="filter-row">
+              <label class="check"><input type="checkbox" name="filter.regex" id="filter-regex"> Regex</label>
+              <button type="button" class="small" id="filter-clear">Clear</button>
+            </div>
+            <small class="note-s">Without Regex, this matches plain text. With Regex enabled, it is a regular
+              expression and ignores letter case.</small>
+            <div class="filter-row mycall">
+              <label class="check"><input type="checkbox" name="filter.mycall" id="filter-mycall">
+                <span>drop my call <b id="filter-mycall-call"></b> and the calls up to</span></label>
+              <input name="filter.mycall_diff" id="filter-mycall-diff" inputmode="numeric" placeholder="2" size="2" maxlength="1">
+              <span class="mut">characters off it</span>
+            </div>
+            <small class="note-s">Compared place by place: a letter other, or missing at the end (a cut call),
+              counts one change; the letters keep their places, so a call read backwards differs in all of them.
+              These are the busts the skimmer makes of this station's own signal. A call MASTER.SCP knows passes
+              all the same (a real neighbour), only my call itself never: for OK1HRA, two changes drop OK1HRB,
+              OK1HR, OK1H, OK2HRB, while OK1BR and OK1RR (known) pass; 0 = the call itself. My call = Station and
+              feed → Call.</small>
+            <small class="note-s">Only the calls that pass go anywhere; empty = all. The rest are dropped right
+              where they are decoded: no spot on the telnet feed or to the RBN, no dot on the map, not in the
+              DX cluster nor the statistics — peers' and workers' spots too.</small>
+          </fieldset>
+          <fieldset>
+            <legend>Bad calls</legend>
+            <label>Bad calls <input name="filter.bad" id="filter-bad-calls" placeholder="e.g. UA9, OK1ABC, 3B8" spellcheck="false" autocomplete="off">
+              <small class="bad" id="filter-bad-calls-bad" hidden>only letters, digits and / in a prefix or a call</small></label>
+            <small class="note-s">Prefixes or whole calls, separated by commas, any case. A prefix drops every call
+              that starts with it (UA9 drops UA9ABC); a whole call drops that call, also with a /part (OK1ABC drops
+              OK1ABC/P and DL/OK1ABC). They are dropped right where they are decoded, as by the callsign filter: no
+              spot on the telnet feed or to the RBN, no dot on the map, not in the DX cluster nor the statistics —
+              peers' and workers' spots too.</small>
+          </fieldset>
+        </div>
+      </div>
+      <div class="set-pane" data-pane="network" role="tabpanel" hidden>
+        <div class="set-grid">
+          <fieldset>
+            <legend>Other skimmers: workers and peers</legend>
+            <label>Name on the LAN <input name="hub.name" placeholder="host name">
+              <small>how other skimmers list this one (Skimmers on the LAN, below); a worker asks its hub for bands under it</small></label>
+            <label>Hub port <input name="hub.port" inputmode="numeric" placeholder="7380">
+              <small>workers connect here for the bands Bands → decoded by names after them; 0 = no hub</small></label>
+            <label class="wide">Their feeds <input name="peers.hosts" placeholder="192.168.1.30, pc2:7300">
+              <small>telnet feeds of other skimmers (ours or CW Skimmer Server), host or host:port; their CQ spots go out
+              on this feed and to the RBN under this call, duplicates dropped — fine for skimmers on this station's antennas,
+              not for someone else's</small></label>
+          </fieldset>
+          <fieldset>
+            <legend>Status</legend>
+            <label>Console every <input name="status.console_s" inputmode="numeric" placeholder="10">
+              <small>seconds, 0 = quiet; always off as a service</small></label>
+            <label>Web port <input name="status.http_port" inputmode="numeric" placeholder="8073">
+              <small>this page moves with it</small></label>
+          </fieldset>
+          <fieldset>
+            <legend>Visitors</legend>
+            <label class="check"><input type="checkbox" name="visitors.login" data-default="true"> visitors from outside sign in with their callsign</label>
+            <label class="wide">Free from <input name="visitors.free_from" placeholder="the private networks" spellcheck="false">
+              <small>the addresses or networks (a.b.c.d/n, comma separated) that see the page without signing in; empty = the private networks (10/8, 172.16/12, 192.168/16, loopback, link-local). Through a proxy everyone signs in. The visits are in the Log tab.</small></label>
+          </fieldset>
+        </div>
+        <details class="more" id="lan">
+          <summary>Skimmers on the LAN</summary>
+          <p class="mut note">Other skimmer-headless instances answer a broadcast (UDP 8075). This one is
+            <b id="lan-self"></b>. <button type="button" class="small" id="lan-find">Search</button> <span id="lan-msg" class="mut"></span></p>
+          <div class="wrap"><table class="grid" id="lan-list"></table></div>
+        </details>
+      </div>
+      <div class="set-pane" data-pane="system" role="tabpanel" hidden>
+        <div class="set-grid">
+          <fieldset>
+            <legend>Updates</legend>
+            <label>Mode <select name="update.mode" data-default="auto">
+              <option value="auto">automatic — install a newer release by itself</option>
+              <option value="notify">notify — only show that one is out</option>
+              <option value="off">off — never look</option></select>
+              <small>once a day the skimmer looks at its releases on GitHub (ok1hra/skimmer-for-linux)</small></label>
+            <label>Install at UTC hour <input name="update.hour_utc" inputmode="numeric" placeholder="3" data-max="23">
+              <small>0–23: a newer release is downloaded and checked at once, swapped in and restarted into at this hour — a few seconds without spots</small></label>
+            <div id="upd" class="upd"></div>
+            <small class="note-s">A new version is checked against the sha256 GitHub publishes for it and run once on this
+              config before it replaces the running AppImage; the old file stays beside it as <code>….AppImage.prev</code>
+              (<i>Back to</i> puts it back). A version that crashes three times right after the update goes back by
+              itself (under the systemd service). Only a release AppImage replaces itself — a development build, or a
+              program from a build tree, only reports. Name the file without a version
+              (<code>skimmer-headless-x86_64.AppImage</code>): it keeps its name across updates.</small>
+          </fieldset>
+        </div>
+        <details class="more">
+          <summary>Not editable here — set in the config file or by a start switch</summary>
+          <dl class="kv" id="set-ro"></dl>
+          <p class="mut note" id="set-path"></p>
+        </details>
+        <details class="more">
+          <summary>Earlier configs</summary>
+          <div class="wrap"><table class="grid" id="set-baks"></table></div>
+        </details>
+      </div>
       <div class="actions">
         <button type="submit" id="set-save" class="primary">Save and restart</button>
         <button type="button" id="set-reset">Discard changes</button>
@@ -562,21 +631,6 @@
         <span id="set-msg" class="mut"></span>
       </div>
     </form>
-    <details class="more" id="lan">
-      <summary>Skimmers on the LAN</summary>
-      <p class="mut note">Other skimmer-headless instances answer a broadcast (UDP 8075). This one is
-        <b id="lan-self"></b>. <button type="button" class="small" id="lan-find">Search</button> <span id="lan-msg" class="mut"></span></p>
-      <div class="wrap"><table class="grid" id="lan-list"></table></div>
-    </details>
-    <details class="more">
-      <summary>Not editable here — set in the config file or by a start switch</summary>
-      <dl class="kv" id="set-ro"></dl>
-      <p class="mut note" id="set-path"></p>
-    </details>
-    <details class="more">
-      <summary>Earlier configs</summary>
-      <div class="wrap"><table class="grid" id="set-baks"></table></div>
-    </details>
   </section>
 
   <section id="tab-log" hidden>

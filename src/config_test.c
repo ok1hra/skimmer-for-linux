@@ -872,6 +872,22 @@ int main(void) {
     g_string_free(ini, TRUE);
   }
 
+  printf("== [rp] in1_name, in2_name: the antennas' names\n");
+  {
+    SkimHdConfig c;
+    GError *e = NULL;
+    const gboolean ok = parse(&c, "[radio]\nhost=a\n[rp]\nin1_name =  Beverage NE \nin2_name=\n[bands]\n20m=14045500\n", &e);
+    check("IN1's name kept (trimmed), IN2 without one", ok && c.rp_in_name[0] &&
+          strcmp(c.rp_in_name[0], "Beverage NE") == 0 && !c.rp_in_name[1]);
+    if (ok) { skim_hd_config_clear(&c); }
+    g_clear_error(&e);
+    const gboolean ok2 = parse(&c, "[radio]\nhost=a\n[rp]\nin2_name=a name far longer than twenty-four characters\n"
+                               "[bands]\n20m=14045500\n", &e);
+    check("a name over 24 characters refused", !ok2 && e && strstr(e->message, "in2_name"));
+    if (ok2) { skim_hd_config_clear(&c); }
+    g_clear_error(&e);
+  }
+
   printf("\n%s (%d of %d checks failed)\n", fails ? "FAIL" : "PASS", fails, checks);
   return fails ? 1 : 0;
 }
