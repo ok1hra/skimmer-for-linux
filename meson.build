@@ -55,6 +55,7 @@ dl_dep = cc.find_library('dl', required : false)
 engine_sources = [
   'src/engine/tci_client.c',   # M1: WS client, IQ ingest, conjugate, outgoing SPOT
   'src/engine/hpsdr_p1.c',     # HPSDR Protocol 1 IQ source (Red Pitaya), no TCI
+  'src/engine/rp_stream.c',    # SKRS: every slot of the skimmer's own bitstream
   'src/engine/channelizer.c',  # M2: polyphase filter bank → complex channels
   'src/engine/fftw_lock.c',    # FFTW planner is not thread-safe: one lock
   'src/engine/decode_cw.c',    # M3: CW backend (implements decode.h)
@@ -163,6 +164,16 @@ skimmer_rp_agent_test = executable('skimmer-rp-agent-test',
   link_with : engine_lib,
 )
 test('rp-agent', skimmer_rp_agent_test, args : [skimmer_rp_host], timeout : 60)
+# SKRS (src/engine/rp_stream.c) from the agent on the skimmer's own
+# bitstream, simulated: 20 streams at every rate, a pair aligned by the
+# hardware index, beside P1, the stop and the keep-alive timeout.
+skimmer_rp_stream_test = executable('skimmer-rp-stream-test',
+  ['src/rp_stream_test.c'],
+  include_directories : include_directories('src'),
+  dependencies : engine_deps,
+  link_with : engine_lib,
+)
+test('rp-stream', skimmer_rp_stream_test, args : [skimmer_rp_host], timeout : 60)
 # … and the same on the skimmer's own bitstream (docs/FPGA.md), simulated:
 # slots, the ring, hardware indices
 test('rp-agent-skrf', skimmer_rp_agent_test, args : [skimmer_rp_host, '--sim-skrf'], timeout : 60)

@@ -463,6 +463,7 @@ int main(int argc, char **argv) {
 
   printf("status:\n");
   out = ctl("status");
+  CHECK(count_of(out, "\"overflows\":0") == 2, "no overflow on either stream so far");
   CHECK(count_of(out, "\"streaming\":true") == 2 && strstr(out, "\"rate\":384000") &&
         strstr(out, "\"receivers\":3") && strstr(out, "\"sel\":2") && strstr(out, "\"board\":\"SIM\""),
         "both streams, A 3 RX, B 384 kHz with RX2 on IN2");
