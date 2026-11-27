@@ -73,7 +73,7 @@
 #include <unistd.h>
 
 #define AGENT_MAJOR 0
-#define AGENT_MINOR 5
+#define AGENT_MINOR 6
 #define ADC_HZ      122.88e6
 #define NRX         8
 #define MODE_P1     0
@@ -93,6 +93,7 @@ typedef struct {
 } Hw;
 
 static Hw hw;
+static int skrf;                     /* the skimmer's own bitstream (FPGA.md)   */
 
 struct Inst {
   int                k;                    /* 0 = eth0 (DDC 0–7), 1 = mvl0      */
@@ -136,6 +137,9 @@ struct Inst {
   uint8_t            epoch;
   uint64_t           idx;
   uint64_t           pair_resets;
+  /* the skimmer's bitstream: where this stream reads its slots */
+  uint64_t           sk_rd;               /* the next hardware index           */
+  uint32_t           sk_gen[NRX];         /* the slots' timelines it anchored on */
   /* orphan detection */
   int64_t            unreach_first_ns, unreach_last_ns;
   uint64_t           unreach_count, orphan_stops;
@@ -162,7 +166,30 @@ static void logf_(const char *fmt, ...) {
   va_end(ap);
 }
 
+#define SK_STS_ADDR 0x41000000u      /* the skimmer's bitstream's status words */
+
+/* --fpga: which bitstream the board runs (start.sh loaded it) */
+static int fpga_opt = 0;             /* 0 auto, 1 stock, 2 skrf, 3 skrf simulated */
+
 static void hw_map(void) {
+  if (fpga_opt == 0 && !hw.sim) {    /* auto: the skimmer's bitstream says SKRF */
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) { perror("/dev/mem"); exit(1); }
+    volatile uint32_t *st = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, SK_STS_ADDR);
+    fpga_opt = st != MAP_FAILED && st[0] == 0x46524B53u ? 2 : 1;
+    if (st != MAP_FAILED) { munmap((void *)st, 4096); }
+    close(fd);
+  }
+  if (fpga_opt >= 2) {               /* registers are shadows; the slots get them */
+    for (int k = 0; k < 2; k++) {
+      Inst *in = &inst[k];
+      in->rst = &in->s_rst;
+      in->rate = &in->s_rate;
+      in->sel = &in->s_sel;
+      for (int i = 0; i < NRX; i++) { in->freq[i] = &in->s_freq[i]; }
+    }
+    return;
+  }
   if (hw.sim) {
     for (int k = 0; k < 2; k++) {
       Inst *in = &inst[k];
@@ -236,6 +263,11 @@ static void fifo_reset_bookkeeping(Inst *in, int64_t now_ns, uint64_t sim_base) 
   }
 }
 
+static uint64_t sk_anchor(Inst *in);
+static void sk_set_rd(Inst *in, uint64_t at);
+static void sk_program(void);
+static void sk_settle(Inst *in);
+
 /* The resets, and the epochs they begin. An EP6 thread reads a batch under
  * fifo_rw's read lock (both instances at once); a reset takes it for
  * writing, so it never lands inside a batch: a batch that popped samples
@@ -258,17 +290,30 @@ static Inst *partner_of(Inst *in) {
 /* A reset of in's FIFOs (a start, an overflow, a new receiver count) — and
  * its partner's in the same breath when paired: one new epoch for both. */
 static void stream_reset(Inst *in) {
+  if (skrf) { sk_settle(in); }          /* its slots on their new rate first */
   pthread_mutex_lock(&pair_lock);
   Inst *o = partner_of(in);
   pthread_rwlock_wrlock(&fifo_rw);                        /* no batch runs */
   const uint8_t e = ++pair_gen;
   const int64_t now = mono_ns();
-  uint64_t base = sim_next(in);
-  if (o && sim_next(o) > base) { base = sim_next(o); }
-  if (o) {
-    fifo_reset_pair(in, o, now, base);                    /* at once      */
+  if (skrf) {
+    /* no FIFO to reset: anchor at a common hardware index */
+    uint64_t at = sk_anchor(in);
+    if (o && sk_anchor(o) > at) { at = sk_anchor(o); }
+    sk_set_rd(in, at);
+    in->fifo_reset_ns = now;
+    if (o) {
+      sk_set_rd(o, at);
+      o->fifo_reset_ns = now;
+    }
   } else {
-    fifo_reset_at(in, now, base);
+    uint64_t base = sim_next(in);
+    if (o && sim_next(o) > base) { base = sim_next(o); }
+    if (o) {
+      fifo_reset_pair(in, o, now, base);                  /* at once      */
+    } else {
+      fifo_reset_at(in, now, base);
+    }
   }
   in->reset_epoch = e;
   __atomic_add_fetch(&in->resets, 1, __ATOMIC_SEQ_CST);
@@ -290,16 +335,14 @@ static unsigned fifo_count(Inst *in) {
   return halves >= 4095 ? 4095 : halves <= 0 ? 0 : (unsigned)halves;
 }
 
-/* A 24-bit big-endian I then Q in the first 6 bytes of the word (memory
- * order), as the bitstream's FIFO hands them and the server copies them. */
-static uint64_t sim_word(Inst *in, int rx) {
+static uint64_t sim_sample(double rate, int rx, int in2, uint64_t t) {
   /* receiver rx: a tone (rx+1) kHz above its centre at true RF, so the wire
    * (RF-inverted) carries its conjugate; IN1 −12 dBFS, IN2 −26 dBFS. Its
-   * phase is a function of the sample number (fifo_reset_at): two
-   * instances reset together give the same sample at the same index */
-  const double amp = ((*in->sel >> rx) & 1) ? 0.05 : 0.25;
-  const double rate = rate_hz(in), f = 1000.0 * (rx + 1);
-  const uint64_t t = hw.base[in->k] + hw.n[in->k][rx]++;
+   * phase is a function of the sample number t (fifo_reset_at; with
+   * --sim-skrf the hardware index): two streams of one instant give the
+   * same sample at the same index */
+  const double amp = in2 ? 0.05 : 0.25;
+  const double f = 1000.0 * (rx + 1);
   const uint64_t per = (uint64_t)llround(rate);          /* whole seconds */
   const double ph = 2 * M_PI * f * (double)(t % per) / rate;
   /* and a noise both inputs hear, a function of the sample number too
@@ -311,7 +354,7 @@ static uint64_t sim_word(Inst *in, int rx) {
   hsh ^= hsh >> 29;
   const double nr = ((double)(hsh & 0xFFFFFF) / 8388608.0 - 1.0);
   const double ni = ((double)((hsh >> 24) & 0xFFFFFF) / 8388608.0 - 1.0);
-  const double na = ((*in->sel >> rx) & 1) ? 0.005 : 0.01;
+  const double na = in2 ? 0.005 : 0.01;
   const int32_t vi = (int32_t)lrint((amp * cos(ph) + na * nr) * 8388607.0);
   const int32_t vq = (int32_t)lrint((-amp * sin(ph) + na * ni) * 8388607.0);
   uint64_t w = 0;
@@ -319,6 +362,13 @@ static uint64_t sim_word(Inst *in, int rx) {
   b[0] = (uint8_t)(vi >> 16); b[1] = (uint8_t)(vi >> 8); b[2] = (uint8_t)vi;
   b[3] = (uint8_t)(vq >> 16); b[4] = (uint8_t)(vq >> 8); b[5] = (uint8_t)vq;
   return w;
+}
+
+/* A 24-bit big-endian I then Q in the first 6 bytes of the word (memory
+ * order), as the bitstream's FIFO hands them and the server copies them. */
+static uint64_t sim_word(Inst *in, int rx) {
+  const uint64_t t = hw.base[in->k] + hw.n[in->k][rx]++;
+  return sim_sample(rate_hz(in), rx, (*in->sel >> rx) & 1, t);
 }
 
 static uint64_t fifo_read(Inst *in, int rx) {
@@ -352,6 +402,627 @@ static void fifo_read_n(Inst *in, int rx, uint64_t *out, int n) {
 }
 
 static uint32_t phase_word(uint32_t hz) { return (uint32_t)floor(hz / ADC_HZ * (1 << 30) + 0.5); }
+
+/* ---- the skimmer's own bitstream (docs/FPGA.md): slots and the ring ------------- */
+
+/* With fpga/projects/skimmer_rp_122_88 loaded, the same two P1 instances run
+ * on its slots: instance k on slots 8k … 8k+7, all at the instance's rate,
+ * each receiver's frequency and input its slot's. The FPGA writes every
+ * sample as a tagged 64-bit word into a ring in DDR; one reader thread
+ * copies the new bursts out (NEON: 245 MB/s uncached, 64-bit loads 66) and
+ * files each sample into its slot's buffer at its HARDWARE index — the
+ * stage's vector number since the sync, unwrapped. A stream reads its
+ * receivers' buffers at one index range, so they are aligned by
+ * construction, across instances too; a reset (start, overflow, a new
+ * receiver count or rate) re-anchors it — with its partner when paired —
+ * at a common index and starts a new epoch, as on the stock FIFOs. */
+
+#define SK_MAGIC     0x46524B53u       /* "SKRF" */
+#define SK_CFG       0x40000000u
+#define SK_STS       0x41000000u
+#define SK_RING      0x1E000000u
+#define SK_RING_SIZE (8u << 20)
+#define SK_BURST     128u
+#define SK_NBURSTS   (SK_RING_SIZE / SK_BURST)
+#define SK_MAX       32
+#define SK_BUF       (1u << 16)        /* a slot's buffer: 65536 samples      */
+
+typedef struct {
+  uint64_t          w[SK_BUF];         /* index i at w[i % SK_BUF]; bytes 6–7 = i's low 16 bits */
+  volatile uint64_t wr;                /* the next index to come (all below are in) */
+  volatile int      stage;             /* 0 = 384 k … 3 = 48 k; -1 = nothing yet    */
+  volatile uint32_t gen;               /* bumps when the timeline restarts          */
+} SkSlot;
+
+typedef struct {
+  int               on, sim;
+  int               nslots, version;
+  volatile uint32_t *cfg, *sts;
+  volatile uint64_t *ring;
+  uint32_t          sim_cfg[64], sim_sts[16];
+  uint64_t          *sim_ring;
+  SkSlot            *slot;
+  pthread_mutex_t   lock;              /* register writes (and the sim's packer)    */
+  uint32_t          ctrl;              /* cfg word 0 as written                     */
+  uint32_t          rd_burst;
+  uint64_t          stage_idx[4];
+  int               stage_have[4];
+  volatile uint32_t sync_gen;
+  /* what the reader saw */
+  uint64_t          words, ticks, peak_words, unknown, overruns, syncs;
+  unsigned          flags, peak1, peak2, clips;
+} Sk;
+
+static Sk sk;
+
+static const uint16_t sk_rate_reg[4] = { 160, 320, 640, 1280 };   /* stage → stock rate register */
+static int sk_stage_of(uint16_t rate_reg) {
+  for (int r = 0; r < 4; r++) {
+    if (sk_rate_reg[r] == rate_reg) { return r; }
+  }
+  return 3;
+}
+
+static void sk_burst_copy(uint64_t *dst, const volatile uint64_t *src) {
+#if defined(__arm__)
+  if (!sk.sim) {
+    __asm__ volatile("vld1.64 {d0-d3}, [%0]!\n\t"
+                     "vld1.64 {d4-d7}, [%0]!\n\t"
+                     "vld1.64 {d16-d19}, [%0]!\n\t"
+                     "vld1.64 {d20-d23}, [%0]\n\t"
+                     "vst1.64 {d0-d3}, [%1]!\n\t"
+                     "vst1.64 {d4-d7}, [%1]!\n\t"
+                     "vst1.64 {d16-d19}, [%1]!\n\t"
+                     "vst1.64 {d20-d23}, [%1]\n\t"
+                     : "+r"(src), "+r"(dst)
+                     :
+                     : "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d16", "d17", "d18", "d19",
+                       "d20", "d21", "d22", "d23", "memory");
+    return;
+  }
+#endif
+  for (unsigned k = 0; k < SK_BURST / 8; k++) { dst[k] = src[k]; }
+}
+
+/* ---- SKRS: the skimmer's own stream (docs/FPGA.md, "The ARM side") -------------
+ * P1 cannot mix rates and has 8 receivers an IP. A client that sends SKRC
+ * datagrams to port 1025 of eth0 gets up to every slot, each at its own
+ * rate, as SKRS datagrams — one slot a datagram:
+ *   SKRC: "SKRC" ver(1)=1 cmd(1): 1 = start (n(1), then n × { id(1),
+ *         hz(4, BE), rate(1: 0 = 48 … 3 = 384 k), input(1: 1|2) }),
+ *         2 = stop, 3 = keep-alive (every second; 5 s without one = stop).
+ *   SKRS: "SKRS" ver(1)=1 id(1) rate(1) flags(1: bit 0 samples lost
+ *         before this one, bit 1 IN1 clipped, bit 2 IN2 clipped — since
+ *         the last datagram of that id) epoch(4, BE: the syncs) index(8,
+ *         BE: the hardware index of the first sample) count(2, BE), then
+ *         count × 6 bytes I/Q (24-bit BE, RF-inverted as P1's).
+ * Two ids at one rate share the hardware timeline: one index is one
+ * instant (a phased pair). The slots come from 16 … N-1 first, then from
+ * an instance no P1 client streams on; while SKRS holds an instance's
+ * slots that instance answers busy and ignores a start. */
+
+#define SKRS_PORT  1025
+#define SKRS_MAXN  240                 /* samples a datagram: 22 + 1440 bytes  */
+#define SKRS_HDR   22
+
+typedef struct {
+  uint8_t  id, stage, in2;
+  uint32_t hz;
+  int      slot;
+  uint64_t rd;                         /* the next hardware index to send     */
+  uint32_t gen;
+  int      lost;
+  uint64_t packets;
+} SkrsStream;
+
+typedef struct {
+  int                sock;
+  pthread_mutex_t    lock;
+  int                on;
+  struct sockaddr_in to;
+  int64_t            last_ka_ns;
+  int                n;
+  SkrsStream         st[SK_MAX];
+  uint32_t           holds;            /* slot mask SKRS holds                */
+  uint64_t           starts, timeouts;
+} Skrs;
+
+static Skrs skrs = { .sock = -1, .lock = PTHREAD_MUTEX_INITIALIZER };
+
+/* Does SKRS hold any of instance k's slots? (that instance is busy) */
+static int skrs_holds_inst(int k) {
+  return skrf && (skrs.holds & (0xffu << (8 * k))) != 0;
+}
+
+/* Every slot's register from both instances' state and SKRS's: rate,
+ * input, frequency, on (the receivers a streaming instance reads, SKRS's
+ * streams); then one apply, so the new frequencies take effect on one
+ * clock. */
+static void sk_program(void) {
+  if (!sk.on) { return; }
+  pthread_mutex_lock(&sk.lock);
+  uint32_t ins = 0, ena = 0, mask[4] = { 0, 0, 0, 0 };
+  for (int i = 0; i < skrs.n && skrs.on; i++) {
+    const SkrsStream *x = &skrs.st[i];
+    sk.cfg[11 + x->slot] = (uint32_t)llround(x->hz / ADC_HZ * 4294967296.0);
+    ena |= 1u << x->slot;
+    mask[x->stage] |= 1u << x->slot;
+    if (x->in2) { ins |= 1u << x->slot; }
+  }
+  for (int k = 0; k < ninst; k++) {
+    Inst *in = &inst[k];
+    const int stage = sk_stage_of(*in->rate);
+    for (int r = 0; r < NRX; r++) {
+      const int s = 8 * k + r;
+      if (s >= sk.nslots || ((skrs.holds >> s) & 1)) { continue; }
+      sk.cfg[11 + s] = (uint32_t)llround(in->freq_hz[r] / ADC_HZ * 4294967296.0);
+      if (!in->active || r >= in->receivers) { continue; }
+      ena |= 1u << s;
+      mask[stage] |= 1u << s;
+      if ((*in->sel >> r) & 1) { ins |= 1u << s; }
+    }
+  }
+  sk.cfg[1] = ins;
+  sk.cfg[2] = ena;
+  for (int r = 0; r < 4; r++) { sk.cfg[3 + r] = mask[r]; }
+  sk.cfg[0] = sk.ctrl | 2u;          /* apply: the rising edge */
+  sk.cfg[0] = sk.ctrl;
+  pthread_mutex_unlock(&sk.lock);
+}
+
+/* The sync: every NCO, CIC, filter and the packer held and released, the
+ * DMA writer back to the ring's start. Every slot's timeline restarts. */
+static void sk_sync(void) {
+  pthread_mutex_lock(&sk.lock);
+  sk.cfg[0] = sk.ctrl = 0;
+  usleep(1000);
+  if (sk.sim) {
+    memset(sk.sim_ring, 0, SK_RING_SIZE);
+    sk.sim_sts[2] = 0;
+  } else {
+    for (uint32_t i = 0; i < SK_RING_SIZE / 8; i++) { sk.ring[i] = 0; }
+  }
+  sk.cfg[7] = 0;                      /* unity gain: stock's levels (FPGA.md)   */
+  sk.cfg[8] = SK_RING;
+  sk.rd_burst = 0;
+  memset(sk.stage_idx, 0, sizeof(sk.stage_idx));
+  memset(sk.stage_have, 0, sizeof(sk.stage_have));
+  for (int s = 0; s < sk.nslots; s++) {
+    sk.slot[s].stage = -1;
+    sk.slot[s].wr = 0;
+    __atomic_add_fetch(&sk.slot[s].gen, 1, __ATOMIC_SEQ_CST);
+  }
+  sk.cfg[0] = sk.ctrl = 4u;           /* DMA on (non-cacheable: /dev/mem)       */
+  usleep(1000);
+  sk.cfg[0] = sk.ctrl = 5u;           /* run: the sync                          */
+  sk.syncs++;
+  __atomic_add_fetch(&sk.sync_gen, 1, __ATOMIC_SEQ_CST);
+  pthread_mutex_unlock(&sk.lock);
+}
+
+/* One word from the ring. */
+static void sk_word(uint64_t w) {
+  const unsigned tag = (unsigned)(w >> 56);
+  if ((tag >> 6) == 1) {
+    const unsigned s = (unsigned)(w >> 48) & 0x1f, r = (tag >> 4) & 3;
+    const unsigned vc = (tag & 0xf) | (unsigned)((w >> 53) & 7) << 4;
+    if (s >= (unsigned)sk.nslots) { sk.unknown++; return; }
+    uint64_t full;
+    if (!sk.stage_have[r]) {
+      full = vc;
+      sk.stage_have[r] = 1;
+    } else {
+      full = sk.stage_idx[r] + ((vc - (unsigned)sk.stage_idx[r]) & 127u);
+    }
+    sk.stage_idx[r] = full;
+    SkSlot *x = &sk.slot[s];
+    if (x->stage != (int)r) {         /* a new rate: a new timeline             */
+      x->stage = (int)r;
+      x->wr = full;
+      __atomic_add_fetch(&x->gen, 1, __ATOMIC_SEQ_CST);
+    }
+    x->w[full % SK_BUF] = (w & 0x0000ffffffffffffull) | (full & 0xffff) << 48;
+    if (full >= x->wr) { __atomic_store_n(&x->wr, full + 1, __ATOMIC_RELEASE); }
+    sk.words++;
+  } else if (tag == 0xff) {
+    sk.ticks++;
+    sk.flags |= (unsigned)(w >> 48) & 0xff;
+  } else if (tag == 0xfe) {
+    sk.peak_words++;
+    sk.peak1 = (unsigned)((w & 0xff) << 8 | ((w >> 8) & 0xff));
+    sk.peak2 = (unsigned)(((w >> 16) & 0xff) << 8 | ((w >> 24) & 0xff));
+    sk.clips |= (unsigned)(w >> 32) & 3;
+    sk.flags |= (unsigned)(w >> 48) & 0xff;
+  } else {
+    sk.unknown++;
+  }
+}
+
+static void *sk_reader(void *arg) {
+  (void)arg;
+  uint64_t b[SK_BURST / 8] __attribute__((aligned(16)));
+  for (;;) {
+    const uint32_t wr = (sk.sim ? sk.sim_sts[2] : sk.sts[2]) & 0xffff;
+    /* the writer's counter moves at the address phase: the last two bursts
+       may still be in flight */
+    uint32_t avail = (wr - sk.rd_burst - 2) & (SK_NBURSTS - 1);
+    if (avail > SK_NBURSTS - 512) {
+      if (avail < SK_NBURSTS - 2) {   /* not "just behind": it lapped us       */
+        sk.overruns++;
+        logf_("the ring ran over (the reader fell 8 MB behind) — a new sync");
+        sk_sync();
+      }
+      usleep(500);
+      continue;
+    }
+    if (!avail) { usleep(1000); continue; }
+    while (avail--) {
+      sk_burst_copy(b, (sk.sim ? (volatile uint64_t *)sk.sim_ring : sk.ring) + sk.rd_burst * (SK_BURST / 8));
+      for (unsigned k = 0; k < SK_BURST / 8; k++) { sk_word(b[k]); }
+      sk.rd_burst = (sk.rd_burst + 1) & (SK_NBURSTS - 1);
+    }
+  }
+  return NULL;
+}
+
+/* --sim-skrf: the FPGA's packer as a thread — every stage's vectors at its
+ * rate, the slots in its mask as words (the stock sim's tone and noise, a
+ * function of the hardware index), tick and peak words, 128-byte bursts. */
+static uint64_t sim_sample(double rate, int rx, int in2, uint64_t t);
+
+static void *sk_sim_thread(void *arg) {
+  (void)arg;
+  uint32_t seen = 0;
+  double t0 = 0;
+  uint64_t v[4] = { 0, 0, 0, 0 }, ticks = 0;
+  uint64_t burst[SK_BURST / 8];
+  unsigned nb = 0;
+  for (;;) {
+    usleep(1000);
+    pthread_mutex_lock(&sk.lock);
+    const uint32_t g = __atomic_load_n(&sk.sync_gen, __ATOMIC_SEQ_CST);
+    if (g != seen) {                  /* a sync: the packer starts over         */
+      seen = g;
+      t0 = mono_ns() * 1e-9;
+      memset(v, 0, sizeof(v));
+      ticks = 0;
+      nb = 0;
+    }
+    if (!(sk.sim_cfg[0] & 1)) { pthread_mutex_unlock(&sk.lock); continue; }
+    const double t = mono_ns() * 1e-9 - t0;
+    for (int r = 0; r < 4; r++) {
+      const double rate = 384000.0 / (1 << r);
+      const uint64_t want = (uint64_t)(t * rate);
+      for (; v[r] < want; v[r]++) {
+        const uint32_t mask = sk.sim_cfg[3 + r], ins = sk.sim_cfg[1];
+        for (int s = 0; s < sk.nslots; s++) {
+          if (!((mask >> s) & 1)) { continue; }
+          const uint64_t p = sim_sample(rate, s % 8, (ins >> s) & 1, v[r]);
+          const unsigned vc = (unsigned)(v[r] & 127);
+          burst[nb++] = p | (uint64_t)((1u << 6) | ((unsigned)r << 4) | (vc & 15)) << 56 |
+                        (uint64_t)(((vc >> 4) << 5) | (unsigned)s) << 48;
+          if (nb == SK_BURST / 8) {
+            const uint32_t at = sk.sim_sts[2] & (SK_NBURSTS - 1);
+            memcpy(sk.sim_ring + at * (SK_BURST / 8), burst, SK_BURST);
+            __atomic_store_n(&sk.sim_sts[2], (at + 1) & 0xffff, __ATOMIC_RELEASE);
+            nb = 0;
+          }
+        }
+        if (r == 3) {
+          ticks++;
+          burst[nb++] = 0xffull << 56 | ((ticks >> 40) & 0xff) | ((ticks >> 32) & 0xff) << 8 |
+                        ((ticks >> 24) & 0xff) << 16 | ((ticks >> 16) & 0xff) << 24 |
+                        ((ticks >> 8) & 0xff) << 32 | (ticks & 0xff) << 40;
+          if (nb == SK_BURST / 8) {
+            const uint32_t at = sk.sim_sts[2] & (SK_NBURSTS - 1);
+            memcpy(sk.sim_ring + at * (SK_BURST / 8), burst, SK_BURST);
+            __atomic_store_n(&sk.sim_sts[2], (at + 1) & 0xffff, __ATOMIC_RELEASE);
+            nb = 0;
+          }
+        }
+      }
+    }
+    pthread_mutex_unlock(&sk.lock);
+  }
+  return NULL;
+}
+
+static void sk_init(int sim) {
+  sk.on = skrf = 1;
+  sk.sim = sim;
+  pthread_mutex_init(&sk.lock, NULL);
+  if (sim) {
+    sk.cfg = sk.sim_cfg;
+    sk.sts = sk.sim_sts;
+    sk.sim_ring = calloc(1, SK_RING_SIZE);
+    sk.ring = sk.sim_ring;
+    sk.sim_sts[0] = SK_MAGIC;
+    sk.sim_sts[1] = 24u << 24 | 24u << 16 | 3u;
+  } else {
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) { perror("/dev/mem"); exit(1); }
+    sk.cfg = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, SK_CFG);
+    sk.sts = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, SK_STS);
+    sk.ring = mmap(NULL, SK_RING_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, SK_RING);
+    close(fd);
+    if (sk.cfg == MAP_FAILED || sk.sts == MAP_FAILED || sk.ring == MAP_FAILED) { perror("mmap skrf"); exit(1); }
+    if (sk.sts[0] != SK_MAGIC) {
+      logf_("--fpga skrf, but the FPGA does not say SKRF (%08x)", sk.sts[0]);
+      exit(1);
+    }
+  }
+  sk.nslots = (int)(sk.sts[1] >> 24);
+  sk.version = (int)(sk.sts[1] & 0xffff);
+  if (sk.nslots > SK_MAX) { sk.nslots = SK_MAX; }
+  sk.slot = calloc((size_t)sk.nslots, sizeof(SkSlot));
+  if (!sk.slot || (sim && !sk.sim_ring)) { perror("calloc"); exit(1); }
+  for (int s = 0; s < sk.nslots; s++) { sk.cfg[11 + s] = 0; }
+  sk_sync();
+  pthread_t t;
+  if (pthread_create(&t, NULL, sk_reader, NULL) == 0) { pthread_detach(t); }
+  if (sim && pthread_create(&t, NULL, sk_sim_thread, NULL) == 0) { pthread_detach(t); }
+}
+
+/* An instance's receivers' buffers: the samples every one of them has from
+ * in->sk_rd on (avail), or -1 when one of them restarted its timeline (a
+ * new rate, a sync) or fell a buffer behind (an overflow): reset. */
+static int sk_avail(Inst *in, int receivers, uint64_t *avail) {
+  const int stage = sk_stage_of(*in->rate);
+  uint64_t a = UINT64_MAX;
+  for (int r = 0; r < receivers; r++) {
+    SkSlot *x = &sk.slot[8 * in->k + r];
+    if (x->stage != stage) { *avail = 0; return 0; }   /* not at this rate yet */
+    if (x->gen != in->sk_gen[r]) { return -2; }
+    const uint64_t w = __atomic_load_n(&x->wr, __ATOMIC_ACQUIRE);
+    const uint64_t have = w > in->sk_rd ? w - in->sk_rd : 0;
+    if (have > SK_BUF - 8192) { return -1; }
+    if (have < a) { a = have; }
+  }
+  *avail = a == UINT64_MAX ? 0 : a;
+  return 0;
+}
+
+/* A reset right after a new rate or receiver count waits (≤ 100 ms) for its
+ * slots' first words at that rate: anchored before, the stream would only
+ * meet the new timeline later and reset again. */
+static void sk_settle(Inst *in) {
+  const int stage = sk_stage_of(*in->rate);
+  for (int tries = 0; tries < 200; tries++) {
+    int ok = 1;
+    for (int r = 0; r < in->receivers && ok; r++) {
+      ok = sk.slot[8 * in->k + r].stage == stage && sk.slot[8 * in->k + r].wr > 0;
+    }
+    if (ok) { return; }
+    usleep(500);
+  }
+}
+
+/* The common index a reset anchors at: past every receiver's newest sample. */
+static uint64_t sk_anchor(Inst *in) {
+  uint64_t a = 0;
+  for (int r = 0; r < in->receivers; r++) {
+    const SkSlot *x = &sk.slot[8 * in->k + r];
+    if (x->wr > a) { a = x->wr; }
+  }
+  return a;
+}
+
+static void sk_set_rd(Inst *in, uint64_t at) {
+  in->sk_rd = at;
+  for (int r = 0; r < NRX; r++) {
+    if (8 * in->k + r < sk.nslots) { in->sk_gen[r] = sk.slot[8 * in->k + r].gen; }
+  }
+}
+
+static void skrs_stop_locked(const char *why) {
+  if (!skrs.on) { return; }
+  char a[32];
+  inet_ntop(AF_INET, &skrs.to.sin_addr, a, sizeof(a));
+  logf_("SKRS: %s:%u's %d streams stopped (%s)", a, ntohs(skrs.to.sin_port), skrs.n, why);
+  skrs.on = 0;
+  skrs.n = 0;
+  skrs.holds = 0;
+}
+
+/* A start: the slots for n streams, or 0 when they do not fit. */
+static int skrs_start_locked(const struct sockaddr_in *from, const uint8_t *b, ssize_t len) {
+  const int n = b[6];
+  if (n < 1 || n > sk.nslots || len < 7 + 7 * n) { return 0; }
+  /* free slots: 16 … first, then an idle instance's */
+  int order[SK_MAX], no = 0;
+  for (int sl = 16; sl < sk.nslots; sl++) { order[no++] = sl; }
+  for (int k = 0; k < ninst; k++) {
+    if (inst[k].active) { continue; }
+    for (int r = 0; r < NRX && 8 * k + r < sk.nslots; r++) { order[no++] = 8 * k + r; }
+  }
+  if (ninst < 2) {
+    for (int r = 0; r < NRX && 8 + r < sk.nslots; r++) { order[no++] = 8 + r; }
+  }
+  if (no < n) { return 0; }
+  skrs.to = *from;
+  skrs.n = n;
+  skrs.holds = 0;
+  for (int i = 0; i < n; i++) {
+    const uint8_t *e = b + 7 + 7 * i;
+    SkrsStream *x = &skrs.st[i];
+    memset(x, 0, sizeof(*x));
+    x->id = e[0];
+    x->hz = (uint32_t)e[1] << 24 | (uint32_t)e[2] << 16 | (uint32_t)e[3] << 8 | e[4];
+    if (x->hz > 61440000u) { x->hz = 61440000u; }
+    x->stage = (uint8_t)(3 - (e[5] & 3));      /* 0 = 48 k on the wire, stage 3 */
+    x->in2 = e[6] == 2;
+    x->slot = order[i];
+    x->rd = 0;
+    x->gen = 0;
+    skrs.holds |= 1u << x->slot;
+  }
+  skrs.on = 1;
+  skrs.last_ka_ns = mono_ns();
+  skrs.starts++;
+  char a[32];
+  inet_ntop(AF_INET, &from->sin_addr, a, sizeof(a));
+  logf_("SKRS: %d streams to %s:%u", n, a, ntohs(from->sin_port));
+  return 1;
+}
+
+/* The control socket: starts, stops, keep-alives; the 5-s timeout. */
+static void *skrs_ctl_thread(void *arg) {
+  (void)arg;
+  for (;;) {
+    struct pollfd p = { .fd = skrs.sock, .events = POLLIN };
+    const int pr = poll(&p, 1, 500);
+    pthread_mutex_lock(&skrs.lock);
+    if (skrs.on && mono_ns() - skrs.last_ka_ns > 5000000000LL) {
+      skrs.timeouts++;
+      skrs_stop_locked("no keep-alive for 5 s");
+      pthread_mutex_unlock(&skrs.lock);
+      sk_program();
+      continue;
+    }
+    pthread_mutex_unlock(&skrs.lock);
+    if (pr <= 0 || !(p.revents & POLLIN)) { continue; }
+    uint8_t b[512];
+    struct sockaddr_in from;
+    socklen_t fl = sizeof(from);
+    const ssize_t len = recvfrom(skrs.sock, b, sizeof(b), MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
+    if (len < 6 || memcmp(b, "SKRC", 4) != 0 || b[4] != 1) { continue; }
+    int changed = 0;
+    pthread_mutex_lock(&skrs.lock);
+    const int same = skrs.on && from.sin_addr.s_addr == skrs.to.sin_addr.s_addr &&
+                     from.sin_port == skrs.to.sin_port;
+    if (b[5] == 1) {                     /* start (or a new set from the same client) */
+      if (skrs.on && !same) {
+        /* one SKRS client at a time: a second one is refused (no reply) */
+      } else {
+        skrs_stop_locked("a new start");
+        uint8_t ack[8] = { 'S', 'K', 'R', 'C', 1, 0x81, 0, 0 };
+        ack[6] = (uint8_t)skrs_start_locked(&from, b, len);
+        sendto(skrs.sock, ack, sizeof(ack), 0, (struct sockaddr *)&from, fl);
+        changed = 1;
+      }
+    } else if (b[5] == 2 && same) {
+      skrs_stop_locked("the client's stop");
+      changed = 1;
+    } else if (b[5] == 3 && same) {
+      skrs.last_ka_ns = mono_ns();
+    }
+    pthread_mutex_unlock(&skrs.lock);
+    if (changed) { sk_program(); }
+  }
+  return NULL;
+}
+
+/* The sender: every stream's new samples, SKRS_MAXN a datagram, a slot's
+ * datagrams of one round in one GSO send. */
+static void *skrs_send_thread(void *arg) {
+  (void)arg;
+  static uint8_t buf[8 * (SKRS_HDR + 6 * SKRS_MAXN)];
+  const size_t dsize = SKRS_HDR + 6 * SKRS_MAXN;
+  for (;;) {
+    int sent_any = 0;
+    pthread_mutex_lock(&skrs.lock);
+    for (int i = 0; i < skrs.n && skrs.on; i++) {
+      SkrsStream *x = &skrs.st[i];
+      SkSlot *sl = &sk.slot[x->slot];
+      if (sl->stage != x->stage || sl->wr == 0) { continue; }      /* not yet at its rate */
+      if (sl->gen != x->gen) {                       /* (re)anchor on its timeline */
+        x->gen = sl->gen;
+        x->rd = sl->wr;
+        continue;
+      }
+      const uint64_t wr = __atomic_load_n(&sl->wr, __ATOMIC_ACQUIRE);
+      uint64_t have = wr > x->rd ? wr - x->rd : 0;
+      if (have > SK_BUF - 8192) {                    /* fell behind: skip ahead */
+        x->rd = wr - 4096;
+        x->lost = 1;
+        have = 4096;
+      }
+      int m = 0;
+      while (have >= SKRS_MAXN && m < 8) {
+        uint8_t *d = buf + (size_t)m * dsize;
+        memcpy(d, "SKRS", 4);
+        d[4] = 1;
+        d[5] = x->id;
+        d[6] = (uint8_t)(3 - x->stage);
+        d[7] = (uint8_t)((x->lost ? 1 : 0) | ((sk.flags >> 1) & 3) << 1);
+        x->lost = 0;
+        const uint32_t ep = sk.sync_gen;
+        d[8] = (uint8_t)(ep >> 24); d[9] = (uint8_t)(ep >> 16); d[10] = (uint8_t)(ep >> 8); d[11] = (uint8_t)ep;
+        for (int b = 0; b < 8; b++) { d[12 + b] = (uint8_t)(x->rd >> (56 - 8 * b)); }
+        d[20] = SKRS_MAXN >> 8;
+        d[21] = SKRS_MAXN & 0xff;
+        uint8_t *q = d + SKRS_HDR;
+        for (int k = 0; k < SKRS_MAXN; k++, q += 6) {
+          const uint64_t idx = x->rd + (uint64_t)k;
+          const uint64_t w = sl->w[idx % SK_BUF];
+          if ((w >> 48) == (idx & 0xffff)) { memcpy(q, &w, 6); } else { memset(q, 0, 6); }
+        }
+        x->rd += SKRS_MAXN;
+        have -= SKRS_MAXN;
+        m++;
+      }
+      if (!m) { continue; }
+      struct sockaddr_in to = skrs.to;
+      int done = 0;
+      if (use_gso && m > 1) {
+        char cbuf[CMSG_SPACE(sizeof(uint16_t))];
+        memset(cbuf, 0, sizeof(cbuf));
+        struct iovec iov = { buf, (size_t)m * dsize };
+        struct msghdr mh = { .msg_name = &to, .msg_namelen = sizeof(to), .msg_iov = &iov, .msg_iovlen = 1,
+                             .msg_control = cbuf, .msg_controllen = sizeof(cbuf) };
+        struct cmsghdr *cm = CMSG_FIRSTHDR(&mh);
+        cm->cmsg_level = SOL_UDP;
+        cm->cmsg_type = UDP_SEGMENT;
+        cm->cmsg_len = CMSG_LEN(sizeof(uint16_t));
+        const uint16_t seg = (uint16_t)dsize;
+        memcpy(CMSG_DATA(cm), &seg, sizeof(seg));
+        done = sendmsg(skrs.sock, &mh, 0) >= 0;
+      }
+      for (int k = 0; !done && k < m; k++) {
+        sendto(skrs.sock, buf + (size_t)k * dsize, dsize, 0, (struct sockaddr *)&to, sizeof(to));
+      }
+      x->packets += (uint64_t)m;
+      sent_any = 1;
+    }
+    pthread_mutex_unlock(&skrs.lock);
+    if (!sent_any) { usleep(1000); }
+  }
+  return NULL;
+}
+
+static void skrs_init(const Inst *a) {
+  skrs.sock = socket(AF_INET, SOCK_DGRAM, 0);
+  if (skrs.sock < 0) { perror("socket"); return; }
+  int yes = 1, big = 4 << 20;
+  setsockopt(skrs.sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  setsockopt(skrs.sock, SOL_SOCKET, SO_SNDBUF, &big, sizeof(big));
+  struct sockaddr_in b = a->bind_addr;
+  b.sin_port = htons((uint16_t)(ntohs(a->bind_addr.sin_port) + 1));     /* 1025 beside 1024 */
+  if (a->ifname[0]) {
+    setsockopt(skrs.sock, SOL_SOCKET, SO_BINDTODEVICE, a->ifname, strlen(a->ifname) + 1);
+  }
+  if (bind(skrs.sock, (struct sockaddr *)&b, sizeof(b)) < 0) {
+    perror("SKRS bind");
+    close(skrs.sock);
+    skrs.sock = -1;
+    return;
+  }
+  pthread_t t;
+  if (pthread_create(&t, NULL, skrs_ctl_thread, NULL) == 0) { pthread_detach(t); }
+  if (pthread_create(&t, NULL, skrs_send_thread, NULL) == 0) { pthread_detach(t); }
+}
+
+/* n samples of receiver r from in->sk_rd on, as the stock FIFO's words (the
+ * first 6 bytes I then Q, big-endian 24 bits); a sample the ring lost is 0. */
+static void sk_read(Inst *in, int r, uint64_t *out, int n) {
+  const SkSlot *x = &sk.slot[8 * in->k + r];
+  for (int k = 0; k < n; k++) {
+    const uint64_t i = in->sk_rd + (uint64_t)k;
+    const uint64_t w = x->w[i % SK_BUF];
+    out[k] = (w >> 48) == (i & 0xffff) ? w : 0;
+  }
+}
+
 
 /* ---- EP6: the stream ----------------------------------------------------------- */
 
@@ -398,6 +1069,7 @@ static void *ep6_thread(void *arg) {
   memcpy(CMSG_DATA(cm), &seg, sizeof(seg));
   int header_offset = 0;
   in->seq = 0;
+  sk_program();                                  /* its slots on (skrf)     */
   stream_reset(in);
   int was = in->receivers;
   const int marked = in->marked;
@@ -414,9 +1086,44 @@ static void *ep6_thread(void *arg) {
      * own — F0: that stalls nobody); a new count realigns them all */
     if (receivers != was) {
       was = receivers;
+      sk_program();
       stream_reset(in);
       continue;
     }
+    if (skrf) {
+      pthread_rwlock_rdlock(&fifo_rw);
+      if (__atomic_load_n(&in->resets, __ATOMIC_SEQ_CST) != in->seen_resets) {
+        pthread_rwlock_unlock(&fifo_rw);
+        continue;
+      }
+      uint64_t avail = 0;
+      int st = sk_avail(in, receivers, &avail);
+      if (hw.force_overflow[in->k]) {
+        hw.force_overflow[in->k] = 0;
+        st = -1;
+      }
+      if (st < 0) {                    /* fell a buffer behind, or a new timeline */
+        pthread_rwlock_unlock(&fifo_rw);
+        if (st == -1) {
+          in->overflows++;
+          logf_("%s: overflow — RX1's slot %d at %llu, the stream at %llu (%d receivers)", in->name,
+                8 * in->k, (unsigned long long)sk.slot[8 * in->k].wr, (unsigned long long)in->sk_rd,
+                receivers);
+        }
+        stream_reset(in);
+        continue;
+      }
+      const uint64_t need = (uint64_t)(m * n * 2);
+      if (avail < need) {
+        pthread_rwlock_unlock(&fifo_rw);
+        long us = (long)((double)(need - avail) * 1e6 / rate_hz(in));
+        usleep((useconds_t)(us < 200 ? 200 : us > 20000 ? 20000 : us));
+        continue;
+      }
+      for (int r = 0; r < receivers; r++) { sk_read(in, r, data[r], m * n * 2); }
+      in->sk_rd += need;
+      pthread_rwlock_unlock(&fifo_rw);
+    } else {
     pthread_rwlock_rdlock(&fifo_rw);
     if (__atomic_load_n(&in->resets, __ATOMIC_SEQ_CST) != in->seen_resets) {
       pthread_rwlock_unlock(&fifo_rw);           /* reset meanwhile: adopt it */
@@ -440,6 +1147,7 @@ static void *ep6_thread(void *arg) {
     for (int r = 0; r < receivers; r++) { fifo_read_n(in, r, data[r], m * n * 2); }
     if (hw.sim) { hw.taken[in->k] += (uint64_t)(m * n * 2); }
     pthread_rwlock_unlock(&fifo_rw);
+    }
     for (int i = 0; i < m; i++) {
       const uint32_t be = htonl(in->seq++);
       memcpy(buffer + i * 1032 + 4, &be, 4);
@@ -498,6 +1206,7 @@ static void stream_stop(Inst *in) {
     in->paired = 0;
     *in->sel = in->base_sel;
   }
+  sk_program();                     /* its slots off (skrf)                     */
 }
 
 static void stream_start(Inst *in, const struct sockaddr_in *from, int marked, int paired) {
@@ -535,6 +1244,7 @@ static void adc_word(Inst *in, const uint8_t *f, const struct sockaddr_in *from)
   if (in->active && in->marked && from->sin_addr.s_addr == in->client.sin_addr.s_addr &&
       from->sin_port == in->client.sin_port) {
     *in->sel = sel;
+    sk_program();
   }
 }
 
@@ -566,7 +1276,9 @@ static void ep2_frame(Inst *in, const uint8_t *f, const struct sockaddr_in *from
   if (f[0] == 0 || f[0] == 1) {
     in->receivers = ((f[4] >> 3) & 7) + 1;
     static const uint16_t reg[4] = { 1280, 640, 320, 160 };
+    const uint16_t was = *in->rate;
     *in->rate = reg[f[1] & 3];
+    if (skrf && *in->rate != was) { sk_program(); }   /* its slots to that stage */
     return;
   }
   if (f[0] >= 38 || !rx_of[f[0]]) { return; }
@@ -575,8 +1287,10 @@ static void ep2_frame(Inst *in, const uint8_t *f, const struct sockaddr_in *from
   hz = ntohl(hz);
   if (hz > 61440000u) { return; }
   const int rx = rx_of[f[0]] - 1;
+  const uint32_t was = in->freq_hz[rx];
   in->freq_hz[rx] = hz;
   *in->freq[rx] = phase_word(hz);
+  if (skrf && hz != was) { sk_program(); }
 }
 
 /* An ICMP error queued on the socket: port unreachable from our client
@@ -681,7 +1395,7 @@ static void *server_thread(void *arg) {
       uint8_t out[60];
       memset(out, 0, sizeof(out));
       memcpy(out, reply, 20);
-      out[2] = (uint8_t)(2 + (in->active ? 1 : 0));
+      out[2] = (uint8_t)(2 + (in->active || skrs_holds_inst(in->k) ? 1 : 0));
       if (n >= 8 && memcmp(buf + 4, "SKRP", 4) == 0) {   /* our client asks (byte 3 stays 0: it is part of the command) */
         memcpy(out + 0x14, "SKRP", 4);
         out[0x18] = AGENT_MAJOR;
@@ -692,6 +1406,13 @@ static void *server_thread(void *arg) {
         if (ninst > 1) {                         /* the other instance's IPv4 */
           const uint32_t peer = inst_ipv4(&inst[1 - in->k]);
           memcpy(out + 0x1D, &peer, 4);
+        }
+        /* the skimmer's bitstream: its slots, and SKRS's port (FPGA.md) */
+        out[0x21] = skrf ? (uint8_t)sk.nslots : 0;
+        if (skrf && skrs.sock >= 0) {
+          const uint16_t sp = (uint16_t)(ntohs(in->bind_addr.sin_port) + 1);
+          out[0x22] = (uint8_t)(sp >> 8);
+          out[0x23] = (uint8_t)sp;
         }
       }
       sendto(in->sock, out, sizeof(out), 0, (struct sockaddr *)&from, fl);
@@ -705,10 +1426,12 @@ static void *server_thread(void *arg) {
     case 0x0304feef: {
       /* marked: "SKRP" in bytes 4–7; paired: byte 8 bit 0 (docs/PHASING.md) */
       const int mk = n >= 8 && memcmp(buf + 4, "SKRP", 4) == 0;
+      if (skrs_holds_inst(in->k)) { break; }     /* its slots stream as SKRS */
       stream_start(in, &from, mk, mk && n >= 9 && (buf[8] & 1));
       if (in->marked && in->adc_have && in->adc_from.sin_addr.s_addr == from.sin_addr.s_addr &&
           in->adc_from.sin_port == from.sin_port) {
         *in->sel = in->adc_sel;
+        sk_program();
       }
       break;
     }
@@ -751,7 +1474,7 @@ static double fpga_temp(void) {
 
 /* hw_rev=… from the board's EEPROM (the factory environment at 0x1800). */
 static void board_rev(char *out, size_t room) {
-  snprintf(out, room, "%s", hw.sim ? "SIM" : "?");
+  snprintf(out, room, "%s", hw.sim || sk.sim ? "SIM" : "?");
   int fd = open("/sys/bus/i2c/devices/0-0050/eeprom", O_RDONLY);
   if (fd < 0) { return; }
   char env[1024];
@@ -799,7 +1522,29 @@ static void status_json(FILE *f) {
   fprintf(f, "{\"agent\":\"%d.%d\",\"read_mode\":%d,\"gso\":%s,\"board\":", AGENT_MAJOR, AGENT_MINOR,
           read_mode, use_gso ? "true" : "false");
   json_str(f, rev);
-  fprintf(f, ",\"mode\":\"p1\",\"sim\":%s", hw.sim ? "true" : "false");
+  fprintf(f, ",\"mode\":\"p1\",\"sim\":%s", hw.sim || sk.sim ? "true" : "false");
+  if (skrf) {
+    fprintf(f, ",\"fpga\":{\"bitstream\":\"skrf\",\"version\":\"%d.%d\",\"slots\":%d,\"ticks\":%llu,"
+               "\"words\":%llu,\"unknown\":%llu,\"overruns\":%llu,\"syncs\":%llu,\"flags\":%u,"
+               "\"peak_in1\":%u,\"peak_in2\":%u,\"clips\":%u}",
+            (sk.version >> 8) & 0xff, sk.version & 0xff, sk.nslots, (unsigned long long)sk.ticks,
+            (unsigned long long)sk.words, (unsigned long long)sk.unknown, (unsigned long long)sk.overruns,
+            (unsigned long long)sk.syncs, sk.flags, sk.peak1, sk.peak2, sk.clips);
+    pthread_mutex_lock(&skrs.lock);
+    char a[32] = "";
+    if (skrs.on) { inet_ntop(AF_INET, &skrs.to.sin_addr, a, sizeof(a)); }
+    fprintf(f, ",\"skrs\":{\"streaming\":%s,\"client\":\"%s\",\"starts\":%llu,\"timeouts\":%llu,\"streams\":[",
+            skrs.on ? "true" : "false", a, (unsigned long long)skrs.starts, (unsigned long long)skrs.timeouts);
+    for (int i = 0; i < skrs.n && skrs.on; i++) {
+      const SkrsStream *x = &skrs.st[i];
+      fprintf(f, "%s{\"id\":%u,\"slot\":%d,\"hz\":%u,\"rate\":%u,\"input\":%d,\"packets\":%llu}", i ? "," : "",
+              x->id, x->slot, x->hz, 384000u >> x->stage, x->in2 ? 2 : 1, (unsigned long long)x->packets);
+    }
+    fprintf(f, "]}");
+    pthread_mutex_unlock(&skrs.lock);
+  } else {
+    fprintf(f, ",\"fpga\":{\"bitstream\":\"stock\"}");
+  }
   if (isnan(t)) { fprintf(f, ",\"fpga_c\":null"); } else { fprintf(f, ",\"fpga_c\":%.1f", t); }
   fprintf(f, ",\"load\":[%.2f,%.2f,%.2f],\"uptime_s\":%.0f,\"mem_kb\":%ld,\"mem_avail_kb\":%ld",
           l1, l5, l15, up, mem_total, mem_avail);
@@ -861,9 +1606,10 @@ static void ctl_handle(int c) {
     Inst *in = &inst[which == 'b'];
     *in->sel = (uint8_t)mask;          /* the manager's word: live, and the base */
     in->base_sel = (uint8_t)mask;
+    sk_program();
     logf_("%s: inputs 0x%02x (bit = receiver on IN2)", in->name, mask);
     fprintf(f, "ok\n");
-  } else if (hw.sim && sscanf(line, "sim-overflow %c", &which) == 1 &&
+  } else if ((hw.sim || sk.sim) && sscanf(line, "sim-overflow %c", &which) == 1 &&
              (which == 'a' || (which == 'b' && ninst > 1))) {
     hw.force_overflow[which == 'b'] = 1;   /* --sim: as if its FIFO ran over */
     fprintf(f, "ok\n");
@@ -943,8 +1689,9 @@ static void parse_bind(Inst *in, const char *spec) {
 
 static void usage(void) {
   fprintf(stderr,
-          "skimmer-rp serve [--sim] [--bind A[,B]] [--sel A,B] [--ctl PATH] [--orphan-s N]\n"
-          "                 [--read 0|2] [--gso 0|1]\n"
+          "skimmer-rp serve [--sim | --sim-skrf] [--fpga auto|stock|skrf] [--bind A[,B]] [--sel A,B]\n"
+          "                 [--ctl PATH] [--orphan-s N] [--read 0|2] [--gso 0|1]\n"
+          "   --fpga: the bitstream start.sh loaded (auto: SKRF in its status word = the skimmer's)\n"
           "   --read 0: one 64-bit load a sample (default 2: NEON, 4 a load); --gso 0: no UDP GSO\n"
           "   A, B: an interface (eth0, mvl0 — port 1024) or addr:port (--sim)\n"
           "   --sel: each instance's input mask (bit r set = receiver r on IN2)\n"
@@ -968,6 +1715,12 @@ int main(int argc, char **argv) {
   unsigned sel[2] = { 0, 0 };
   for (int i = 2; i < argc; i++) {
     if (strcmp(argv[i], "--sim") == 0) { hw.sim = 1; }
+    else if (strcmp(argv[i], "--sim-skrf") == 0) { fpga_opt = 3; }
+    else if (strcmp(argv[i], "--fpga") == 0 && i + 1 < argc) {
+      const char *v = argv[++i];
+      fpga_opt = !strcmp(v, "stock") ? 1 : !strcmp(v, "skrf") ? 2 : !strcmp(v, "auto") ? 0 : -1;
+      if (fpga_opt < 0) { usage(); }
+    }
     else if (strcmp(argv[i], "--bind") == 0 && i + 1 < argc) { binds = argv[++i]; }
     else if (strcmp(argv[i], "--read") == 0 && i + 1 < argc) { read_mode = atoi(argv[++i]) == 2 ? 2 : 0; }
     else if (strcmp(argv[i], "--gso") == 0 && i + 1 < argc) { use_gso = atoi(argv[++i]) != 0; }
@@ -991,6 +1744,7 @@ int main(int argc, char **argv) {
   parse_bind(&inst[0], spec);
   if (second) { parse_bind(&inst[1], second); }
   hw_map();
+  if (fpga_opt >= 2) { sk_init(fpga_opt == 3); }
   for (int k = 0; k < 2; k++) {                     /* Pavel's defaults */
     for (int i = 0; i < NRX; i++) {
       *inst[k].freq[i] = phase_word(600000);
@@ -1000,10 +1754,12 @@ int main(int argc, char **argv) {
     *inst[k].sel = (uint8_t)sel[k];
     inst[k].base_sel = (uint8_t)sel[k];
   }
+  sk_program();
   for (int k = 0; k < ninst; k++) {
     inst[k].sock = open_socket(&inst[k]);
     if (inst[k].sock < 0) { return 1; }
   }
+  if (skrf) { skrs_init(&inst[0]); }
   pthread_t t;
   if (pthread_create(&t, NULL, ctl_thread, NULL) == 0) { pthread_detach(t); }
   for (int k = 1; k < ninst; k++) {
@@ -1011,7 +1767,8 @@ int main(int argc, char **argv) {
   }
   logf_("%d.%d serving %s%s%s (%s), orphan stop after %d s", AGENT_MAJOR, AGENT_MINOR,
         inst[0].name, ninst > 1 ? ", " : "", ninst > 1 ? inst[1].name : "",
-        hw.sim ? "simulated FIFOs" : "/dev/mem", orphan_s);
+        skrf ? (sk.sim ? "the skimmer's bitstream, simulated" : "the skimmer's bitstream (SKRF)")
+             : hw.sim ? "simulated FIFOs" : "/dev/mem, the stock bitstream", orphan_s);
   server_thread(&inst[0]);
   return 0;
 }

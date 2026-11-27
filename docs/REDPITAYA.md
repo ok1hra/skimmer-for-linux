@@ -102,6 +102,16 @@ One process replaces both stock servers on the same bitstream.
   `rp-agent` gate runs the real agent against the engine's client on the
   build machine.
 
+## The skimmer's own bitstream (agent 0.6, `docs/FPGA.md`)
+
+`fpga/projects/skimmer_rp_122_88` is a bitstream of our own: 24 slots
+(DDCs) at a rate each, written by DMA into a ring in DDR, every sample
+with its hardware index. Agent 0.6 tells it from the stock one by its
+status word (`--fpga auto`), serves both P1 instances on its slots
+exactly as on stock, and adds SKRS — every slot at its own rate to the
+skimmer (`[rp] stream=skrs`). The design, the register map, the wire and
+the measurements are in `docs/FPGA.md`. On stock the agent behaves as 0.5.
+
 ## Both IPs for the skimmer (config, `source_hpsdr_p1.c`)
 
 `[bands]` lines take `ip=b` (the band comes from IP B, mvl0, DDC 8–15) and

@@ -157,6 +157,7 @@ G_BEGIN_DECLS
 #define SKIM_HD_MAX_BANDS 16          /* both IPs of a Red Pitaya, 8 each     */
 #define SKIM_HD_IP_RX     8           /* sdr_receiver_hpsdr's receivers an IP */
 #define SKIM_HD_IP_RX_384 4           /* … of them at 384 kHz (the board's ARM) */
+#define SKIM_HD_SLOTS     24          /* the skimmer's own bitstream's DDCs (SKRS) */
 #define SKIM_HD_MAX_LISTED 32         /* [bands] lines, the ones off included */
 #define SKIM_HD_HOST_AUTO "auto"      /* [radio] host: what a broadcast finds */
 
@@ -180,7 +181,9 @@ typedef struct {
                                        * 0–7), 1 = IP B (mvl0, DDC 8–15)     */
   guint8       input;                 /* 0 = IN1, 1 = IN2 (the agent only)   */
   guint        rate;                  /* its IQ rate: its IP's ([radio] rate,
-                                       * [rp] b_rate)                        */
+                                       * [rp] b_rate); with [rp] stream=skrs
+                                       * its own (rate=), else [radio] rate  */
+  guint        own_rate;              /* rate=… (0 = none; stream=skrs only)  */
   gboolean     phased;                /* ip=ab: IP A (IN1) + IP B (IN2), ip
                                        * stays 0 (A is the band's own); or
                                        * in=12: two receivers of its own IP,
@@ -205,6 +208,10 @@ typedef struct {
   /* [rp] — the board's second IP (bands with ip=b) */
   gboolean         rp_split;          /* mode=extended: IN1 → IP A, IN2 → IP B */
   char            *rp_b_host;         /* NULL = the agent's discovery names it */
+  gboolean         rp_skrs;           /* stream=skrs: the skimmer's bitstream —
+                                       * every band its own slot(s) and rate,
+                                       * SKRS from [radio] host (docs/FPGA.md) */
+  guint            nslots;            /* … the slots the bands take         */
   guint            rp_b_rate;         /* its rate (default [radio] rate)      */
   guint            nb_ip[2];          /* receivers on each IP (a phased band
                                        * counts on both)                     */

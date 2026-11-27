@@ -103,7 +103,10 @@ static const char fake_ssh[] =
     "      sleep 0.3\n"
     "      if grep -q skimmer-for-linux \"$R/media/mmcblk0p1/start.sh\"; then\n"
     "        sel=$(sed -n 's/^sel=//p' \"$R/media/mmcblk0p1/start.sh\")\n"
-    "        \"$R/media/mmcblk0p1/apps/skimmer_rp/skimmer-rp\" serve --sim --sel \"$sel\" "
+    "        sim=--sim\n"
+    "        grep -q '^bit=.*skimmer_rp_122_88.bit' \"$R/media/mmcblk0p1/start.sh\" && "
+    "[ -f \"$R/media/mmcblk0p1/apps/skimmer_rp/skimmer_rp_122_88.bit\" ] && sim=--sim-skrf\n"
+    "        \"$R/media/mmcblk0p1/apps/skimmer_rp/skimmer-rp\" serve $sim --sel \"$sel\" "
     "--bind 127.0.0.4:$SKIM_RP_P1_PORT,127.0.0.5:$SKIM_RP_P1_PORT --ctl \"$R/run/skimmer-rp.sock\" "
     "--orphan-s 2 </dev/null >\"$R/agent.log\" 2>&1 &\n"
     "        echo $! > \"$R/agent.pid\"\n"
@@ -221,6 +224,11 @@ int main(int argc, char **argv) {
   g_setenv("SKIM_RP_P1_PORT", portstr, TRUE);
   g_setenv("XDG_RUNTIME_DIR", runtime, TRUE);
   g_setenv("FAKE_HOST", "127.0.0.4", TRUE);
+  /* the skimmer's bitstream to install: a stand-in file */
+  char *bitf = g_build_filename(R, "..", "skimmer_rp_122_88.bit", NULL);
+  g_file_set_contents(bitf, "a bitstream stand-in\n", -1, NULL);
+  g_setenv("SKIM_RP_BIT", bitf, TRUE);
+  g_free(bitf);
   g_setenv("FAKE_PW", "s3cret pass", TRUE);
   g_unsetenv("SSH_AUTH_SOCK");
 
@@ -369,13 +377,13 @@ int main(int argc, char **argv) {
   check("both IPs answer as the agent, idle",
         has(j, "{\"host\":\"127.0.0.4\",\"state\":\"idle\",\"agent\":true}") &&
             has(j, "{\"host\":\"127.0.0.5\",\"state\":\"idle\",\"agent\":true}") &&
-            has(j, "\"agent\":\"skimmer-rp 0.5\"") && has(j, "\"stock\":false"));
+            has(j, "\"agent\":\"skimmer-rp 0.6\"") && has(j, "\"stock\":false"));
   g_free(j);
 
   check("status read", run_job(rp, SKIM_HD_RP_STATUS, NULL));
   j = skim_hd_rp_json(rp);
   check("… the agent's JSON, inst B on IN2 for RX2",
-        has(j, "\"status\":{\"agent\":\"0.5\"") && has(j, "\"status_age_s\":") && has(j, "\"sel\":2"));
+        has(j, "\"status\":{\"agent\":\"0.6\"") && has(j, "\"status_age_s\":") && has(j, "\"sel\":2"));
   g_free(j);
   SkimHdRpReadings rd;
   check("… its readings: the load (the sim has no FPGA sensor: NaN)",
@@ -399,6 +407,43 @@ int main(int argc, char **argv) {
   char *bak2 = get("media/mmcblk0p1/start.sh.pavel");
   check("… keeps Pavel's start.sh, not ours, as the backup", bak2 && strcmp(bak2, pavel_start) == 0);
   g_free(bak2);
+  ss = get("media/mmcblk0p1/start.sh");
+  check("… and Pavel's bitstream (nothing asked otherwise)",
+        has(ss, "bit=$apps_dir/sdr_receiver_hpsdr_122_88/sdr_receiver_hpsdr_122_88.bit") &&
+            !exists("media/mmcblk0p1/apps/skimmer_rp/skimmer_rp_122_88.bit"));
+  g_free(ss);
+
+  /* the skimmer's own bitstream (docs/FPGA.md) */
+  SkimHdRpArgs fp = { .fpga = 1 };
+  check("install with the skimmer's bitstream", run_job(rp, SKIM_HD_RP_INSTALL, &fp));
+  char *bitc = get("media/mmcblk0p1/apps/skimmer_rp/skimmer_rp_122_88.bit");
+  ss = get("media/mmcblk0p1/start.sh");
+  check("… the bitstream on the card, start.sh loads it (Pavel's if it went missing)",
+        bitc && strcmp(bitc, "a bitstream stand-in\n") == 0 &&
+            has(ss, "bit=$apps_dir/skimmer_rp/skimmer_rp_122_88.bit") && has(ss, "[ -f $bit ] ||") &&
+            has(ss, "sel=0x05,0x00") && !exists("tmp/skimmer_rp_122_88.bit.new"));
+  g_free(bitc);
+  g_free(ss);
+  check("status read", run_job(rp, SKIM_HD_RP_STATUS, NULL));
+  j = skim_hd_rp_json(rp);
+  check("… the board says so, the agent runs on it (skrf)",
+        has(j, "\"fpga\":\"skimmer\"") && has(j, "\"bitstream\":\"skrf\""));
+  if (!has(j, "\"bitstream\":\"skrf\"") || !has(j, "\"fpga\":\"skimmer\"")) { printf("     %s\n", j); }
+  g_free(j);
+  j = skim_hd_rp_status_block(rp);
+  check("… Statistics' block names it, its slots and the ADC's peaks",
+        j && has(j, "\"bitstream\":\"skrf\"") && has(j, "\"slots\":24") && has(j, "\"peak_in1\":"));
+  g_free(j);
+  SkimHdRpArgs keep = { 0 };
+  check("a reinstall without a choice", run_job(rp, SKIM_HD_RP_INSTALL, &keep));
+  ss = get("media/mmcblk0p1/start.sh");
+  check("… keeps the skimmer's bitstream", has(ss, "bit=$apps_dir/skimmer_rp/skimmer_rp_122_88.bit"));
+  g_free(ss);
+  SkimHdRpArgs stock = { .fpga = 2 };
+  check("install with Pavel's bitstream again", run_job(rp, SKIM_HD_RP_INSTALL, &stock));
+  ss = get("media/mmcblk0p1/start.sh");
+  check("… start.sh loads his", has(ss, "bit=$apps_dir/sdr_receiver_hpsdr_122_88/sdr_receiver_hpsdr_122_88.bit"));
+  g_free(ss);
 
   check("uninstall", run_job(rp, SKIM_HD_RP_UNINSTALL, NULL));
   ss = get("media/mmcblk0p1/start.sh");

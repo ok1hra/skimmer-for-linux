@@ -32,7 +32,7 @@ cp b/vendor/wsjtx-ft/skimmer-ft8d $A/usr/bin/   # + WSJT-X's FT8/FT4 ([ft8]; bri
 cp b/vendor/js8call/skimmer-js8d $A/usr/bin/    # + JS8Call-improved's JS8 ([js8]; libstdc++)
 # + the Red Pitaya agent (static armhf, for the board — rp_manage.c installs
 # it); in share/, where linuxdeploy does not look for x86 libraries
-mkdir -p $A/usr/share/skimmer-for-linux && cp b/skimmer-rp-armhf $A/usr/share/skimmer-for-linux/
+mkdir -p $A/usr/share/skimmer-for-linux && cp b/skimmer-rp-armhf b/skimmer_rp_122_88.bit $A/usr/share/skimmer-for-linux/
 tar -xzf /dl/onnxruntime-linux-x64-1.21.0.tgz -C /build
 ORT=/build/onnxruntime-linux-x64-1.21.0
 cp $ORT/lib/libonnxruntime.so.1.21.0 $A/usr/lib/

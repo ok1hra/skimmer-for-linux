@@ -49,6 +49,9 @@ typedef struct {
   guint8   agent_sel;            /* bit r = receiver r on IN2                 */
   guint8   agent_inst;           /* 0 = eth0 (DDC 0–7), 1 = mvl0 (DDC 8–15)   */
   char     agent_peer[16];       /* the other instance's IPv4 ("" = none)     */
+  /* … on the skimmer's own bitstream (agent 0.6 on, docs/FPGA.md): */
+  guint8   agent_slots;          /* its DDC slots (0 = the stock bitstream)   */
+  guint16  agent_skrs_port;      /* SKRS's UDP port (0 = none): rp_stream.h   */
 } SkimHpsdrInfo;
 
 /* Unicast discovery to host:port; blocks up to timeout_ms. */

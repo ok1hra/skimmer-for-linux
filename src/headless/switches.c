@@ -75,7 +75,7 @@ static const struct { const char *name; SkimSwitchKind kind; } KNOWN[] = {
   { "SKIM_DISCOVERY_PORT", S }, { "SKIM_SUPERVISED", S }, { "SKIM_UPDATE_URL", S },
   /* the Red Pitaya over SSH (rp_manage.c): the agent file; the gate's fake
    * ssh, board root and port; the askpass's socket (ssh's child only) */
-  { "SKIM_RP_AGENT", S }, { "SKIM_RP_SSH", S }, { "SKIM_RP_ROOT", S }, { "SKIM_RP_P1_PORT", S },
+  { "SKIM_RP_AGENT", S }, { "SKIM_RP_BIT", S }, { "SKIM_RP_SSH", S }, { "SKIM_RP_ROOT", S }, { "SKIM_RP_P1_PORT", S },
   { "SKIM_ASKPASS_SOCK", S },
 };
 

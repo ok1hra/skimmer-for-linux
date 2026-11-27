@@ -35,6 +35,7 @@ struct _SkimHdRp {
   char   *dir;        /* <state>/rp: key, known_hosts                     */
   char   *rundir;     /* <runtime>/skimmer-rp: the master, askpass sockets */
   char   *agent;      /* the ARM agent to install, NULL = none here        */
+  char   *bit;        /* the skimmer's bitstream, NULL = none here         */
   char   *ssh, *keygen;
   char   *root;       /* SKIM_RP_ROOT ("" on a real board)                 */
   guint16 p1_port;
@@ -97,6 +98,26 @@ char *skim_hd_rp_agent_path(void) {
   char *cand[] = {
     g_build_filename(dir, "skimmer-rp-armhf", NULL),
     g_build_filename(dir, "..", "share", "skimmer-for-linux", "skimmer-rp-armhf", NULL),
+  };
+  g_free(dir);
+  char *found = NULL;
+  for (guint i = 0; i < G_N_ELEMENTS(cand); i++) {
+    if (!found && g_file_test(cand[i], G_FILE_TEST_IS_REGULAR)) { found = cand[i]; }
+    else { g_free(cand[i]); }
+  }
+  return found;
+}
+
+char *skim_hd_rp_bit_path(void) {
+  const char *env = g_getenv("SKIM_RP_BIT");
+  if (env && *env) { return g_file_test(env, G_FILE_TEST_IS_REGULAR) ? g_strdup(env) : NULL; }
+  char *self = self_exe();
+  if (!self) { return NULL; }
+  char *dir = g_path_get_dirname(self);
+  g_free(self);
+  char *cand[] = {
+    g_build_filename(dir, "skimmer_rp_122_88.bit", NULL),
+    g_build_filename(dir, "..", "share", "skimmer-for-linux", "skimmer_rp_122_88.bit", NULL),
   };
   g_free(dir);
   char *found = NULL;
@@ -461,6 +482,7 @@ typedef struct {
   char *pw;
   gboolean take_over, persist, sel_given;
   guint8 sel_a, sel_b;
+  gint fpga;
   char **ours;
   void (*done)(SkimHdRp *, SkimHdRpJob, gboolean, gpointer);
   gpointer user;
@@ -496,6 +518,7 @@ static gboolean probe(Job *j, GError **error) {
       "[ -f $C/apps/sdr_receiver_hpsdr_122_88/sdr_receiver_hpsdr_122_88.bit ] && echo pavel=1\n"
       "[ -f $C/start.sh.pavel ] && echo backup=1\n"
       "grep -q " RP_TAG " $C/start.sh 2>/dev/null && echo installed=1\n"
+      "grep -q '^bit=.*skimmer_rp_122_88.bit' $C/start.sh 2>/dev/null && echo fpga=skimmer\n"
       "[ -x $D/skimmer-rp ] && echo \"agent=$($D/skimmer-rp ctl --ctl $CTL version 2>/dev/null)\"\n"
       "pidof sdr-receiver-hpsdr >/dev/null && echo stock=1\n"
       "sel=$(sed -n 's/^sel=//p' $C/start.sh 2>/dev/null | head -n 1); echo \"sel=$sel\"\n"
@@ -684,11 +707,11 @@ static gboolean switch_and_wait(Job *j, gboolean expect_agent, GError **error) {
   return FALSE;
 }
 
-static char *start_sh(guint8 a, guint8 b) {
+static char *start_sh(guint8 a, guint8 b, gboolean skimmer_bit) {
   return g_strdup_printf(
       "#! /bin/sh\n"
-      "# " RP_TAG ": the skimmer's agent on Pavel Demin's sdr_receiver_hpsdr_122_88\n"
-      "# bitstream, in place of his two servers. His own start.sh is start.sh.pavel\n"
+      "# " RP_TAG ": the skimmer's agent, in place of Pavel Demin's two servers, on\n"
+      "# %s. His own start.sh is start.sh.pavel\n"
       "# beside this one; the skimmer's Uninstall puts it back.\n"
       "\n"
       "# the inputs of eth0's and mvl0's receivers (bit r set = receiver r on IN2)\n"
@@ -698,7 +721,10 @@ static char *start_sh(guint8 a, guint8 b) {
       "\n"
       "source $apps_dir/stop.sh\n"
       "\n"
-      "cat $apps_dir/sdr_receiver_hpsdr_122_88/sdr_receiver_hpsdr_122_88.bit > /dev/xdevcfg\n"
+      "# the bitstream (the skimmer's own: docs/FPGA.md — Pavel's if it is missing)\n"
+      "bit=%s\n"
+      "[ -f $bit ] || bit=$apps_dir/sdr_receiver_hpsdr_122_88/sdr_receiver_hpsdr_122_88.bit\n"
+      "cat $bit > /dev/xdevcfg\n"
       "\n"
       "address=`awk -F : '$5=\"FF\"' OFS=: /sys/class/net/eth0/address`\n"
       "ip link add mvl0 link eth0 address $address type macvlan mode passthru\n"
@@ -722,7 +748,37 @@ static char *start_sh(guint8 a, guint8 b) {
       "fi\n"
       "\n"
       "$apps_dir/skimmer_rp/skimmer-rp serve --sel $sel > /var/log/skimmer-rp.log 2>&1 &\n",
-      a, b);
+      skimmer_bit ? "the skimmer's own bitstream (skimmer_rp_122_88)"
+                  : "Pavel Demin's sdr_receiver_hpsdr_122_88 bitstream",
+      a, b,
+      skimmer_bit ? "$apps_dir/skimmer_rp/skimmer_rp_122_88.bit"
+                  : "$apps_dir/sdr_receiver_hpsdr_122_88/sdr_receiver_hpsdr_122_88.bit");
+}
+
+/* A file to the board's /tmp, checked by its sha256 on arrival. */
+static gboolean copy_checked(SkimHdRp *rp, const char *host, const char *path, const char *tmpname,
+                             const char *what, GError **error) {
+  char *bin = NULL;
+  gsize len = 0;
+  if (!g_file_get_contents(path, &bin, &len, error)) { return FALSE; }
+  char *sum = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)bin, len);
+  GBytes *in = g_bytes_new_take(bin, len);
+  char *out = NULL;
+  char *tmp = g_strdup_printf("%s/tmp/%s", rp->root, tmpname);
+  char *tq = sq(tmp);
+  char *cmd = g_strdup_printf("cat > %s && sha256sum %s", tq, tq);
+  gboolean ok = ssh_run(rp, host, cmd, in, 120, &out, error);
+  g_free(cmd);
+  g_free(tq);
+  g_free(tmp);
+  g_bytes_unref(in);
+  if (ok && (!out || !g_str_has_prefix(out, sum))) {
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "%s arrived damaged (sha256)", what);
+    ok = FALSE;
+  }
+  g_free(out);
+  g_free(sum);
+  return ok;
 }
 
 static gboolean job_install(Job *j, GError **error) {
@@ -745,37 +801,38 @@ static gboolean job_install(Job *j, GError **error) {
     g_mutex_unlock(&rp->mu);
   }
 
-  set_step(rp, "copying the agent");
-  char *bin = NULL;
-  gsize len = 0;
-  if (!g_file_get_contents(rp->agent, &bin, &len, error)) { return FALSE; }
-  char *sum = g_compute_checksum_for_data(G_CHECKSUM_SHA256, (const guchar *)bin, len);
-  GBytes *in = g_bytes_new_take(bin, len);
-  char *out = NULL;
-  char *tmp = g_strdup_printf("%s/tmp/skimmer-rp.new", rp->root);
-  char *tq = sq(tmp);
-  char *cmd = g_strdup_printf("cat > %s && sha256sum %s", tq, tq);
-  gboolean ok = ssh_run(rp, j->host, cmd, in, 120, &out, error);
-  g_free(cmd);
-  g_free(tq);
-  g_free(tmp);
-  g_bytes_unref(in);
-  if (ok && (!out || !g_str_has_prefix(out, sum))) {
-    g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "the agent arrived damaged (sha256)");
-    ok = FALSE;
+  /* which bitstream: asked, or what the card's start.sh loads now */
+  g_mutex_lock(&rp->mu);
+  const gboolean had = board(rp, "fpga") != NULL;
+  g_mutex_unlock(&rp->mu);
+  const gboolean skimmer_bit = j->fpga == 1 || (j->fpga == 0 && had);
+  if (skimmer_bit && !rp->bit) {
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                "this build carries no skimmer bitstream (skimmer_rp_122_88.bit)");
+    return FALSE;
   }
-  g_free(out);
-  g_free(sum);
-  if (!ok) { return FALSE; }
+  set_step(rp, "copying the agent");
+  if (!copy_checked(rp, j->host, rp->agent, "skimmer-rp.new", "the agent", error)) { return FALSE; }
+  if (skimmer_bit) {
+    set_step(rp, "copying the skimmer's bitstream");
+    if (!copy_checked(rp, j->host, rp->bit, "skimmer_rp_122_88.bit.new", "the bitstream", error)) {
+      return FALSE;
+    }
+  }
 
   set_step(rp, "writing the card");
-  char *ss = start_sh(j->sel_a, j->sel_b);
+  char *ss = start_sh(j->sel_a, j->sel_b, skimmer_bit);
   char *script = g_strdup_printf(
       "set -e\n"
       "ro() { mount -o remount,ro $C 2>/dev/null || true; }\n"
       "mount -o remount,rw $C\n"
       "trap ro EXIT\n"
       "mkdir -p $D\n"
+      "if [ -f $R/tmp/skimmer_rp_122_88.bit.new ]; then\n"
+      "  cp $R/tmp/skimmer_rp_122_88.bit.new $D/skimmer_rp_122_88.bit.new\n"
+      "  mv $D/skimmer_rp_122_88.bit.new $D/skimmer_rp_122_88.bit\n"
+      "  rm -f $R/tmp/skimmer_rp_122_88.bit.new\n"
+      "fi\n"
       "cp $R/tmp/skimmer-rp.new $D/skimmer-rp.new\n"
       "chmod 755 $D/skimmer-rp.new 2>/dev/null || true\n"
       "mv $D/skimmer-rp.new $D/skimmer-rp\n"
@@ -792,7 +849,7 @@ static gboolean job_install(Job *j, GError **error) {
       "echo written\n",
       ss);
   g_free(ss);
-  ok = ssh_script(rp, j->host, script, 60, NULL, error);
+  const gboolean ok = ssh_script(rp, j->host, script, 60, NULL, error);
   g_free(script);
   return ok && switch_and_wait(j, TRUE, error);
 }
@@ -957,6 +1014,15 @@ char *skim_hd_rp_status_block(SkimHdRp *rp) {
     out_dbl(o, "rp_load", rp->rd.load1);
     jraw(st, top_end, "mem_avail_kb", v, sizeof(v));
     if (v[0]) { g_string_append_printf(o, ",\"rp_mem_mb\":%.0f", g_ascii_strtod(v, NULL) / 1024); }
+    /* the skimmer's bitstream (docs/FPGA.md): its slots, the ADC's peaks
+     * (of 32768, the last 5 ms) and clips (bit 0 IN1, bit 1 IN2) */
+    jraw(st, top_end, "bitstream", v, sizeof(v));
+    kv_str(o, "bitstream", v[0] ? v : NULL, TRUE);
+    static const char *fk[] = { "slots", "peak_in1", "peak_in2", "clips" };
+    for (guint i = 0; i < G_N_ELEMENTS(fk); i++) {
+      jraw(st, top_end, fk[i], v, sizeof(v));
+      if (v[0]) { out_num(o, fk[i], v, TRUE); }
+    }
     g_string_append_printf(o, ",\"age_s\":%.0f", (g_get_monotonic_time() - rp->status_t) / 1e6);
     g_string_append(o, ",\"ips\":[");
     const char *q = inst ? inst + 8 : end;
@@ -1101,6 +1167,7 @@ gboolean skim_hd_rp_start(SkimHdRp *rp, SkimHdRpJob job, const SkimHdRpArgs *arg
   j->sel_a = args->sel_a;
   j->sel_b = args->sel_b;
   j->sel_given = args->sel_given || job == SKIM_HD_RP_SEL;
+  j->fpga = args->fpga;
   j->ours = args->ours ? g_strdupv((char **)args->ours) : NULL;
   j->done = done;
   j->user = user;
@@ -1142,6 +1209,7 @@ char *skim_hd_rp_json(SkimHdRp *rp) {
   g_mutex_lock(&rp->mu);
   kv_bool(o, "ssh", rp->ssh != NULL, FALSE);
   kv_bool(o, "agent_file", rp->agent != NULL, TRUE);
+  kv_bool(o, "bit_file", rp->bit != NULL, TRUE);
   kv_str(o, "host", rp->host, TRUE);
   char *key = g_build_filename(rp->dir, "id_ed25519", NULL);
   kv_bool(o, "key", g_file_test(key, G_FILE_TEST_EXISTS), TRUE);
@@ -1153,7 +1221,7 @@ char *skim_hd_rp_json(SkimHdRp *rp) {
   kv_str(o, "step", rp->step, TRUE);
   kv_str(o, "error", rp->error, TRUE);
   g_string_append(o, ",\"board\":{");
-  static const char *keys[] = { "hw", "arch", "alpine", "agent", "sel", "eth0", "mvl0" };
+  static const char *keys[] = { "hw", "arch", "alpine", "agent", "sel", "eth0", "mvl0", "fpga" };
   for (guint i = 0; i < G_N_ELEMENTS(keys); i++) { kv_str(o, keys[i], board(rp, keys[i]), i > 0); }
   static const char *flags[] = { "xdevcfg", "pavel", "backup", "installed", "stock" };
   for (guint i = 0; i < G_N_ELEMENTS(flags); i++) { kv_bool(o, flags[i], board(rp, flags[i]) != NULL, TRUE); }
@@ -1204,6 +1272,7 @@ SkimHdRp *skim_hd_rp_new(const char *state_dir, const char *agent, const char *h
   g_chmod(rp->dir, 0700);
   rp->rundir = run_dir();
   rp->agent = agent ? g_strdup(agent) : skim_hd_rp_agent_path();
+  rp->bit = skim_hd_rp_bit_path();
   const char *ssh = g_getenv("SKIM_RP_SSH");
   rp->ssh = ssh && *ssh ? g_strdup(ssh) : g_find_program_in_path("ssh");
   rp->keygen = g_find_program_in_path("ssh-keygen");
@@ -1232,6 +1301,7 @@ void skim_hd_rp_free(SkimHdRp *rp) {
   g_free(rp->dir);
   g_free(rp->rundir);
   g_free(rp->agent);
+  g_free(rp->bit);
   g_free(rp->ssh);
   g_free(rp->keygen);
   g_free(rp->root);

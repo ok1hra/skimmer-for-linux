@@ -250,6 +250,10 @@ static gboolean parse_discovery(const guint8 *d, gssize n, SkimHpsdrInfo *out) {
     out->agent_mode = d[0x1A];
     out->agent_sel = d[0x1B];
     out->agent_inst = d[0x1C];
+    if (n >= 0x24) {                       /* the skimmer's bitstream (0.6+) */
+      out->agent_slots = d[0x21];
+      out->agent_skrs_port = (guint16)(d[0x22] << 8 | d[0x23]);
+    }
     if (n >= 0x21 && (d[0x1D] | d[0x1E] | d[0x1F] | d[0x20])) {   /* the other IP (0.2+) */
       g_snprintf(out->agent_peer, sizeof(out->agent_peer), "%u.%u.%u.%u", d[0x1D], d[0x1E],
                  d[0x1F], d[0x20]);

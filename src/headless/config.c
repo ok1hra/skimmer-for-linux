@@ -425,6 +425,7 @@ char *skim_hd_band_modes(const SkimHdBand *b, SkimCwEngine dflt) {
     if (b->ip) { g_string_append(s, " ip=b"); }
     if (b->input) { g_string_append(s, " in=2"); }
   }
+  if (b->own_rate) { g_string_append_printf(s, " rate=%u", b->own_rate / 1000); }
   if (b->phase_mode >= 0) {
     g_string_append_printf(s, " phase=%s", phase_mode_name((SkimPhaseMode)b->phase_mode));
   }
@@ -551,6 +552,17 @@ static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
         b->input = 0;
       } else if (g_strcmp0(t, "in=1") == 0 || g_strcmp0(t, "in=2") == 0) {
         b->input = t[3] == '2';
+      } else if (g_str_has_prefix(t, "rate=")) {
+        /* its own rate ([rp] stream=skrs): 48 | 96 | 192 | 384 (kHz) or in Hz */
+        char *end = NULL;
+        guint64 r = g_ascii_strtoull(t + 5, &end, 10);
+        if (end && (*end == 'k' || *end == 'K')) { end++; }
+        if (r && r < 1000) { r *= 1000; }
+        if (!end || *end || (r != 48000 && r != 96000 && r != 192000 && r != 384000)) {
+          ok = bad(error, path, "band %s: %s (rate=48, 96, 192 or 384)", name, t);
+        } else {
+          b->own_rate = (guint)r;
+        }
       } else if (g_str_has_prefix(t, "phase=")) {
         SkimPhaseMode pm;
         if (!phase_mode_parse(t + 6, &pm)) {
@@ -560,7 +572,7 @@ static gboolean band_parse(SkimHdBand *b, const char *name, const char *value,
         }
       } else {
         ok = bad(error, path, "band %s: mode \"%s\" (cw, cw:v3, cw:v4, cw:v2, cw:deepcw, rtty, off, "
-                 "@worker, ip=a|b|ab, in=1|2, phase=…)", name, t);
+                 "@worker, ip=a|b|ab, in=1|2, rate=…, phase=…)", name, t);
       }
     }
     g_strfreev(m);
@@ -659,6 +671,22 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   }
   h->rp_split = rpm && strcmp(rpm, "extended") == 0;
   g_free(rpm);
+  char *rps = g_key_file_get_string(kf, "rp", "stream", NULL);
+  if (rps) { g_strstrip(rps); }
+  if (rps && rps[0] && strcmp(rps, "p1") != 0 && strcmp(rps, "skrs") != 0) {
+    bad(error, path, "[rp] stream \"%s\" (p1 or skrs)", rps);
+    g_free(rps);
+    return FALSE;
+  }
+  h->rp_skrs = rps && strcmp(rps, "skrs") == 0;
+  g_free(rps);
+  if (h->rp_skrs && h->rp_split) {
+    return bad(error, path, "[rp] stream=skrs takes each band's input from its in=1|2 — "
+               "mode=extended is the stock bitstream's two IPs");
+  }
+  if (h->rp_skrs && h->source != SKIM_HD_SOURCE_HPSDR_P1) {
+    return bad(error, path, "[rp] stream=skrs is a Red Pitaya's (type=hpsdr-p1)");
+  }
   char *bh = g_key_file_get_string(kf, "rp", "b_host", NULL);
   if (bh) { g_strstrip(bh); }
   if (bh && bh[0]) {
@@ -1346,7 +1374,13 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
       }
     }
     if (!ok) { break; }
-    b->rate = b->ip ? h->rp_b_rate : h->rate;
+    if (b->own_rate && !h->rp_skrs) {
+      ok = bad(error, path, "band %s: rate= is the skimmer's bitstream's — [rp] stream=skrs "
+               "(else a band takes its IP's rate)", keys[i]);
+      break;
+    }
+    b->rate = h->rp_skrs ? (b->own_rate ? b->own_rate : h->rate) : b->ip ? h->rp_b_rate : h->rate;
+    if (h->rp_skrs) { b->ip = 0; }             /* SKRS has no IPs: every slot from host */
     if (h->rp_split) { b->input = b->ip; }     /* two antennas: the IP names the input */
     {                                          /* [phase.<band>]: its own weight, memories */
       char *grp = g_strdup_printf("phase.%s", keys[i]);
@@ -1393,7 +1427,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
       } else if (h->source != SKIM_HD_SOURCE_HPSDR_P1) {
         ok = bad(error, path, "band %s: ip=ab is a Red Pitaya's two inputs (type=hpsdr-p1 only)",
                  keys[i]);
-      } else if (!b->same_ip && h->rate != h->rp_b_rate) {
+      } else if (!b->same_ip && !h->rp_skrs && h->rate != h->rp_b_rate) {
         ok = bad(error, path, "band %s: ip=ab needs one rate on both IPs — [radio] rate %u, "
                  "[rp] b_rate %u", keys[i], h->rate, h->rp_b_rate);
       }
@@ -1401,6 +1435,22 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     }
     h->nlisted++;
     if (b->off) { continue; }
+    if (h->rp_skrs) {                          /* slots, not IPs: 1 a band, 2 phased */
+      const guint need = b->phased ? 2 : 1;
+      if (h->nslots + need > SKIM_HD_SLOTS) {
+        ok = bad(error, path, "band %s: the bitstream has %d slots and %u are taken (a phased "
+                 "band takes two)", keys[i], SKIM_HD_SLOTS, h->nslots);
+        break;
+      }
+      if (h->nb == SKIM_HD_MAX_BANDS) {
+        ok = bad(error, path, "band %s: %d bands at most", keys[i], SKIM_HD_MAX_BANDS);
+        break;
+      }
+      h->nslots += need;
+      if (b->phased) { h->nb_phased++; }
+      h->band[h->nb++] = *b;
+      continue;
+    }
     if (b->phased && b->same_ip && h->nb_ip[b->ip] + 2 > SKIM_HD_IP_RX) {
       ok = bad(error, path, "band %s: in=12 takes two receivers of IP %c, and %u of its %d are "
                "taken", keys[i], b->ip ? 'B' : 'A', h->nb_ip[b->ip], SKIM_HD_IP_RX);
@@ -1447,7 +1497,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
   }
   /* 384 kHz: the board's ARM reads and sends 4 receivers an IP with room
    * to spare (docs/REDPITAYA.md, F0 and agent 0.3) — more is not measured */
-  for (guint ip = 0; ok && ip < 2 && h->source == SKIM_HD_SOURCE_HPSDR_P1; ip++) {
+  for (guint ip = 0; ok && ip < 2 && h->source == SKIM_HD_SOURCE_HPSDR_P1 && !h->rp_skrs; ip++) {
     const guint r = ip ? h->rp_b_rate : h->rate;
     if (r == 384000 && h->nb_ip[ip] > SKIM_HD_IP_RX_384) {
       ok = bad(error, path, "IP %c at 384 kHz: %u receivers at most (%u asked) — the Red Pitaya's "
@@ -1517,7 +1567,7 @@ gboolean skim_hd_config_load(SkimHdConfig *cfg, const char *path, GError **error
 /* ---- editing ------------------------------------------------------------------- */
 
 const char *const SKIM_HD_EDITABLE[] = {
-  "radio.type", "radio.host", "radio.rate", "radio.clock_ppm", "rp.mode", "rp.b_host", "rp.b_rate",
+  "radio.type", "radio.host", "radio.rate", "radio.clock_ppm", "rp.mode", "rp.stream", "rp.b_host", "rp.b_rate",
   "bands",
   "decode.engine", "decode.log", "decode.suppress_cw_on_rtty", "decode.rtty_adaptive",
   "decode.rtty_adaptive_spots", "decode.rtty_adaptive_minutes", "decode.v4_workers", "decode.v4_guard",
