@@ -2,7 +2,7 @@
  * skimmer-rbn-test — offline gate for M6: the RBN telnet feed.
  *
  * Units (a local telnet sink against the feed alone):
- *   - login handshake (banner, prompt, hello),
+ *   - login handshake (banner, prompt, hello), the answer to SKIMMER/SETT,
  *   - spot line format: the classic cluster line the RBN Aggregator parses
  *     (DX de <call>-#: kHz call CW dB WPM CQ HHMMZ, CRLF-terminated),
  *   - broadcast to several logged-in clients, client/line counters,
@@ -575,6 +575,13 @@ int main(void) {
     check("hello names the login (uppercased)",
           cap_wait(a, "Hello AGGR1", 3000));
     check("one client logged in", skim_rbn_feed_clients(f) == 1);
+
+    /* the RBN Aggregator asks SKIMMER/SETT after its login for the bands */
+    skim_rbn_feed_set_bands(f, NULL, "1800.0-1870.0,3500.0-3570.0");
+    cap_send(a, "skimmer/sett\r\n");
+    check("SKIMMER/SETT answers CW Skimmer Server's line",
+          cap_wait(a, "SETT: vlNormal 1800.0-1870.0,3500.0-3570.0\r\n", 3000));
+    check("SKIMMER/SETT keeps the client", skim_rbn_feed_clients(f) == 1);
 
     skim_rbn_feed_spot(f, "DL1ABC", "CW", 14025100.0, 25.0, 22.0);
     check("spot line arrives", cap_wait(a, "DL1ABC", 3000));

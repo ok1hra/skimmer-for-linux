@@ -51,6 +51,14 @@ void skim_rbn_feed_set_tap(SkimRbnFeed *f, SkimRbnFeedTap tap, gpointer user);
 
 guint16 skim_rbn_feed_port(const SkimRbnFeed *f);
 
+/* What the feed answers a logged-in client's SKIMMER/SETT — the command
+ * the RBN Aggregator sends after its login to learn the node's bands
+ * (CW Skimmer Server: "SETT: vlNormal 1800.0-1870.0,3500.0-3570.0,…"):
+ * "SETT: vl<level> <ranges>". ranges = kHz "lo-hi" pairs, comma
+ * separated, ascending; NULL or "" = no answer (the command is ignored,
+ * as before). level NULL = "Normal". Any thread, any time. */
+void skim_rbn_feed_set_bands(SkimRbnFeed *f, const char *level, const char *ranges);
+
 /* Hold every spot delay_s seconds (0 = none, the default; at most 99)
  * before it goes out. The line keeps the time it was spotted. Set it
  * before the first spot. */

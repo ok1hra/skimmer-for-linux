@@ -4,7 +4,8 @@
 # DE OK1RTY OK1RTY K" in RTTY on the band that decodes RTTY. The gate checks
 # that the config is read (band modes, per-band engine), the source streams,
 # both spots reach the telnet feed at the right frequency, /status.json says
-# so (with the built-in gate and the SKIM_* switches), SIGTERM stops it
+# so (with the built-in gate and the SKIM_* switches), the feed answers the
+# RBN Aggregator's SKIMMER/SETT with both bands, SIGTERM stops it
 # cleanly, and a bad config stops the start with exit 2. [ft8] takes both
 # bands' FT8 and FT4 dials and decodes their cycles, [js8] both bands' JS8
 # dials in all four submodes. 20m asks for
@@ -93,18 +94,19 @@ feed_line() {
 
 # the telnet feed: log in, wait for the mock's calls (≤ 90 s: two readings,
 # 8 s settle, one 8 s message per round)
-got= rgot= partial=
+got= rgot= sett= partial=
 for _ in $(seq 50); do
   if { exec 3<>/dev/tcp/127.0.0.1/$FEED; } 2>/dev/null; then break; fi
   sleep 0.2
 done
 if { true >&3; } 2>/dev/null; then
-  printf 'TEST\r\n' >&3
+  printf 'TEST\r\nSKIMMER/SETT\r\n' >&3
   end=$((SECONDS + 90))
   while ((SECONDS < end)) && [[ -z $got || -z $rgot ]]; do
     if feed_line 3; then
       [[ $line == *OK1MCK* && -z $got ]] && got=$line
       [[ $line == *OK1RTY* && -z $rgot ]] && rgot=$line
+      [[ $line == SETT:* && -z $sett ]] && sett=${line%$'\r'}
     fi
   done
   exec 3>&-
@@ -115,6 +117,9 @@ echo "  feed: ${rgot:-nothing}"
 [[ $got == *" 14046.5 "* || $got == *" 7046.5 "* ]]; check "… at centre + 1 kHz" $?
 [[ $rgot == "DX de TEST-#:"*" 7035.5 "*OK1RTY*RTTY*"45 BPS"*CQ* ]]
 check "the RTTY CQ is spotted too, 40m only, at centre - 10 kHz, 45 BPS" $?
+echo "  feed: ${sett:-no SETT answer}"
+[[ $sett == "SETT: vlNormal 7000.0-7091.0,14000.0-14091.0" ]]
+check "SKIMMER/SETT: both bands, 91/96 of the rate around each centre, ascending" $?
 
 sleep 1.5                                    # the status snapshot is 1 Hz
 json=$(curl -s "http://127.0.0.1:$HTTP/status.json" || true)

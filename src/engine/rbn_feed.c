@@ -74,6 +74,9 @@ struct _SkimRbnFeed {
   GHashTable     *recent;                      /* call → GArray of Recent    */
   gint64          recent_pruned_us;
   volatile gint   dup_dropped;                 /* external spots dropped     */
+  GMutex          sett_lock;
+  char           *sett;                        /* SKIMMER/SETT's answer line
+                                                * (CRLF included), NULL = none */
 };
 
 /* --- client lifecycle (feed thread) ---------------------------------------------- */
@@ -124,7 +127,16 @@ static void client_line(Client *c, char *line) {
     return;
   }
   /* Logged in: this is a one-way feed — cluster commands (SET/…, SH/DX)
-   * are accepted and ignored; only an explicit goodbye acts. */
+   * are accepted and ignored; SKIMMER/SETT (the RBN Aggregator asks it
+   * after the login, for the node's bands) is answered; a goodbye acts. */
+  if (g_ascii_strcasecmp(line, "SKIMMER/SETT") == 0) {
+    g_mutex_lock(&c->f->sett_lock);
+    char *sett = g_strdup(c->f->sett);
+    g_mutex_unlock(&c->f->sett_lock);
+    if (sett && !client_send(c, sett)) { client_drop(c); }
+    g_free(sett);
+    return;
+  }
   if (g_ascii_strcasecmp(line, "bye") == 0 ||
       g_ascii_strcasecmp(line, "quit") == 0) {
     client_drop(c);
@@ -402,6 +414,7 @@ static SkimRbnFeed *feed_alloc(const char *mycall) {
   f->loop    = g_main_loop_new(f->ctx, FALSE);
   f->clients = g_ptr_array_new_with_free_func(client_free);
   g_mutex_init(&f->recent_lock);
+  g_mutex_init(&f->sett_lock);
   f->recent = g_hash_table_new_full(g_str_hash, g_str_equal, g_free,
                                     (GDestroyNotify)g_array_unref);
   return f;
@@ -413,6 +426,8 @@ static void feed_dealloc(SkimRbnFeed *f) {
   g_main_context_unref(f->ctx);
   g_hash_table_unref(f->recent);
   g_mutex_clear(&f->recent_lock);
+  g_mutex_clear(&f->sett_lock);
+  g_free(f->sett);
   g_free(f);
 }
 
@@ -474,6 +489,17 @@ void skim_rbn_feed_free(SkimRbnFeed *f) {
 }
 
 guint16 skim_rbn_feed_port(const SkimRbnFeed *f) { return f->port; }
+
+void skim_rbn_feed_set_bands(SkimRbnFeed *f, const char *level, const char *ranges) {
+  g_return_if_fail(f);
+  char *sett = ranges && ranges[0]
+                 ? g_strdup_printf("SETT: vl%s %s\r\n", level && level[0] ? level : "Normal", ranges)
+                 : NULL;
+  g_mutex_lock(&f->sett_lock);
+  g_free(f->sett);
+  f->sett = sett;
+  g_mutex_unlock(&f->sett_lock);
+}
 
 guint skim_rbn_feed_clients(const SkimRbnFeed *f) {
   return (guint)g_atomic_int_get(&((SkimRbnFeed *)f)->nclients);

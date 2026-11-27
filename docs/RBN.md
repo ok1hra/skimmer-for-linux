@@ -21,28 +21,33 @@ Facts from hra2 (2026-11-19, Aggregator v6.4):
 - The Aggregator listens itself on `[Connections - Local User] Port
   Number` (default **7550**) for loggers. On the same machine the
   skimmer's `[rbn] port` must be another one — hra2 runs 7551.
+- After its login the Aggregator sends `SKIMMER/SETT`; CW Skimmer Server
+  answers `SETT: vlNormal 1800.0-1870.0,3500.0-3570.0,…` (the validation
+  level, then the segments it skims in kHz) and the Aggregator hands the
+  ranges to the RBN as the node's bands. The feed answers it the same way
+  (`skim_rbn_feed_set_bands`): every received CW/RTTY band as CW Skimmer
+  reports a segment, 91/96 of its rate around its centre, ascending,
+  overlaps merged, level `Normal`. Before 2026-11-27 it ignored the
+  command, so a node behind our port showed the RBN no bands.
 
-## Uploading without the Aggregator (not built — needs the RBN's consent)
+## Uploading without the Aggregator — rejected (2026-11-27)
 
-Asked for 2026-11-19: the Aggregator built into the skimmer. The upload
-protocol is not public. The one known replacement is SparkGap's
-`rbn2_feeder.py` (github.com/hotairfred/SparkGap issues #49, cdub89/SparkGap
-#42, Oct–Nov 2026):
+Seen through a logging proxy on hra2 (Aggregator v6.4, 2026-11-27): the
+Aggregator posts JSON over plain HTTP to
+`http://x.reversebeacon.net:88/rx/6/` — `id.php` at start and about every
+5 min (the node's call, grid, name, QTH, bands, versions; the reply carries
+the server's rules: upload interval 10 s, 1500 spots in 3 min, which
+windows take CQ/DE/beacon spots, excluded frequencies, the URLs and hashes
+of master.scp, patt3ch.lst and bcn.csv), and `s.php` every 10 s when it
+has spots (CQ spots only, as read from the telnet line, held only until
+the next tick). Three fields of those posts (`fingerPrint`/`fp`,
+`shortHash`, `h`) come from a private algorithm. The RBN gives approved
+feeders a closed library for them (`librbn2_auth.so`, `rbn2auth/1.2`,
+from Chris WX7V; SparkGap's `rbn2_feeder.py`, cdub89/SparkGap#42,
+hotairfred/SparkGap#49) after its own test criteria.
 
-- It posts to two RBN scripts, `id.php` (sign-in, at start and every
-  300 s) and `s.php` (the spots, a batch per tick).
-- Both carry fields computed by **`librbn2_auth.so`**, a small private
-  library (Linux x86_64, `rbn2auth/1.2`): `rbn2_auth_short_hash` for the
-  sign-in, `rbn2_auth_spot_hash` over the batch's calls. It is not
-  published; the RBN team (Chris WX7V) gives it to approved testers on
-  request, not for redistribution.
-- The RBN authorises a feeder by name and version after it passes their
-  test criteria. What SparkGap had to do in the Aggregator's place: spot
-  only a station calling CQ or TEST; repeat counts by RBN's `patt3ch.lst`;
-  upload CQ-tagged lines only; mode codes CW = 1, RTTY = 11; no beacons;
-  the frequency right (ppm-corrected).
-
-So the built-in upload waits for the RBN: ask them for the criteria and
-the library. Once granted, it goes in as DeepCW's runtime did — the
-library `dlopen`ed from outside git, never shipped, `[rbn] upload=direct`
-off by default, the Aggregator port kept as it is.
+Dan, 2026-11-27: we do not ask for a binary blob for authentication — the
+upload stays with the RBN Aggregator on the `[rbn]` port. Extracting or
+imitating the Aggregator's hash is out as well: the RBN authorises a
+feeder by name and version. Revisit only if the RBN publishes an open
+upload protocol.

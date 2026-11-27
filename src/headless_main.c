@@ -2916,6 +2916,44 @@ static gboolean dec_start(Hd *h, Band *b, guint k, const SkimHdBand *cb, const c
   return skim_pipeline_start(d->p, error);
 }
 
+/* The bands the feed's spots come from, for its answer to the RBN
+ * Aggregator's SKIMMER/SETT: each received CW/RTTY band (a worker's too —
+ * its spots go out here) as CW Skimmer reports a segment, 91/96 of its
+ * rate around its centre, in kHz, ascending, overlaps merged. NULL = none. */
+static int sett_cmp(gconstpointer a, gconstpointer b) {
+  const double x = ((const double *)a)[0], y = ((const double *)b)[0];
+  return (x > y) - (x < y);
+}
+
+static char *sett_ranges(const SkimHdConfig *c) {
+  double r[SKIM_HD_MAX_BANDS][2];
+  guint n = 0;
+  for (guint i = 0; i < c->nb && n < SKIM_HD_MAX_BANDS; i++) {
+    const SkimHdBand *b = &c->band[i];
+    if (b->off || (!b->cw && !b->rtty) || !b->rate) { continue; }
+    const double half = b->rate * 91.0 / 96.0 / 2.0;
+    r[n][0] = (b->centre_hz - half) / 1000.0;
+    r[n][1] = (b->centre_hz + half) / 1000.0;
+    n++;
+  }
+  if (!n) { return NULL; }
+  qsort(r, n, sizeof(r[0]), sett_cmp);
+  GString *o = g_string_new(NULL);
+  double lo = r[0][0], hi = r[0][1];
+  for (guint i = 1; i <= n; i++) {
+    if (i < n && r[i][0] <= hi) {               /* overlapping: one range */
+      if (r[i][1] > hi) { hi = r[i][1]; }
+      continue;
+    }
+    char a[G_ASCII_DTOSTR_BUF_SIZE], z[G_ASCII_DTOSTR_BUF_SIZE];
+    g_string_append_printf(o, "%s%s-%s", o->len ? "," : "",
+                           g_ascii_formatd(a, sizeof(a), "%.1f", lo),
+                           g_ascii_formatd(z, sizeof(z), "%.1f", hi));
+    if (i < n) { lo = r[i][0]; hi = r[i][1]; }
+  }
+  return g_string_free(o, FALSE);
+}
+
 int main(int argc, char **argv) {
   skim_hd_rp_askpass_main(argc, argv);        /* ssh's askpass: prints, exits */
   skim_log_ring_install();
@@ -3282,6 +3320,13 @@ int main(int argc, char **argv) {
     if (n) { g_message("spots: %u of the last %d h back from %s", n, SPOT_KEEP_S / 3600, h->spot_path); }
   }
   if (h->feed || h->rbn) { skim_rbn_feed_set_tap(h->feed ? h->feed : h->rbn, feed_tap, h); }
+  {                                            /* SKIMMER/SETT: the bands     */
+    char *sett = sett_ranges(c);
+    if (h->feed) { skim_rbn_feed_set_bands(h->feed, "Normal", sett); }
+    if (h->rbn) { skim_rbn_feed_set_bands(h->rbn, "Normal", sett); }
+    if (sett && h->rbn) { g_message("rbn: SKIMMER/SETT answers %s", sett); }
+    g_free(sett);
+  }
 
   if (c->peers && c->peers[0]) {
     if (!h->feed && !h->rbn) {
