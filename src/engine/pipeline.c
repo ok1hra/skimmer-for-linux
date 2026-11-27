@@ -464,7 +464,18 @@ static void rbn_sink_fwd(const char *call, const char *mode, double freq_hz,
     skim_gatelog_event(p->glog, pipe_now_us(p), pipe_wall_us(p), "spot", call,
                        freq_hz, snr_db, speed);
   }
-  skim_rbn_feed_spot(p->cfg.rbn, call, mode, freq_hz, snr_db, speed);
+  /* a phased band: what phasing did for this station (the tap's, not the line's) */
+  const SkimStation *pst = p->pmeter ? skim_station_table_lookup(p->stations, call) : NULL;
+  if (pst && pst->phased) {
+    /* the better antenna as the station record took it (G = SNR_Y − best) */
+    const double best = isnan(pst->snr2_b_db) || pst->snr2_a_db >= pst->snr2_b_db
+                            ? pst->snr2_a_db : pst->snr2_b_db;
+    const double sy = isnan(pst->phase_gain_db) || isnan(best) ? NAN : best + pst->phase_gain_db;
+    const SkimRbnPhase ph = { pst->phase_gain_db, sy - pst->snr2_a_db };
+    skim_rbn_feed_spot_phased(p->cfg.rbn, call, mode, freq_hz, snr_db, speed, &ph);
+  } else {
+    skim_rbn_feed_spot(p->cfg.rbn, call, mode, freq_hz, snr_db, speed);
+  }
 }
 
 SkimPipeline *skim_pipeline_new(const SkimPipelineConfig *cfg) {

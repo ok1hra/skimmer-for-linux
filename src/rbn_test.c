@@ -535,8 +535,10 @@ static void on_station(const SkimStation *st, gpointer user) {
 }
 
 static void tap_cb(const char *call, const char *mode, double freq_hz, double snr_db,
-                   double speed, gpointer user) {
-  g_string_append_printf(user, "%s %s %.0f %.0f %.0f;", call, mode, freq_hz, snr_db, speed);
+                   double speed, const SkimRbnPhase *phase, gpointer user) {
+  g_string_append_printf(user, "%s %s %.0f %.0f %.0f", call, mode, freq_hz, snr_db, speed);
+  if (phase) { g_string_append_printf(user, " %+.0f/%+.0f", phase->gain_db, phase->gain_a_db); }   /* the test locale has a decimal comma */
+  g_string_append_c(user, ';');
 }
 
 int main(void) {
@@ -759,6 +761,11 @@ int main(void) {
     skim_rbn_feed_spot(sink, "SP2SNK", "RTTY", 14083500.0, 15.0, 45.0);
     check("sink: no port, the tap has the spot",
           skim_rbn_feed_port(sink) == 0 && strcmp(got->str, "SP2SNK RTTY 14083500 15 45;") == 0);
+    g_string_truncate(got, 0);
+    const SkimRbnPhase ph = { 2.0, -3.0 };
+    skim_rbn_feed_spot_phased(sink, "JA1PHS", "CW", 7012300.0, 18.0, 28.0, &ph);
+    check("a phased band's spot: the tap has phasing's gain too",
+          strcmp(got->str, "JA1PHS CW 7012300 18 28 +2/-3;") == 0);
     skim_rbn_feed_free(sink);
     g_string_free(got, TRUE);
   }

@@ -22,8 +22,14 @@ const Dxc = (() => {
   // same table in both), then this skimmer's own: band, country
   const COLS = [
     ['time', 'UTC'], ['khz', 'kHz'], ['play', ''], ['call', 'DX'], ['km', 'km'], ['src', 'From'], ['mode', 'Mode'],
-    ['db', 'dB'], ['speed', 'WPM'], ['band', 'Band'], ['country', 'Country'],
+    ['db', 'dB'], ['phase', 'Φ dB'], ['speed', 'WPM'], ['band', 'Band'], ['country', 'Country'],
   ];
+  // Φ dB: what phasing gave a phased band's spot (its SNR over the better
+  // antenna alone; over antenna A — the band unphased — in the tip); the
+  // column is there only while a spot of a phased band is
+  const phaseSeen = () => rows.some((s) => 'phase' in s || 'phase_a' in s);
+  const sgn = (v) => `${v > 0 ? '+' : v < 0 ? '−' : '±'}${Math.abs(v).toFixed(1)}`;
+  const antA = () => (typeof antIn === 'function' ? antIn(0) : 'IN1');
   const DEF = { bands: {}, call: '', regex: false, kmMin: 0, kmMax: 20000, azMin: 0, azMax: 360,
                 dbMin: -30, dbMax: 60, spMin: 0, spMax: 99, modes: { CW: true, RTTY: true, FT8: true, FT4: true, JS8: true, WSPR: true }, country: '',
                 src: { here: true, worker: true, peer: true }, conts: {}, age: 30, hidden: { src: true } };
@@ -208,6 +214,15 @@ const Dxc = (() => {
       case 'km': return s.km != null ? `<td class="c-km"${tone(s.km, kmR)} title="${Math.round(s.az)}°"><span class="km">${thousands(Math.round(s.km))}</span>` +
         `<span class="arr" style="transform:rotate(${Math.round(s.az)}deg)">↑</span></td>` : '<td class="c-km"></td>';
       case 'db': return `<td class="c-db"${tone(s.snr, dbR)}><span class="m">${meter(s.snr, dbR)}</span><span class="v">${s.snr}</span></td>`;
+      case 'phase': {
+        if (!('phase' in s) && !('phase_a' in s)) return '<td class="c-phase"></td>';
+        const g = s.phase, ga = s.phase_a;
+        const tip = [g != null ? `${sgn(g)} dB over the better antenna alone` : 'no reading over the better antenna',
+                     ga != null ? `${sgn(ga)} dB over antenna A (${antA()}) alone — the band unphased` : ''].filter(Boolean).join('; ');
+        const v = g != null ? g : ga;
+        const cls = v == null || Math.abs(v) < 0.5 ? 'z' : v > 0 ? 'up' : 'dn';
+        return `<td class="c-phase ${cls}" title="${esc(`phasing: ${tip}`)}">${v == null ? '–' : sgn(Math.round(v * 10) / 10)}</td>`;
+      }
       case 'speed': return `<td class="c-speed">${s.speed || ''}</td>`;
       case 'mode': return `<td class="c-mode">${esc(s.mode)}</td>`;
       case 'band': return `<td class="c-band">${esc(s.band)}</td>`;
@@ -218,18 +233,19 @@ const Dxc = (() => {
   }
   function draw() {
     if (!el) return;
-    const vis = COLS.filter(([c]) => !F.hidden[c]);
+    const vis = COLS.filter(([c]) => !F.hidden[c] && (c !== 'phase' || phaseSeen()));
     const shown = rows.filter((s) => pass(s));
     kmR = spanOf(shown.filter((s) => s.km != null).map((s) => s.km));
     dbR = spanOf(shown.filter((s) => Number.isFinite(s.snr)).map((s) => s.snr));
     el.querySelector('.dxc-count').textContent = `${shown.length} of ${rows.length}`;
     el.querySelector('.dxc-clear').disabled = !Object.values(active).some((f) => f());
     el.querySelector('thead').innerHTML = `<tr>${vis.map(([c, n]) => c === 'play' ? '<th class="c-play"></th>' :
+      c === 'phase' ? `<th class="c-phase" title="what phasing gave the spot: its SNR over the better antenna alone (+ better, − worse); a phased band's spots only">${n}</th>` :
       `<th data-c="${c}" class="c-${c}"><span>${n}</span><button type="button" class="fbtn${active[c] && active[c]() ? ' on' : ''}" title="filter">▾</button></th>`).join('')}</tr>`;
     el.querySelector('tbody').innerHTML = shown.length ? shown.map((s) =>
       `<tr data-call="${esc(s.call)}" class="${s.age > 900 ? 'old' : ''}${s.call === marked ? ' hi' : ''}">${vis.map(([c]) => cell(c, s)).join('')}</tr>`).join('')
       : `<tr><td colspan="${vis.length}" class="mut">${rows.length ? 'the filters leave nothing' : 'no spots in the last half hour'}</td></tr>`;
-    el.querySelector('.dxc-cols').innerHTML = COLS.map(([c, n]) =>
+    el.querySelector('.dxc-cols').innerHTML = COLS.filter(([c]) => c !== 'phase' || phaseSeen()).map(([c, n]) =>
       `<label><input type="checkbox" data-col="${c}"${F.hidden[c] ? '' : ' checked'}> ${c === 'play' ? 'listen' : c === 'km' ? 'km, bearing' : n}</label>`).join('');
     onChange(shown, marked);
   }

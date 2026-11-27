@@ -15,6 +15,8 @@
 
 #include "headless/spotlog.h"
 
+#include <math.h>
+
 static int fails, checks;
 static void check(const char *what, int ok) {
   checks++;
@@ -47,6 +49,13 @@ static char *all(SkimHdSpotLog *l) {
   char *s = g_strjoinv(" ", (char **)g.calls->pdata);
   g_ptr_array_unref(g.calls);
   return s;
+}
+
+static gboolean phase_of(const SkimHdSpot *s, gpointer user) {
+  if (!s->phased) { g_string_append_printf(user, "%s- ", s->call); return TRUE; }
+  g_string_append_printf(user, "%s%+.1f/%s ", s->call, s->phase_db,
+                         isnan(s->phase_a_db) ? "nan" : "x");
+  return TRUE;
 }
 
 static gboolean first_mode(const SkimHdSpot *s, gpointer user) {
@@ -104,6 +113,35 @@ int main(void) {
     skim_hd_spotlog_foreach_newest(b, first_mode, mode);
     check("a mode with markup read as letters and digits only", strcmp(mode, "C?W") == 0);
     skim_hd_spotlog_free(b);
+  }
+
+  printf("== a phased band's spot: phasing's gain across a restart\n");
+  {
+    SkimHdSpotLog *p = skim_hd_spotlog_new(7200, 100);
+    SkimHdSpot q1 = spot(now - 30, "JA1PH", 7012300, "");
+    q1.phased = TRUE;
+    q1.phase_db = 2.14;
+    q1.phase_a_db = NAN;
+    SkimHdSpot q2 = spot(now - 20, "W1UNP", 7013300, "");
+    skim_hd_spotlog_add(p, &q1);
+    skim_hd_spotlog_add(p, &q2);
+    check("saved", skim_hd_spotlog_save(p, path, NULL));
+    char *text = NULL;
+    g_file_get_contents(path, &text, NULL, NULL);
+    check("the phased line one field more (+2.1/nan), the other as before",
+          text && strstr(text, "\tJA1PH\tCW\t17.0\t25.0\t\t+2.1/nan\n") &&
+              strstr(text, "\tW1UNP\tCW\t17.0\t25.0\t\n"));
+    g_free(text);
+    skim_hd_spotlog_free(p);
+    p = skim_hd_spotlog_new(7200, 100);
+    check("both back", skim_hd_spotlog_load(p, path, now) == 2);
+    GString *ph = g_string_new(NULL);
+    skim_hd_spotlog_foreach_newest(p, phase_of, ph);
+    check("… W1UNP not phased, JA1PH +2.1 over the better antenna, none over A",
+          strcmp(ph->str, "W1UNP- JA1PH+2.1/nan ") == 0);
+    printf("       (%s)\n", ph->str);
+    g_string_free(ph, TRUE);
+    skim_hd_spotlog_free(p);
   }
 
   printf("== at most max; a save with nothing new; no file\n");

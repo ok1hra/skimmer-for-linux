@@ -2623,8 +2623,13 @@ static void hub_spot(const char *worker, const char *call, const char *mode, dou
 #define SPOT_MAX     20000
 
 static void spot_log_add(Hd *h, const char *call, const char *mode, double freq_hz,
-                         double snr_db, double speed) {
+                         double snr_db, double speed, const SkimRbnPhase *phase) {
   SkimHdSpot sp = { 0 }, *s = &sp;
+  if (phase) {                                 /* a phased band's: what phasing gave */
+    s->phased = TRUE;
+    s->phase_db = phase->gain_db;
+    s->phase_a_db = phase->gain_a_db;
+  }
   s->t = g_get_real_time() / G_USEC_PER_SEC;
   g_strlcpy(s->call, call, sizeof(s->call));
   g_strlcpy(s->mode, mode, sizeof(s->mode));
@@ -2676,7 +2681,16 @@ static gboolean spot_json(const SkimHdSpot *s, gpointer user) {
   skim_json_append(o, band);
   g_string_append(o, "\",\"src\":\"");
   skim_json_append(o, s->src);
-  g_string_append(o, "\"}");
+  g_string_append_c(o, '"');
+  if (s->phased) {                             /* a phased band's: phasing's gain */
+    const double v[2] = { s->phase_db, s->phase_a_db };
+    for (int k = 0; k < 2; k++) {
+      char n[G_ASCII_DTOSTR_BUF_SIZE];
+      g_ascii_formatd(n, sizeof(n), "%.1f", v[k]);
+      g_string_append_printf(o, ",\"%s\":%s", k ? "phase_a" : "phase", isnan(v[k]) ? "null" : n);
+    }
+  }
+  g_string_append_c(o, '}');
   return TRUE;
 }
 
@@ -2746,7 +2760,7 @@ static void js8_spot(const char *call, double freq_hz, int snr_db, gboolean cq, 
   if (confirmed && h->cfg.js8_feed && h->feed) {
     skim_rbn_feed_spot_digital(h->feed, call, "JS8", freq_hz, snr_db, cq);   /* tap → the log */
   } else {
-    spot_log_add(h, call, "JS8", freq_hz, snr_db, 0);
+    spot_log_add(h, call, "JS8", freq_hz, snr_db, 0, NULL);
   }
 }
 
@@ -2762,16 +2776,16 @@ static void ft8_spot(const char *call, const char *mode, double freq_hz, int snr
   if (h->cfg.ft8_feed && h->feed) {
     skim_rbn_feed_spot_digital(h->feed, call, mode, freq_hz, snr_db, cq);   /* tap → the log */
   } else {
-    spot_log_add(h, call, mode, freq_hz, snr_db, 0);
+    spot_log_add(h, call, mode, freq_hz, snr_db, 0, NULL);
   }
 }
 
 /* Every spot the feed sends (the spotting thread): into the log, and a
  * worker's up the link to its hub. */
 static void feed_tap(const char *call, const char *mode, double freq_hz, double snr_db,
-                     double speed, gpointer user) {
+                     double speed, const SkimRbnPhase *phase, gpointer user) {
   Hd *h = user;
-  spot_log_add(h, call, mode, freq_hz, snr_db, speed);
+  spot_log_add(h, call, mode, freq_hz, snr_db, speed, phase);
   if (h->cfg.source != SKIM_HD_SOURCE_HUB || !h->src) { return; }
   char f[G_ASCII_DTOSTR_BUF_SIZE];
   g_ascii_formatd(f, sizeof(f), "%.1f", freq_hz);

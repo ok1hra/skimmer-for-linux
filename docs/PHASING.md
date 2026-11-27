@@ -367,7 +367,9 @@ Locally (a station, a channel):
 
 - **G = SNR_Y − max(SNR_A, SNR_B)**, the gain over the better antenna,
   where the channel carries a station; **G_A = SNR_Y − SNR_A**, the gain
-  over today's skimmer (IN1 only).
+  over today's skimmer (IN1 only). Each spot of a phased band carries its
+  station's G and G_A as the spot went out (the DX cluster's Φ dB column,
+  G_A in its tip; never in the telnet line).
 - **share_B**: B's part of the output noise (which antenna "carried" it).
 - **align = |vᴴ·u_n|²**: the station's signature against the noise's
   principal direction. Near 1, nothing can separate the two.

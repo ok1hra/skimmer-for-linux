@@ -9,6 +9,11 @@
  *   # skimmer-headless spots 1
  *   1763583012  7046500.0  OK1MCK  CW  41  25  (source: empty = this skimmer)
  *
+ * and a phased band's spot one field more: what phasing gave it, dB over
+ * the better antenna and over antenna A, "+2.1/+3.4" ("nan" where a meter
+ * had none). A build before it skips such a line; an unphased spot's line
+ * is as before.
+ *
  * A line that does not read is skipped; a spot older than keep_s (or more
  * than five minutes ahead of the clock) is not taken back. Thread-safe.
  *
@@ -25,6 +30,8 @@ typedef struct {
   char   call[16], mode[8];
   double freq_hz, snr_db, speed;
   char   src[64];              /* "" = this skimmer; a worker or a peer        */
+  gboolean phased;             /* a phased band's: phasing's gain (rbn_feed.h)  */
+  double phase_db, phase_a_db; /* over the better antenna, over A (NAN: none)   */
 } SkimHdSpot;
 
 typedef struct _SkimHdSpotLog SkimHdSpotLog;

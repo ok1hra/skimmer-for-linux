@@ -245,7 +245,10 @@ here; what was done and why is in git.
   continent stays), and the counts and the heat map pass the cluster's other
   filters too (`Dxc.passes`); the DX cluster's columns are wifilt's, in its
   order and alignment (UTC, kHz, DX, km with the bearing's arrow, From,
-  Mode, dB, WPM, then Band, Country); the map's wheel zooms only inside
+  Mode, dB, WPM, then Band, Country; Φ dB after dB while a phased band's
+  spot is listed: G of the spot's station, G_A in its tip — the pipeline
+  hands them to the feed's tap only, `skim_rbn_feed_spot_phased`, the line
+  unchanged; /api/spots `phase`, `phase_a`, spots.tsv an 8th field); the map's wheel zooms only inside
   its circle; a newly opened page starts on Status (the tab is kept in
   sessionStorage, for a reload); About (a `<dialog>`, everyone) names the
   authors and decoders, README's Credits every licence;

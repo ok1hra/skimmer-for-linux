@@ -269,8 +269,8 @@ static gboolean recent_seen(SkimRbnFeed *f, const char *call, double freq_hz, gi
 /* digi: NULL = the classic line (speed + WPM/BPS, CQ); "CQ" / "DE" = an
  * FT8/FT4 line, no speed, never relayed (skim_rbn_feed_spot_digital). */
 static void spot_out(SkimRbnFeed *f, const char *call, const char *mode, double freq_hz,
-                     double snr_db, double speed, const char *digi) {
-  if (f->tap) { f->tap(call, mode, freq_hz, snr_db, speed, f->tap_user); }
+                     double snr_db, double speed, const char *digi, const SkimRbnPhase *phase) {
+  if (f->tap) { f->tap(call, mode, freq_hz, snr_db, speed, phase, f->tap_user); }
   if (f->relay && !digi) { skim_rbn_feed_spot(f->relay, call, mode, freq_hz, snr_db, speed); }
   if (!f->svc) { return; }                     /* a sink: nobody to write to */
   GDateTime *now = g_date_time_new_now_utc();
@@ -315,6 +315,12 @@ static void spot_out(SkimRbnFeed *f, const char *call, const char *mode, double 
 
 void skim_rbn_feed_spot(SkimRbnFeed *f, const char *call, const char *mode,
                         double freq_hz, double snr_db, double speed) {
+  skim_rbn_feed_spot_phased(f, call, mode, freq_hz, snr_db, speed, NULL);
+}
+
+void skim_rbn_feed_spot_phased(SkimRbnFeed *f, const char *call, const char *mode,
+                               double freq_hz, double snr_db, double speed,
+                               const SkimRbnPhase *phase) {
   g_return_if_fail(f && call && call[0]);
   /* our own pipelines' policy decides their re-spots; only a spot another
    * skimmer sent first makes ours a duplicate (never without peers/workers) */
@@ -325,7 +331,7 @@ void skim_rbn_feed_spot(SkimRbnFeed *f, const char *call, const char *mode,
     g_atomic_int_inc(&f->dup_dropped);
     return;
   }
-  spot_out(f, call, mode, freq_hz, snr_db, speed, NULL);
+  spot_out(f, call, mode, freq_hz, snr_db, speed, NULL, phase);
 }
 
 gboolean skim_rbn_feed_spot_external(SkimRbnFeed *f, const char *call, const char *mode,
@@ -338,7 +344,7 @@ gboolean skim_rbn_feed_spot_external(SkimRbnFeed *f, const char *call, const cha
     g_atomic_int_inc(&f->dup_dropped);
     return FALSE;
   }
-  spot_out(f, call, mode, freq_hz, snr_db, speed, NULL);
+  spot_out(f, call, mode, freq_hz, snr_db, speed, NULL, NULL);
   return TRUE;
 }
 
@@ -352,7 +358,7 @@ void skim_rbn_feed_spot_digital(SkimRbnFeed *f, const char *call, const char *mo
     g_atomic_int_inc(&f->dup_dropped);
     return;
   }
-  spot_out(f, call, mode, freq_hz, snr_db, 0, cq ? "CQ" : "DE");
+  spot_out(f, call, mode, freq_hz, snr_db, 0, cq ? "CQ" : "DE", NULL);
 }
 
 void skim_rbn_feed_set_tap(SkimRbnFeed *f, SkimRbnFeedTap tap, gpointer user) {

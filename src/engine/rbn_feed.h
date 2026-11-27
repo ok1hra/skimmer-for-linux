@@ -34,9 +34,19 @@ void         skim_rbn_feed_free(SkimRbnFeed *f);
  * (a worker hands them to its hub this way). Port 0 in the answers. */
 SkimRbnFeed *skim_rbn_feed_new_sink(const char *mycall);
 
-/* Every spot the feed sends, on the spotting thread, before any delay. */
+/* What phasing did for a spot of a phased band (docs/PHASING.md), from the
+ * station's SNR_2500 meters: the combination over the better antenna alone
+ * (G) and over antenna A alone (IN1 — the band unphased); NAN where a meter
+ * had no reading. It never reaches a line — the tap only. */
+typedef struct {
+  double gain_db, gain_a_db;
+} SkimRbnPhase;
+
+/* Every spot the feed sends, on the spotting thread, before any delay;
+ * phase NULL = not a phased band's spot. */
 typedef void (*SkimRbnFeedTap)(const char *call, const char *mode, double freq_hz,
-                               double snr_db, double speed, gpointer user);
+                               double snr_db, double speed, const SkimRbnPhase *phase,
+                               gpointer user);
 void skim_rbn_feed_set_tap(SkimRbnFeed *f, SkimRbnFeedTap tap, gpointer user);
 
 guint16 skim_rbn_feed_port(const SkimRbnFeed *f);
@@ -56,6 +66,10 @@ void skim_rbn_feed_set_relay(SkimRbnFeed *f, SkimRbnFeed *relay);
 /* Broadcast one spot to every logged-in client (after the delay). Thread-safe. */
 void skim_rbn_feed_spot(SkimRbnFeed *f, const char *call, const char *mode,
                         double freq_hz, double snr_db, double speed);
+/* The same, a phased band's spot: phase goes to the tap (the line is the same). */
+void skim_rbn_feed_spot_phased(SkimRbnFeed *f, const char *call, const char *mode,
+                               double freq_hz, double snr_db, double speed,
+                               const SkimRbnPhase *phase);
 
 /* A spot another skimmer made (a peer's feed, a hub's worker): sent like
  * skim_rbn_feed_spot() unless this feed sent the call within 300 Hz in the

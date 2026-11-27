@@ -4,6 +4,8 @@
  */
 #include "headless/spotlog.h"
 
+#include <math.h>
+
 #define HEADER "# skimmer-headless spots 1\n"
 
 struct _SkimHdSpotLog {
@@ -82,6 +84,12 @@ gboolean skim_hd_spotlog_save(SkimHdSpotLog *l, const char *path, GError **error
     field(o, s->mode);
     g_string_append_printf(o, "\t%s\t%s\t", snr, sp);
     field(o, s->src);
+    if (s->phased) {
+      char g[G_ASCII_DTOSTR_BUF_SIZE], ga[G_ASCII_DTOSTR_BUF_SIZE];
+      g_ascii_formatd(g, sizeof(g), "%+.1f", s->phase_db);
+      g_ascii_formatd(ga, sizeof(ga), "%+.1f", s->phase_a_db);
+      g_string_append_printf(o, "\t%s/%s", isnan(s->phase_db) ? "nan" : g, isnan(s->phase_a_db) ? "nan" : ga);
+    }
     g_string_append_c(o, '\n');
   }
   g_mutex_unlock(&l->lock);
@@ -120,7 +128,8 @@ guint skim_hd_spotlog_load(SkimHdSpotLog *l, const char *path, gint64 now) {
     char **f = g_strsplit(*ln, "\t", -1);
     SkimHdSpot s = { 0 };
     double t, fr, snr, sp;
-    if (g_strv_length(f) == 7 && num(f[0], &t) && num(f[1], &fr) && num(f[4], &snr) &&
+    const guint nf = g_strv_length(f);
+    if ((nf == 7 || nf == 8) && num(f[0], &t) && num(f[1], &fr) && num(f[4], &snr) &&
         num(f[5], &sp) && f[2][0] && f[3][0] && t > now - l->keep_s && t <= now + 300 && fr > 0) {
       s.t = (gint64)t;
       s.freq_hz = fr;
@@ -132,6 +141,15 @@ guint skim_hd_spotlog_load(SkimHdSpotLog *l, const char *path, gint64 now) {
         if (!g_ascii_isalnum(*x)) { *x = '?'; }
       }
       g_strlcpy(s.src, f[6], sizeof(s.src));
+      if (nf == 8) {                             /* a phased band's: "G/GA"     */
+        char **g = g_strsplit(f[7], "/", 2);
+        if (g_strv_length(g) == 2) {
+          s.phased = TRUE;
+          s.phase_db = num(g[0], &s.phase_db) ? s.phase_db : NAN;
+          s.phase_a_db = num(g[1], &s.phase_a_db) ? s.phase_a_db : NAN;
+        }
+        g_strfreev(g);
+      }
       /* in time order only: a line out of order would break the trimming */
       const SkimHdSpot *last = g_queue_peek_tail(&l->q);
       if (!last || s.t >= last->t) {

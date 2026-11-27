@@ -320,6 +320,11 @@ table.dxc { border-collapse: collapse; width: 100%; background: var(--well); fon
 .dxc td.c-db .m { display: inline-block; min-width: 6ch; text-align: right; }
 .dxc td.c-call { font-weight: 700; letter-spacing: .03em; }
 .dxc td.c-db { font-weight: 700; }
+/* Φ dB: what phasing gave the spot — better green, worse red, about none grey */
+.dxc .c-phase { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dxc td.c-phase.up { color: var(--ok); font-weight: 700; }
+.dxc td.c-phase.dn { color: var(--bad); font-weight: 700; }
+.dxc td.c-phase.z { color: var(--mut); }
 .dxc td.c-db .m { letter-spacing: -1px; margin-right: 6px; font-weight: 400; opacity: .9; }
 .dxc tr.old td { opacity: .55; }
 .dxc tbody tr { cursor: pointer; }
