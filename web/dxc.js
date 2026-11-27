@@ -17,12 +17,12 @@
 'use strict';
 
 const Dxc = (() => {
-  // wifilt's DX cluster's columns, in its order and alignment (UTC, kHz, DX,
-  // km with the bearing's arrow, spotter, mode, dB, WPM — the eye reads the
-  // same table in both), then this skimmer's own: band, country
+  // wifilt's DX cluster's columns in its alignment (UTC, kHz, DX, km with the
+  // bearing's arrow, spotter, dB, WPM), then band, mode (after the band since
+  // 2026-11-27, Dan), country
   const COLS = [
-    ['time', 'UTC'], ['khz', 'kHz'], ['play', ''], ['call', 'DX'], ['km', 'km'], ['src', 'From'], ['mode', 'Mode'],
-    ['db', 'dB'], ['phase', 'Φ dB'], ['speed', 'WPM'], ['band', 'Band'], ['country', 'Country'],
+    ['time', 'UTC'], ['khz', 'kHz'], ['play', ''], ['call', 'DX'], ['km', 'km'], ['src', 'From'],
+    ['db', 'dB'], ['phase', 'Φ dB'], ['speed', 'WPM'], ['band', 'Band'], ['mode', 'Mode'], ['country', 'Country'],
   ];
   // Φ dB: what phasing gave a phased band's spot (its SNR over the better
   // antenna alone; over antenna A — the band unphased — in the tip); the

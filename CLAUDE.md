@@ -244,8 +244,8 @@ here; what was done and why is in git.
   (`Dxc.setCont`, in the Country column's menu too; a call of no known
   continent stays), and the counts and the heat map pass the cluster's other
   filters too (`Dxc.passes`); the DX cluster's columns are wifilt's, in its
-  order and alignment (UTC, kHz, DX, km with the bearing's arrow, From,
-  Mode, dB, WPM, then Band, Country; Φ dB after dB while a phased band's
+  alignment (UTC, kHz, DX, km with the bearing's arrow, From, dB, WPM,
+  then Band, Mode, Country — Mode after Band since 2026-11-27, Dan; Φ dB after dB while a phased band's
   spot is listed: G of the spot's station, G_A in its tip — the pipeline
   hands them to the feed's tap only, `skim_rbn_feed_spot_phased`, the line
   unchanged; /api/spots `phase`, `phase_a`, spots.tsv an 8th field); the map's wheel zooms only inside
