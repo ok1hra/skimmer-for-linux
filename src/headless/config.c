@@ -1375,7 +1375,7 @@ static gboolean parse(SkimHdConfig *h, GKeyFile *kf, GError **error) {
     }
     if (!ok) { break; }
     if (b->own_rate && !h->rp_skrs) {
-      ok = bad(error, path, "band %s: rate= is the skimmer's bitstream's — [rp] stream=skrs "
+      ok = bad(error, path, "band %s: rate= is the decoder bitstream's — [rp] stream=skrs "
                "(else a band takes its IP's rate)", keys[i]);
       break;
     }

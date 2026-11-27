@@ -576,7 +576,7 @@ static gboolean probe(Job *j, GError **error) {
 
 static gboolean job_connect(Job *j, GError **error) {
   SkimHdRp *rp = j->rp;
-  set_step(rp, "the skimmer's key");
+  set_step(rp, "the decoder's key");
   if (!ensure_key(rp, error)) { return FALSE; }
   set_step(rp, "connecting with the key");
   GError *e = NULL;
@@ -600,10 +600,10 @@ static gboolean job_connect(Job *j, GError **error) {
       rp->connected = FALSE;
       g_mutex_unlock(&rp->mu);
       g_set_error(error, G_IO_ERROR, G_IO_ERROR_PERMISSION_DENIED, "%s",
-                  changed ? "the board shows another SSH host key than before (Pavel's image makes "
-                            "new ones at every boot until the skimmer's agent is installed; or the "
+                  changed ? "the board shows another SSH host key than before (Pavel Demin's image makes "
+                            "new ones at every boot until the decoder agent is installed; or the "
                             "card was re-imaged) — type its root password to trust it"
-                          : "the board does not know the skimmer's key yet — type its root password once");
+                          : "the board does not know the decoder's key yet — type its root password once");
       return FALSE;
     }
     if (changed) {                              /* the password vouches for the new key */
@@ -614,10 +614,10 @@ static gboolean job_connect(Job *j, GError **error) {
       run(rp, argv, NULL, NULL, 20, NULL, NULL, &code, NULL);
       g_free(kh);
     }
-    set_step(rp, "putting the skimmer's key on the board");
+    set_step(rp, "putting the decoder's key on the board");
     char *pub = read_pub(rp);
     if (!pub || !g_str_has_prefix(pub, "ssh-ed25519 ") || strchr(pub, '\'')) {
-      g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "the skimmer's public key is unreadable");
+      g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED, "the decoder's public key is unreadable");
       g_free(pub);
       return FALSE;
     }
@@ -652,7 +652,7 @@ static gboolean supported(SkimHdRp *rp, GError **error) {
                         ? "only the STEMlab 122.88-16 SDR is supported (EEPROM hw_rev)"
                   : !arch || !g_str_has_prefix(arch, "armv7") ? "not an ARMv7 board"
                   : !board(rp, "xdevcfg") ? "no /dev/xdevcfg — not Pavel Demin's image?"
-                  : !board(rp, "pavel") ? "Pavel's sdr_receiver_hpsdr_122_88 is not on the card"
+                  : !board(rp, "pavel") ? "Pavel Demin's sdr_receiver_hpsdr_122_88 is not on the card"
                                         : NULL;
   char *hwc = g_strdup(hw ? hw : "?");
   g_mutex_unlock(&rp->mu);
@@ -687,7 +687,7 @@ static gboolean others_stream(Job *j, GError **error) {
 
 static gboolean switch_and_wait(Job *j, gboolean expect_agent, GError **error) {
   SkimHdRp *rp = j->rp;
-  set_step(rp, "starting %s", expect_agent ? "the agent" : "Pavel's servers");
+  set_step(rp, "starting %s", expect_agent ? "the agent" : "Pavel Demin's servers");
   if (!ssh_script(rp, j->host, "setsid $C/start.sh </dev/null >/dev/null 2>&1 &\n", 20, NULL,
                   error)) {
     return FALSE;
@@ -707,7 +707,7 @@ static gboolean switch_and_wait(Job *j, gboolean expect_agent, GError **error) {
     if (up) { return probe(j, error); }
   }
   g_set_error(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "%s did not come up in 10 s",
-              expect_agent ? "the agent" : "Pavel's servers");
+              expect_agent ? "the agent" : "Pavel Demin's servers");
   return FALSE;
 }
 
@@ -818,7 +818,7 @@ static gboolean job_install(Job *j, GError **error) {
   set_step(rp, "copying the agent");
   if (!copy_checked(rp, j->host, rp->agent, "skimmer-rp.new", "the agent", error)) { return FALSE; }
   if (skimmer_bit) {
-    set_step(rp, "copying the skimmer's bitstream");
+    set_step(rp, "copying the decoder bitstream");
     if (!copy_checked(rp, j->host, rp->bit, "skimmer_rp_122_88.bit.new", "the bitstream", error)) {
       return FALSE;
     }
@@ -870,7 +870,7 @@ static gboolean job_uninstall(Job *j, GError **error) {
     return FALSE;
   }
   if (others_stream(j, error)) { return FALSE; }
-  set_step(rp, "putting Pavel's start.sh back");
+  set_step(rp, "putting Pavel Demin's start.sh back");
   static const char script[] =
       "set -e\n"
       "ro() { mount -o remount,ro $C 2>/dev/null || true; }\n"

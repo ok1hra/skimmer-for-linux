@@ -399,7 +399,7 @@ static gboolean start_skrs(P1 *p, const char *host, double ppm) {
   if (!info.agent || !info.agent_slots || !info.agent_skrs_port) {
     p1_state(p, "%s: [rp] stream=skrs, but the board runs %s — its own bitstream and agent "
              "0.6 serve SKRS (Settings → Red Pitaya)", host,
-             info.agent ? "the stock bitstream" : "no skimmer agent");
+             info.agent ? "the stock bitstream" : "no decoder agent");
     return FALSE;
   }
   SkimRpStreamSpec spec[SKIM_RP_STREAM_MAX];
@@ -479,7 +479,7 @@ static gboolean start_on(P1 *p, const char *host, double ppm, gboolean took) {
            skim_hpsdr_client_device(p->rp), p->nrx_ip[0], c->rate / 1000, ppm,
            took ? " (taken over)" : "");
   if (p->inputs[0] && !skim_hpsdr_client_agent(p->rp)) {
-    g_warning("radio: %s runs no skimmer agent — in=2 bands take IN1 (Settings → Red Pitaya "
+    g_warning("radio: %s runs no decoder agent — in=2 bands take IN1 (Settings → Red Pitaya "
               "installs it)", host);
   }
   if (p->nrx_ip[1]) {                           /* the board names its second IP */
@@ -532,7 +532,7 @@ static void b_try(P1 *p) {
   }
   const char *host = c->rp_b_host ? c->rp_b_host : p->b.peer[0] ? p->b.peer : NULL;
   if (!host) {
-    b_state(p, "has no address: the board runs no skimmer agent to name it — set [rp] b_host");
+    b_state(p, "has no address: the board runs no decoder agent to name it — set [rp] b_host");
     return;
   }
   g_strlcpy(p->b.host, host, sizeof(p->b.host));

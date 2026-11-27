@@ -2925,10 +2925,10 @@ int main(int argc, char **argv) {
       "List the skimmer-headless instances on this LAN (address, name, role, call, "
       "ports) and exit", NULL },
     { "redpitaya", 0, 0, G_OPTION_ARG_STRING, &rp_cmd,
-      "The skimmer's own Red Pitaya over SSH, then exit: connect (the root password "
-      "once, never stored; the skimmer's key goes on the board), probe, status, "
-      "install (the skimmer's agent in place of Pavel's two servers; --take-over "
-      "even while another client streams), uninstall (Pavel's start.sh back). The "
+      "The decoder's own Red Pitaya over SSH, then exit: connect (the root password "
+      "once, never stored; the decoder's key goes on the board), probe, status, "
+      "install (the decoder agent in place of Pavel Demin's two servers; --take-over "
+      "even while another client streams), uninstall (Pavel Demin's start.sh back). The "
       "board: HOST after the options, else the first [radio] host", "CMD" },
     { "install-service", 0, 0, G_OPTION_ARG_NONE, &install_service,
       "Write a systemd user service that runs this program (with --config, "

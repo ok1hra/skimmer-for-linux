@@ -152,10 +152,10 @@
       <div class="legend" id="legend-temp"></div><div class="chart" id="chart-temp"></div></div>
     <div class="chart-card" id="card-rp" hidden><h2>Red Pitaya <span class="mut" id="rp-card-sub"></span></h2>
       <div class="tiles rp-tiles" id="rp-tiles"></div>
-      <p class="sub mut">the board's FPGA in the hottest minute of each bucket (the Zynq-7020 is rated to 85 °C); below, the Mb/s each IP sent — every client's, not only this skimmer's</p>
+      <p class="sub mut">the board's FPGA in the hottest minute of each bucket (the Zynq-7020 is rated to 85 °C); below, the Mb/s each IP sent — every client's, not only this decoder's</p>
       <div class="legend" id="legend-rptemp"></div><div class="chart" id="chart-rptemp"></div>
       <div class="legend" id="legend-rpnet"></div><div class="chart" id="chart-rpnet"></div>
-      <div id="rp-adc"><p class="sub mut">the ADC on the skimmer's bitstream: each input's loudest peak (dBFS, of the statuses read every 10 s — 0 dBFS is full scale)</p>
+      <div id="rp-adc"><p class="sub mut">the ADC on the decoder bitstream: each input's loudest peak (dBFS, of the statuses read every 10 s — 0 dBFS is full scale)</p>
       <div class="legend" id="legend-rppeak"></div><div class="chart" id="chart-rppeak"></div></div>
       <div id="rp-ev"><p class="sub mut">what went wrong on the board: the 5.3-ms windows each input clipped in (a full-scale sample), and the FIFO overflows (IQ the board dropped before it was sent, right scale)</p>
       <div class="legend" id="legend-rpev"></div><div class="chart" id="chart-rpev"></div></div>
@@ -247,17 +247,17 @@
             <option value="p1">P1 — both inputs into one set of 16 receivers, each band its input</option>
             <option value="extended">two antennas — IN1 → IP A, IN2 → IP B</option></select>
             <small>the board's two IPs: A = the host above (receivers 1–8), B = its second address (9–16);
-            the input of a band needs the skimmer's agent on the board (Red Pitaya below)</small></label>
+            the input of a band needs the decoder agent on the board (Red Pitaya below)</small></label>
           <label class="rp-only">Stream <select name="rp.stream" data-default="p1">
             <option value="p1">Protocol 1 — the stock bitstream: 8 receivers an IP, one rate an IP</option>
-            <option value="skrs">SKRS — the skimmer's own bitstream: 24 slots, each band its own rate</option></select>
-            <small>SKRS needs the skimmer's bitstream and agent 0.6 on the board (docs/FPGA.md): every band one
+            <option value="skrs">SKRS — the decoder bitstream: 24 slots, each band its own rate</option></select>
+            <small>SKRS needs the decoder bitstream and agent 0.6 on the board (docs/FPGA.md): every band one
             slot from the host above, a phased band (Φ) two — IN1 and IN2</small></label>
           <label class="rp-only p1-only">Rate IP B <select name="rp.b_rate" data-default="">
             <option value="">as IP A</option><option value="48000">48 kHz</option><option value="96000">96 kHz</option>
             <option value="192000">192 kHz</option><option value="384000" title="4 receivers an IP; each band costs ~7× the CPU of 96 kHz on this PC (measured: 54 % of a core for CW+RTTY)">384 kHz (4 receivers)</option></select></label>
           <label class="rp-only p1-only">Address IP B <input name="rp.b_host" placeholder="the agent names it">
-            <small>empty = the address the skimmer's agent reports</small></label>
+            <small>empty = the address the decoder agent reports</small></label>
         </fieldset>
         <fieldset>
           <legend>Decoding</legend>
@@ -511,28 +511,28 @@
         <div id="rp-state" class="rp-state mut"></div>
         <div class="rp-actions">
           <input type="password" id="rp-pw" placeholder="root password (once)" autocomplete="off" hidden>
-          <button type="button" class="small" id="rp-connect" title="with the skimmer's own key; the first time the board's root password, never stored">Connect</button>
-          <select id="rp-fpga" class="small" title="the bitstream the agent runs on: Pavel Demin's (16 receivers, one rate an IP) or the skimmer's own (24 slots, a rate each: SKRS — docs/FPGA.md)">
-            <option value="">bitstream: as the card has it</option><option value="stock">Pavel's stock bitstream</option><option value="skimmer">the skimmer's own (24 slots)</option></select>
-          <button type="button" class="small" id="rp-install" title="the skimmer's agent in place of Pavel Demin's two servers (his start.sh kept)">Install the agent</button>
+          <button type="button" class="small" id="rp-connect" title="with the decoder's own key; the first time the board's root password, never stored">Connect</button>
+          <select id="rp-fpga" class="small" title="the bitstream the agent runs on: Pavel Demin's (16 receivers, one rate an IP) or the decoder bitstream (24 slots, a rate each: SKRS — docs/FPGA.md)">
+            <option value="">bitstream: as the card has it</option><option value="stock">Pavel Demin's stock bitstream</option><option value="skimmer">the decoder bitstream (24 slots)</option></select>
+          <button type="button" class="small" id="rp-install" title="the decoder agent in place of Pavel Demin's two servers (his start.sh kept)">Install the agent</button>
           <button type="button" class="small" id="rp-uninstall" title="Pavel Demin's start.sh back, and run">Uninstall</button>
           <label class="rp-take"><input type="checkbox" id="rp-take"> even while another client streams</label>
         </div>
         <div id="rp-ext" class="rp-ext" hidden>
-          <div class="mut">Inputs for another client (an IP this skimmer does not take — e.g. CW Skimmer Server), kept on the board:</div>
+          <div class="mut">Inputs for another client (an IP this decoder does not take — e.g. CW Skimmer Server), kept on the board:</div>
           <div id="rp-ext-rows"></div>
           <button type="button" class="small" id="rp-ext-apply">Apply on the board</button>
         </div>
-        <small class="note-s">The skimmer talks to its board over SSH with its own key. Connect asks once for the board's
+        <small class="note-s">The decoder talks to its board over SSH with its own key. Connect asks once for the board's
           root password (it is never stored) and puts the key there. <i>Install</i> replaces Pavel Demin's two servers with
-          the skimmer's agent on the same FPGA image: Protocol 1 on both IPs as before (CW Skimmer Server and others work
-          unchanged), plus each receiver's input and the board's state for Statistics. <i>Uninstall</i> puts Pavel's start
+          the decoder agent on the same FPGA image: Protocol 1 on both IPs as before (CW Skimmer Server and others work
+          unchanged), plus each receiver's input and the board's state for Statistics. <i>Uninstall</i> puts Pavel Demin's start
           back. Nothing changes on the board without one of these buttons.</small>
       </fieldset>
       <fieldset>
         <legend>Bands <span class="mut" id="band-count"></span></legend>
         <div class="wrap"><table class="grid bands-edit">
-          <thead><tr><th>RX</th><th title="received — an unticked band stays in the list, off">on</th><th>name</th><th>centre kHz</th><th title="what the receiver takes in: its centre ± half the rate">kHz from – to</th><th class="rp-only" title="the board's IP: A = receivers 1–8, B = 9–16 (8 each)">IP</th><th class="rp-only" title="the ADC input (needs the skimmer's agent on the board)">input</th><th class="skrs-only" title="the band's own rate (SKRS); empty = the Rate above">rate</th><th>CW</th><th>engine</th><th>RTTY</th><th title="empty = this PC; a worker's name = received here, its IQ passed to that worker, which decodes it">decoded by</th><th></th></tr></thead>
+          <thead><tr><th>RX</th><th title="received — an unticked band stays in the list, off">on</th><th>name</th><th>centre kHz</th><th title="what the receiver takes in: its centre ± half the rate">kHz from – to</th><th class="rp-only" title="the board's IP: A = receivers 1–8, B = 9–16 (8 each)">IP</th><th class="rp-only" title="the ADC input (needs the decoder agent on the board)">input</th><th class="skrs-only" title="the band's own rate (SKRS); empty = the Rate above">rate</th><th>CW</th><th>engine</th><th>RTTY</th><th title="empty = this PC; a worker's name = received here, its IQ passed to that worker, which decodes it">decoded by</th><th></th></tr></thead>
           <tbody id="band-rows"></tbody>
         </table></div>
         <datalist id="worker-names"></datalist>

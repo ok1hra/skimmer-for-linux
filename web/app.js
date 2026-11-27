@@ -1724,7 +1724,7 @@ function bandRow(b, may, rx, rate) {
       : `<td><input data-k="name" value="${esc(b.name)}" size="6"${dis} title="a band of your own"></td>`) +
     `<td><input data-k="khz" value="${esc(b.khz)}" inputmode="decimal" size="9"${b.seg ? ` placeholder="${esc(fmtKhz(b.def / 1000, null, ' '))}" title="empty = the segment's centre; a number moves it"` : ''}${dis}></td>` +
     `<td class="mut span">${span}</td>` +
-    `<td class="rp-only"><select data-k="ip"${dis}><option value="a">A</option><option value="b">B</option><option value="ab" title="phased: IN1 on IP A and IN2 on IP B at this centre, combined channel by channel before decoding — a receiver on each IP, one rate on both, the skimmer's agent on the board">A+B Φ</option></select></td>` +
+    `<td class="rp-only"><select data-k="ip"${dis}><option value="a">A</option><option value="b">B</option><option value="ab" title="phased: IN1 on IP A and IN2 on IP B at this centre, combined channel by channel before decoding — a receiver on each IP, one rate on both, the decoder agent on the board">A+B Φ</option></select></td>` +
     `<td class="rp-only"><select data-k="input"${dis}${rpSplit() || ip === 'ab' ? ` disabled title="${ip === 'ab' ? 'phased: IN1 at A, IN2 at B' : 'two antennas: the IP names the input'}"` : ''}><option value="1">IN1</option><option value="2">IN2</option><option value="12" title="phased on this IP: two of its receivers at this centre, IN1 and IN2, combined channel by channel before decoding — one stream, so aligned by itself; the other IP stays free">IN1+IN2 Φ</option></select></td>` +
     `<td class="skrs-only"><select data-k="rate"${dis}><option value="">${bandRate() / 1000} k</option><option value="48000">48 k</option><option value="96000">96 k</option><option value="192000">192 k</option><option value="384000">384 k</option></select></td>` +
     `<td><input type="checkbox" data-k="cw"${b.cw ? ' checked' : ''}${dis}></td>` +
@@ -2619,7 +2619,7 @@ function rpDiagram() {
   const st = (rp.d && rp.d.ips) || [];
   const host = (k) => (st[k] && st[k].host) || (k ? ($('[name="rp.b_host"]').value.trim() || 'IP B') : (($('[name="radio.host"]').value.split(',')[0] || '').split('@')[0].trim() || 'IP A'));
   const who = (k) => {
-    if (sets[k].n) return ['this skimmer', `${sets[k].n} band${sets[k].n === 1 ? '' : 's'} · ${sets[k].rate / 1000} kHz`, 'on'];
+    if (sets[k].n) return ['this decoder', `${sets[k].n} band${sets[k].n === 1 ? '' : 's'} · ${sets[k].rate / 1000} kHz`, 'on'];
     const s = st[k] && st[k].state;
     if (s === 'busy') return ['another client', 'streams from it now', 'busy'];
     return ['free', 'for another client (CW Skimmer…)', 'off'];
@@ -2639,7 +2639,7 @@ function rpDiagram() {
     }
     g += `<rect class="box ${s.n ? 'on' : ''}" x="180" y="${y[k] - 26}" width="170" height="52" rx="4"/>` +
          `<text x="265" y="${y[k] - 4}" text-anchor="middle">receivers ${k ? '9–16' : '1–8'}</text>` +
-         `<text class="mut" x="265" y="${y[k] + 14}" text-anchor="middle">${s.n ? `${s.n} of 8 · ${s.rate / 1000} kHz` : 'none for this skimmer'}</text>` +
+         `<text class="mut" x="265" y="${y[k] + 14}" text-anchor="middle">${s.n ? `${s.n} of 8 · ${s.rate / 1000} kHz` : 'none for this decoder'}</text>` +
          `<path class="${w[2]}" d="M350 ${y[k]} L 400 ${y[k]}"/>` +
          `<rect class="box ${w[2]}" x="400" y="${y[k] - 26}" width="110" height="52" rx="4"/>` +
          `<text x="455" y="${y[k] - 4}" text-anchor="middle">IP ${k ? 'B' : 'A'}</text>` +
@@ -2656,9 +2656,9 @@ function rpRender() {
   if (!d) return;
   const b = d.board || {};
   const sub = !d.ssh ? 'ssh is not installed on this PC (openssh-client)'
-    : !d.connected ? (d.key ? 'not connected' : 'not connected yet — Connect puts the skimmer\'s key there')
-    : `${b.hw || '?'} · Alpine ${b.alpine || '?'} · ${b.installed && b.agent ? b.agent.replace('skimmer-rp', 'skimmer agent') : b.stock ? 'Pavel Demin\'s servers' : 'no servers running'}` +
-      (b.installed && b.fpga === 'skimmer' ? ' · the skimmer\'s bitstream' : '');
+    : !d.connected ? (d.key ? 'not connected' : 'not connected yet — Connect puts the decoder\'s key there')
+    : `${b.hw || '?'} · Alpine ${b.alpine || '?'} · ${b.installed && b.agent ? b.agent.replace('skimmer-rp', 'decoder agent') : b.stock ? 'Pavel Demin\'s servers' : 'no servers running'}` +
+      (b.installed && b.fpga === 'skimmer' ? ' · the decoder bitstream' : '');
   $('#rp-sub').textContent = sub;
   const busy = !!d.job;
   const stEl = $('#rp-state');
@@ -2670,12 +2670,12 @@ function rpRender() {
   const supported = (b.hw || '').startsWith('STEM_122-16SDR') && b.pavel && b.xdevcfg;
   $('#rp-install').disabled = !may || busy || !d.connected || !supported || !d.agent_file;
   $('#rp-install').title = !d.agent_file ? 'this build carries no Red Pitaya agent'
-    : !supported && d.connected ? 'only a STEMlab 122.88-16 SDR on Pavel Demin\'s image' : 'the skimmer\'s agent in place of Pavel Demin\'s two servers (his start.sh kept)';
+    : !supported && d.connected ? 'only a STEMlab 122.88-16 SDR on Pavel Demin\'s image' : 'the decoder agent in place of Pavel Demin\'s two servers (his start.sh kept)';
   $('#rp-install').textContent = b.installed ? 'Reinstall the agent' : 'Install the agent';
   $('#rp-fpga').disabled = $('#rp-install').disabled;
   $('#rp-fpga').querySelector('option[value=skimmer]').disabled = !d.bit_file;
   $('#rp-fpga').querySelector('option[value=""]').textContent =
-    `bitstream: as the card has it (${b.fpga === 'skimmer' ? 'the skimmer\'s own' : 'Pavel\'s'})`;
+    `bitstream: as the card has it (${b.fpga === 'skimmer' ? 'the decoder bitstream' : 'Pavel Demin\'s'})`;
   $('#rp-uninstall').disabled = !may || busy || !d.connected || !b.backup;
   $('.rp-take').classList.toggle('hi', /another client/.test(d.error || ''));
   // inputs for another client: on an IP this skimmer takes no band from
@@ -2725,14 +2725,14 @@ on('#rp-connect', 'click', () => {
 on('#rp-pw', 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#rp-connect').click(); } });
 on('#rp-install', 'click', () => {
   const take = $('#rp-take').checked;
-  if (!confirm('Install the skimmer\'s agent on the Red Pitaya?\n\nPavel Demin\'s start.sh is kept (start.sh.pavel) and comes back with Uninstall. ' +
+  if (!confirm('Install the decoder agent on the Red Pitaya?\n\nPavel Demin\'s start.sh is kept (start.sh.pavel) and comes back with Uninstall. ' +
                'Both IPs\' streams stop for a moment while the agent takes over' + (take ? ' — including another client\'s.' : '.'))) return;
   const fpga = $('#rp-fpga').value;
   rpAction({ action: 'install', ...(take ? { take_over: '1' } : {}), ...(fpga ? { fpga } : {}) });
 });
 on('#rp-uninstall', 'click', () => {
   const take = $('#rp-take').checked;
-  if (!confirm('Put Pavel Demin\'s start.sh back and run it? The skimmer\'s agent leaves the board.')) return;
+  if (!confirm('Put Pavel Demin\'s start.sh back and run it? The decoder agent leaves the board.')) return;
   rpAction({ action: 'uninstall', ...(take ? { take_over: '1' } : {}) });
 });
 on('#rp-ext-apply', 'click', () => {
@@ -2757,7 +2757,7 @@ function renderRp(x, g) {
   if (card.hidden) return;
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const fpgaClass = (t) => (t >= 85 ? 'hot' : t >= 75 ? 'warm' : 'cool');
-  $('#rp-card-sub').textContent = r ? `${r.board || ''}${r.firmware ? ` · ${r.firmware.replace('skimmer-rp', 'skimmer agent')}` : ''}` : '';
+  $('#rp-card-sub').textContent = r ? `${r.board || ''}${r.firmware ? ` · ${r.firmware.replace('skimmer-rp', 'decoder agent')}` : ''}` : '';
   const tiles = [];
   const tile = (k, v, title = '') => tiles.push(`<div class="tile"${title ? ` title="${esc(title)}"` : ''}><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`);
   if (r && r.fpga_c != null) tile('FPGA', `<b class="temp ${fpgaClass(r.fpga_c)}">${fmt(r.fpga_c)} °C</b>`, 'the Zynq\'s own sensor (XADC); rated to 85 °C');
@@ -2767,8 +2767,8 @@ function renderRp(x, g) {
     const db = (p) => (p > 0 ? `${fmt(Math.min(0, Math.round(200 * Math.log10(p / 32768)) / 10) || 0, 1)} dBFS` : '–');
     const clip = (bit) => (r.clips & bit ? ' <b class="temp hot">clipped</b>' : '');
     tile('ADC', `IN1 ${db(r.peak_in1)}${clip(1)} · IN2 ${db(r.peak_in2)}${clip(2)}`,
-      'the skimmer\'s bitstream: each input\'s peak over the last 5 ms; "clipped" = a full-scale sample since the board\'s last sync (a null needs both inputs unclipped)');
-    tile('bitstream', `the skimmer\'s · ${r.slots || 24} slots`, 'docs/FPGA.md');
+      'the decoder bitstream: each input\'s peak over the last 5 ms; "clipped" = a full-scale sample since the board\'s last sync (a null needs both inputs unclipped)');
+    tile('bitstream', `decoder · ${r.slots || 24} slots`, 'docs/FPGA.md');
   }
   for (const [k, ip] of ((r && r.ips) || []).entries()) {
     const name = `IP ${k ? 'B' : 'A'}`;
