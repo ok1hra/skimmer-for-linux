@@ -81,8 +81,62 @@ from the hardware is only this:
 3. **Stable offsets** over the estimation window (seconds). Measured
    drift was < 1° over 2 s.
 
-So the stock bitstream is enough. An FPGA of our own (NCO phase reset, a
-hardware time stamp) would be a convenience, not a requirement.
+So the stock bitstream is enough for phasing itself. The FPGA of our own
+(`docs/FPGA.md`) comes for capacity — every HF band from both inputs needs
+20–22 DDCs at a rate each — and it brings the three things below with it.
+
+### Calibration: what needs it, and what the FPGA gives instead
+
+The design needs no calibration of the two receive paths, and no injected
+signal (a TX output fed back into the inputs, say). Every constant or
+slowly changing difference between the paths — cables, input
+transformers, the board's anti-alias filters, the NCOs' phase, the
+antennas themselves — is inside what the weights estimate. The weights
+do not separate "hardware" from "antenna and path"; they find the
+combination that lifts a station or takes an interferer out, and the
+hardware is part of what they measure. A cable-length difference turns
+into a phase that grows with frequency (20 m of cable ≈ 14° across
+384 kHz); the weights are per channel, so that is absorbed too.
+
+Calibration would matter only for two things this design does not do or
+does not depend on:
+
+- **Steering by geometry** (a beam or a null "at azimuth X°" computed from
+  where the antennas stand) needs the paths' absolute phase, cables
+  included. The design never uses geometry: the steering vector comes from
+  the signal itself.
+- **Weights kept across a restart** (Fixed mode, the memories M1–M3, a
+  learned null on a local interferer) are only valid while the two NCOs
+  keep their phase relation. On stock the relation after a retune is not
+  known, so a kept weight may need re-tuning; MVDR/MRC re-converge in a
+  second or two.
+
+What the hardware must give phasing, and the FPGA of our own provides by
+construction:
+
+1. **A fixed relation between the two inputs' DDCs**: one clock (given),
+   both NCOs reset by one strobe and new frequencies applied by one strobe,
+   and a hardware sample counter latched at that reset and stamped into
+   the stream. The sample index then is exact by construction, not by the
+   agent's bookkeeping. F0 measured lag 0 and ±0.27° within one run; it did
+   not measure across restarts — the common reset makes that question go
+   away.
+2. **Equal frequency and rate on both inputs** for every phased band (two
+   slots, one per input, written in one apply).
+3. **ADC overload per input**: a peak register and a sticky clip flag for
+   IN1 and IN2, stamped into the stream. Clipping breaks the linear
+   relation between the inputs and every null with it; the skimmer must
+   know, show it beside the coherence, and fall back to IN1 while it lasts.
+
+**A test tone on OUT1 (optional, for the bench).** The STEMlab 122.88-16
+has two DAC outputs, and a DDS → DAC tone costs the FPGA little (one NCO,
+the DAC interface). It is for measurements on the bench, not operation:
+OUT1 through a splitter into IN1 and IN2 measures both paths' phase and
+gain against frequency, their stability across restarts and retunes (the
+NCO reset's own test), and gives a self-test of the whole chain. Not in
+operation: the inputs sit on antennas, so injecting needs a coupler on each
+input; the tone would occupy a frequency, show up in the skimmer as a
+carrier, and leak to the antenna as a (tiny) emission.
 
 ## The combiner, per channel
 
@@ -431,10 +485,11 @@ side by side, the groups, the stations, the measured lag and the CPU.
    48–384 kHz). The ARM budget from F0 applies to each IP: with agent 0.3,
    8 × 192 kHz on each. That allows 8 phased bands at 96–192 kHz, using
    all 16 DDCs.
-4. **An FPGA of our own (later, optional)**: NCO phase reset and a
-   hardware sample counter would make the index exact by construction,
-   and per-input ADC peak/overload registers would tell whether one antenna
-   is overdriven. Not needed for the first version.
+4. **The FPGA of our own (`docs/FPGA.md`)**: NCO phase reset and a
+   hardware sample counter make the index exact by construction, and
+   per-input ADC peak/overload registers tell whether one antenna is
+   overdriven ("Calibration" above). Phasing works without it on stock;
+   the FPGA is planned for capacity and brings these with it.
 
 ### The skimmer
 
@@ -465,8 +520,12 @@ side by side, the groups, the stations, the measured lag and the CPU.
 ## An FPGA of our own: what changes, what does not
 
 The design runs on the stock bitstream, and nothing in it waits for an
-FPGA of our own. It is built so that one can come in later behind the same
-interfaces:
+FPGA of our own. Since 2026-11-27 one is planned anyway (`docs/FPGA.md`:
+every HF band from both inputs does not fit the stock 16 DDCs), and it
+comes in behind the same interfaces. Required of it for phasing: the
+common NCO reset and apply strobe, the hardware sample counter in the
+stream, equal frequency and rate for a pair, ADC overload per input
+("Calibration" above); optional: the OUT1 test tone for the bench.
 
 - **The sample index is an interface, not an implementation.** The
   skimmer aligns the two streams by (epoch, sample index) from the stream.
@@ -564,13 +623,10 @@ What the air taught, and what changed for it:
 
 ## Open questions for P0
 
-- (2026-11-25: IN2 is empty at the station; Dan will say when an antenna
-  can go there — ask then, not before.) What does the station have on IN2? A second antenna (spaced how far, for
-  which bands?), a noise antenna for nulling, or another polarisation?
-  The answer sets the first mode to tune (MVDR for nulling, MRC for
-  diversity).
+- IN2 carries a wideband receive antenna since 2026-11-26 (P0 above).
 - Does the phase offset between the two instances change at a retune? F0
   could not tell. With adaptive weights it does not matter, but Fixed mode
-  would need re-tuning after each retune.
+  would need re-tuning after each retune. The FPGA of our own resets both
+  NCOs together, and its OUT1 tone measures exactly this on the bench.
 - The channelizer's real CPU cost per band, measured on this machine:
   that decides how many bands can be phased at once.
