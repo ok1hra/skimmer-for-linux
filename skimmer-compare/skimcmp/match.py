@@ -29,6 +29,7 @@ from statistics import median
 
 from .arbiter import RANK, Arbiter
 from .intervals import Membership, intersect, normalize, subtract, total
+from .logs import Spot
 from .windows import Windows, remote_at
 
 CQ_WORDS = {"CQ", "TEST", "QRZ"}
@@ -303,6 +304,23 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine, call
             if b and not (b in off and sp.t in off[b]):
                 dst.append((b, sp))
     Lin = [(b, sp) for b, sp in Lin if sp.cm in CQ_WORDS]
+    # A phased band (docs/PHASING.md): L's SNR as antenna A alone would have
+    # had it — SNR − G_A, the spot's own (phase-<T>.jsonl) or else its band's
+    # median in the status — so the SNR scale, its bins and the L→W curve
+    # compare the decoders, not the antennas. A.phased: [(t, how, G_A, band)].
+    A.phased = []
+    snaps = store.phase_snaps()
+    if snaps[0] or store.phase:
+        adj = []
+        for b, sp in Lin:
+            ga, how = store.phase_a(b, sp.t, sp.f, sp.call, snaps)
+            if how:
+                A.phased.append((sp.t, how, ga, b))
+            if how in ("spot", "band") and ga:
+                sp = Spot(sp.t, sp.f, sp.call, int(round(sp.snr - ga)), sp.wpm, sp.cm,
+                          sp.spotter, sp.line, sp.mode)
+            adj.append((b, sp))
+        Lin = adj
     Rcq = [(b, sp) for b, sp in Rin if sp.cm in CQ_WORDS]
     Rnon = defaultdict(list)
     for b, sp in Rin:

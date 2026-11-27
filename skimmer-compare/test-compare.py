@@ -961,6 +961,62 @@ def paused_bands():
           "RTTY: RBN's UA9EEE on 20 m counts only after the pause (%s)" % b.get("rbn"))
 
 
+def phased_bands():
+    print("=== phased bands — L's SNR taken back to antenna A alone (SNR − Φ_A)")
+    root = tempfile.mkdtemp(prefix="compare-phased-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    with open(os.path.join(root, "headless.ini"), "w") as fh:
+        fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n20m=14040000\n")
+    with open(os.path.join(root, "master.scp"), "w") as fh:
+        fh.write("# test\nUA9AAA\nUA9BBB\nUA9CCC\nUA9DDD\n")
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\n"
+                 "[remote]\nwindows = 7000-7091 14000-14091\n[rbn]\nexclude = OK1HRA\n")
+    T = "20261001-120000"
+    loc = [mark("12:00:00", "connected to 127.0.0.1:7373"),
+           L("12:10:00", 7020.0, "UA9AAA", snr=20),     # 40 m phased, its own Φ_A 5.0
+           L("12:20:00", 7021.0, "UA9BBB", snr=18),     # 40 m phased, no record: the band's 3.0
+           L("12:30:00", 14020.0, "UA9CCC", snr=20),    # 20 m not phased
+           L("12:52:00", 7022.0, "UA9DDD", snr=20)]     # 40 m on antenna A alone (mode a)
+    rem = [mark("12:00:00", "connected to 192.168.1.201:7301")]
+    rbn = [mark("12:00:00", "connected to telnet.reversebeacon.net:7000")]
+    events = ["%s recording as OK1HRA since %s UTC\n" % (ts("12:00:00"), T),
+              "%s stopped — write check OK\n" % ts("14:00:00")]
+    for kind, lines in (("local", loc), ("remote", rem), ("rbn", rbn), ("events", events)):
+        with open(os.path.join(logs, "%s-%s.log" % (kind, T)), "w") as fh:
+            fh.writelines(lines)
+    with open(os.path.join(logs, "status-%s.jsonl" % T), "w") as fh:
+        for m in range(0, 120, 5):
+            ph = {"mode": "a" if m >= 50 else "mvdr", "gain_db": 1.0, "gain_a_db": 3.0}
+            bands = [{"band": "40m", "centre_hz": 7040000, "phase": ph},
+                     {"band": "20m", "centre_hz": 14040000, "phase": None}]
+            fh.write("%s\t%s\n" % (ts("%02d:%02d:00" % (12 + m // 60, m % 60)), json.dumps(
+                {"streaming": True, "lost_pct": 0, "rate": 96000, "engine": "cw-v4", "bands": bands})))
+    with open(os.path.join(logs, "phase-%s.jsonl" % T), "w") as fh:
+        fh.write("%s\t%s\n" % (ts("12:11:00"), json.dumps(
+            {"t": epoch("12:10:00"), "call": "UA9AAA", "mode": "CW", "khz": 7020.0, "snr": 20,
+             "speed": 22, "band": "40m", "src": "", "phase": 2.0, "phase_a": 5.0})))
+        fh.write("%s\t%s\n" % (ts("12:31:00"), json.dumps(      # no G_A: not used
+            {"t": epoch("12:20:00"), "call": "UA9BBB", "mode": "CW", "khz": 7021.0, "snr": 18,
+             "speed": 22, "band": "40m", "src": "", "phase": 1.0, "phase_a": None})))
+    cfg = Config(os.path.join(root, "compare.ini"))
+    store = Store(cfg.logs, lambda: RbnIndex(loose_bands(cfg.local_windows, 2.0), cfg.exclude))
+    store.poll()
+    An = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
+                 epoch("23:00:00"))
+    snr = {sp.call: sp.snr for _, sp in An.Lin}
+    check(snr.get("UA9AAA") == 15, "the spot's own Φ_A: 20 − 5 = 15 (%s)" % snr.get("UA9AAA"))
+    check(snr.get("UA9BBB") == 15, "no Φ_A of its own: the band's median, 18 − 3 = 15 (%s)" % snr.get("UA9BBB"))
+    check(snr.get("UA9CCC") == 20 and snr.get("UA9DDD") == 20,
+          "20 m not phased and 40 m on antenna A alone: as sent (%s, %s)" % (snr.get("UA9CCC"), snr.get("UA9DDD")))
+    check([sp.snr for sp in store.L if sp.call == "UA9AAA"] == [20], "the recorded spot itself is not changed")
+    S = summarize(An, epoch("12:00:00"), epoch("14:00:00") + 1)
+    ph = S["counts"]["phased_L"]
+    check(ph == {"spot": 1, "band": 1, "off": 1, "mean_db": 4.0, "bands": ["40m"]},
+          "the counts: one by its own Φ, one by the band's, one switched off (%s)" % ph)
+
+
 def RT(hms, spotter, f, call, cm="CQ"):
     """An RTTY line: skimmer-headless and RBN name the mode, 45 BPS."""
     return "%s\tDX de %-9s %7.2f  %-12s RTTY  20 dB  45 BPS  %-6s 1200Z\n" % (
@@ -1056,6 +1112,7 @@ if __name__ == "__main__":
     dead_feed()
     rtty()
     paused_bands()
+    phased_bands()
     print("  (files in %s)" % root)
     print("\n%s (%d failure%s)" % ("FAIL" if fails else "PASS", fails, "" if fails == 1 else "s"))
     sys.exit(1 if fails else 0)

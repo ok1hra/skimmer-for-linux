@@ -204,6 +204,14 @@ function renderFacts() {
       el('span', { cls: 'muted' }, ` CQ spots left out: L spots only the calls its callsign filter lets through`
         + (F.about ? ` (${F.about})` : '') + `, so both sides are compared on those calls only`
         + (F.since != null ? ` (since ${utc(F.since)} UTC)` : ''))) : []),
+    // a phased band (L's two antennas combined): its SNR taken back to antenna A alone
+    ...(c.phased_L ? fact('Phasing', el('b', null, `L ${num(c.phased_L.spot + c.phased_L.band + c.phased_L.off)} spots`),
+      el('span', { cls: 'muted' }, ` of phased bands (${c.phased_L.bands.join(', ')}): L combined two antennas there, W one — `
+        + `their SNR is taken back to antenna A alone (SNR − Φ_A`
+        + (c.phased_L.mean_db != null ? `, ${c.phased_L.mean_db > 0 ? '−' : '+'}${Math.abs(c.phased_L.mean_db).toFixed(1)} dB on average` : '')
+        + `; ${num(c.phased_L.spot)} by the spot's own Φ, ${num(c.phased_L.band)} by the band's median`
+        + (c.phased_L.off ? `, ${num(c.phased_L.off)} with phasing switched off` : '')
+        + `), so the SNR bins compare the decoders. Recall and busts still include what phasing gave L.`)) : []),
   );
 }
 

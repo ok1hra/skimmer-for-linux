@@ -46,6 +46,11 @@
 #                    (lines in the file vs. lines the recorder wrote),
 #                    write errors, suspend/freeze detection, disk space
 #   status-<T>.jsonl local skimmer status (/status.json) every -S seconds
+#   phase-<T>.jsonl  a phased band's spots as the local skimmer's /api/spots
+#                    lists them (beside -w), each once, asked every heartbeat:
+#       2026-11-27T21:30:05Z<TAB>{"t":…,"call":…,"khz":…,"phase":…,"phase_a":…}
+#                    what phasing gave the spot (docs/PHASING.md) — compare
+#                    takes its SNR back to antenna A alone
 #
 # A dropped feed reconnects every 10 s; the others keep recording.
 #
@@ -113,6 +118,7 @@ REMOTE_FILE="$OUT/remote-$START.log"
 RBN_FILE="$OUT/rbn-$START.log"
 EVENTS="$OUT/events-$START.log"
 SNAPS="$OUT/status-$START.jsonl"
+PHASE_FILE="$OUT/phase-$START.jsonl"
 STATE="$OUT/.state-$START"            # recorder counters, one file per feed
 mkdir -p "$STATE" || exit 1
 
@@ -336,6 +342,28 @@ snapshot() {          # [status JSON already fetched]
   fi
 }
 
+# A phased band's spots (the local skimmer's /api/spots, the last 5 min):
+# each spot whose object names "phase" goes to PHASE_FILE once — the line
+# on the feed does not carry what phasing gave it. Every heartbeat.
+declare -A PHASE_SEEN=()
+phase_spots() {
+  [[ $STATUS_URL == */status.json ]] || return
+  local j o k
+  j=$(curl -s --max-time 5 "${STATUS_URL%/status.json}/api/spots?minutes=5" 2>/dev/null) &&
+    [[ $j == \{* ]] || return
+  while IFS= read -r o; do
+    [[ -n ${PHASE_SEEN[$o]+x} ]] && continue
+    PHASE_SEEN[$o]=$EPOCHSECONDS
+    printf '%s\t%s\n' "$(ts)" "$o" 2>/dev/null >>"$PHASE_FILE" ||
+      note "WRITE ERROR — $PHASE_FILE not writable"
+  done < <(grep -o '{"t":[^{}]*"phase":[^{}]*}' <<<"$j")
+  if ((${#PHASE_SEEN[@]} > 2000)); then        # past the window asked for: forget
+    for k in "${!PHASE_SEEN[@]}"; do
+      ((EPOCHSECONDS - PHASE_SEEN[$k] > 900)) && unset 'PHASE_SEEN[$k]'
+    done
+  fi
+}
+
 # Is the local skimmer's telnet feed on the port we record? Its status says
 # which port it serves ("feed_port", 0 = feed off). Noted on every change;
 # a moved feed is followed (same host, the new port) unless -F.
@@ -462,6 +490,7 @@ while :; do
     kill -0 "$p" 2>/dev/null || note "ERROR: a recorder process ($p) died"
   done
   probe_feed_port
+  phase_spots
   WRITE_OK=1
   check_feed local "$LOCAL_FILE"; line=$FIELD
   check_feed remote "$REMOTE_FILE"; line+=" · $FIELD"

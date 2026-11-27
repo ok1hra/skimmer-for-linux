@@ -9,6 +9,9 @@ UTC start time <T>:
   events-<T>.log   <UTC> message      ("stopped — write check …" ends the session,
                                        a later "resumed session …" (-C) continues it)
   status-<T>.jsonl <UTC>\\t{json}     local skimmer health every few minutes
+  phase-<T>.jsonl  <UTC>\\t{json}     a phased band's spot as the local skimmer's
+                                       /api/spots has it: what phasing gave it
+                                       ("phase", "phase_a" — docs/PHASING.md)
 
 Files are tailed: each poll reads only what was appended, keeps a trailing
 partial line for the next poll, and picks up sessions that appear later.
@@ -22,9 +25,10 @@ import json
 import os
 import re
 import threading
+from bisect import bisect_right
 
 from .intervals import normalize
-from .windows import snapshot_paused, snapshot_windows
+from .windows import snapshot_paused, snapshot_phase, snapshot_windows
 
 RESUMED = "resumed session"   # capture-spots.sh -C: the session goes on
 # what capture-spots.sh says about the local skimmer's telnet feed port (from
@@ -34,7 +38,7 @@ PORT_WRONG_RE = re.compile(r"WARNING: the local skimmer serves its feed on port 
 PORT_OFF = "reports its telnet feed OFF"
 PORT_OK = "local skimmer feed confirmed on port"
 PORT_FOLLOWED = "— the recorder follows it"     # capture-spots.sh moved to the new port
-FILE_RE = re.compile(r"^(local|remote|rbn|events|status)-(\d{8}-\d{6})\.(?:log|jsonl)$")
+FILE_RE = re.compile(r"^(local|remote|rbn|events|status|phase)-(\d{8}-\d{6})\.(?:log|jsonl)$")
 # one regex for all three dialects:
 #   DX de OK1HRA-#:   1825.8  OK1CF        CW    30 dB  25 WPM  CQ      1727Z   skimmer-for-linux
 #   DX de OK1HRA-#:   1826.1  RZ3DX          15 dB  29 WPM                1727Z   CW Skimmer Server
@@ -44,6 +48,9 @@ SPOT_RE = re.compile(
     r"(-?\d+)\s+dB\s+(\d+)\s+(WPM|BPS)\b\s*(.*?)\s*\d{4}Z\s*$")
 
 STALE_S = 180          # a live session whose events log is this quiet has died
+PHASE_DT_S = 90        # a phase record names the spot within this many seconds …
+PHASE_DF_KHZ = 0.3     # … and kHz (the page's spot and the feed's line, one spot)
+PHASE_SNAP_S = 600     # a band's median gain holds this long after its status snapshot
 PAUSE_EDGE_S = 600     # a pause seen in one status snapshot reaches at most this far
                        # towards a neighbour that does not show it (snapshots: 300 s,
                        # and at once on a change since 2026-11-21)
@@ -133,7 +140,8 @@ class Session:
         self.tails = {}
         self.conn = {"local": [], "remote": [], "rbn": []}   # [(t, up)]
         # [(t, streaming, lost_pct, engine or None, windows or None,
-        #   RTTY windows or None, paused or None)] — windows.snapshot_paused
+        #   RTTY windows or None, paused or None, phased or None)] —
+        #   windows.snapshot_paused, windows.snapshot_phase
         self.health = []
         self.stopped = None       # time of "stopped — write check"
         self.last_t = self.start  # newest timestamp seen in any of its files
@@ -267,12 +275,44 @@ class Store:
         # (RTTY against RBN, rtty.py). The referee (rbn) takes every mode:
         # a call RBN heard in RTTY is a real call too.
         self.L, self.R, self.Lr = [], [], []
+        # what phasing gave the local skimmer's phased-band spots: {call:
+        # [(t, kHz, G, G_A)]} (phase-<T>.jsonl; G, G_A None where unknown)
+        self.phase = {}
         self.rbn = self.rbn_factory()
         self.rbn_rtty = self.rbn_factory()
         self.version += 1
 
     def ordered(self):
         return [self.sessions[T] for T in sorted(self.sessions)]
+
+    def phase_snaps(self):
+        """([t], [{band: (mode, G_A)}]) of every status snapshot that names
+        the phased bands ({} = none phased), oldest first — for phase_a."""
+        snaps = sorted(((h[0], h[7]) for s in self.sessions.values() for h in s.health
+                        if len(h) > 7 and h[7] is not None), key=lambda x: x[0])
+        return [t for t, _ in snaps], [m for _, m in snaps]
+
+    def phase_a(self, band, t, f, call, snaps):
+        """What phasing gave a local spot over antenna A alone (dB, G_A),
+        and where that came from: ("spot", the spot's own record), ("band",
+        the band's median in the status snapshot before it — snaps from
+        phase_snaps()), ("off", the band phased but on antenna A alone — 0),
+        or (None, not phased — 0)."""
+        best = None
+        for pt, khz, g, ga in self.phase.get(call, ()):
+            if abs(pt - t) <= PHASE_DT_S and abs(khz - f) <= PHASE_DF_KHZ and ga is not None:
+                if best is None or abs(pt - t) < best[0]:
+                    best = (abs(pt - t), ga)
+        if best is not None:
+            return best[1], "spot"
+        ts, maps = snaps
+        k = bisect_right(ts, t) - 1
+        if k < 0 or t - ts[k] > PHASE_SNAP_S or band not in maps[k]:
+            return 0.0, None
+        mode, ga = maps[k][band]
+        if mode == "a":
+            return 0.0, "off"
+        return (ga, "band") if ga is not None else (0.0, None)
 
     def current(self, now):
         """The session recording right now: the newest one with no stop line
@@ -312,7 +352,7 @@ class Store:
                 s.tails[kind] = Tail(os.path.join(self.dir, n))
         changed = False
         for s in self.ordered():
-            for kind in ("events", "status", "local", "remote", "rbn"):
+            for kind in ("events", "status", "phase", "local", "remote", "rbn"):
                 tail = s.tails.get(kind)
                 if tail is None:
                     continue
@@ -359,8 +399,18 @@ class Store:
             s.health.append((t, bool(d.get("streaming", True)),
                              float(d.get("lost_pct") or 0.0), d.get("engine") or None,
                              snapshot_windows(d), snapshot_windows(d, rtty=True),
-                             snapshot_paused(d)))
+                             snapshot_paused(d), snapshot_phase(d)))
             s.seen(t)
+            return
+        if kind == "phase":
+            _, _, js = line.partition("\t")
+            try:
+                d = json.loads(js)
+                t, call, khz = int(d["t"]), str(d["call"]), float(d["khz"])
+            except (ValueError, KeyError, TypeError):
+                return
+            num = lambda v: float(v) if isinstance(v, (int, float)) else None
+            self.phase.setdefault(call, []).append((t, khz, num(d.get("phase")), num(d.get("phase_a"))))
             return
         if line.startswith("#"):
             ts, _, msg = line[1:].partition("\t")

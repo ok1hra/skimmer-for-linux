@@ -163,6 +163,21 @@ def breakdown_block(evs):
     return out
 
 
+def phased(A, ta, tb):
+    """{"spot": n, "band": n, "off": n, "mean_db": mean G_A taken off, "bands": [...]}
+    of L's phased-band CQ spots in [ta, tb), or None when there were none."""
+    rows = [r for r in getattr(A, "phased", ()) if ta <= r[0] < tb]
+    if not rows:
+        return None
+    out = {"spot": 0, "band": 0, "off": 0}
+    for _, how, _, _ in rows:
+        out[how] += 1
+    g = [ga for _, how, ga, _ in rows if how in ("spot", "band")]
+    out["mean_db"] = round(sum(g) / len(g), 2) if g else None
+    out["bands"] = sorted({b for *_, b in rows})
+    return out
+
+
 def hourly(evs, ta, tb, common):
     """breakdown_block per UTC hour, trimmed to the hours with compared time."""
     hrs = [(t, t + 3600) for t in range(int(ta - ta % 3600), int(tb), 3600)]
@@ -379,7 +394,11 @@ def summarize(A, ta, tb):
             "spots_R_all": sum(ta <= sp.t < tb for _, sp in A.Rin),
             "events": len(evs), "rbn_spots": rbn_n, "rbn_own": rbn_own,
             # CQ spots of the compared time the local callsign filter left out
-            **{"filtered_" + k: filtered(A, k, ta, tb) for k in ("L", "R")}},
+            **{"filtered_" + k: filtered(A, k, ta, tb) for k in ("L", "R")},
+            # L's CQ spots of a phased band (match.py A.phased): their SNR taken
+            # back to antenna A alone — from the spot's own record or its band's
+            # median; "off" = the band on antenna A alone then
+            "phased_L": phased(A, ta, tb)},
         "cats": cats,
         "recall": rec, "bust": bust, "latency": lat,
         "breakdown": breakdown_block(evs),

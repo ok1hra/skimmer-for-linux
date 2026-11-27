@@ -149,9 +149,16 @@ class Feed(threading.Thread):
                 c.close()
 
 
+# /api/spots: one spot of a phased band (it names "phase"), one not — the
+# recorder keeps the first, once, however often it asks
+SPOTS = (b'{"now":1,"minutes":5,"spots":[{"t":1795793523,"call":"UY2UA","mode":"CW","khz":7018.3,'
+         b'"snr":15,"speed":33,"band":"40m","src":"","phase":1.5,"phase_a":2.5},'
+         b'{"t":1795793522,"call":"G0HSP","mode":"CW","khz":14077.0,"snr":2,"speed":20,"band":"20m","src":""}]}')
+
+
 class Status(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        body = b'{"radio":"mock","bands":[]}'
+        body = SPOTS if self.path.startswith("/api/spots") else b'{"radio":"mock","bands":[]}'
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -227,7 +234,7 @@ def start_capture(out, lport, rport, sport, seconds, bport=None, extra_env=None,
 
 
 def files(out):
-    f = {k: None for k in ("local", "remote", "rbn", "events", "status")}
+    f = {k: None for k in ("local", "remote", "rbn", "events", "status", "phase")}
     for n in os.listdir(out):
         for k in f:
             if n.startswith(k + "-"):
@@ -311,6 +318,10 @@ def run1():
           "events: the heartbeat counts the rbn feed")
     n = sum(1 for _ in open(f["status"])) if f["status"] else 0
     check(n >= 3, "status snapshots: %d lines" % n)
+    ph = open(f["phase"]).read().splitlines() if f["phase"] else []
+    check(len(ph) == 1 and '"call":"UY2UA"' in ph[0] and '"phase_a":2.5}' in ph[0]
+          and re.match(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\t\{", ph[0]),
+          "phase: the phased band's spot once, the other not (%d lines)" % len(ph))
     check(not any(x.startswith(".state") for x in os.listdir(out)), "state dir removed")
     check(inhibitors() == inh0, "sleep inhibitor released")
     print("  (files in %s)" % out)

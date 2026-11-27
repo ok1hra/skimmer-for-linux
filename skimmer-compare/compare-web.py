@@ -136,7 +136,8 @@ def view(cfg, S, feeds, engine, T_name, live, scp_n, joined=None):
         "counts": {"spots_L": C["spots_L"], "spots_W": C["spots_R"], "spots_W_all": C["spots_R_all"],
                    "events": C["events"], "rbn_spots": C["rbn_spots"], "rbn_own": C["rbn_own"],
                    "scp_calls": scp_n,
-                   "filtered_L": C["filtered_L"], "filtered_W": C["filtered_R"]},
+                   "filtered_L": C["filtered_L"], "filtered_W": C["filtered_R"],
+                   "phased_L": C.get("phased_L")},
         # L's callsign filter (compare.ini [local filter]): both sides are
         # compared only on the calls it lets through
         "filter": {"about": cfg.filter_about,

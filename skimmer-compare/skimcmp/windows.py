@@ -49,6 +49,26 @@ def snapshot_windows(d, rtty=False):
     return tuple(sorted(out, key=lambda w: w[1])) or None
 
 
+def snapshot_phase(d):
+    """{band: (mode, gain_a_db or None)} of the bands the local skimmer
+    phases (docs/PHASING.md; "phase" not null in /status.json): the mode it
+    runs ("a" = antenna A alone, phasing off) and the median gain of the
+    combination over antenna A on the band's stations; {} when none is
+    phased, None for a snapshot without bands."""
+    bands = d.get("bands")
+    if not isinstance(bands, list):
+        return None
+    out = {}
+    for b in bands:
+        ph = b.get("phase") if isinstance(b, dict) else None
+        if not isinstance(ph, dict) or "band" not in b:
+            continue
+        g = ph.get("gain_a_db")
+        out[str(b["band"])] = (str(ph.get("mode") or ""),
+                               float(g) if isinstance(g, (int, float)) else None)
+    return out
+
+
 def snapshot_paused(d):
     """{"cw": {band: why}, "rtty": {band: why}} of the bands whose mode the
     local skimmer has paused on its own (v0.8.6+: the thermal guard, adaptive
