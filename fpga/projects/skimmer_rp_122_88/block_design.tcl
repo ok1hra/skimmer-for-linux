@@ -1,9 +1,11 @@
 # The skimmer's own bitstream for the STEMlab 122.88-16 (docs/FPGA.md).
 #
-# N slots, each: input select → NCO × mixer → CIC ÷160 (fixed); then all
-# slots through one time-shared FIR ÷2 (384 kHz) and three half-bands ÷2
-# (192, 96, 48 kHz); the packer takes each slot at its own rate into
-# tagged 64-bit words, the DMA writer puts them into a ring in DDR (ACP).
+# N slots (a multiple of 4), each: input select → NCO × mixer → CIC ÷8
+# (4 stages, per I and Q); then CICs ÷20 (6 stages) each shared by 8 of
+# those channels; all slots through one time-shared FIR ÷2 (384 kHz) and
+# three half-bands ÷2 (192, 96, 48 kHz), unity gain; the packer takes each
+# slot at its own rate into tagged 64-bit words, the DMA writer puts them
+# into a ring in DDR (ACP).
 #
 # cfg (32-bit words, at 0x40000000):
 #   0 control: bit 0 run (0 = every slot held: the sync), bit 1 apply (a
@@ -15,27 +17,35 @@
 #   8 the ring's base address (8 MB)     9 tone phase increment
 #   10 tone amplitude (bits 15:0)        11 + s: slot s's phase increment
 # sts (at 0x41000000): 0 "SKRF", 1 version (7:0 minor, 15:8 major,
-#   23:16 CIC_W, 31:24 N), 2 the writer's position (128-byte bursts),
+#   23:16 MIX_W, 31:24 N), 2 the writer's position (128-byte bursts),
 #   3 flags, 4 peaks (15:0 IN1, 31:16 IN2), 5–6 ticks since the sync.
 
 if {![info exists N]} {
   set N [expr {[info exists ::env(SKR_N)] ? $::env(SKR_N) : 24}]
 }
-if {![info exists CIC_W]} {
-  set CIC_W [expr {[info exists ::env(SKR_CIC_W)] ? $::env(SKR_CIC_W) : 24}]
+# the mixer's output, the first CIC's input: whole bytes (an AXIS tdata
+# narrower than its bytes would leave the padding unconnected)
+if {![info exists MIX_W]} {
+  set MIX_W [expr {[info exists ::env(SKR_MIX_W)] ? $::env(SKR_MIX_W) : 24}]
 }
 set VERSION_MAJOR 0
-set VERSION_MINOR 1
+set VERSION_MINOR 3
 
+if {$N % 4 != 0} { error "N must be a multiple of 4 (8 channels a shared CIC)" }
 set CH [expr {2 * $N}]
 set CH_W [expr {int(ceil(log($CH) / log(2)))}]
 set CFG_W [expr {32 * (11 + $N)}]
 set STS_W 224
-# the CIC outputs are combined in equal groups of at most 16
-for {set G 16} {$CH % $G != 0} {incr G -1} {}
-set NG [expr {$CH / $G}]
+# the second CICs: NG of them, 8 channels each — CIC g takes the channels
+# g, g + NG, …, g + 7·NG, so their outputs side by side are channels
+# NG·k … NG·k + NG − 1, in order
+set NG [expr {$CH / 8}]
 
 set dir projects/skimmer_rp_122_88
+# our modules: before the block design refers to them (project.tcl adds
+# projects/NAME/*.v only after it, as top-level sources)
+add_files -norecurse [glob $dir/hdl/*.v]
+update_compile_order -fileset sources_1
 source $dir/filters/fir.tcl
 source $dir/filters/hb.tcl
 
@@ -174,9 +184,10 @@ for {set s 0} {$s < $N} {incr s} {
     din pinc_$s/dout
   }
 
-  # Create dds
+  # Create dds (NEGATIVE_SINE FALSE: the stream RF-inverted, as the stock
+  # bitstream's — measured 2026-11-27 — so P1 clients see what they expect)
   cell dds dds_$s {
-    NEGATIVE_SINE TRUE
+    NEGATIVE_SINE FALSE
   } {
     pinc latch_$s/dout
     aclk pll_0/clk_out1
@@ -197,23 +208,23 @@ for {set s 0} {$s < $N} {incr s} {
     cell dsp48 mult_$c {
       A_WIDTH 24
       B_WIDTH 16
-      P_WIDTH $CIC_W
+      P_WIDTH $MIX_W
     } {
       A dds_slice_$c/dout
       B insel_$s/dout
       CLK pll_0/clk_out1
     }
 
-    # Create cic_compiler
+    # Create cic_compiler: ÷8, 122.88 → 15.36 MS/s
     cell xilinx.com:ip:cic_compiler cic_$c {
       INPUT_DATA_WIDTH.VALUE_SRC USER
       FILTER_TYPE Decimation
-      NUMBER_OF_STAGES 6
+      NUMBER_OF_STAGES 4
       SAMPLE_RATE_CHANGES Fixed
-      FIXED_OR_INITIAL_RATE 160
+      FIXED_OR_INITIAL_RATE 8
       INPUT_SAMPLE_FREQUENCY 122.88
       CLOCK_FREQUENCY 122.88
-      INPUT_DATA_WIDTH $CIC_W
+      INPUT_DATA_WIDTH $MIX_W
       QUANTIZATION Truncation
       OUTPUT_DATA_WIDTH 24
       USE_XTREME_DSP_SLICE false
@@ -227,36 +238,66 @@ for {set s 0} {$s < $N} {incr s} {
   }
 }
 
-# Combine the CIC outputs: NG groups of G, then the groups
+# The second CICs: ÷20, 15.36 MS/s → 768 kS/s, 8 channels each
 
 for {set g 0} {$g < $NG} {incr g} {
   set ports {}
-  for {set i 0} {$i < $G} {incr i} {
-    lappend ports [format S%02d_AXIS $i] cic_[expr {$G * $g + $i}]/M_AXIS_DATA
+  for {set k 0} {$k < 8} {incr k} {
+    lappend ports [format S%02d_AXIS $k] cic_[expr {$g + $NG * $k}]/M_AXIS_DATA
   }
   lappend ports aclk pll_0/clk_out1 aresetn ctrl_0/run_n
   cell xilinx.com:ip:axis_combiner comb_$g {
     TDATA_NUM_BYTES.VALUE_SRC USER
     TDATA_NUM_BYTES 3
-    NUM_SI $G
+    NUM_SI 8
   } $ports
+
+  cell xilinx.com:ip:axis_dwidth_converter conv_$g {
+    S_TDATA_NUM_BYTES.VALUE_SRC USER
+    S_TDATA_NUM_BYTES 24
+    M_TDATA_NUM_BYTES 3
+  } {
+    S_AXIS comb_$g/M_AXIS
+    aclk pll_0/clk_out1
+    aresetn ctrl_0/run_n
+  }
+
+  cell xilinx.com:ip:cic_compiler cic2_$g {
+    INPUT_DATA_WIDTH.VALUE_SRC USER
+    FILTER_TYPE Decimation
+    NUMBER_OF_STAGES 6
+    SAMPLE_RATE_CHANGES Fixed
+    FIXED_OR_INITIAL_RATE 20
+    NUMBER_OF_CHANNELS 8
+    INPUT_SAMPLE_FREQUENCY 15.36
+    CLOCK_FREQUENCY 122.88
+    INPUT_DATA_WIDTH 24
+    QUANTIZATION Truncation
+    OUTPUT_DATA_WIDTH 24
+    USE_XTREME_DSP_SLICE false
+    HAS_ARESETN true
+  } {
+    S_AXIS_DATA conv_$g/M_AXIS
+    aclk pll_0/clk_out1
+    aresetn ctrl_0/run_n
+  }
 }
 
 set ports {}
 for {set g 0} {$g < $NG} {incr g} {
-  lappend ports [format S%02d_AXIS $g] comb_$g/M_AXIS
+  lappend ports [format S%02d_AXIS $g] cic2_$g/M_AXIS_DATA
 }
 lappend ports aclk pll_0/clk_out1 aresetn ctrl_0/run_n
 cell xilinx.com:ip:axis_combiner comb_all {
   TDATA_NUM_BYTES.VALUE_SRC USER
-  TDATA_NUM_BYTES [expr {3 * $G}]
+  TDATA_NUM_BYTES 3
   NUM_SI $NG
 } $ports
 
 # Create axis_dwidth_converter
-cell xilinx.com:ip:axis_dwidth_converter conv_0 {
+cell xilinx.com:ip:axis_dwidth_converter conv_all {
   S_TDATA_NUM_BYTES.VALUE_SRC USER
-  S_TDATA_NUM_BYTES [expr {3 * $CH}]
+  S_TDATA_NUM_BYTES [expr {3 * $NG}]
   M_TDATA_NUM_BYTES 3
 } {
   S_AXIS comb_all/M_AXIS
@@ -265,26 +306,28 @@ cell xilinx.com:ip:axis_dwidth_converter conv_0 {
 }
 
 # The FIR ÷2 (768 → 384 kHz) and the half-bands (→ 192, 96, 48 kHz):
-# all slots time-shared, 24-bit data, 18-bit coefficients (one DSP a
-# symmetric pair), the channel number in tuser for the packer.
+# all slots time-shared, 24-bit data, 24-bit coefficients with 23
+# fractional bits (18 bits left the stopband at -80 dB), the output at full
+# precision: the sample at unity gain is bits 46:23 (the packer's window);
+# the channel number in tuser for the packer.
 
 proc fir_cell {name coef rate} {
   upvar CH CH
   cell xilinx.com:ip:fir_compiler $name {
     DATA_WIDTH.VALUE_SRC USER
     DATA_WIDTH 24
-    COEFFICIENTVECTOR $coef
-    COEFFICIENT_WIDTH 18
+    COEFFICIENTVECTOR {$coef}
+    COEFFICIENT_WIDTH 24
     QUANTIZATION Quantize_Only
-    BESTPRECISION true
+    BESTPRECISION false
+    COEFFICIENT_FRACTIONAL_BITS 23
     FILTER_TYPE Decimation
     DECIMATION_RATE 2
     NUMBER_CHANNELS $CH
     NUMBER_PATHS 1
     SAMPLE_FREQUENCY $rate
     CLOCK_FREQUENCY 122.88
-    OUTPUT_ROUNDING_MODE Convergent_Rounding_to_Even
-    OUTPUT_WIDTH 32
+    OUTPUT_ROUNDING_MODE Full_Precision
     M_DATA_HAS_TUSER Chan_ID_Field
     HAS_ARESETN true
   } {
@@ -294,15 +337,27 @@ proc fir_cell {name coef rate} {
 }
 
 fir_cell fir_0 $fir_coef 0.768
-connect_bd_intf_net [get_bd_intf_pins conv_0/M_AXIS] [get_bd_intf_pins fir_0/S_AXIS_DATA]
+connect_bd_intf_net [get_bd_intf_pins conv_all/M_AXIS] [get_bd_intf_pins fir_0/S_AXIS_DATA]
 fir_cell hb_1 $hb_coef 0.384
 fir_cell hb_2 $hb_coef 0.192
 fir_cell hb_3 $hb_coef 0.096
+
+# the filters' full-precision widths, as tdata (whole bytes)
+foreach {k name} {0 fir_0 1 hb_1 2 hb_2 3 hb_3} {
+  set w [get_property CONFIG.OUTPUT_WIDTH [get_bd_cells $name]]
+  set DW($k) [expr {8 * (($w + 7) / 8)}]
+  puts "skimmer_rp: $name output $w bits"
+}
 
 # Create skr_pack
 cell skr_pack pack_0 {
   N $N
   CH_W $CH_W
+  D_W0 $DW(0)
+  D_W1 $DW(1)
+  D_W2 $DW(2)
+  D_W3 $DW(3)
+  LSB 23
 } {
   aclk pll_0/clk_out1
   aresetn ctrl_0/run_n
@@ -354,7 +409,7 @@ cell constant const_magic {
 
 cell constant const_version {
   CONST_WIDTH 32
-  CONST_VALUE [expr {($N << 24) | ($CIC_W << 16) | ($VERSION_MAJOR << 8) | $VERSION_MINOR}]
+  CONST_VALUE [expr {($N << 24) | ($MIX_W << 16) | ($VERSION_MAJOR << 8) | $VERSION_MINOR}]
 }
 
 cell constant const_pad {

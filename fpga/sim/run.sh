@@ -10,7 +10,7 @@ TB=${1:-skr_pack_tb}
 export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu${LIBRARY_PATH:+:$LIBRARY_PATH}
 W=../tmp/sim-$TB
 rm -rf "$W"; mkdir -p "$W"; cd "$W"
-xvlog -sv -L xpm ../../projects/skimmer_rp_122_88/skr_*.v ../../sim/$TB.sv > xvlog.log
+xvlog -sv -L xpm ../../projects/skimmer_rp_122_88/hdl/skr_*.v ../../sim/$TB.sv > xvlog.log
 xvlog -sv "$XILINX_VIVADO/data/verilog/src/glbl.v" >> xvlog.log
 xelab -L xpm -L unisims_ver -debug off $TB glbl -s $TB > xelab.log
 xsim $TB -R | tee xsim.log | grep -E "PASS|FAIL|Error|ERROR"

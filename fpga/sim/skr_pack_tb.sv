@@ -18,10 +18,12 @@ module skr_pack_tb;
   // slot s at rate index rate_of[s]: 0 = 384 k … 3 = 48 k
   integer rate_of [N] = '{0, 1, 2, 3, 0, 3};
   reg [N-1:0] mask [4];
-  reg [31:0] shifts = {3'd0, 5'd3, 3'd0, 5'd2, 3'd0, 5'd1, 3'd0, 5'd0};
+  // the shift a stage: 0, 1, 2 to the right, 2 to the left (-2)
+  integer sh_of [4] = '{0, 1, 2, -2};
+  reg [31:0] shifts = {3'd0, 5'b11110, 3'd0, 5'd2, 3'd0, 5'd1, 3'd0, 5'd0};
   reg [31:0] adc = 0;
 
-  reg [31:0] sd [4];
+  reg [47:0] sd [4];
   reg sv [4];
   reg [CH_W-1:0] su [4];
 
@@ -33,7 +35,8 @@ module skr_pack_tb;
   wire [31:0] flags, peaks;
   wire [63:0] ticks;
 
-  skr_pack #(.N(N), .CH_W(CH_W)) dut (
+  // full-precision inputs, 48 bits, the sample at bits 46:23 (LSB 23)
+  skr_pack #(.N(N), .CH_W(CH_W), .D_W0(48), .D_W1(48), .D_W2(48), .D_W3(48), .LSB(23)) dut (
     .aclk(aclk), .aresetn(aresetn),
     .mask_0(mask[0]), .mask_1(mask[1]), .mask_2(mask[2]), .mask_3(mask[3]),
     .shifts(shifts), .adc_data(adc),
@@ -53,13 +56,19 @@ module skr_pack_tb;
   function automatic integer val(input integer r, input integer s, input integer n, input integer q);
     integer v;
     v = ((r * 16 + s) * 4096 + (n % 2048)) * 2 + q;
+    if(r == 3) v = v * 8;   // × 4 after the left shift: some saturate
     if(n % 2) v = -v;
     return v;
   endfunction
 
   // the packer's scaling: an arithmetic shift, rounded by the bit below
-  function automatic integer scaled(input integer x, input integer r);
-    return (x >>> r) + ((r > 0) ? ((x >>> (r - 1)) & 1) : 0);
+  function automatic integer scaled(input integer x, input integer sh);
+    integer y;
+    if(sh < 0) y = x <<< (-sh);
+    else y = (x >>> sh) + ((sh > 0) ? ((x >>> (sh - 1)) & 1) : 0);
+    if(y > 8388607) y = 8388607;
+    if(y < -8388608) y = -8388608;
+    return y;
   endfunction
 
   integer errors = 0;
@@ -80,25 +89,27 @@ module skr_pack_tb;
     begin
       integer tag, slot, i, q, r, n, ei, eq, s;
       tag = od[63:56];
-      slot = od[55:48];
+      slot = od[52:48];
       i = {{8{od[7]}}, od[7:0], od[15:8], od[23:16]};
       q = {{8{od[31]}}, od[31:24], od[39:32], od[47:40]};
       if(tag == 8'hff)
         ticks_seen = ticks_seen + 1;
       else if(tag == 8'hfe)
         peaks_seen = peaks_seen + 1;
-      else if(tag >= 8'h10 && tag <= 8'h13)
+      else if(tag[7:6] == 2'b01)
       begin
-        r = tag - 8'h10;
+        integer vc;
+        r = tag[5:4];
+        vc = {od[55:53], od[59:56]};
         s = slot;
         if(s >= N) fail($sformatf("slot %0d out of range", s));
         else
         begin
           if(rate_of[s] != r) fail($sformatf("slot %0d came at rate %0d, set %0d", s, r, rate_of[s]));
           n = got[s];
-          // stage r's shift is r (shifts above)
-          ei = scaled(val(r, s, n, 0), r);
-          eq = scaled(val(r, s, n, 1), r);
+          if(vc != n % 128) fail($sformatf("slot %0d sample %0d: vector number %0d", s, n, vc));
+          ei = scaled(val(r, s, n, 0), sh_of[r]);
+          eq = scaled(val(r, s, n, 1), sh_of[r]);
           if(i != ei || q != eq)
             fail($sformatf("slot %0d sample %0d: I %0d Q %0d, expected %0d %0d", s, n, i, q, ei, eq));
           got[s] = got[s] + 1;
@@ -130,7 +141,9 @@ module skr_pack_tb;
             @(posedge aclk);
             sv[r] <= 1'b1;
             su[r] <= c;
-            sd[r] <= val(r, c / 2, t * (8 >> r) + n, c % 2);
+            // the sample at unity gain plus fraction bits below it, which
+            // the window drops (they must not round it)
+            sd[r] <= ($signed(48'(val(r, c / 2, t * (8 >> r) + n, c % 2))) <<< 23) | 48'h3ff;
             // the ADC: one clip on IN2 in tick 3
             adc <= (t == 3 && c == 0 && n == 0 && r == 0) ? 32'h8000_0100 : 32'h0000_0100;
           end
