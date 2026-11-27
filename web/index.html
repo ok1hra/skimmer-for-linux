@@ -155,6 +155,10 @@
       <p class="sub mut">the board's FPGA in the hottest minute of each bucket (the Zynq-7020 is rated to 85 °C); below, the Mb/s each IP sent — every client's, not only this skimmer's</p>
       <div class="legend" id="legend-rptemp"></div><div class="chart" id="chart-rptemp"></div>
       <div class="legend" id="legend-rpnet"></div><div class="chart" id="chart-rpnet"></div>
+      <div id="rp-adc"><p class="sub mut">the ADC on the skimmer's bitstream: each input's loudest peak (dBFS, of the statuses read every 10 s — 0 dBFS is full scale)</p>
+      <div class="legend" id="legend-rppeak"></div><div class="chart" id="chart-rppeak"></div></div>
+      <div id="rp-ev"><p class="sub mut">what went wrong on the board: the 5.3-ms windows each input clipped in (a full-scale sample), and the FIFO overflows (IQ the board dropped before it was sent, right scale)</p>
+      <div class="legend" id="legend-rpev"></div><div class="chart" id="chart-rpev"></div></div>
       <p class="sub mut" id="rp-card-note"></p></div>
     <div class="chart-card" id="card-phase" hidden><h2>Phasing <span class="mut" id="phase-card-sub"></span></h2>
       <p class="sub mut">what the two antennas gave, channel by channel (a pixel a channel) and in time (the newest on top): <b>interference</b> — what the combination takes off antenna A's floor; <b>gain</b> — a station's SNR over the better antenna alone. On the right the band's medians, the same rows. Grey stripes: antenna A or B alone (what phasing would give); black: nothing read, B missing.</p>

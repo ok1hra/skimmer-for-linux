@@ -67,6 +67,12 @@ typedef enum {
   SKIM_SG_RP_LOAD,         /* the board's 1-minute load average              */
   SKIM_SG_RP_MBPS_A,       /* Mb/s the board sent from IP A (eth0) …         */
   SKIM_SG_RP_MBPS_B,       /* … and from IP B (mvl0): every client's         */
+  SKIM_SG_RP_OVF,          /* the board's FIFO overflows (and the skimmer
+                            * bitstream's ring overruns) in the minute       */
+  SKIM_SG_RP_PEAK1,        /* dBFS: the ADC's loudest peak, IN1 …            */
+  SKIM_SG_RP_PEAK2,        /* … IN2 (the skimmer's bitstream only)           */
+  SKIM_SG_RP_CLIP1,        /* 5.3-ms windows IN1 clipped in, the minute …    */
+  SKIM_SG_RP_CLIP2,        /* … IN2 (the skimmer's bitstream only)           */
   SKIM_SG_N,
 } SkimStatsGlobalMetric;
 

@@ -668,6 +668,89 @@ int main(void) {
     g_remove(path);
   }
 
+  printf("== a version 8 file (16 bands, no Red Pitaya overflows, peaks or clips)\n");
+  {
+    enum { G8 = 13, NB8 = SKIM_STATS_BANDS, M8 = SKIM_STATS_MODES, N8 = NB8 * M8 * SKIM_SM_N + G8 };
+    typedef struct {
+      char    magic[8];
+      guint32 version, minutes, bands, modes, sm_n, sg_n;
+      char    names[NB8][16];
+      guint32 ntier, tier_res[3], tier_len[3], pad;
+    } H8;
+    typedef struct {
+      gint64 start;
+      float  band[NB8][M8][SKIM_SM_N];
+      float  glob[G8];
+      guint8 n[N8];
+    } S8;
+    const guint res[3] = { 1, 15, 60 }, tl[3] = { SKIM_STATS_MINUTES, 90 * 24 * 4, 2 * 365 * 24 };
+    gsize len = sizeof(H8);
+    for (int t = 0; t < 3; t++) { len += tl[t] * sizeof(S8); }
+    char *buf = g_malloc0(len);
+    H8 *h = (H8 *)buf;
+    memcpy(h->magic, "SKIMSTAT", 8);
+    h->version = 8;
+    h->bands = NB8;
+    h->modes = M8;
+    h->sm_n = SKIM_SM_N;
+    h->sg_n = G8;
+    h->ntier = 3;
+    for (int t = 0; t < 3; t++) { h->tier_res[t] = res[t]; h->tier_len[t] = tl[t]; }
+    g_strlcpy(h->names[0], "20m", 16);
+    g_strlcpy(h->names[1], "40m", 16);
+    gsize off = sizeof(H8);
+    for (int t = 0; t < 3; t++) {
+      S8 *sl = (S8 *)(buf + off);
+      for (guint i = 0; i < tl[t]; i++) {
+        for (guint b = 0; b < NB8; b++)
+          for (guint k = 0; k < M8; k++)
+            for (guint j = 0; j < SKIM_SM_N; j++) sl[i].band[b][k][j] = NAN;
+        for (guint j = 0; j < G8; j++) sl[i].glob[j] = NAN;
+      }
+      S8 *one = &sl[(now / res[t]) % tl[t]];
+      one->start = now - now % res[t];
+      /* 40m CW (band 1, mode 0): 5 spots; the board's FPGA at 61 °C */
+      one->band[1][0][SKIM_SM_SPOTS] = 5;
+      one->n[(1 * M8 + 0) * SKIM_SM_N + SKIM_SM_SPOTS] = 1;
+      one->glob[SKIM_SG_RP_TEMP] = 61;
+      one->n[NB8 * M8 * SKIM_SM_N + SKIM_SG_RP_TEMP] = 1;
+      off += tl[t] * sizeof(S8);
+    }
+    g_file_set_contents(path, buf, (gssize)len, NULL);
+    g_free(buf);
+    const char *bands[] = { "20m", "40m" };
+    SkimStats *s = skim_stats_open(path, bands, 2);
+    char *j = skim_stats_json(s, now, 1, 60);
+    char *cs = series_of(strstr(j, "\"cw\":"), "spots", "40m");
+    check("40m CW's spots and the FPGA's temperature carried over",
+          cs && strcmp(cs, "5") == 0 && strstr(j, "\"rp_temp\":[61]"));
+    check("… the overflows, peaks and clips empty",
+          strstr(j, "\"rp_ovf\":[null]") && strstr(j, "\"rp_peak1\":[null]") && strstr(j, "\"rp_clip2\":[null]"));
+    g_free(cs); g_free(j);
+    for (int i = 0; i < 2; i++) {                 /* from now on: the new series */
+      SkimStatsMinute m = minute_of(0, 0, 0, NAN);
+      m.glob[SKIM_SG_RP_OVF] = 3;
+      m.glob[SKIM_SG_RP_PEAK1] = i ? -12.5f : -20;
+      m.glob[SKIM_SG_RP_CLIP1] = 2;
+      skim_stats_put(s, now + 1 + i, &m);
+    }
+    skim_stats_free(s);                          /* written as this version  */
+    s = skim_stats_open(path, bands, 2);
+    j = skim_stats_json(s, now + 2, 1, 60);
+    check("saved as this version and reopened: overflows summed (6), the loudest peak (-12.5), clips summed (4)",
+          strstr(j, "\"rp_ovf\":[6]") && strstr(j, "\"rp_peak1\":[-12.5]") && strstr(j, "\"rp_clip1\":[4]"));
+    check("… the old FPGA minute still there", strstr(j, "\"rp_temp\":[61]") != NULL);
+    g_free(j);
+    skim_stats_free(s);
+    char *keep = g_strconcat(path, ".v8", NULL);
+    GStatBuf kb;
+    check("… the version 8 file kept beside it, as it was (for an older build)",
+          g_stat(keep, &kb) == 0 && (gsize)kb.st_size == len);
+    g_remove(keep);
+    g_free(keep);
+    g_remove(path);
+  }
+
   printf("== the 15-minute and hour rings\n");
   {
     char *p2 = g_build_filename(dir, "tiers.bin", NULL);

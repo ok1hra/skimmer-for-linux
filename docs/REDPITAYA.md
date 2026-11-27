@@ -128,10 +128,15 @@ bands share one rate; every band on ip=b is refused (that is a single IP:
 put B's address in `[radio] host`). Gate `rp-two-ip`: skimmer-headless on
 the real agent in `--sim`.
 
-The statistics (version 8) keep 16 bands and four series of the board:
-FPGA °C (peak), its load (managers and the LAN only), Mb/s from each IP
-(every client's, from the agent's tx bytes) — from the agent's status
-every 10 s while it runs the board.
+The statistics (version 9) keep 16 bands and the board's series: FPGA °C
+(peak), its load (managers and the LAN only), Mb/s from each IP (every
+client's, from the agent's tx bytes), the FIFO overflows a minute (both
+instances and the skimmer bitstream's ring overruns; managers and the LAN
+only) and, on the skimmer's bitstream, each input's loudest ADC peak (of
+the 5-ms windows the statuses sample) and the 5.3-ms windows it clipped in
+(the agent's `clip_n1`/`clip_n2` totals) — from the agent's status every
+10 s while it runs the board; the counters as differences (an agent
+started anew counts from zero).
 
 ## 384 kHz
 

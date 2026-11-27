@@ -8,11 +8,11 @@
  * slot of a minute in tier t is (minute / res mod len); a slot whose start
  * is not the current one is cleared first.
  *
- * File (version 8): a header, then the three rings one after the other.
+ * File (version 9): a header, then the three rings one after the other.
  * Native byte order — the file never leaves the machine that wrote it.
  * Versions 1 and 2 (the minutes only) are read, their week merged into the
- * coarser rings; versions 3–7 (the rings: 8 bands, two to four modes, fewer
- * metrics) are read slot by slot; either way the file is written anew
+ * coarser rings; versions 3–8 (the rings: 8 or 16 bands, two to four modes,
+ * fewer metrics) are read slot by slot; either way the file is written anew
  * (≈ 84 MB: 16 bands since version 8 — a Red Pitaya's two IPs).
  *
  * Saving writes only the slots changed since the last save, in place (pwrite
@@ -34,7 +34,8 @@
  *     "js8":  { … } | null              (all submodes; null while none decoded)
  *     "global": { "cpu": [ … ], "lost": …, "clients": …, "streaming": …, "radio": …,
  *                 "cpu_cw": …, "cpu_rtty": …, "cpu_temp": …, "cpu_helpers": …,
- *                 "rp_temp": …, "rp_load": …, "rp_mbps_a": …, "rp_mbps_b": … } }
+ *                 "rp_temp": …, "rp_load": …, "rp_mbps_a": …, "rp_mbps_b": …,
+ *                 "rp_ovf": …, "rp_peak1": …, "rp_peak2": …, "rp_clip1": …, "rp_clip2": … } }
  *   A bucket sums the counts (spots, stations, folded, gate_below), averages
  *   the levels (active, cpu, clients, snr, streaming = the share of minutes
  *   streamed) over the minutes that had them, takes the worst lost, the
@@ -53,12 +54,14 @@
 #include "json.h"
 
 #define MAGIC   "SKIMSTAT"
-#define VERSION 8                    /* 3: the 15-minute and hour rings;
+#define VERSION 9                    /* 3: the 15-minute and hour rings;
                                       * 4: the CPU temperature;
                                       * 5: the thermal guard's pauses;
                                       * 6: FT8, the helpers' CPU;
                                       * 7: JS8;
-                                      * 8: 16 bands, the Red Pitaya's series */
+                                      * 8: 16 bands, the Red Pitaya's series;
+                                      * 9: its overflows, ADC peaks and clips */
+#define V8_SG_N 13                   /* version 8's global metrics           */
 #define OLD_BANDS 8                  /* versions 1–7                         */
 #define V7_SG_N 9                    /* versions 6 and 7's global metrics    */
 #define OLD_MODES 2                  /* versions 1–5: CW, RTTY               */
@@ -93,6 +96,9 @@ static const struct { const char *name; Agg agg; } GLOB_M[SKIM_SG_N] = {
   [SKIM_SG_CPU_TEMP] = { "cpu_temp", AGG_MAX },  [SKIM_SG_CPU_HELPERS] = { "cpu_helpers", AGG_MEAN },
   [SKIM_SG_RP_TEMP] = { "rp_temp", AGG_MAX },    [SKIM_SG_RP_LOAD] = { "rp_load", AGG_MEAN },
   [SKIM_SG_RP_MBPS_A] = { "rp_mbps_a", AGG_MEAN }, [SKIM_SG_RP_MBPS_B] = { "rp_mbps_b", AGG_MEAN },
+  [SKIM_SG_RP_OVF] = { "rp_ovf", AGG_SUM },
+  [SKIM_SG_RP_PEAK1] = { "rp_peak1", AGG_MAX },  [SKIM_SG_RP_PEAK2] = { "rp_peak2", AGG_MAX },
+  [SKIM_SG_RP_CLIP1] = { "rp_clip1", AGG_SUM },  [SKIM_SG_RP_CLIP2] = { "rp_clip2", AGG_SUM },
 };
 
 typedef struct {
@@ -106,7 +112,7 @@ typedef struct {
   guint32 ntier, tier_res[NTIER], tier_len[NTIER], pad;
 } Header3;
 
-/* Version 8: the same, with 16 band names. */
+/* Versions 8 and 9: the same, with 16 band names. */
 typedef struct {
   char    magic[8];
   guint32 version, minutes, bands, modes, sm_n, sg_n;
@@ -176,6 +182,18 @@ typedef struct {
   MinuteV7 m;
   guint8   n[NV7];
 } SlotV7;
+
+/* Version 8: 16 bands, 13 global metrics. */
+typedef struct {
+  float band[SKIM_STATS_BANDS][SKIM_STATS_MODES][SKIM_SM_N];
+  float glob[V8_SG_N];
+} MinuteV8;
+#define NV8 (SKIM_STATS_BANDS * SKIM_STATS_MODES * SKIM_SM_N + V8_SG_N)
+typedef struct {
+  gint64   start;
+  MinuteV8 m;
+  guint8   n[NV8];
+} SlotV8;
 
 /* Version 3: a ring slot of those. */
 typedef struct {
@@ -262,22 +280,24 @@ static gsize file_len_of(gsize slot) {
   for (guint t = 0; t < NTIER; t++) { n += (gsize)TIER[t].len * slot; }
   return n;
 }
-static gsize file_len(void) {
+static gsize file_len8_of(gsize slot) {
   gsize n = sizeof(Header8);
-  for (guint t = 0; t < NTIER; t++) { n += (gsize)TIER[t].len * sizeof(Slot); }
+  for (guint t = 0; t < NTIER; t++) { n += (gsize)TIER[t].len * slot; }
   return n;
 }
+static gsize file_len(void) { return file_len8_of(sizeof(Slot)); }
 
 static gsize ring_offset_of(guint t, gsize slot) {
   gsize n = sizeof(Header3);
   for (guint u = 0; u < t; u++) { n += (gsize)TIER[u].len * slot; }
   return n;
 }
-static gsize ring_offset(guint t) {
+static gsize ring_offset8_of(guint t, gsize slot) {
   gsize n = sizeof(Header8);
-  for (guint u = 0; u < t; u++) { n += (gsize)TIER[u].len * sizeof(Slot); }
+  for (guint u = 0; u < t; u++) { n += (gsize)TIER[u].len * slot; }
   return n;
 }
+static gsize ring_offset(guint t) { return ring_offset8_of(t, sizeof(Slot)); }
 
 /* A version 1–7 record (8 bands; and its merge counts, NULL: none) as this
  * version's: its `modes` modes' sm_n band metrics and sg_n globals in
@@ -411,7 +431,9 @@ static gboolean load(SkimStats *s) {
                       len == file_len_of(sizeof(SlotV6));
   const gboolean v7 = head_ok && rings_ok && h->version == 7 && h->sg_n == V7_SG_N &&
                       len == file_len_of(sizeof(SlotV7));
-  const gboolean v8 = head_ok && rings8_ok && h->version == VERSION && h->sg_n == SKIM_SG_N &&
+  const gboolean v8 = head_ok && rings8_ok && h->version == 8 && h->sg_n == V8_SG_N &&
+                      len == file_len8_of(sizeof(SlotV8));
+  const gboolean v9 = head_ok && rings8_ok && h->version == VERSION && h->sg_n == SKIM_SG_N &&
                       len == file_len();
   gboolean same = FALSE;
   if (v1 || v2) {
@@ -461,7 +483,31 @@ static gboolean load(SkimStats *s) {
               : v6 ? "JS8 starts" : "16 bands and the Red Pitaya's series start",
               kept);
     g_free(kept);
-  } else if (v8) {
+  } else if (v8) {                             /* slot by slot, the new globals empty */
+    int from[SKIM_STATS_BANDS];
+    columns(h8->names, SKIM_STATS_BANDS, s, from);
+    for (guint t = 0; t < NTIER; t++) {
+      const SlotV8 *in = (const SlotV8 *)(data + ring_offset8_of(t, sizeof(SlotV8)));
+      for (guint i = 0; i < TIER[t].len; i++) {
+        SkimStatsMinute m;
+        guint8 n[NV] = { 0 };
+        empty_minute(&m);
+        memcpy(m.band, in[i].m.band, sizeof(m.band));
+        memcpy(m.glob, in[i].m.glob, sizeof(in[i].m.glob));
+        memcpy(n, in[i].n, NV8);
+        Slot *o = &s->ring[t][i];
+        o->start = in[i].start;
+        remap(&o->m, &m, from, s->nb, o->n, n);
+      }
+    }
+    s->dirty = TRUE;                           /* written as this version   */
+    char *kept;
+    keep_old(s, data, len, h->version, &kept);
+    g_message("stats: %s is a version 8 history — carried over, the Red Pitaya's overflows, "
+              "ADC peaks and clips start now (the old file kept as %s, for an older build)",
+              s->path, kept);
+    g_free(kept);
+  } else if (v9) {
     int from[SKIM_STATS_BANDS];
     columns(h8->names, SKIM_STATS_BANDS, s, from);
     for (guint t = 0; t < NTIER; t++) {

@@ -246,15 +246,16 @@ here; what was done and why is in git.
   the table's status column says what a worker or a guard does
   with the band; statistics (`stats.c`, three
   rings: 1 min × 7 d, 15 min × 90 d, 1 h × 2 y, saved in place; file
-  version 8 = 16 bands and the Red Pitaya's series (FPGA °C, its load,
-  Mb/s each IP; version 7 = 8 bands) and four modes, CW, RTTY, FT8 (FT8 + FT4) and JS8 (every
+  version 9 = 16 bands and the Red Pitaya's series (FPGA °C, its load,
+  Mb/s each IP; since 9 its FIFO overflows, each input's ADC peak and
+  clipped 5.3-ms windows — the agent's `clip_n1/2`; version 7 = 8 bands) and four modes, CW, RTTY, FT8 (FT8 + FT4) and JS8 (every
   submode; for both: spots, senders that appeared, as "active" the senders
   heard a minute, SNR), and the helper programs' CPU (`cpu_helpers`:
   skimmer-ft8d, skimmer-js8d — a kept-running one read from /proc —,
   skimmer-wsprd — outside the process's own); version 5 added the thermal
   guard's pauses per band (`thermal`, the share of the bucket off — red in
   "active decoders by band"), 6 FT8; a version 3–6 file is carried over and
-  kept as `stats.bin.v3` … `.v7` for an older build; ≈ 84 MB), settings (one parser:
+  kept as `stats.bin.v3` … `.v8` for an older build; ≈ 84 MB), settings (one parser:
   `skim_hd_config_apply_form` → `skim_hd_config_parse` → save with a
   backup → restart: exit 75 under `SKIM_SUPERVISED=1`, else exec), log.
   Managers only (settings_from, no proxy headers, a Host that is this

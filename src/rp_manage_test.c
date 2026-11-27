@@ -388,6 +388,13 @@ int main(int argc, char **argv) {
   SkimHdRpReadings rd;
   check("… its readings: the load (the sim has no FPGA sensor: NaN)",
         skim_hd_rp_readings(rp, &rd) && !isnan(rd.load1) && isnan(rd.fpga_c));
+  SkimHdRpMinute rm;
+  skim_hd_rp_take_minute(rp, &rm);
+  check("… the minute's overflows: 0 (counted from this status on); no clips on Pavel's bitstream",
+        rm.overflows == 0 && isnan(rm.clips[0]) && isnan(rm.peak_db[0]));
+  skim_hd_rp_take_minute(rp, &rm);
+  check("… taken: the next minute knows nothing until a status comes",
+        isnan(rm.overflows) && isnan(rm.clips[0]) && isnan(rm.peak_db[0]));
 
   SkimHdRpArgs sel = { .sel_a = 0x05, .sel_b = 0x00, .persist = TRUE };
   check("inputs set live and kept", run_job(rp, SKIM_HD_RP_SEL, &sel));
@@ -434,6 +441,9 @@ int main(int argc, char **argv) {
   check("… Statistics' block names it, its slots and the ADC's peaks",
         j && has(j, "\"bitstream\":\"skrf\"") && has(j, "\"slots\":24") && has(j, "\"peak_in1\":"));
   g_free(j);
+  skim_hd_rp_take_minute(rp, &rm);
+  check("… and the minute's clipped windows each input (the agent's counters)",
+        rm.clips[0] == 0 && rm.clips[1] == 0);
   SkimHdRpArgs keep = { 0 };
   check("a reinstall without a choice", run_job(rp, SKIM_HD_RP_INSTALL, &keep));
   ss = get("media/mmcblk0p1/start.sh");

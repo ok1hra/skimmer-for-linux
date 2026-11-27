@@ -469,10 +469,12 @@ const Charts = (() => {
   // opts: { name, color, fmtV, fmtTick, height, minSpan, ramp } — the scale spans
   // the values' range rounded out to tens, at least minSpan wide. ramp:
   // [[value, '#rrggbb'], …] ascending — the line takes the colour of its height
-  // (a gradient up the plot), the dots too.
+  // (a gradient up the plot), the dots too. more: [{ name, color, values }] —
+  // other lines on the same scale, each in its colour, in the tip too.
   function line(box, x, values, opts) {
     const { svg, W, H } = frame(box, opts.height || 110);
-    const v = values.filter((y) => y != null);
+    const more = opts.more || [];
+    const v = [values, ...more.map((o) => o.values)].flat().filter((y) => y != null);
     const span = opts.minSpan || 20;
     let lo = v.length ? Math.floor(Math.min(...v) / 10) * 10 : 0;
     let hi = v.length ? Math.ceil(Math.max(...v) / 10) * 10 : span;
@@ -522,6 +524,17 @@ const Charts = (() => {
         el('circle', { cx: px(i), cy: py(y), r: 2, fill: at(y) }, svg);
       }
     });
+    for (const o of more) {
+      let od = '', op = false;
+      o.values.forEach((y, i) => {
+        if (y == null) { op = false; return; }
+        od += `${op ? 'L' : 'M'}${px(i).toFixed(1)},${py(y).toFixed(1)}`;
+        op = true;
+        if (o.values[i - 1] == null && o.values[i + 1] == null) el('circle', { cx: px(i), cy: py(y), r: 2, fill: o.color }, svg);
+      });
+      el('path', { d: od, fill: 'none', stroke: o.color, 'stroke-width': 2, 'stroke-linejoin': 'round',
+                   'stroke-linecap': 'round' }, svg);
+    }
     if (!v.length) {
       const t = el('text', { x: m.l + pw / 2, y: m.t + ph / 2 + 4, 'text-anchor': 'middle', 'font-size': 12,
                              fill: css('--tick') }, svg);
@@ -536,7 +549,8 @@ const Charts = (() => {
       syncAt(i);
       tt.show((px(i) * r.width) / W, (py(values[i] ?? lo) * r.height) / H, x.label(i),
               [{ value: values[i] == null ? '–' : opts.fmtV(values[i]), label: opts.name,
-                 color: values[i] == null ? opts.color : at(values[i]) }]);
+                 color: values[i] == null ? opts.color : at(values[i]) },
+               ...more.map((o) => ({ value: o.values[i] == null ? '–' : opts.fmtV(o.values[i]), label: o.name, color: o.color }))]);
     });
     hit.addEventListener('pointerleave', () => { tt.hide(); syncOff(); });
   }

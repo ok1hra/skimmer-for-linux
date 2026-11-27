@@ -266,10 +266,18 @@ table.grid { border-collapse: collapse; width: 100%; background: var(--panel); b
 .st-side { position: relative; }
 .ladder th.hm { width: 26px; padding: 2px 0 4px; text-align: center; letter-spacing: 0; }
 .ladder td.hm { width: 26px; padding: 0; }
+/* each continent's eye over its label: the page's continent filter */
+.ladder th.hm button { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; padding: 0 1px;
+  border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: 0; cursor: pointer; }
+.ladder th.hm button svg { color: var(--mut); }
+.ladder th.hm button:hover svg { color: var(--fg); }
+.ladder th.hm.x button, .ladder th.hm.x button svg { color: var(--faint); }
 /* room either side of the continents, so the heat map's edge blobs fade
  * out into the ground instead of being cut at the first and last column */
 .ladder .hm-pad { width: 14px; padding: 0; }
 .ladder-heat { position: absolute; pointer-events: none; }
+/* Statistics → Red Pitaya: the ADC's and the events' charts under the network's */
+#rp-adc, #rp-ev { margin-top: 14px; }
 .ladder tr.head-row th { padding: 2px 6px 4px; border-bottom: 1px solid var(--ln); color: var(--mut); font-weight: 400;
   font-size: 11px; letter-spacing: .1em; text-transform: uppercase; text-align: left; vertical-align: bottom; cursor: help; }
 .readouts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 16px; color: var(--mut); font-size: 13px;

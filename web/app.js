@@ -2728,13 +2728,14 @@ on('#rp-ext-apply', 'click', () => {
 });
 
 // ---- Statistics → Red Pitaya: the board (status.redpitaya, from the skimmer's
-// agent on it) and its history (rp_temp, rp_mbps_a/b). From outside the LAN
+// agent on it) and its history (rp_temp, rp_mbps_a/b; rp_peak1/2 and
+// rp_clip1/2 on the skimmer's bitstream, rp_ovf the FIFO overflows). From outside the LAN
 // without addresses, load and memory (status_public); no agent: no card.
 function renderRp(x, g) {
   const r = status && status.redpitaya;
   const has = (a) => a && a.some((v) => v != null);
   const card = $('#card-rp');
-  card.hidden = !(r && r.managed) && !has(g.rp_temp) && !has(g.rp_mbps_a) && !has(g.rp_mbps_b);
+  card.hidden = !(r && r.managed) && !has(g.rp_temp) && !has(g.rp_mbps_a) && !has(g.rp_mbps_b) && !has(g.rp_ovf);
   if (card.hidden) return;
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const fpgaClass = (t) => (t >= 85 ? 'hot' : t >= 75 ? 'warm' : 'cool');
@@ -2745,7 +2746,7 @@ function renderRp(x, g) {
   if (r && r.uptime_s != null) tile('up', `${fmt(r.uptime_s / 86400, 1)} days`);
   if (r && r.rp_load != null) tile('load', fmt(r.rp_load, 2), 'the board\'s 1-minute load average (2 cores)');
   if (r && r.bitstream === 'skrf') {
-    const db = (p) => (p > 0 ? `${fmt(20 * Math.log10(p / 32768), 1)} dBFS` : '–');
+    const db = (p) => (p > 0 ? `${fmt(Math.min(0, Math.round(200 * Math.log10(p / 32768)) / 10) || 0, 1)} dBFS` : '–');
     const clip = (bit) => (r.clips & bit ? ' <b class="temp hot">clipped</b>' : '');
     tile('ADC', `IN1 ${db(r.peak_in1)}${clip(1)} · IN2 ${db(r.peak_in2)}${clip(2)}`,
       'the skimmer\'s bitstream: each input\'s peak over the last 5 ms; "clipped" = a full-scale sample since the board\'s last sync (a null needs both inputs unclipped)');
@@ -2759,6 +2760,12 @@ function renderRp(x, g) {
     tile(name, what, `${ip.host || ''}${ip.client ? ` → ${ip.client}` : ''}${ip.link_mbps ? ` · link ${ip.link_mbps} Mb/s` : ''}` +
       `${ip.overflows ? ` · FIFO overflows ${ip.overflows}` : ''}${ip.orphan_stops ? ` · orphans stopped ${ip.orphan_stops}` : ''}`);
   }
+  // the FIFO overflows since the agent started, both IPs — the history below
+  const ovf = ((r && r.ips) || []).reduce((a, ip) => (ip.overflows == null ? a : (a || 0) + ip.overflows), null);
+  if (ovf != null) {
+    tile('overflows', ovf ? `<b class="temp hot">${fmt(ovf)}</b>` : '0',
+      'FIFO overflows since the agent started (both IPs): IQ the board dropped before it was sent — the chart below has them by time');
+  }
   $('#rp-tiles').innerHTML = tiles.join('');
   const ramp = [[55, css('--ok')], [70, css('--ok')], [78, css('--warn')], [85, css('--bad')]];
   $('#legend-rptemp').innerHTML = '<span><i class="ramp" style="background:linear-gradient(90deg,var(--ok),var(--ok) 35%,var(--warn) 65%,var(--bad))"></i>FPGA, the hottest minute</span>';
@@ -2770,5 +2777,27 @@ function renderRp(x, g) {
   $('#legend-rpnet').innerHTML = layers.map((l) => `<span><i style="background:${l.color}"></i>${l.name}</span>`).join('') + '<span><i class="line"></i>both</span>';
   Charts.area($('#chart-rpnet'), x, layers, a.map((v, i) => (v == null && b[i] == null ? null : (v || 0) + (b[i] || 0))),
     (v) => `${fmt(v, 1)} Mb/s`, 'Mb/s from the board');
+  // the ADC (the skimmer's bitstream only): each input's loudest peak
+  const nul = x.t.map(() => null), p1 = g.rp_peak1 || nul, p2 = g.rp_peak2 || nul;
+  $('#rp-adc').hidden = !has(p1) && !has(p2);
+  if (!$('#rp-adc').hidden) {
+    const c1 = Charts.seriesColor(0), c2 = Charts.seriesColor(1);
+    $('#legend-rppeak').innerHTML = `<span><i style="background:${c1}"></i>IN1</span><span><i style="background:${c2}"></i>IN2</span>`;
+    Charts.line($('#chart-rppeak'), x, p1, { name: 'IN1, the loudest peak', color: c1, fmtV: (v) => `${fmt(v, 1)} dBFS`,
+      fmtTick: (v) => `${fmt(v)} dB`, height: 110, minSpan: 20, mark: { value: 0, label: 'full scale (0 dBFS)' },
+      more: [{ name: 'IN2, the loudest peak', color: c2, values: p2 }] });
+  }
+  // clipped windows (stacked, left) and the FIFO overflows (right)
+  const k1 = g.rp_clip1 || nul, k2 = g.rp_clip2 || nul, ov = g.rp_ovf || nul;
+  $('#rp-ev').hidden = !has(k1) && !has(k2) && !has(ov);
+  if (!$('#rp-ev').hidden) {
+    const evLayers = [{ name: 'IN1 clipped', color: css('--warn'), values: k1 }, { name: 'IN2 clipped', color: css('--bad'), values: k2 }];
+    $('#legend-rpev').innerHTML = evLayers.map((l) => `<span><i style="background:${l.color}"></i>${l.name}</span>`).join('') +
+      `<span><i class="line" style="border-color:${css('--accent')};opacity:1"></i>FIFO overflows (right)</span>` +
+      '<span><i class="line"></i>clipped, both</span>';
+    Charts.area($('#chart-rpev'), x, evLayers, k1.map((v, i) => (v == null && k2[i] == null ? null : (v || 0) + (k2[i] || 0))),
+      (v) => `${fmt(v)} window${v === 1 ? '' : 's'}`, 'clipped, both inputs',
+      { name: 'FIFO overflows', color: css('--accent'), values: ov, fmtV: (v) => fmt(v), fmtTick: (v) => (Number.isInteger(v) ? fmt(v) : '') });
+  }
   $('#rp-card-note').textContent = r && r.age_s > 60 ? `the board's last status is ${Math.round(r.age_s)} s old` : '';
 }

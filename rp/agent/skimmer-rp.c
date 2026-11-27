@@ -451,6 +451,7 @@ typedef struct {
   /* what the reader saw */
   uint64_t          words, ticks, peak_words, unknown, overruns, syncs;
   unsigned          flags, peak1, peak2, clips;
+  uint64_t          clip_n[2];         /* peak windows (256 ticks) IN1, IN2 clipped */
 } Sk;
 
 static Sk sk;
@@ -632,6 +633,8 @@ static void sk_word(uint64_t w) {
     sk.peak1 = (unsigned)((w & 0xff) << 8 | ((w >> 8) & 0xff));
     sk.peak2 = (unsigned)(((w >> 16) & 0xff) << 8 | ((w >> 24) & 0xff));
     sk.clips |= (unsigned)(w >> 32) & 3;
+    sk.clip_n[0] += (w >> 32) & 1;
+    sk.clip_n[1] += (w >> 33) & 1;
     sk.flags |= (unsigned)(w >> 48) & 0xff;
   } else {
     sk.unknown++;
@@ -1526,10 +1529,11 @@ static void status_json(FILE *f) {
   if (skrf) {
     fprintf(f, ",\"fpga\":{\"bitstream\":\"skrf\",\"version\":\"%d.%d\",\"slots\":%d,\"ticks\":%llu,"
                "\"words\":%llu,\"unknown\":%llu,\"overruns\":%llu,\"syncs\":%llu,\"flags\":%u,"
-               "\"peak_in1\":%u,\"peak_in2\":%u,\"clips\":%u}",
+               "\"peak_in1\":%u,\"peak_in2\":%u,\"clips\":%u,\"clip_n1\":%llu,\"clip_n2\":%llu}",
             (sk.version >> 8) & 0xff, sk.version & 0xff, sk.nslots, (unsigned long long)sk.ticks,
             (unsigned long long)sk.words, (unsigned long long)sk.unknown, (unsigned long long)sk.overruns,
-            (unsigned long long)sk.syncs, sk.flags, sk.peak1, sk.peak2, sk.clips);
+            (unsigned long long)sk.syncs, sk.flags, sk.peak1, sk.peak2, sk.clips,
+            (unsigned long long)sk.clip_n[0], (unsigned long long)sk.clip_n[1]);
     pthread_mutex_lock(&skrs.lock);
     char a[32] = "";
     if (skrs.on) { inet_ntop(AF_INET, &skrs.to.sin_addr, a, sizeof(a)); }

@@ -277,7 +277,7 @@ cheap insurance, and with all 24 slots on it should be there.
 | S2 | the new blocks in Verilog with xsim testbenches | **done** for the packer (`fpga/sim/skr_pack_tb.sv`: format, rates, rounding, shifts, saturation, vector numbers, ticks, clips; a wrong shift fails it). The Xilinx IP chain was checked on the board instead (S3) |
 | S3 | the bitstream on the board from RAM, `rp/spike/skrf` | **done** (above): rates, identity of twin slots, orientation, the noise floor = stock's, the read cost. The OUT1 loop is still to do: it needs a cable at the bench |
 | S4 | agent 0.6: the new bitstream, P1 on slots, SKRS | **done**; live on the board 11 min with SkimSrv and the service |
-| S5 | the skimmer: SKRS client and source, config, Settings | **done** in code and gates; Statistics' clips/peaks are not shown yet |
+| S5 | the skimmer: SKRS client and source, config, Settings | **done** in code and gates; Statistics shows the peaks and clips by time since 2026-11-27 (stats version 9, the agent's `clip_n1/2`) |
 | S6 | installed by the skimmer (the .bit shipped like the agent), the new-user install check, live with every band | after CQWW (2026-11-28/29), Dan's go |
 
 Vivado runs on hra2 with the skimmer service stopped (and is restarted

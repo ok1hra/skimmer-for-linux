@@ -88,6 +88,19 @@ typedef struct {
 } SkimHdRpReadings;
 gboolean  skim_hd_rp_readings(SkimHdRp *rp, SkimHdRpReadings *out);
 
+/* What the board's statuses said since the last call (the stats' minute),
+ * NaN where none did: FIFO overflows (both IPs' instances, and the skimmer
+ * bitstream's ring overruns) and, on that bitstream, the ADC's loudest peak
+ * each input (dBFS, of the 5-ms windows the statuses sampled) and the
+ * 5.3-ms windows each input clipped in (clip_n1/2: an agent built since
+ * 2026-11-27 counts them).
+ * The counters are differences of the agent's totals; one made anew (an
+ * agent restart) counts from zero. */
+typedef struct {
+  double overflows, peak_db[2], clips[2];
+} SkimHdRpMinute;
+void      skim_hd_rp_take_minute(SkimHdRp *rp, SkimHdRpMinute *out);
+
 /* The board for status.json ("redpitaya"), NULL before any probe: the
  * model, the agent's version (or Pavel's servers), the mode, FPGA °C,
  * uptime, rp_load and rp_mem_mb, and each IP: host, streaming, client,

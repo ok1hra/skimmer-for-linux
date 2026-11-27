@@ -55,6 +55,10 @@ struct _SkimHdRp {
   SkimHdRpReadings rd;
   double  tx_prev[2]; /* the status before: each IP's tx bytes, when       */
   gint64  tx_prev_t;
+  /* the counters' totals in the status before (NaN: none), and what the
+   * statuses since the last skim_hd_rp_take_minute added up to */
+  double  ovf_prev, clip_prev[2];
+  SkimHdRpMinute acc;
   GThread *thread;
 };
 
@@ -902,6 +906,16 @@ static gboolean job_sel(Job *j, GError **error) {
   return ok && probe(j, error);
 }
 
+/* A counter's growth since the status before into *acc (the first status:
+ * 0, nothing known to have grown); a total smaller than the one before is
+ * an agent started anew, which counts from zero. NaN cur: nothing. */
+static void add_delta(double *acc, double cur, double *prev) {
+  if (isnan(cur)) { return; }
+  const double d = isnan(*prev) ? 0 : cur >= *prev ? cur - *prev : cur;
+  *acc = (isnan(*acc) ? 0 : *acc) + d;
+  *prev = cur;
+}
+
 static gboolean job_status(Job *j, GError **error) {
   SkimHdRp *rp = j->rp;
   char *out = NULL;
@@ -924,8 +938,33 @@ static gboolean job_status(Job *j, GError **error) {
     p += 11;
     if (*p != 'n' && *p != '-') { tx[k] = g_ascii_strtod(p, NULL); }
   }
+  /* the counters: every instance's FIFO overflows and the bitstream's ring
+   * overruns (one total), each input's clipped windows; the ADC's peaks */
+  double ovf = NAN, clip[2] = { NAN, NAN }, peak[2] = { NAN, NAN };
+  for (p = out; (p = strstr(p, "\"overflows\":")); ) {
+    p += 12;
+    if (g_ascii_isdigit(*p)) { ovf = (isnan(ovf) ? 0 : ovf) + g_ascii_strtod(p, NULL); }
+  }
+  if ((p = strstr(out, "\"overruns\":")) && g_ascii_isdigit(p[11])) {
+    ovf = (isnan(ovf) ? 0 : ovf) + g_ascii_strtod(p + 11, NULL);
+  }
+  for (int k = 0; k < 2; k++) {
+    char key[16];
+    g_snprintf(key, sizeof(key), "\"peak_in%d\":", k + 1);
+    if ((p = strstr(out, key)) && g_ascii_isdigit(p[strlen(key)])) {
+      const double v = g_ascii_strtod(p + strlen(key), NULL);   /* 0: no window read yet */
+      if (v > 0) { peak[k] = 20 * log10(MIN(v, 32768) / 32768); }
+    }
+    g_snprintf(key, sizeof(key), "\"clip_n%d\":", k + 1);
+    if ((p = strstr(out, key)) && g_ascii_isdigit(p[strlen(key)])) { clip[k] = g_ascii_strtod(p + strlen(key), NULL); }
+  }
   const gint64 now = g_get_monotonic_time();
   g_mutex_lock(&rp->mu);
+  add_delta(&rp->acc.overflows, ovf, &rp->ovf_prev);
+  for (int k = 0; k < 2; k++) {
+    add_delta(&rp->acc.clips[k], clip[k], &rp->clip_prev[k]);
+    if (!isnan(peak[k]) && !(rp->acc.peak_db[k] >= peak[k])) { rp->acc.peak_db[k] = peak[k]; }
+  }
   const double dt = (now - rp->tx_prev_t) / 1e6;
   double d[2] = { NAN, NAN };
   for (int k = 0; k < 2; k++) {
@@ -1063,6 +1102,13 @@ char *skim_hd_rp_status_block(SkimHdRp *rp) {
   g_mutex_unlock(&rp->mu);
   g_string_append_c(o, '}');
   return g_string_free(o, FALSE);
+}
+
+void skim_hd_rp_take_minute(SkimHdRp *rp, SkimHdRpMinute *out) {
+  g_mutex_lock(&rp->mu);
+  *out = rp->acc;
+  rp->acc = (SkimHdRpMinute){ NAN, { NAN, NAN }, { NAN, NAN } };
+  g_mutex_unlock(&rp->mu);
 }
 
 gboolean skim_hd_rp_readings(SkimHdRp *rp, SkimHdRpReadings *out) {
@@ -1278,6 +1324,8 @@ SkimHdRp *skim_hd_rp_new(const char *state_dir, const char *agent, const char *h
   rp->keygen = g_find_program_in_path("ssh-keygen");
   const char *root = g_getenv("SKIM_RP_ROOT");
   rp->root = g_strdup(root ? root : "");
+  rp->ovf_prev = rp->clip_prev[0] = rp->clip_prev[1] = NAN;
+  rp->acc = (SkimHdRpMinute){ NAN, { NAN, NAN }, { NAN, NAN } };
   const char *port = g_getenv("SKIM_RP_P1_PORT");
   rp->p1_port = port && atoi(port) > 0 ? (guint16)atoi(port) : 1024;
   rp->host = host && *host ? g_strdup(host) : NULL;

@@ -1565,6 +1565,13 @@ static void stats_minute(Hd *h) {
     m.glob[SKIM_SG_RP_LOAD] = (float)rd.load1;
     m.glob[SKIM_SG_RP_MBPS_A] = (float)rd.mbps[0];
     m.glob[SKIM_SG_RP_MBPS_B] = (float)rd.mbps[1];
+    SkimHdRpMinute rm = { NAN, { NAN, NAN }, { NAN, NAN } };
+    if (h->rp) { skim_hd_rp_take_minute(h->rp, &rm); }
+    m.glob[SKIM_SG_RP_OVF] = (float)rm.overflows;
+    m.glob[SKIM_SG_RP_PEAK1] = (float)rm.peak_db[0];
+    m.glob[SKIM_SG_RP_PEAK2] = (float)rm.peak_db[1];
+    m.glob[SKIM_SG_RP_CLIP1] = (float)rm.clips[0];
+    m.glob[SKIM_SG_RP_CLIP2] = (float)rm.clips[1];
   }
   h->temp_peak = NAN;
   m.glob[SKIM_SG_RADIO] = 0;
@@ -1762,12 +1769,13 @@ static char *web_status(GHashTable *q, SkimHdWebWho who, guint *st, const char *
   return body;
 }
 
-/* The history without the machine readings (the CPU load, IQ lost) for a
- * client from outside: those series as null. The CPU temperature stays. */
+/* The history without the machine readings (the CPU load, IQ lost, the
+ * board's load and FIFO overflows) for a client from outside: those series
+ * as null. The CPU temperature stays. */
 static char *stats_public(const char *full) {
   static GRegex *re;
   if (!re) {
-    re = g_regex_new("\"(cpu|cpu_cw|cpu_rtty|lost|rp_load)\":\\[[^\\]]*\\]", G_REGEX_OPTIMIZE,
+    re = g_regex_new("\"(cpu|cpu_cw|cpu_rtty|lost|rp_load|rp_ovf)\":\\[[^\\]]*\\]", G_REGEX_OPTIMIZE,
                      0, NULL);
   }
   char *out = re ? g_regex_replace(re, full, -1, 0, "\"\\1\":null", 0, NULL) : NULL;
