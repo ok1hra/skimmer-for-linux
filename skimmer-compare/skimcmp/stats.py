@@ -164,17 +164,21 @@ def breakdown_block(evs):
 
 
 def phased(A, ta, tb):
-    """{"spot": n, "band": n, "off": n, "mean_db": mean G_A taken off, "bands": [...]}
-    of L's phased-band CQ spots in [ta, tb), or None when there were none."""
+    """L's phased-band CQ spots in [ta, tb) (match.py A.phased), or None:
+    {"spot": n, "band": n, "off": n — how G_A was known ("off": the band on
+    antenna A alone), "mean_db": mean G_A taken off, "dropped": n under L's
+    floor on IN1, "floor": that floor (dB, L's scale), "bands": [...]}."""
     rows = [r for r in getattr(A, "phased", ()) if ta <= r[0] < tb]
     if not rows:
         return None
     out = {"spot": 0, "band": 0, "off": 0}
-    for _, how, _, _ in rows:
-        out[how] += 1
-    g = [ga for _, how, ga, _ in rows if how in ("spot", "band")]
+    for r in rows:
+        out[r[1]] += 1
+    g = [r[2] for r in rows if r[1] in ("spot", "band")]
     out["mean_db"] = round(sum(g) / len(g), 2) if g else None
-    out["bands"] = sorted({b for *_, b in rows})
+    out["dropped"] = sum(1 for r in rows if r[4])
+    out["floor"] = getattr(A, "phase_floor", None)
+    out["bands"] = sorted({r[3] for r in rows})
     return out
 
 

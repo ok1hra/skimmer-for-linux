@@ -204,14 +204,17 @@ function renderFacts() {
       el('span', { cls: 'muted' }, ` CQ spots left out: L spots only the calls its callsign filter lets through`
         + (F.about ? ` (${F.about})` : '') + `, so both sides are compared on those calls only`
         + (F.since != null ? ` (since ${utc(F.since)} UTC)` : ''))) : []),
-    // a phased band (L's two antennas combined): its SNR taken back to antenna A alone
+    // a phased band (L's two antennas combined): L measured as on antenna A
+    // (IN1) alone, where W listens — its SNR, and the spots IN1 would not have carried
     ...(c.phased_L ? fact('Phasing', el('b', null, `L ${num(c.phased_L.spot + c.phased_L.band + c.phased_L.off)} spots`),
-      el('span', { cls: 'muted' }, ` of phased bands (${c.phased_L.bands.join(', ')}): L combined two antennas there, W one — `
-        + `their SNR is taken back to antenna A alone (SNR − Φ_A`
-        + (c.phased_L.mean_db != null ? `, ${c.phased_L.mean_db > 0 ? '−' : '+'}${Math.abs(c.phased_L.mean_db).toFixed(1)} dB on average` : '')
-        + `; ${num(c.phased_L.spot)} by the spot's own Φ, ${num(c.phased_L.band)} by the band's median`
-        + (c.phased_L.off ? `, ${num(c.phased_L.off)} with phasing switched off` : '')
-        + `), so the SNR bins compare the decoders. Recall and busts still include what phasing gave L.`)) : []),
+      el('span', { cls: 'muted' }, ` of phased bands (${c.phased_L.bands.join(', ')}): L combined two antennas there, W listens on IN1 — `
+        + `L is measured as on IN1 alone: its SNR is SNR − Φ_A`
+        + (c.phased_L.mean_db != null ? ` (${c.phased_L.mean_db > 0 ? '−' : '+'}${Math.abs(c.phased_L.mean_db).toFixed(1)} dB on average)` : '')
+        + `, and ${num(c.phased_L.dropped)} spot${c.phased_L.dropped === 1 ? '' : 's'} whose SNR on IN1 falls under L's floor`
+        + (c.phased_L.floor != null ? ` (${c.phased_L.floor} dB, the lowest 1 % of L's spots on the other bands)` : ' (no floor yet: too few spots on unphased bands)')
+        + ` left out — so recall, busts and the SNR bins compare the decoders, not the antennas`
+        + ` (Φ_A: ${num(c.phased_L.spot)} the spot's own, ${num(c.phased_L.band)} the band's median`
+        + (c.phased_L.off ? `, ${num(c.phased_L.off)} with phasing switched off` : '') + ')')) : []),
   );
 }
 

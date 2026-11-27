@@ -105,6 +105,8 @@ class Analysis:
     pass
 
 
+PHASE_FLOOR_Q = 0.01     # L's floor: this quantile of its SNR on the unphased bands
+PHASE_FLOOR_MIN_N = 200  # … from at least this many spots, else no floor (none dropped)
 CURVE_STEP = 5      # dB of L's SNR per curve point
 CURVE_MIN_N = 5     # fewer pairs in a bin than this → the bin has no point
 
@@ -304,22 +306,32 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine, call
             if b and not (b in off and sp.t in off[b]):
                 dst.append((b, sp))
     Lin = [(b, sp) for b, sp in Lin if sp.cm in CQ_WORDS]
-    # A phased band (docs/PHASING.md): L's SNR as antenna A alone would have
-    # had it — SNR − G_A, the spot's own (phase-<T>.jsonl) or else its band's
-    # median in the status — so the SNR scale, its bins and the L→W curve
-    # compare the decoders, not the antennas. A.phased: [(t, how, G_A, band)].
-    A.phased = []
+    # A phased band (docs/PHASING.md): L measured as on antenna A alone (IN1,
+    # where W listens) — its SNR is SNR − G_A, the spot's own (phase-<T>.jsonl)
+    # or else its band's median in the status; and a spot whose SNR on IN1
+    # falls under L's floor (the PHASE_FLOOR_Q quantile of L's SNR on the
+    # unphased bands: under it L reports nothing) L would not have made on
+    # IN1 — it leaves, so recall and busts are IN1's too. The SNR bins, the
+    # L→W curve, recall and busts compare the decoders, not the antennas.
+    # A.phased: [(t, how, G_A, band, dropped)]; A.phase_floor: the floor.
+    A.phased, A.phase_floor = [], None
     snaps = store.phase_snaps()
     if snaps[0] or store.phase:
+        looked = [(b, sp) + store.phase_a(b, sp.t, sp.f, sp.call, snaps) for b, sp in Lin]
+        plain = sorted(sp.snr for b, sp, ga, how in looked if how is None)
+        if len(plain) >= PHASE_FLOOR_MIN_N:
+            A.phase_floor = plain[int(PHASE_FLOOR_Q * (len(plain) - 1))]
         adj = []
-        for b, sp in Lin:
-            ga, how = store.phase_a(b, sp.t, sp.f, sp.call, snaps)
-            if how:
-                A.phased.append((sp.t, how, ga, b))
+        for b, sp, ga, how in looked:
+            drop = False
             if how in ("spot", "band") and ga:
                 sp = Spot(sp.t, sp.f, sp.call, int(round(sp.snr - ga)), sp.wpm, sp.cm,
                           sp.spotter, sp.line, sp.mode)
-            adj.append((b, sp))
+                drop = A.phase_floor is not None and sp.snr < A.phase_floor
+            if how:
+                A.phased.append((sp.t, how, ga, b, drop))
+            if not drop:
+                adj.append((b, sp))
         Lin = adj
     Rcq = [(b, sp) for b, sp in Rin if sp.cm in CQ_WORDS]
     Rnon = defaultdict(list)

@@ -969,7 +969,7 @@ def phased_bands():
     with open(os.path.join(root, "headless.ini"), "w") as fh:
         fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n20m=14040000\n")
     with open(os.path.join(root, "master.scp"), "w") as fh:
-        fh.write("# test\nUA9AAA\nUA9BBB\nUA9CCC\nUA9DDD\n")
+        fh.write("# test\nUA9AAA\nUA9BBB\nUA9CCC\nUA9DDD\nUA9EEE\nUA9FFF\nUA9GGG\n")
     with open(os.path.join(root, "compare.ini"), "w") as fh:
         fh.write("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\n"
                  "[remote]\nwindows = 7000-7091 14000-14091\n[rbn]\nexclude = OK1HRA\n")
@@ -977,9 +977,13 @@ def phased_bands():
     loc = [mark("12:00:00", "connected to 127.0.0.1:7373"),
            L("12:10:00", 7020.0, "UA9AAA", snr=20),     # 40 m phased, its own Φ_A 5.0
            L("12:20:00", 7021.0, "UA9BBB", snr=18),     # 40 m phased, no record: the band's 3.0
-           L("12:30:00", 14020.0, "UA9CCC", snr=20),    # 20 m not phased
+           L("12:30:00", 14020.0, "UA9CCC", snr=20),    # 20 m not phased: L's floor
+           L("12:31:00", 14025.0, "UA9FFF", snr=12),    # … is the lowest of these, 12 dB
+           L("12:32:00", 14030.0, "UA9GGG", snr=25),
+           L("12:40:00", 7023.0, "UA9EEE", snr=14),     # 40 m: 14 − 5 = 9 under the floor
            L("12:52:00", 7022.0, "UA9DDD", snr=20)]     # 40 m on antenna A alone (mode a)
-    rem = [mark("12:00:00", "connected to 192.168.1.201:7301")]
+    rem = [mark("12:00:00", "connected to 192.168.1.201:7301"),
+           R("12:40:00", 7023.0, "UA9EEE", snr=10)]     # W (on IN1) heard it
     rbn = [mark("12:00:00", "connected to telnet.reversebeacon.net:7000")]
     events = ["%s recording as OK1HRA since %s UTC\n" % (ts("12:00:00"), T),
               "%s stopped — write check OK\n" % ts("14:00:00")]
@@ -997,15 +1001,26 @@ def phased_bands():
         fh.write("%s\t%s\n" % (ts("12:11:00"), json.dumps(
             {"t": epoch("12:10:00"), "call": "UA9AAA", "mode": "CW", "khz": 7020.0, "snr": 20,
              "speed": 22, "band": "40m", "src": "", "phase": 2.0, "phase_a": 5.0})))
+        fh.write("%s\t%s\n" % (ts("12:41:00"), json.dumps(
+            {"t": epoch("12:40:00"), "call": "UA9EEE", "mode": "CW", "khz": 7023.0, "snr": 14,
+             "speed": 22, "band": "40m", "src": "", "phase": 4.0, "phase_a": 5.0})))
         fh.write("%s\t%s\n" % (ts("12:31:00"), json.dumps(      # no G_A: not used
             {"t": epoch("12:20:00"), "call": "UA9BBB", "mode": "CW", "khz": 7021.0, "snr": 18,
              "speed": 22, "band": "40m", "src": "", "phase": 1.0, "phase_a": None})))
     cfg = Config(os.path.join(root, "compare.ini"))
     store = Store(cfg.logs, lambda: RbnIndex(loose_bands(cfg.local_windows, 2.0), cfg.exclude))
     store.poll()
+    import skimcmp.match as M
+    keep_n, M.PHASE_FLOOR_MIN_N = M.PHASE_FLOOR_MIN_N, 3     # three unphased spots make a floor here
     An = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
                  epoch("23:00:00"))
+    M.PHASE_FLOOR_MIN_N = keep_n
     snr = {sp.call: sp.snr for _, sp in An.Lin}
+    ev = {e["call"]: e for e in An.events}
+    check(An.phase_floor == 12, "L's floor: the lowest of its unphased spots here, 12 dB (%s)" % An.phase_floor)
+    check("UA9EEE" not in snr and ev.get("UA9EEE", {}).get("cat") == "only-R",
+          "9 dB on IN1, under the floor: L would not have had it — W's only (%s)"
+          % ev.get("UA9EEE", {}).get("cat"))
     check(snr.get("UA9AAA") == 15, "the spot's own Φ_A: 20 − 5 = 15 (%s)" % snr.get("UA9AAA"))
     check(snr.get("UA9BBB") == 15, "no Φ_A of its own: the band's median, 18 − 3 = 15 (%s)" % snr.get("UA9BBB"))
     check(snr.get("UA9CCC") == 20 and snr.get("UA9DDD") == 20,
@@ -1013,8 +1028,9 @@ def phased_bands():
     check([sp.snr for sp in store.L if sp.call == "UA9AAA"] == [20], "the recorded spot itself is not changed")
     S = summarize(An, epoch("12:00:00"), epoch("14:00:00") + 1)
     ph = S["counts"]["phased_L"]
-    check(ph == {"spot": 1, "band": 1, "off": 1, "mean_db": 4.0, "bands": ["40m"]},
-          "the counts: one by its own Φ, one by the band's, one switched off (%s)" % ph)
+    check(ph == {"spot": 2, "band": 1, "off": 1, "mean_db": 4.33, "dropped": 1, "floor": 12,
+                 "bands": ["40m"]},
+          "the counts: two by their own Φ, one by the band's, one off; one dropped (%s)" % ph)
 
 
 def RT(hms, spotter, f, call, cm="CQ"):
