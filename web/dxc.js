@@ -11,7 +11,9 @@
 // the RTTY palette over it too ([rtty_palette] open_on_spot).
 // Filters and columns are kept in the browser. The Mode and age filters are
 // the page's own: the band ladder's legend (its eyes) and the map's age
-// buttons set the same ones (modeOn/setMode, setAge; 'sk-filter' on a change).
+// buttons set the same ones (modeOn/setMode, setAge; 'sk-filter' on a change),
+// and so are the continents: the eyes over the heat map (contOn/setCont), in
+// the Country column's menu here.
 'use strict';
 
 const Dxc = (() => {
@@ -24,7 +26,7 @@ const Dxc = (() => {
   ];
   const DEF = { bands: {}, call: '', regex: false, kmMin: 0, kmMax: 20000, azMin: 0, azMax: 360,
                 dbMin: -30, dbMax: 60, spMin: 0, spMax: 99, modes: { CW: true, RTTY: true, FT8: true, FT4: true, JS8: true, WSPR: true }, country: '',
-                src: { here: true, worker: true, peer: true }, age: 30, hidden: { src: true } };
+                src: { here: true, worker: true, peer: true }, conts: {}, age: 30, hidden: { src: true } };
   const load = () => { try { return JSON.parse(localStorage.getItem('skdxc') || '{}'); } catch (e) { return {}; } };
   const F = { ...JSON.parse(JSON.stringify(DEF)), ...load() };
   if (!(F.age > 0 && F.age <= 30)) F.age = 30;            // the status page keeps half an hour
@@ -43,6 +45,7 @@ const Dxc = (() => {
     if (F.dbMin === -10) F.dbMin = -30;
     F.modes = { ...DEF.modes, ...(F.modes || {}) };
   }
+  F.conts = F.conts || {};
   F.v = 3;
   // every change is the user's: the ladder and the map's age buttons follow
   const save = () => {
@@ -87,9 +90,15 @@ const Dxc = (() => {
     if (s.km != null && (s.km < F.kmMin || s.km > F.kmMax)) return false;
     if (s.az != null && (F.azMin <= F.azMax ? (s.az < F.azMin || s.az > F.azMax) : (s.az < F.azMin && s.az > F.azMax))) return false;
     if (F.country && !(s.where && s.where.name.toUpperCase().includes(F.country.toUpperCase()))) return false;
+    if (no('cont') && contOff()) {                 // a call of no known continent stays
+      const c = typeof Cont !== 'undefined' ? Cont.of(s.call) : '';
+      if (c && F.conts[c] === false) return false;
+    }
     if (no('src') && F.src[srcKind(s)] === false) return false;
     return true;
   }
+  const CONTS = [['EU', 'Europe'], ['NA', 'North America'], ['SA', 'South America'], ['AS', 'Asia'], ['AF', 'Africa'], ['OC', 'Oceania']];
+  const contOff = () => Object.values(F.conts).some((v) => v === false);
   // a spot (or a WSPR station) from elsewhere on the page, with its place
   const placeCache = new Map();
   function placed(s) {
@@ -107,7 +116,7 @@ const Dxc = (() => {
     khz: () => Object.values(F.bands).some((v) => v === false),
     call: () => !!F.call, km: () => F.kmMin > 0 || F.kmMax < 20000 || F.azMin > 0 || F.azMax < 360,
     db: () => F.dbMin > DEF.dbMin || F.dbMax < DEF.dbMax, speed: () => F.spMin > 0 || F.spMax < 99,
-    mode: () => Object.values(F.modes).some((v) => v === false), country: () => !!F.country, src: () => Object.values(F.src).some((v) => !v),
+    mode: () => Object.values(F.modes).some((v) => v === false), country: () => !!F.country || contOff(), src: () => Object.values(F.src).some((v) => !v),
     band: () => Object.values(F.bands).some((v) => v === false), time: () => F.age !== 30,
   };
 
@@ -136,7 +145,10 @@ const Dxc = (() => {
       case 'mode': return `<div class="fm-t">Mode</div>${checks('modes', ['CW', 'RTTY', 'FT8', 'FT4', 'JS8', 'WSPR'])}` +
         '<div class="fm-note">The same switches as the eyes in the Bands legend: a mode left out is out of the ' +
         'bands\' counts, the heat map, the map and this table. WSPR has no rows here.</div>';
-      case 'country': return `<div class="fm-t">Country contains</div><input data-f="country" value="${esc(F.country)}" placeholder="Japan, Russia…">`;
+      case 'country': return `<div class="fm-t">Country contains</div><input data-f="country" value="${esc(F.country)}" placeholder="Japan, Russia…">` +
+        `<div class="fm-t">Continents</div><div class="fm-grid">${checks('conts', CONTS.map(([c]) => c), (c) => CONTS.find(([k]) => k === c)[1])}</div>` +
+        '<div class="fm-note">The same switches as the eyes over the Bands\' heat map: a continent left out is out of the ' +
+        'bands\' counts, the heat map, the map and this table.</div>';
       case 'src': return `<div class="fm-t">Made by</div>${checks('src', ['here', 'worker', 'peer'], (k) => ({ here: 'this skimmer', worker: 'a worker', peer: 'a peer' }[k]))}`;
       case 'time': return `<div class="fm-t">Age</div><div class="fm-act">${[5, 10, 15, 30].map((a) => `<button type="button" data-age="${a}" class="${F.age === a ? 'on' : ''}">${a} min</button>`).join('')}</div>`;
       default: return '';
@@ -158,7 +170,7 @@ const Dxc = (() => {
   function closeMenu() { if (menu) { menu.remove(); menu = null; } }
   function resetCol(c) {
     const keys = { khz: ['bands'], band: ['bands'], call: ['call', 'regex'], km: ['kmMin', 'kmMax', 'azMin', 'azMax'],
-                   db: ['dbMin', 'dbMax'], speed: ['spMin', 'spMax'], mode: ['modes'], country: ['country'], src: ['src'], time: ['age'] }[c] || [];
+                   db: ['dbMin', 'dbMax'], speed: ['spMin', 'spMax'], mode: ['modes'], country: ['country', 'conts'], src: ['src'], time: ['age'] }[c] || [];
     for (const k of keys) F[k] = JSON.parse(JSON.stringify(DEF[k]));
   }
   function menuEvent(e) {
@@ -300,6 +312,12 @@ const Dxc = (() => {
     save();
     if (el) draw();
   }
+  function setCont(c, on) {
+    F.conts[c] = !!on;
+    if (menu && menu.dataset.c === 'country') closeMenu();
+    save();
+    if (el) draw();
+  }
   function setAge(a) {
     if (![5, 10, 15, 30].includes(a)) return;
     F.age = a;
@@ -311,5 +329,5 @@ const Dxc = (() => {
   // pass the same filters — skip: the ones they show their own way
   const passes = (s, skip) => pass(placed(s), skip);
   return { mount, update, age: () => F.age, modeOn: (m) => F.modes[m] !== false, setMode, setAge,
-           bandOn: (b) => F.bands[b] !== false, setBand, passes };
+           bandOn: (b) => F.bands[b] !== false, setBand, contOn: (c) => F.conts[c] !== false, setCont, passes };
 })();

@@ -1,5 +1,5 @@
-// map.js — the status page's azimuthal map: the spots of the last half hour
-// around the station, the way IP-rotator draws its map (web/map/ has the
+// map.js — the status page's azimuthal map: the stations spotted in the last
+// half hour around the station (a call once, at its newest spot — app.js), the way IP-rotator draws its map (web/map/ has the
 // data): an azimuthal equidistant projection — distance and bearing true from
 // the centre — land, borders, DXCC prefixes, the grey line, range rings.
 //
@@ -467,7 +467,7 @@ const SkMap = (() => {
       if (view.visitor) paintVisitor(g, view.visitor);
       g.restore();
       g.fillStyle = '#39d98a'; g.beginPath(); g.arc(view.cx, view.cy, 4, 0, 7); g.fill();
-      foot(zoom, `heat: ${(view.heat || []).length} DXCC — spots weighted by their SNR, log scale · `);
+      foot(zoom, `heat: ${(view.heat || []).length} DXCC — stations weighted by their SNR, log scale · `);
       return;
     }
     view.visitor = placeVisitor(g, view, boxes);    // its label keeps the spots' labels off
@@ -518,7 +518,7 @@ const SkMap = (() => {
     el.querySelector('[data-k=zoom]').textContent = opt.zoom ? `${fmtKm(zoom)}` : `auto · ${fmtKm(zoom)}`;
     el.querySelector('[data-o=auto]').classList.toggle('on', !opt.zoom);
     const un = spots.filter((s) => !s.where).length;
-    el.querySelector('.map-count').textContent = `${spots.length} spot${spots.length === 1 ? '' : 's'} · ` +
+    el.querySelector('.map-count').textContent = `${spots.length} station${spots.length === 1 ? '' : 's'} · ` +
       `${note}${un ? `${un} unplaced · ` : ''}centre ${centerOf().what}`;
   }
   const fmtKm = (km) => `${Math.round(km).toLocaleString('en-US')} km`;

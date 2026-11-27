@@ -221,7 +221,8 @@ here; what was done and why is in git.
 - **The web page** (libsoup 3, `src/headless/web.c`, static files in `web/`
   built in as a GResource, plain JS/SVG — no libraries, it must work
   offline; the look of IP-rotator/wifilt, Roboto Condensed built in):
-  status = an azimuthal map of the last 30 min of spots (`web/map.js`, data
+  status = an azimuthal map of the last 30 min of spots, a call once at its
+  newest spot (`web/map.js`, data
   `web/map/` from IP-rotator) + the DX cluster with column filters
   (`web/dxc.js`), both from `/api/spots`, + the bands table (10 m on top:
   two stacked bars a band, spots of the map's age and active decoders, each
@@ -236,7 +237,9 @@ here; what was done and why is in git.
   grey in the bars and leaves the numbers, the heat map, the map and the
   cluster; the ladder's band eye IS the DX cluster's band filter
   (`Dxc.setBand`, one filter for the map, the cluster, the counts and the
-  heat map), and the counts and the heat map pass the cluster's other
+  heat map), the eyes over the heat map's continents are one more
+  (`Dxc.setCont`, in the Country column's menu too; a call of no known
+  continent stays), and the counts and the heat map pass the cluster's other
   filters too (`Dxc.passes`); the DX cluster's columns are wifilt's, in its
   order and alignment (UTC, kHz, DX, km with the bearing's arrow, From,
   Mode, dB, WPM, then Band, Country); the map's wheel zooms only inside

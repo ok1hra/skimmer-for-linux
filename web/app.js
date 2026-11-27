@@ -169,6 +169,9 @@ function renderFeedAddress(a) {
 // kept by dxc.js with the DX cluster's Mode column.
 const LADDER_MODES = [['CW', 'cw'], ['RTTY', 'rtty'], ['FT8', 'ft8'], ['FT4', 'ft4'], ['JS8', 'js8'], ['WSPR', 'wspr']];
 const modeOn = (m) => typeof Dxc === 'undefined' || Dxc.modeOn(m);
+// a continent the eye over the heat map leaves out (the DX cluster keeps it,
+// beside its Country filter): out of the counts, the heat map, the map, the cluster
+const contOn = (c) => typeof Dxc === 'undefined' || Dxc.contOn(c);
 // the age the map, the ladder and the heat map show (5, 10, 15 or 30 min)
 const ladderAgeS = () => (typeof Dxc === 'undefined' ? 30 : Dxc.age()) * 60;
 let status = null;
@@ -293,7 +296,12 @@ function renderStatus(d) {
     '<tr class="head-row"><th title="on the map"></th><th class="l">band</th>' +
     `<th colspan="2" class="l" title="the spots of the last ${ageMin} min, mode by mode (WSPR: its stations decoded) — the age is the map's">spots ${ageMin} min</th>` +
     '<th colspan="2" class="l" title="now: CW and RTTY channel decoders reading a signal, FT8/FT4 and JS8 the senders of the last minute, WSPR the stations of its newest cycle">active decoders</th>' +
-    '<th class="hm-pad"></th>' + CONT.map((c) => `<th class="hm" title="${CONT_NAME[c]}: the stations heard on the band in the last ${ageMin} min — the modes counted, each call once">${c}</th>`).join('') + '<th class="hm-pad"></th>' +
+    '<th class="hm-pad"></th>' + CONT.map((c) => {
+      const on = contOn(c);
+      return `<th class="hm${on ? '' : ' x'}"><button type="button" data-cont="${c}" aria-pressed="${on}" title="${CONT_NAME[c]}: ${on
+        ? `the stations heard on the band in the last ${ageMin} min — the modes counted, each call once. Click: leave ${CONT_NAME[c]} out of the bands, the heat map, the map and the DX cluster`
+        : 'left out — click: count it again'}">${on ? EYE_ON : EYE_OFF}<span>${c}</span></button></th>`;
+    }).join('') + '<th class="hm-pad"></th>' +
     '<th class="l" title="what the band does besides decoding: a worker decodes it, the thermal guard tests it, a mode is paused">status</th></tr>' +
     ladderOrder(rows.map((r) => r.b)).map((b) => {
     const { v } = rows.find((r) => r.b === b);
@@ -699,12 +707,21 @@ placeDxc();
 const mapShown = { list: [], marked: null };
 function mapDraw() {
   if (typeof SkMap === 'undefined') return;
-  SkMap.update(mapShown.list.map((s) => ({ ...s, hi: s.call === mapShown.marked })),
+  // a call the feed spotted again (on the same band or another) is one
+  // station on the map — at its newest spot; the DX cluster keeps every row
+  const last = new Map();
+  for (const s of mapShown.list) {
+    const o = last.get(s.call);
+    if (!o || (s.t != null && o.t != null ? s.t > o.t : s.age < o.age)) last.set(s.call, s);
+  }
+  SkMap.update([...last.values()].map((s) => ({ ...s, hi: s.call === mapShown.marked })),
                { locator: spots.locator, call: spots.call, visitor: visitor.call });
 }
 on('#ladder', 'click', (e) => {
   const lg = e.target.closest('button[data-mode]');
   if (lg && typeof Dxc !== 'undefined') { Dxc.setMode(lg.dataset.mode, !Dxc.modeOn(lg.dataset.mode)); return; }
+  const ct = e.target.closest('button[data-cont]');
+  if (ct && typeof Dxc !== 'undefined') { Dxc.setCont(ct.dataset.cont, !Dxc.contOn(ct.dataset.cont)); return; }
   const b = e.target.closest('button[data-band]');
   if (b && typeof Dxc !== 'undefined') Dxc.setBand(b.dataset.band, !Dxc.bandOn(b.dataset.band));   // 'sk-filter' redraws
 });
@@ -863,6 +880,7 @@ function heatCells(m, rows, dim, ageMin) {
     const x = m && m.get(c), n = x ? x.calls.size : 0;
     const sw = x ? [...x.w.values()].reduce((a, v) => a + v, 0) : 0;
     t.push(n ? 1 - Math.exp(-sw / 1.5) : 0);
+    if (!contOn(c)) return `<td class="hm x" title="${CONT_NAME[c]}: left out (the eye over the column)"></td>`;
     if (!n) return `<td class="hm" title="${CONT_NAME[c]}: none in ${ageMin} min"></td>`;
     const parts = [['CW', x.cw], ['RTTY', x.rtty], ['FT8/FT4', x.ft8], ['JS8', x.js8], ['WSPR', x.wspr]].filter(([, s]) => s.size)
       .map(([k, s]) => `${k} ${s.size}`).join(', ');
