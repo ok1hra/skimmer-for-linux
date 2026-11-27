@@ -180,6 +180,12 @@ test('rp-agent-skrf', skimmer_rp_agent_test, args : [skimmer_rp_host, '--sim-skr
 
 # … and the same source for the board: static armhf (Pavel's Alpine is musl,
 # so nothing shared), shipped in the AppImage for rp_manage to install.
+# The skimmer's own bitstream (docs/FPGA.md): built with Vivado by hand
+# (fpga/build.sh), kept in git with its sha256; copied beside the binaries
+# for rp_manage (skim_hd_rp_bit_path) and into the AppImage.
+skimmer_rp_bit = configure_file(input : 'fpga/bin/skimmer_rp_122_88.bit',
+  output : 'skimmer_rp_122_88.bit', copy : true)
+
 arm_cc = find_program('arm-linux-gnueabihf-gcc', required : get_option('rp_agent'))
 if arm_cc.found()
   skimmer_rp_armhf = custom_target('skimmer-rp-armhf',
@@ -717,6 +723,11 @@ test('headless-mock', find_program('tests/headless-mock.sh'),
 # a phased band (ip=ab): paired, aligned, Φ live, B lost and back.
 test('rp-two-ip', find_program('tests/rp-two-ip.sh'),
   args : [skimmer_headless, skimmer_rp_host, skimmer_phase_bench], timeout : 180)
+# SKRS gate: [rp] stream=skrs on the skimmer's own bitstream (simulated):
+# every band its own rate and input, a phased band from both inputs lined
+# up by the hardware index, the slots' limit.
+test('rp-skrs', find_program('tests/rp-skrs.sh'),
+  args : [skimmer_headless, skimmer_rp_host], timeout : 120)
 # … with the agent on the skimmer's own bitstream (simulated: docs/FPGA.md)
 test('rp-two-ip-skrf', find_program('tests/rp-two-ip.sh'),
   args : [skimmer_headless, skimmer_rp_host, skimmer_phase_bench], timeout : 180,

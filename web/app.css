@@ -722,6 +722,10 @@ body.touring { overflow: hidden; }
 .rp-ext-row { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; margin: 4px 0; font-size: 13px; }
 .rp-ext-row b { width: 3.5em; }
 #settings.no-rp .rp-only, .no-rp .rp-only { display: none; }
+/* SKRS (the skimmer's own bitstream): a rate a band, no IP B */
+.skrs-only { display: none; }
+body.skrs .skrs-only { display: table-cell; }
+body.skrs .p1-only { display: none; }
 td.rxl { white-space: nowrap; }
 /* Statistics → Phasing: the coarse waterfall of what phasing gave */
 .phase-ctl { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 4px 0 8px; font-size: 13px; }

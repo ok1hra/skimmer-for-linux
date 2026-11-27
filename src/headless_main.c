@@ -7,7 +7,7 @@
  *                    [--list-switches] [--fetch-deepcw-model]
  *                    [--install-service] [--uninstall-service] [--find-radios]
  *                    [--find-skimmers]
- *                    [--redpitaya connect|probe|status|install|uninstall [HOST]]
+ *                    [--redpitaya connect|probe|status|install|install-fpga|install-stock|uninstall [HOST]]
  *
  * An IQ source (headless/source.h — a Red Pitaya running sdr_receiver_hpsdr,
  * up to 8 receivers at once) feeds one engine pipeline per band and mode
@@ -1932,9 +1932,9 @@ static char *web_config(GHashTable *q, SkimHdWebWho who, guint *st, const char *
                              b->centre_hz, b->cw ? "true" : "false", engine_key(b->cw_engine),
                              b->rtty ? "true" : "false", b->off ? "false" : "true");
       json_kv(o, "worker", b->worker, FALSE);
-      g_string_append_printf(o, ",\"ip\":\"%s\",\"input\":%u,\"phase\":\"%s\"}",
+      g_string_append_printf(o, ",\"ip\":\"%s\",\"input\":%u,\"rate\":%u,\"phase\":\"%s\"}",
                              b->phased && !b->same_ip ? "ab" : b->ip ? "b" : "a",
-                             b->phased && b->same_ip ? 12u : b->input + 1u,
+                             b->phased && b->same_ip ? 12u : b->input + 1u, b->own_rate,
                              b->phase_mode >= 0 ? skim_phase_mode_name((SkimPhaseMode)b->phase_mode) : "");
     }
     g_string_append_c(o, ']');
@@ -2243,6 +2243,9 @@ static char *web_redpitaya_post(GHashTable *form, guint *st, gpointer user) {
     .sel_a = form_mask(form, "sel_a"),
     .sel_b = form_mask(form, "sel_b"),
     .sel_given = g_hash_table_contains(form, "sel_a") || g_hash_table_contains(form, "sel_b"),
+    /* fpga=skimmer | stock: the bitstream to install; none = the card's */
+    .fpga = !g_strcmp0(g_hash_table_lookup(form, "fpga"), "skimmer") ? 1
+            : !g_strcmp0(g_hash_table_lookup(form, "fpga"), "stock") ? 2 : 0,
     .ours = ours,
   };
   GError *e = NULL;
@@ -2310,14 +2313,18 @@ static int redpitaya_cli(const char *cmd, const char *host, const SkimHdConfig *
   static const struct { const char *name; SkimHdRpJob job; } acts[] = {
     { "connect", SKIM_HD_RP_CONNECT }, { "probe", SKIM_HD_RP_PROBE },
     { "status", SKIM_HD_RP_STATUS },   { "install", SKIM_HD_RP_INSTALL },
-    { "uninstall", SKIM_HD_RP_UNINSTALL },
+    { "uninstall", SKIM_HD_RP_UNINSTALL }, { "install-fpga", SKIM_HD_RP_INSTALL },
+    { "install-stock", SKIM_HD_RP_INSTALL },
   };
   int job = -1;
   for (guint i = 0; i < G_N_ELEMENTS(acts); i++) {
     if (strcmp(cmd, acts[i].name) == 0) { job = (int)acts[i].job; }
   }
+  /* install keeps the card's bitstream; install-fpga the skimmer's own,
+   * install-stock Pavel's (docs/FPGA.md) */
+  const gint fpga = !strcmp(cmd, "install-fpga") ? 1 : !strcmp(cmd, "install-stock") ? 2 : 0;
   if (job < 0) {
-    g_printerr("--redpitaya: connect, probe, status, install or uninstall\n");
+    g_printerr("--redpitaya: connect, probe, status, install, install-fpga, install-stock or uninstall\n");
     return EXIT_CONFIG;
   }
   if (!host) { host = rp_default_host(c); }
@@ -2347,7 +2354,7 @@ static int redpitaya_cli(const char *cmd, const char *host, const SkimHdConfig *
     }
   }
   if (ok && job != SKIM_HD_RP_CONNECT && job != SKIM_HD_RP_PROBE) {
-    const SkimHdRpArgs b = { .take_over = take_over };   /* install: the card's inputs kept */
+    const SkimHdRpArgs b = { .take_over = take_over, .fpga = fpga };   /* install: the card's inputs kept */
     ok = cli_job(rp, (SkimHdRpJob)job, &b);
   }
   char *j = skim_hd_rp_json(rp);

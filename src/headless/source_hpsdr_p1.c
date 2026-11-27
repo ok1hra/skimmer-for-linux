@@ -42,6 +42,11 @@
  * late by more than PAIR_HOLD_S — A goes on alone (b = NULL): the band
  * never stops because of B.
  *
+ * [rp] stream=skrs (the skimmer's own bitstream, docs/FPGA.md): no IPs —
+ * every band one stream of SKRS from [radio] host (src/engine/rp_stream.h),
+ * at its own rate and input; a phased band two (IN1, IN2) at its rate,
+ * which share the board's hardware index, so the same pairer lines them up.
+ *
  * Part of skimmer-for-linux. GPL-3.0-or-later.
  */
 #include "source.h"
@@ -54,6 +59,7 @@
 #include <glib/gstdio.h>
 
 #include "engine/hpsdr_p1.h"
+#include "engine/rp_stream.h"
 
 /* How long the radios may stay silent (no discovery reply — the network not
  * up yet after a boot, a radio rebooting) before the search gives up. A busy
@@ -123,6 +129,12 @@ typedef struct {
   double           ppm_now;
   char             state[160];
   Rx               rx[SKIM_HD_MAX_BANDS];
+  /* [rp] stream=skrs: one SKRS client, stream id → band (and pair side) */
+  SkimRpStream    *skrs;
+  guint            nids;
+  guint            id_band[SKIM_RP_STREAM_MAX];
+  PairSide        *id_side[SKIM_RP_STREAM_MAX];      /* NULL = a plain band  */
+  PairSide         skrs_side[SKIM_HD_MAX_BANDS][2];
 } P1;
 
 static void p1_state(P1 *p, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
@@ -358,6 +370,70 @@ static void rx_iq_cb(const float *iq, guint n, double rate, double centre, gpoin
 }
 
 static void closed_cb(gpointer user) { g_atomic_int_set(&((P1 *)user)->closed, 1); }
+
+/* SKRS: a stream's block to its band, or to its phased band's pairer (the
+ * hardware index is the pair's common timeline, the epoch the board's syncs) */
+static void skrs_cb(guint id, const float *iq, guint n, double rate, double centre, guint32 epoch,
+                    guint64 idx, gpointer user) {
+  P1 *p = user;
+  if (id >= p->nids) { return; }
+  if (p->id_side[id]) {
+    pair_iq_cb(iq, n, rate, centre, (gint)(epoch & 0x7fffffff), idx, p->id_side[id]);
+  } else {
+    Rx *rx = &p->rx[p->id_band[id]];
+    rx->s->iq_cb(rx->band, iq, n, rate, centre, rx->s->iq_user);
+  }
+}
+
+/* [rp] stream=skrs: every band's stream(s) from host; FALSE (state set) when
+ * the board offers no SKRS or refuses them. */
+static gboolean start_skrs(P1 *p, const char *host, double ppm) {
+  const SkimHdConfig *c = p->base.cfg;
+  SkimHpsdrInfo info;
+  GError *err = NULL;
+  if (!skim_hpsdr_discover(host, radio_port(), 1000, &info, &err)) {
+    p1_state(p, "%s: no reply: %s", host, err->message);
+    g_clear_error(&err);
+    return FALSE;
+  }
+  if (!info.agent || !info.agent_slots || !info.agent_skrs_port) {
+    p1_state(p, "%s: [rp] stream=skrs, but the board runs %s — its own bitstream and agent "
+             "0.6 serve SKRS (Settings → Red Pitaya)", host,
+             info.agent ? "the stock bitstream" : "no skimmer agent");
+    return FALSE;
+  }
+  SkimRpStreamSpec spec[SKIM_RP_STREAM_MAX];
+  p->nids = 0;
+  for (guint b = 0; b < c->nb && p->nids < SKIM_RP_STREAM_MAX; b++) {
+    const SkimHdBand *bd = &c->band[b];
+    p->id_band[p->nids] = b;
+    p->id_side[p->nids] = bd->phased ? &p->skrs_side[b][0] : NULL;
+    spec[p->nids++] = (SkimRpStreamSpec){ bd->centre_hz, bd->rate, bd->phased ? 1u : bd->input ? 2u : 1u };
+    if (bd->phased && p->nids < SKIM_RP_STREAM_MAX) {      /* its IN2 */
+      p->id_band[p->nids] = b;
+      p->id_side[p->nids] = &p->skrs_side[b][1];
+      spec[p->nids++] = (SkimRpStreamSpec){ bd->centre_hz, bd->rate, 2 };
+    }
+  }
+  p->skrs = skim_rp_stream_new(host, info.agent_skrs_port);
+  skim_rp_stream_set_cb(p->skrs, skrs_cb, p);
+  skim_rp_stream_set_closed_cb(p->skrs, closed_cb, p);
+  g_atomic_int_set(&p->closed, 0);
+  if (!skim_rp_stream_start(p->skrs, spec, p->nids, ppm, &err)) {
+    p1_state(p, "%s: SKRS start failed: %s", host, err->message);
+    g_clear_error(&err);
+    g_clear_pointer(&p->skrs, skim_rp_stream_free);
+    return FALSE;
+  }
+  g_strlcpy(p->host, host, sizeof(p->host));
+  p->ppm_now = ppm;
+  p->streaming = TRUE;
+  p->search_since_us = 0;
+  p1_state(p, "streaming — %s, %u streams of %u slots (%u bands%s), clock %+.2f ppm",
+           skim_rp_stream_device(p->skrs), p->nids, info.agent_slots, c->nb,
+           p->nphased ? ", phased ones twice" : "", ppm);
+  return TRUE;
+}
 static void closed_b_cb(gpointer user) { g_atomic_int_set(&((P1 *)user)->b.closed, 1); }
 
 /* A client for IP ip's bands: receivers, callbacks, inputs; centres out. */
@@ -381,6 +457,7 @@ static SkimHpsdrClient *client_for(P1 *p, guint ip, const char *host, double *ce
 /* Start streaming from host at ppm; FALSE (state set) when the start fails. */
 static gboolean start_on(P1 *p, const char *host, double ppm, gboolean took) {
   const SkimHdConfig *c = p->base.cfg;
+  if (c->rp_skrs) { return start_skrs(p, host, ppm); }
   GError *err = NULL;
   double centres[SKIM_HD_IP_RX];
   p->take_over = FALSE;                         /* one-shot: the first start   */
@@ -446,7 +523,7 @@ static void b_drop(P1 *p) {
 
 static void b_try(P1 *p) {
   const SkimHdConfig *c = p->base.cfg;
-  if (!p->nrx_ip[1] || p->b.streaming || !p->streaming) { return; }
+  if (!p->nrx_ip[1] || p->b.streaming || !p->streaming || c->rp_skrs) { return; }
   if (!c->rp_b_host && !p->b.peer[0]) {        /* the agent may not have had it yet (DHCP) */
     SkimHpsdrInfo ia;
     if (skim_hpsdr_discover(p->host, radio_port(), 500, &ia, NULL) && ia.agent) {
@@ -610,6 +687,7 @@ static void drop(P1 *p) {
    * that port; another client's goes to its own address, left alone. */
   const guint16 port = p->rp ? skim_hpsdr_client_local_port(p->rp) : 0;
   free_client(p);                                     /* sends no stop: not ours */
+  g_clear_pointer(&p->skrs, skim_rp_stream_free);     /* SKRS: its keep-alive ends */
   if (port) { streams_set(p->host, port); }
   p->streaming = FALSE;
   p1_state(p, "stream lost from %s (another client took the radio, or it left "
@@ -664,6 +742,10 @@ static void p1_status(SkimIqSource *s, SkimIqSourceStatus *o) {
   o->ppm = p->ppm_now;
   o->packets = p->rp ? skim_hpsdr_client_packets(p->rp) : 0;
   o->lost_frames = p->rp ? skim_hpsdr_client_lost_frames(p->rp) : 0;
+  for (guint id = 0; p->skrs && id < p->nids; id++) {
+    o->packets += skim_rp_stream_datagrams(p->skrs, id);
+    o->lost_frames += skim_rp_stream_lost_frames(p->skrs, id);
+  }
   if (p->b.cl) {
     o->packets += skim_hpsdr_client_packets(p->b.cl);
     o->lost_frames += skim_hpsdr_client_lost_frames(p->b.cl);
@@ -674,6 +756,7 @@ static void p1_free(SkimIqSource *s) {
   P1 *p = (P1 *)s;
   b_free(p);                                          /* stops — if still ours */
   free_client(p);
+  g_clear_pointer(&p->skrs, skim_rp_stream_free);
   for (guint b = 0; b < SKIM_HD_MAX_BANDS; b++) { pair_free(p->pair[b]); }
   g_free(p);
 }
@@ -690,6 +773,16 @@ SkimIqSource *skim_iq_source_hpsdr_p1_new(const SkimHdConfig *cfg, gboolean take
   for (guint b = 0; b < SKIM_HD_MAX_BANDS; b++) {
     p->rx[b].s = &p->base;
     p->rx[b].band = b;
+  }
+  if (cfg->rp_skrs) {                          /* SKRS: every band its stream(s) */
+    for (guint b = 0; b < cfg->nb; b++) {
+      if (!cfg->band[b].phased) { continue; }
+      p->pair[b] = pair_new(&p->base, b, cfg->band[b].rate);
+      p->nphased++;
+      p->skrs_side[b][0] = (PairSide){ p->pair[b], 0 };
+      p->skrs_side[b][1] = (PairSide){ p->pair[b], 1 };
+    }
+    return &p->base;
   }
   for (guint b = 0; b < cfg->nb; b++) {        /* each IP's receivers, in band order */
     const guint ip = cfg->band[b].ip ? 1 : 0;

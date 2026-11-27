@@ -213,45 +213,72 @@ right before):
   core and never fell behind more than 161 bursts (20 kB) of the 8 MB
   ring. With 64-bit loads (and saving every sample) it could not keep up.
 
-## The ARM side
+## The ARM side (agent 0.6, `rp/agent/skimmer-rp.c`)
 
-- **The agent** keeps Protocol 1 on both IPs for CW Skimmer and Quisk: a
-  P1 client with n receivers at rate r gets n free slots at r, and the
-  agent builds EP6 frames from those slots' words. Busy when no slots are
-  free.
-- **The skimmer's stream** is the agent's own UDP format (P1 cannot mix
-  rates): one packet carries one slot — `SKRS`, version, slot, rate,
-  flags (clip IN1/IN2, overflow), epoch, the 64-bit index of the first
-  sample, then up to 240 samples of 24-bit I/Q (1 460 bytes). Control in
-  `SKRC` datagrams on the same port: the slot table (frequency, rate,
-  input), start, stop, keep-alive. The skimmer's client is a sibling of
-  `hpsdr_p1.c` with the same IQ callback; a phased pair arrives aligned
-  by index.
-- **Cost.** A word is one 8-byte load and a 6-byte store into its slot's
-  packet: ≈ 3.5 M words/s at the full load, a few per cent of a core —
-  against 54 % of a core for 8 × 384 k of FIFO reads over AXI GP today.
-  Uncached reads of the ring are measured in S3.
+- **Which bitstream.** `--fpga auto` (the default) reads status word 0:
+  `SKRF` = ours, anything else = stock. `--sim-skrf` simulates ours (the
+  packer as a thread writing the ring), so every gate runs on both.
+- **Protocol 1 on slots.** Both P1 instances stay as on stock (eth0, mvl0;
+  discovery, EP2, EP6, the marker, pairing, the orphan stop): instance k
+  takes slots 8k … 8k+7 at its rate, each receiver's frequency and input
+  its slot's. CW Skimmer's HermesIntf and the released skimmer cannot tell
+  (2026-11-27: SkimSrv on IP B at 8 × 96 k and the service on IP A ran
+  11 min on the board, 0 overflows, 4 855 datagrams/s for SkimSrv, as on
+  stock).
+- **The reader** copies new bursts out of the ring with NEON and files
+  each sample into its slot's buffer (65 536 samples) at its hardware
+  index, unwrapped from the word's vector number. A P1 stream reads its
+  receivers' buffers at one index range; a reset (start, overflow, a new
+  rate or receiver count) re-anchors it — with its partner when paired —
+  at a common index and starts a new epoch, as on stock. The ring running
+  over (the reader 8 MB behind) means a new sync.
+- **SKRS, the skimmer's stream** (P1 cannot mix rates): control `SKRC` to
+  port 1025 of eth0 — start (n streams: id, Hz, rate 0 = 48 … 3 = 384 k,
+  input 1|2), stop, keep-alive every second (5 s without one = stopped;
+  no orphan can outlive its client). Data `SKRS` from that port, a
+  datagram a stream: id, rate, flags (samples lost before it; IN1/IN2
+  clipped since the sync), epoch (the syncs), the hardware index of its
+  first sample, up to 240 samples of 24-bit I/Q, RF-inverted as P1
+  (1 462 bytes); a slot's datagrams of a round in one GSO send. Two
+  streams at one rate share the hardware timeline: one index, one
+  instant. Slots come from 16 … 23 first, then from an instance no P1
+  client streams on, which then answers busy and ignores a start.
+  The marked discovery reply names the slots (byte 0x21) and the port
+  (0x22–0x23). Engine client: `src/engine/rp_stream.c`.
+- **The skimmer** (`[rp] stream=skrs`): every band one stream at its own
+  rate (`rate=48|96|192|384` in `[bands]`, else `[radio] rate`) and input
+  (`in=`), a phased band (`ip=ab` or `in=12`) two at its rate, lined up by
+  the same pairer as two IPs; up to 16 bands in 24 slots. Settings →
+  Radio → Stream, and a rate column in Bands.
+- **Gates**: `rp-agent-skrf`, `rp-two-ip-skrf` (P1 on the simulated slots),
+  `rp-stream` (16 SKRS streams at every rate, a pair aligned to 0.004°,
+  beside P1, the stop and the keep-alive), `rp-skrs` (skimmer-headless with
+  all HF + 6 m CW/digital segments, 40 m phased: |γ|² 1.000, nulled 46 dB).
+- **Cost.** Reading and parsing the ring at 24 slots took 46 % of a core
+  (skrf); the agent with 10 receivers of P1 (2 + 8 × 96 k) 17 % — agent
+  0.3 on the stock FIFOs ≈ 22 % for 8.
 
 ## Heat
 
-The board already reads 87 °C on stock (the Zynq's commercial grade is
-specified to 85 °C junction). This design should draw about as much as
-stock: fewer FFs toggling in the CICs, no 128-deep FIFO reads keeping a
-core busy, idle slots silent — S1/S3 report Vivado's estimate and the
-XADC on the board. A fan on the heatsink is cheap insurance whatever
-happens here.
+On 2026-11-27 morning: stock at the same load (agent 0.5, SkimSrv 8 ×
+96 k + 2 × 96 k) read 80.6–81.6 °C on the XADC; ours (10 slots active)
+went 79.7 → 83.4 °C in 11 min, still creeping — ≈ +2–3 °C. Vivado
+estimates 3.20 W against stock's 2.84 W at default activity; idle slots
+are silent. The board was at 87 °C on 2026-11-24 on stock; the Zynq's
+commercial grade is specified to 85 °C junction. A fan on the heatsink is
+cheap insurance, and with all 24 slots on it should be there.
 
 ## Steps
 
 | | what | done when |
 |---|---|---|
-| S0 | `fpga/`: the parts of red-pitaya-notes the build needs (cores, scripts, cfg; MIT, pinned in `fpga/VENDOR.md`), Pavel's project built from our tree | the same design builds, timing met, his utilisation |
-| S1 | the slot design synthesised for N = 20, 22, 24 and CIC widths 20/24 (synthesis + implementation, no board) | N chosen; LUT/FF/BRAM/DSP/power in this file |
-| S2 | the new blocks in Verilog (sync/apply NCO, packer, peaks, counter, tone) with xsim testbenches against a C model (`fpga/model/`): a tone's frequency, level and phase per rate, alias rejection, a pair's phase and index, the words' format | the testbenches pass |
-| S3 | the full bitstream on the board, loaded into the FPGA from RAM (`/dev/xdevcfg`; a reboot or Pavel's .bit gives stock back), read with a test program: tones from the OUT1 loop, the ring's read cost, XADC | numbers in `docs/REDPITAYA.md` |
-| S4 | agent 0.6: the new bitstream, the ring, P1 on slots, `SKRS`/`SKRC`; the `rp-agent` gate's simulator emulates the ring | gate green; CW Skimmer on IP B as before |
-| S5 | the skimmer: the `SKRS` client and source, config (any band any rate, up to N slots, pairs), Settings and Statistics (peaks, clips) | gates green, golden byte-identical |
-| S6 | installed by the skimmer (the .bit shipped like the agent), the new-user install check, live with every band | Dan's verdict |
+| S0 | `fpga/`: the parts of red-pitaya-notes the build needs (cores, scripts, cfg; MIT, pinned in `fpga/VENDOR.md`), Pavel's project built from our tree | **done** 2026-11-27: the same utilisation, timing met |
+| S1 | the slot design synthesised and implemented | **done**: N = 24 (table above; the single CIC left 96 % of the slices, two CICs 90 %) |
+| S2 | the new blocks in Verilog with xsim testbenches | **done** for the packer (`fpga/sim/skr_pack_tb.sv`: format, rates, rounding, shifts, saturation, vector numbers, ticks, clips; a wrong shift fails it). The Xilinx IP chain was checked on the board instead (S3) |
+| S3 | the bitstream on the board from RAM, `rp/spike/skrf` | **done** (above): rates, identity of twin slots, orientation, the noise floor = stock's, the read cost. The OUT1 loop is still to do: it needs a cable at the bench |
+| S4 | agent 0.6: the new bitstream, P1 on slots, SKRS | **done**; live on the board 11 min with SkimSrv and the service |
+| S5 | the skimmer: SKRS client and source, config, Settings | **done** in code and gates; Statistics' clips/peaks are not shown yet |
+| S6 | installed by the skimmer (the .bit shipped like the agent), the new-user install check, live with every band | after CQWW (2026-11-28/29), Dan's go |
 
 Vivado runs on hra2 with the skimmer service stopped (and is restarted
 after each run); never during a contest.

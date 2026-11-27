@@ -198,7 +198,17 @@ here; what was done and why is in git.
   rp-f08908 runs agent 0.5 since 2026-11-26 (both FIFO resets released
   together); IN2 has a wideband RX antenna since then — P0 on the air:
   +1.5 dB over IN1 on most bands, +3 dB on 160 m (PHASING.md).
-- **`meson test` = 45 gates** (DeepCW skips without the model, golden skips
+- **The skimmer's own FPGA** (`docs/FPGA.md`, branch fpga 2026-11-27):
+  `fpga/` (red-pitaya-notes' build, pinned; `fpga/build.sh`, Vivado 2025.2
+  on hra2 with the service stopped) builds `skimmer_rp_122_88`: 24 slots,
+  each its own input, frequency and rate, two CICs + time-shared FIR and
+  half-bands at unity gain, a DMA ring, a hardware index in every word,
+  ADC peaks/clips, an OUT1 tone. Agent 0.6 (`--fpga auto|stock|skrf`,
+  `--sim-skrf`) serves P1 on its slots and SKRS (`src/engine/rp_stream.c`;
+  `[rp] stream=skrs`, a band's `rate=`). Settings → Red Pitaya installs it
+  (the .bit in `fpga/bin/`, shipped like the agent; `--redpitaya
+  install-fpga|install-stock`); Statistics shows the ADC peaks and clips.
+- **`meson test` = 49 gates** (DeepCW skips without the model, golden skips
   without its inputs in `/var/tmp/skimmer-iq/golden`; `ft8d` and `ft8` exist
   only with gfortran, `js8` only with C++20 + Boost headers). `headless-mock` runs
   the whole skimmer-headless on `[radio] type=mock` (no radio).

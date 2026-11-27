@@ -53,6 +53,9 @@ typedef struct {
   guint8      sel_a, sel_b; /* SEL, INSTALL: input masks (bit r = receiver r on IN2) */
   gboolean    sel_given; /* INSTALL: use sel_a/b — else the card's start.sh's (or 0) */
   gboolean    persist;   /* SEL: also into start.sh                                  */
+  gint        fpga;      /* INSTALL: 0 = the bitstream the card's start.sh loads now
+                          * (a first install: Pavel's), 1 = the skimmer's own
+                          * (docs/FPGA.md), 2 = Pavel's stock one                     */
   /* INSTALL/UNINSTALL: the addresses this skimmer streams from itself (its
    * own stream is no reason to refuse), NULL-terminated or NULL */
   const char *const *ours;
@@ -100,6 +103,9 @@ gboolean  skim_hd_rp_managed(SkimHdRp *rp);
  * ../share/skimmer-for-linux/ (the AppImage);
  * NULL when there is none. */
 char     *skim_hd_rp_agent_path(void);
+/* The skimmer's own bitstream to install (skimmer_rp_122_88.bit beside the
+ * binary, ../share/skimmer-for-linux, or SKIM_RP_BIT); NULL = none here. */
+char     *skim_hd_rp_bit_path(void);
 
 /* Call first in main(): when this process is ssh's askpass (SKIM_ASKPASS_SOCK
  * set and one argument, a password prompt), it prints the password from the
