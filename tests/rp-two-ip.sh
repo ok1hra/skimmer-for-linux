@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Two-IP gate: skimmer-headless takes both IPs of a Red Pitaya that runs the
-# skimmer's agent — the real agent (skimmer-rp-host --sim) on 127.0.0.6 and
+# skimmer's agent — the real agent (skimmer-rp-host --sim, or $RP_SIM: --sim-skrf) on 127.0.0.6 and
 # 127.0.0.7. IP A is [radio] host; IP B's address comes from the agent's
 # discovery; the ip=b band streams from B at [rp] b_rate, its in=2 puts it
 # on IN2 through Protocol 1; SIGTERM stops both streams. A config with every
@@ -25,7 +25,7 @@ check() {  # what, condition-exit-code
 
 P=$((30000 + RANDOM % 5000))
 HTTP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
-"$AG" serve --sim --bind 127.0.0.6:$P,127.0.0.7:$P --ctl "$T/ctl.sock" --orphan-s 2 > "$T/agent.log" 2>&1 &
+"$AG" serve ${RP_SIM:---sim} --bind 127.0.0.6:$P,127.0.0.7:$P --ctl "$T/ctl.sock" --orphan-s 2 > "$T/agent.log" 2>&1 &
 APID=$!
 for _ in $(seq 50); do [[ -S $T/ctl.sock ]] && break; sleep 0.1; done
 st() { "$AG" ctl --ctl "$T/ctl.sock" status; }

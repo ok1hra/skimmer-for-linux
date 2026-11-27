@@ -372,7 +372,7 @@ static void check_paired(void) {
 
 int main(int argc, char **argv) {
   if (argc < 2) {
-    fprintf(stderr, "usage: skimmer-rp-agent-test PATH/TO/skimmer-rp-host\n");
+    fprintf(stderr, "usage: skimmer-rp-agent-test PATH/TO/skimmer-rp-host [--sim|--sim-skrf]\n");
     return 2;
   }
   agent = argv[1];
@@ -381,7 +381,11 @@ int main(int argc, char **argv) {
   ctl_path = g_build_filename(dir, "ctl.sock", NULL);
   char *bind = g_strdup_printf(ADDR_A ":%u," ADDR_B ":%u", port, port);
   GError *err = NULL;
-  GSubprocess *proc = g_subprocess_new(G_SUBPROCESS_FLAGS_NONE, &err, agent, "serve", "--sim",
+  /* argv[2]: the simulation (--sim: the stock FIFOs; --sim-skrf: the
+   * skimmer's bitstream's slots and ring, docs/FPGA.md) */
+  const char *sim = argc > 2 ? argv[2] : "--sim";
+  printf("agent %s\n", sim);
+  GSubprocess *proc = g_subprocess_new(G_SUBPROCESS_FLAGS_NONE, &err, agent, "serve", sim,
                                        "--bind", bind, "--ctl", ctl_path, "--orphan-s", "2", NULL);
   if (!proc) {
     printf("FAIL cannot start %s: %s\n", agent, err->message);

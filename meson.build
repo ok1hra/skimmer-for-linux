@@ -163,6 +163,9 @@ skimmer_rp_agent_test = executable('skimmer-rp-agent-test',
   link_with : engine_lib,
 )
 test('rp-agent', skimmer_rp_agent_test, args : [skimmer_rp_host], timeout : 60)
+# … and the same on the skimmer's own bitstream (docs/FPGA.md), simulated:
+# slots, the ring, hardware indices
+test('rp-agent-skrf', skimmer_rp_agent_test, args : [skimmer_rp_host, '--sim-skrf'], timeout : 60)
 
 # … and the same source for the board: static armhf (Pavel's Alpine is musl,
 # so nothing shared), shipped in the AppImage for rp_manage to install.
@@ -703,6 +706,10 @@ test('headless-mock', find_program('tests/headless-mock.sh'),
 # a phased band (ip=ab): paired, aligned, Φ live, B lost and back.
 test('rp-two-ip', find_program('tests/rp-two-ip.sh'),
   args : [skimmer_headless, skimmer_rp_host, skimmer_phase_bench], timeout : 180)
+# … with the agent on the skimmer's own bitstream (simulated: docs/FPGA.md)
+test('rp-two-ip-skrf', find_program('tests/rp-two-ip.sh'),
+  args : [skimmer_headless, skimmer_rp_host, skimmer_phase_bench], timeout : 180,
+  env : ['RP_SIM=--sim-skrf'])
 
 # Hub gate: a hub and a worker on this machine (mock source) — a band
 # passed on, decoded there, spotted on the hub's feed; the peer duplicate;
