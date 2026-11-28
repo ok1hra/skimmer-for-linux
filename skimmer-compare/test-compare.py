@@ -52,6 +52,13 @@ checks that the comparison finds exactly that:
     only-R and stay out of the histogram; session B's 30 min L silence
     beside only 6 R spots stays compared
 
+  held frequency: L spots DK2OY (MASTER.SCP, no RBN) where RBN hears
+    CN3A 5×, W spots F5GGG where RBN hears G0K 3× → both "held": out of
+    recall and of the bust rate, counted apart; an SCP call on an empty
+    frequency stays real, our own spotter holds nothing; held_n=6 → back
+  stopped gap: the recorder stopped 10:30 and resumed (-C) 11:00 → the
+    half hour between is not compared time
+
   ./test-compare.py            exit 0 = everything passed
 """
 import calendar
@@ -233,13 +240,13 @@ def core(root, logs, A_T, B_T):
     # found_scp: found stations only MASTER.SCP vouches for — R's only-R G4CCC
     check(bd["L"] == {"found": 2, "found_scp": 0, "lost": 1, "missed": 1, "unverified": 1,
                       "unresolved": 0,
-                      "nonCQ": 1, "episodes": 5,
+                      "nonCQ": 1, "held": 0, "episodes": 5,
                       "calls": {"found": 2, "lost": 1, "missed": 1, "unverified": 2,
-                                "unresolved": 0, "nonCQ": 1, "own": 5}}
+                                "unresolved": 0, "nonCQ": 1, "held": 0, "own": 5}}
           and bd["R"] == {"found": 3, "found_scp": 1, "lost": 0, "missed": 1, "unverified": 0,
-                          "unresolved": 0, "nonCQ": 0, "episodes": 3,
+                          "unresolved": 0, "nonCQ": 0, "held": 0, "episodes": 3,
                           "calls": {"found": 3, "lost": 0, "missed": 1, "unverified": 0,
-                                    "unresolved": 0, "nonCQ": 0, "own": 3}}
+                                    "unresolved": 0, "nonCQ": 0, "held": 0, "own": 3}}
           and bd["calls_real"] == 4 and bd["n"] == 4,
           "breakdown: L's EA3G bust costs recall, its ON4HHH bust only the bust rate;"
           " R's G4CCC is found by MASTER.SCP alone %s" % bd)
@@ -1033,6 +1040,123 @@ def phased_bands():
           "the counts: two by their own Φ, one by the band's, one off; one dropped (%s)" % ph)
 
 
+def held_frequency():
+    print("=== held frequency — an SCP call where RBN hears another station is no station found")
+    root = tempfile.mkdtemp(prefix="compare-held-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    with open(os.path.join(root, "headless.ini"), "w") as fh:
+        fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n")
+    with open(os.path.join(root, "master.scp"), "w") as fh:
+        fh.write("# test\nDK2OY\nCN3A\nOK1BBB\nDL1AAA\nF5GGG\n")
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\n"
+                 "[remote]\nwindows = 7000-7091\n[rbn]\nexclude = OK1HRA\n")
+    T = "20261001-100000"
+    loc = [mark("10:00:00", "connected to 127.0.0.1:7373"),
+           L("10:02:00", 7010.0, "DL1AAA"),     # RBN confirms → only-L, real
+           L("10:05:00", 7027.8, "DK2OY"),      # SCP only, RBN hears CN3A there → held
+           L("10:20:00", 7040.0, "OK1BBB")]     # SCP only, nobody else there → only-L, real
+    rem = [mark("10:00:00", "connected to 192.168.1.201:7301"),
+           R("10:06:00", 7027.9, "CN3A"),       # the runner: only-R, real
+           R("10:30:00", 7060.0, "F5GGG"),      # SCP only, RBN hears G0K there → held, W's
+           R("10:40:00", 7070.0, "CN3A")]       # CN3A again on 7070: nobody there, but RBN
+    rbn = [mark("10:00:00", "connected to telnet.reversebeacon.net:7000"),  # confirms nothing
+           B("10:02:30", "DK0XX-#", 7010.0, "DL1AAA")] + [
+           B("10:%02d:00" % m, "S5%dXX-#" % i, 7027.8, "CN3A") for i, m in enumerate((1, 3, 4, 6, 8))] + [
+           B("10:%02d:00" % m, "G%dXX-#" % i, 7060.1, "G0K") for i, m in enumerate((28, 31, 33))] + [
+           B("10:41:00", "OK1HRA-#", 7070.0, "ZZ9ZZ")] * 3   # our own spotter holds nothing
+    events = ["%s recording as OK1HRA since %s UTC\n" % (ts("10:00:00"), T),
+              "%s stopped — write check OK\n" % ts("11:00:00")]
+    for kind, lines in (("local", loc), ("remote", rem), ("rbn", rbn), ("events", events)):
+        with open(os.path.join(logs, "%s-%s.log" % (kind, T)), "w") as fh:
+            fh.writelines(lines)
+    with open(os.path.join(logs, "status-%s.jsonl" % T), "w") as fh:
+        for m in range(0, 60, 5):
+            fh.write("%s\t%s\n" % (ts("10:%02d:00" % m), json.dumps({"streaming": True, "lost_pct": 0})))
+    cfg = Config(os.path.join(root, "compare.ini"))
+    store = Store(cfg.logs, lambda: RbnIndex(loose_bands(cfg.local_windows, 2.0), cfg.exclude))
+    store.poll()
+    An = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
+                 epoch("23:00:00"))
+    cat = {(e["call"], round(e["f"])): e for e in An.events}
+    dk, f5 = cat.get(("DK2OY", 7028)), cat.get(("F5GGG", 7060))
+    check(dk is not None and dk["cat"] == "held" and not dk["inU"] and not dk["bL"]
+          and "CN3A" in (dk["note"] or ""),
+          "L's DK2OY on CN3A's frequency: held, out of recall, no bust (%s)" % (dk and dk["cat"]))
+    check(f5 is not None and f5["cat"] == "held" and f5["R"] is not None and not f5["bR"],
+          "W's F5GGG on G0K's frequency: held, W's (%s)" % (f5 and f5["cat"]))
+    ok1 = cat.get(("OK1BBB", 7040))
+    cn = cat.get(("CN3A", 7070))
+    check(ok1 is not None and ok1["cat"] == "only-L" and ok1["inU"],
+          "OK1BBB, SCP only on an empty frequency: still only-L, real")
+    check(cn is not None and cn["cat"] == "only-R" and cn["inU"],
+          "CN3A on 7070: only our own spotter's ZZ9ZZ there — holds nothing, only-R real")
+    S = summarize(An, epoch("10:00:00"), epoch("11:00:00") + 1)
+    check(S["recall"]["n"] == 4 and S["recall"]["L"]["k"] == 2 and S["recall"]["R"]["k"] == 2,
+          "recall: DL1AAA, OK1BBB, CN3A twice — 4 stations, L 2, W 2 (n %d)" % S["recall"]["n"])
+    H = S["held"]
+    check(H["L"]["k"] == 1 and H["L"]["n"] == 3 and H["R"]["k"] == 1 and H["R"]["n"] == 3,
+          "held: L 1 of 3 episodes, W 1 of 3 (%s)" % H)
+    check(S["bust"]["L"]["n"] == 2 and S["bust"]["R"]["n"] == 2,
+          "bust rate: held episodes out of its denominators (L %d, W %d)"
+          % (S["bust"]["L"]["n"], S["bust"]["R"]["n"]))
+    check(S["breakdown"]["L"]["held"] == 1 and S["breakdown"]["L"]["calls"]["held"] == 1,
+          "breakdown: L's held episode and call")
+    An2 = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp),
+                  dict(cfg.params, held_n=6), epoch("23:00:00"))
+    c2 = {(e["call"], round(e["f"])): e["cat"] for e in An2.events}
+    check(c2.get(("DK2OY", 7028)) == "only-L" and c2.get(("F5GGG", 7060)) == "only-R",
+          "held_n=6: CN3A's 5 and G0K's 3 RBN spots are not enough — only-L / only-R again")
+
+
+def stopped_gap():
+    print("=== stopped gap — the time a stopped recorder waited for its -C resume is not compared")
+    root = tempfile.mkdtemp(prefix="compare-gap-")
+    logs = os.path.join(root, "logs")
+    os.makedirs(logs)
+    with open(os.path.join(root, "headless.ini"), "w") as fh:
+        fh.write("[radio]\nrate=96000\n[bands]\n40m=7040000\n")
+    with open(os.path.join(root, "master.scp"), "w") as fh:
+        fh.write("# test\nDL1AAA\n")
+    with open(os.path.join(root, "compare.ini"), "w") as fh:
+        fh.write("[paths]\nlogs = logs\nheadless_ini = headless.ini\nscp = master.scp\n"
+                 "[remote]\nwindows = 7000-7091\n[rbn]\nexclude = OK1HRA\n")
+    T = "20261001-100000"
+    loc = [mark("10:00:00", "connected to 127.0.0.1:7373"), L("10:10:00", 7010.0, "DL1AAA"),
+           mark("11:00:00", "connected to 127.0.0.1:7373"), L("11:10:00", 7010.0, "DL1AAA")]
+    rem = [mark("10:00:00", "connected to 192.168.1.201:7301"), R("10:11:00", 7010.0, "DL1AAA"),
+           mark("11:00:00", "connected to 192.168.1.201:7301"), R("11:11:00", 7010.0, "DL1AAA")]
+    rbn = [mark("10:00:00", "connected to telnet.reversebeacon.net:7000"),
+           mark("11:00:00", "connected to telnet.reversebeacon.net:7000")]
+    events = ["%s recording as OK1HRA since %s UTC\n" % (ts("10:00:00"), T),
+              "%s stopped — write check OK\n" % ts("10:30:00"),
+              "%s resumed session %s as OK1HRA — appending to its files\n" % (ts("11:00:00"), T),
+              "%s stopped — write check OK\n" % ts("11:30:00")]
+    for kind, lines in (("local", loc), ("remote", rem), ("rbn", rbn), ("events", events)):
+        with open(os.path.join(logs, "%s-%s.log" % (kind, T)), "w") as fh:
+            fh.writelines(lines)
+    with open(os.path.join(logs, "status-%s.jsonl" % T), "w") as fh:
+        for m in list(range(0, 30, 5)) + list(range(60, 90, 5)):
+            fh.write("%s\t%s\n" % (ts("%02d:%02d:00" % (10 + m // 60, m % 60)),
+                                    json.dumps({"streaming": True, "lost_pct": 0})))
+    cfg = Config(os.path.join(root, "compare.ini"))
+    store = Store(cfg.logs, lambda: RbnIndex(loose_bands(cfg.local_windows, 2.0), cfg.exclude))
+    store.poll()
+    s = store.sessions[T]
+    want = [(epoch("10:00:00"), epoch("10:30:00")), (epoch("11:00:00"), epoch("11:30:00"))]
+    check(s.up("local", s.end(False, 0)) == want and s.up("rbn", s.end(False, 0)) == want,
+          "the feeds are up 10:00–10:30 and 11:00–11:30, not through the stop (%s)"
+          % s.up("local", s.end(False, 0)))
+    An = analyze(store, cfg.local_windows, cfg.remote_windows, load_scp(cfg.scp), cfg.params,
+                 epoch("23:00:00"))
+    S = summarize(An, epoch("10:00:00"), epoch("12:00:00"))
+    check(S["time"]["common_s"] == 3600,
+          "compared 60 min, the 30 min stop left out (%d s)" % S["time"]["common_s"])
+    check(S["recall"]["n"] == 2 and S["recall"]["L"]["k"] == 2 and S["recall"]["R"]["k"] == 2,
+          "DL1AAA matched in both halves")
+
+
 def RT(hms, spotter, f, call, cm="CQ"):
     """An RTTY line: skimmer-headless and RBN name the mode, 45 BPS."""
     return "%s\tDX de %-9s %7.2f  %-12s RTTY  20 dB  45 BPS  %-6s 1200Z\n" % (
@@ -1129,6 +1253,8 @@ if __name__ == "__main__":
     rtty()
     paused_bands()
     phased_bands()
+    held_frequency()
+    stopped_gap()
     print("  (files in %s)" % root)
     print("\n%s (%d failure%s)" % ("FAIL" if fails else "PASS", fails, "" if fails == 1 else "s"))
     sys.exit(1 if fails else 0)

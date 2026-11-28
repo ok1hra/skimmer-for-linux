@@ -14,6 +14,11 @@ one band, spots joined while the gap is at most gap_min. Then:
            counted where it was matched
   nonCQ    an L episode the remote heard only as DE / without CQ — neither
            a catch nor a plain miss for R
+  held     an only-L / only-R episode of a call only MASTER.SCP vouches for,
+           where RBN heard ANOTHER call (held_n× within held_df_khz and
+           held_dt_min): that station's frequency — a pileup's caller read
+           as a CQ — so neither a found station nor a bust; out of recall,
+           counted on its own
   bust     unmatched L and R episodes of DIFFERENT but similar calls at the
            same frequency and time; the referee decides who was right
   only-L / only-R   the rest
@@ -27,7 +32,7 @@ from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from statistics import median
 
-from .arbiter import RANK, Arbiter
+from .arbiter import RANK, Arbiter, held_by
 from .intervals import Membership, intersect, normalize, subtract, total
 from .logs import Spot
 from .windows import Windows, remote_at
@@ -268,6 +273,7 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine, call
     A.engine = engine
     gap, slack = P["gap_min"] * 60, P["slack_min"] * 60
     df, bust_df, bust_dt = P["df_khz"], P["bust_df_hz"] / 1000.0, P["bust_dt_s"]
+    held_dt = P.get("held_dt_min", 5) * 60
 
     # ---- time: sessions, common time (of this decoder), RBN coverage ------------
     A.sessions, A.spans, A.rbn_up, segs, wsegs, A.dead = compared_time(
@@ -545,6 +551,12 @@ def _analyze(store, local_w, remote_w, scp, P, now, engine, default_engine, call
             v = verdict(e)
             real = v[0] != "none"
             le, re_ = (e, None) if side == "L" else (None, e)
+            h = held_by(store.rbn, e.call, e.band, e.t0, e.t1, e.f, held_dt,
+                        P.get("held_df_khz", 0.3), P.get("held_n", 3)) if v[0] == "scp" else None
+            if h:
+                add("held", le, re_, e.call, v, False, False, False,
+                    note="RBN heard %s there %d×, never %s" % (h[0], h[1], e.call))
+                continue
             add("only-" + side, le, re_, e.call, v, real, side == "L" and real,
                 side == "R" and real, bL=side == "L" and not real,
                 bR=side == "R" and not real, hint_=None if real else hint(e))

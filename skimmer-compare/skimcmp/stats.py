@@ -65,6 +65,23 @@ def quantile(v, q):
     return v[a] + (v[b] - v[a]) * (i - a)
 
 
+def counted(e, X):
+    """An episode of side X that the bust rate counts: a held one (another
+    station's frequency, match.py) is neither right nor busted — counted
+    on its own (held_block)."""
+    return e[X] is not None and e["cat"] != "held"
+
+
+def held_block(evs):
+    """Each side's episodes on another station's frequency (match.py
+    "held"), of all its episodes."""
+    out = {}
+    for X in ("L", "R"):
+        n = sum(e[X] is not None for e in evs)
+        out[X] = prop(sum(e["cat"] == "held" and e[X] is not None for e in evs), n)
+    return out
+
+
 def recall_block(evs):
     U = [e for e in evs if e["inU"]]
     n = len(U)
@@ -95,8 +112,8 @@ def recall_block(evs):
 
 
 def bust_block(evs):
-    nL = sum(e["L"] is not None for e in evs)
-    nR = sum(e["R"] is not None for e in evs)
+    nL = sum(counted(e, "L") for e in evs)
+    nR = sum(counted(e, "R") for e in evs)
     kL = sum(e["bL"] for e in evs)
     kR = sum(e["bR"] for e in evs)
     p = two_prop(kL, nL, kR, nR)
@@ -127,7 +144,8 @@ def breakdown_block(evs):
     each of the side's own call strings that is not a found real call —
     verified but outside U (R heard it without CQ), only ever in an unsettled
     pair, or confirmed by nobody (its busts, the busted strings of lost pairs
-    included). found + nonCQ + unresolved + unverified = the side's unique
+    included), or a real call only on another station's frequency (held).
+    found + nonCQ + held + unresolved + unverified = the side's unique
     calls; found + nonCQ = its verified calls.
 
     found_scp (a part of found, not a segment of its own): found stations
@@ -142,10 +160,11 @@ def breakdown_block(evs):
         own = [e for e in evs if e[X] is not None]
         found = {e["call"] for e in evs if e["inU"] and e[c]}
         lost = {e["call"] for e in evs if e["inU"] and e[b]} - found
-        ok = {e[X]["call"] for e in own
-              if not e[b] and not (e["cat"] == "bust" and not e["inU"])} - found
-        unres = {e[X]["call"] for e in own if e["cat"] == "bust" and not e["inU"]} - found - ok
-        rest = {e[X]["call"] for e in own} - found - ok - unres
+        ok = {e[X]["call"] for e in own if not e[b] and e["cat"] != "held"
+              and not (e["cat"] == "bust" and not e["inU"])} - found
+        held = {e[X]["call"] for e in own if e["cat"] == "held"} - found - ok
+        unres = {e[X]["call"] for e in own if e["cat"] == "bust" and not e["inU"]} - found - ok - held
+        rest = {e[X]["call"] for e in own} - found - ok - held - unres
         out[X] = {
             "found": sum(e["inU"] and e[c] for e in evs),
             "found_scp": sum(e["inU"] and e[c] and e["v"] == "scp" and e["cat"] != "match"
@@ -155,11 +174,12 @@ def breakdown_block(evs):
             "unverified": sum(not e["inU"] and e[b] for e in evs),
             "unresolved": sum(e["cat"] == "bust" and not e["inU"] for e in own),
             "nonCQ": sum(e["cat"] == "nonCQ" for e in own),
+            "held": sum(e["cat"] == "held" for e in own),
             "episodes": len(own),
             "calls": {"found": len(found), "lost": len(lost),
                       "missed": len(real - found - lost), "unverified": len(rest),
-                      "unresolved": len(unres), "nonCQ": len(ok),
-                      "own": len(found | ok | unres | rest)}}
+                      "unresolved": len(unres), "nonCQ": len(ok), "held": len(held),
+                      "own": len(found | ok | held | unres | rest)}}
     return out
 
 
@@ -244,8 +264,8 @@ def bins_block(evs, key, edges):
                     # side's SNR estimate can bias
                     "LofR": prop(sum(e["cL"] and e["cR"] for e in g),
                                  sum(e["cR"] for e in g)),
-                    "bustL": prop(sum(e["bL"] for e in a), sum(e["L"] is not None for e in a)),
-                    "bustR": prop(sum(e["bR"] for e in a), sum(e["R"] is not None for e in a)),
+                    "bustL": prop(sum(e["bL"] for e in a), sum(counted(e, "L") for e in a)),
+                    "bustR": prop(sum(e["bR"] for e in a), sum(counted(e, "R") for e in a)),
                     "b": b, "c": c, "p": binom_two_sided(b, b + c)})
     return out
 
@@ -274,8 +294,10 @@ def band_rows(A, evs, common):
             "onlyR": sum(e["cat"] == "only-R" and e["inU"] for e in g),
             "nonCQ": sum(e["cat"] == "nonCQ" for e in g),
             "bustL": sum(e["bL"] for e in g), "bustR": sum(e["bR"] for e in g),
-            "epsL": sum(e["L"] is not None for e in g),
-            "epsR": sum(e["R"] is not None for e in g),
+            "epsL": sum(counted(e, "L") for e in g),
+            "epsR": sum(counted(e, "R") for e in g),
+            "heldL": sum(e["cat"] == "held" and e["L"] is not None for e in g),
+            "heldR": sum(e["cat"] == "held" and e["R"] is not None for e in g),
             "p": binom_two_sided(sum(e["cL"] and not e["cR"] for e in U),
                                  sum(e["cL"] != e["cR"] for e in U)),
             "lat": median(lat) if lat else None,
@@ -405,6 +427,7 @@ def summarize(A, ta, tb):
             "phased_L": phased(A, ta, tb)},
         "cats": cats,
         "recall": rec, "bust": bust, "latency": lat,
+        "held": held_block(evs),
         "breakdown": breakdown_block(evs),
         "hourly": hourly(evs, ta, tb, common),
         "snr": {"offset": A.snr_offset, "offset_n": A.snr_offset_n, "scale": "R",

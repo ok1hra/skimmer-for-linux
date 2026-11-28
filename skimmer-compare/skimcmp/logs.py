@@ -144,6 +144,10 @@ class Session:
         #   windows.snapshot_paused, windows.snapshot_phase
         self.health = []
         self.stopped = None       # time of "stopped — write check"
+        # every "stopped — write check": the recorder held no feed from then
+        # until a resumed run (-C) connects again — its feed logs have no
+        # "disconnected" line for it
+        self.stops = []
         self.last_t = self.start  # newest timestamp seen in any of its files
         self.last_event = None    # newest events-log line
         # the recorder reads another port than the local feed is on (or the
@@ -166,9 +170,12 @@ class Session:
         return self.last_t
 
     def up(self, kind, end):
-        """[(a, b)] while the feed was connected, closed at the session end."""
+        """[(a, b)] while the feed was connected, closed at a stop of the
+        recorder and at the session end."""
         out, since = [], None
-        for t, up in self.conn[kind]:
+        marks = sorted(self.conn[kind] + [(t, False) for t in self.stops],
+                       key=lambda m: (m[0], m[1]))   # a stop before a connect of its second
+        for t, up in marks:
             if up and since is None:
                 since = t
             elif not up and since is not None:
@@ -375,6 +382,7 @@ class Store:
             s.seen(t)
             if "stopped — write check" in line:
                 s.stopped = t
+                s.stops.append(t)
             elif RESUMED in line:
                 s.stopped = None
             if (PORT_OK in line or PORT_FOLLOWED in line or RESUMED in line

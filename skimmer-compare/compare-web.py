@@ -146,12 +146,16 @@ def view(cfg, S, feeds, engine, T_name, live, scp_n, joined=None):
         "bands": [{"band": b["band"], "lo": b["lo"], "hi": b["hi"], "n": b["n"],
                    "L": prop(b["L"]), "W": prop(b["R"]), "only_L": b["onlyL"], "only_W": b["onlyR"],
                    "bust_L": b["bustL"], "eps_L": b["epsL"], "bust_W": b["bustR"], "eps_W": b["epsR"],
-                   "nonCQ": b["nonCQ"], "p": b["p"],
+                   "nonCQ": b["nonCQ"], "held_L": b["heldL"], "held_W": b["heldR"], "p": b["p"],
                    "median_W_minus_L": b["lat"], "off_s": b.get("off_s", 0)}
                   for b in S["bands"]],
         "recall": {"L": prop(rec["L"]), "W": prop(rec["R"]), "n": rec["n"],
                    "only_L": rec["b"], "only_W": rec["c"], "p": rec["p"]},
         "bust": {"L": prop(bust["L"]), "W": prop(bust["R"]), "p": bust["p"]},
+        # episodes on another station's frequency (match.py "held"): a real
+        # call only MASTER.SCP vouches for, where RBN heard another one —
+        # out of recall and of the bust rate, of all the side's episodes
+        "held": {"L": prop(S["held"]["L"]), "W": prop(S["held"]["R"])},
         "latency": {"n": lat["n"], "median_W_minus_L": lat["median"],
                     "L_first": lat["L_first"], "W_first": lat["R_first"], "ties": lat["ties"]},
         "verdicts": [{"metric": v["metric"], "winner": side.get(v["winner"]),
@@ -178,7 +182,7 @@ def iso(t):
 
 
 KIND = {"match": "match", "only-L": "only L", "only-R": "only W", "bust": "bust pair",
-        "nonCQ": "W heard it not as CQ"}
+        "nonCQ": "W heard it not as CQ", "held": "another station's frequency"}
 
 
 def cell(v):

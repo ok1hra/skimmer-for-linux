@@ -132,6 +132,24 @@ def load_scp(path):
 RANK = {"rbn": 2, "scp": 1, "none": 0}
 
 
+def held_by(rbn, call, band, t0, t1, f, dt_s, df_khz, need):
+    """(other call, its RBN spots) when RBN hears another station at f in
+    [t0 − dt, t1 + dt] at least `need` times, else None.
+
+    MASTER.SCP vouches for a call, not for a frequency: a pileup's caller,
+    read as if he called CQ on the runner's frequency, is a real call at a
+    place RBN never heard it — CQWW 2026, 2357 of L's 3778 only-L stations
+    were such SCP calls, 99 % of them where RBN heard the runner."""
+    seen = {}
+    for x in rbn.near(band, t0 - dt_s, t1 + dt_s, f, df_khz, limit=5000):
+        if x[3] != call:
+            seen[x[3]] = seen.get(x[3], 0) + 1
+    if not seen:
+        return None
+    other, n = max(seen.items(), key=lambda kv: (kv[1], kv[0]))
+    return (other, n) if n >= need else None
+
+
 class Arbiter:
     def __init__(self, rbn, scp, win_s, df_khz):
         self.rbn, self.scp, self.win, self.df = rbn, scp, win_s, df_khz
